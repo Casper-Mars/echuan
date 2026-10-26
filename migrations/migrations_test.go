@@ -7,28 +7,33 @@ import (
 )
 
 // TestEmbeddedMigrations guards the embedded FS itself: the binary must ship
-// exactly the initial migration at version 1.
+// the initial schema plus the projects.last_actor addition.
 func TestEmbeddedMigrations(t *testing.T) {
 	list, err := Load(FS)
 	if err != nil {
 		t.Fatalf("Load(FS): %v", err)
 	}
-	if len(list) != 1 {
-		t.Fatalf("migrations = %d, want 1", len(list))
+	if len(list) != 2 {
+		t.Fatalf("migrations = %d, want 2", len(list))
 	}
 	if list[0].Version != 1 || list[0].Name != "0001_init.sql" {
 		t.Errorf("migration = %d/%s, want 1/0001_init.sql", list[0].Version, list[0].Name)
 	}
-	if len(list[0].SQL) == 0 {
-		t.Error("embedded migration has no SQL")
+	if list[1].Version != 2 || list[1].Name != "0002_project_last_actor.sql" {
+		t.Errorf("migration = %d/%s, want 2/0002_project_last_actor.sql", list[1].Version, list[1].Name)
+	}
+	for _, migration := range list {
+		if len(migration.SQL) == 0 {
+			t.Errorf("embedded migration %s has no SQL", migration.Name)
+		}
 	}
 
 	latest, err := Latest(FS)
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
 	}
-	if latest != 1 {
-		t.Errorf("latest = %d, want 1", latest)
+	if latest != 2 {
+		t.Errorf("latest = %d, want 2", latest)
 	}
 }
 

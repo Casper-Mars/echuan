@@ -20,6 +20,11 @@ var (
 	// not accept (tech design §4.7: 409 invalid_state). Task-06 reuses it for
 	// the remaining project state transitions.
 	ErrInvalidState = errors.New("invalid state")
+	// ErrInvalidVersion reports a conditional write whose If-Match version no
+	// longer matches the persisted one (tech design §4.7: 409 invalid_version).
+	// It is distinct from ErrConflict so the client can tell "re-read and
+	// retry" apart from a duplicate-key style conflict.
+	ErrInvalidVersion = errors.New("invalid version")
 	// ErrTooLarge reports a body above a configured limit (tech design §4.7:
 	// 413 too_large). Both the HTTP body reader and the material writer raise
 	// it, and both must produce the same response.
@@ -70,6 +75,23 @@ func (e *InvalidStateError) Error() string { return e.Reason }
 
 // Unwrap reports ErrInvalidState.
 func (e *InvalidStateError) Unwrap() error { return ErrInvalidState }
+
+// InvalidVersionError reports a conditional write whose expected version no
+// longer matches the persisted row. Current is the version the client must
+// read back before retrying.
+type InvalidVersionError struct {
+	Current  int
+	Expected int
+}
+
+// Error implements error. The current version is part of the message so the
+// client can retry without a second round trip.
+func (e *InvalidVersionError) Error() string {
+	return fmt.Sprintf("version mismatch: expected %d, current version is %d", e.Expected, e.Current)
+}
+
+// Unwrap reports ErrInvalidVersion.
+func (e *InvalidVersionError) Unwrap() error { return ErrInvalidVersion }
 
 // NotFoundError names the resource (and optionally its key) that was missing.
 type NotFoundError struct {

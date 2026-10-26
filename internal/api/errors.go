@@ -149,9 +149,14 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 	var notFound *domain.NotFoundError
 	var conflict *domain.ConflictError
 	var invalidState *domain.InvalidStateError
+	var invalidVersion *domain.InvalidVersionError
 	var tooLarge *domain.TooLargeError
 
 	switch {
+	case errors.As(err, &invalidVersion):
+		// A conditional write lost the race: the message carries the current
+		// version so the client can re-read and retry without a probe call.
+		writeError(w, r, http.StatusConflict, "invalid_version", invalidVersion.Error(), nil)
 	case errors.As(err, &tooLarge):
 		// Both the HTTP body cap and the material writer land here, so the 413
 		// body and the warning are identical whichever layer noticed the size.

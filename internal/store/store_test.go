@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
+
+	"github.com/Casper-Mars/echuan/migrations"
 )
 
 // testLogger writes nothing but keeps the production log contract.
@@ -62,6 +65,36 @@ func schemaObjects(t *testing.T, st *Store, typ string) map[string]bool {
 	return names
 }
 
+func schemaColumns(t *testing.T, st *Store, table string) map[string]bool {
+	t.Helper()
+
+	rows, err := st.Read().QueryContext(context.Background(), `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		t.Fatalf("table_info %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	columns := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			columnTyp string
+			notNull   int
+			defaultV  any
+			primary   int
+		)
+		if err := rows.Scan(&cid, &name, &columnTyp, &notNull, &defaultV, &primary); err != nil {
+			t.Fatalf("scan table_info %s: %v", table, err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("table_info rows %s: %v", table, err)
+	}
+	return columns
+}
+
 func TestMigrateCreatesSchema(t *testing.T) {
 	st := openTestStore(t, 4)
 
@@ -85,8 +118,13 @@ func TestMigrateCreatesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("user_version = %d, want 1", version)
+	if version != 2 {
+		t.Errorf("user_version = %d, want 2", version)
+	}
+
+	columns := schemaColumns(t, st, "projects")
+	if !columns["last_actor"] {
+		t.Errorf("projects.last_actor missing; have %v", columns)
 	}
 
 	latest, err := LatestMigrationVersion()
@@ -109,8 +147,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if applied != 1 {
-		t.Errorf("first applied = %d, want 1", applied)
+	if applied != 2 {
+		t.Errorf("first applied = %d, want 2", applied)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first: %v", err)
@@ -134,8 +172,82 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("user_version = %d, want 1", version)
+	if version != 2 {
+		t.Errorf("user_version = %d, want 2", version)
+	}
+}
+
+// TestMigrate0002PreservesExistingProjects starts from a version-1 database
+// with real rows, applies the embedded 0002 migration and checks that the new
+// column is present and the existing project survived untouched.
+func TestMigrate0002PreservesExistingProjects(t *testing.T) {
+	st, err := Open(Config{Path: filepath.Join(t.TempDir(), "state.db")})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	base, err := fs.ReadFile(migrations.FS, "0001_init.sql")
+	if err != nil {
+		t.Fatalf("read 0001: %v", err)
+	}
+	applied, err := st.MigrateFS(ctx, fstest.MapFS{
+		"0001_init.sql": {Data: base},
+	})
+	if err != nil {
+		t.Fatalf("MigrateFS(0001): %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("applied = %d, want 1", applied)
+	}
+	if version, err := st.MigrationVersion(ctx); err != nil || version != 1 {
+		t.Fatalf("version = %d (%v), want 1", version, err)
+	}
+	if schemaColumns(t, st, "projects")["last_actor"] {
+		t.Fatal("projects.last_actor exists before 0002")
+	}
+
+	if _, err := st.Write().ExecContext(ctx, `
+		INSERT INTO products (product_id, name, git_url, create_time, update_time)
+		VALUES ('APP', '产品', 'git@example.com:APP.git', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert product: %v", err)
+	}
+	if _, err := st.Write().ExecContext(ctx, `
+		INSERT INTO projects (project_id, product_id, seq_no, title, status, version, create_time, update_time)
+		VALUES ('APP-1', 1, 1, '既有项目', 0, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+
+	applied, err = st.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("applied = %d, want 1 (only 0002)", applied)
+	}
+	if version, err := st.MigrationVersion(ctx); err != nil || version != 2 {
+		t.Fatalf("version = %d (%v), want 2", version, err)
+	}
+	if !schemaColumns(t, st, "projects")["last_actor"] {
+		t.Fatal("projects.last_actor missing after 0002")
+	}
+
+	var (
+		title     string
+		status    int
+		lastActor *string
+	)
+	if err := st.Read().QueryRowContext(ctx,
+		`SELECT title, status, last_actor FROM projects WHERE project_id = 'APP-1'`).
+		Scan(&title, &status, &lastActor); err != nil {
+		t.Fatalf("select project: %v", err)
+	}
+	if title != "既有项目" || status != 0 {
+		t.Errorf("project = %q/%d, want 既有项目/0", title, status)
+	}
+	if lastActor != nil {
+		t.Errorf("last_actor = %q, want NULL for pre-existing rows", *lastActor)
 	}
 }
 
@@ -423,8 +535,8 @@ func TestMigrateRejectsNewerSchema(t *testing.T) {
 	if !errors.As(err, &sv) {
 		t.Fatalf("error = %v, want SchemaVersionError", err)
 	}
-	if sv.Database != 99 || sv.Binary != 1 {
-		t.Errorf("versions = %d/%d, want 99/1", sv.Database, sv.Binary)
+	if sv.Database != 99 || sv.Binary != 2 {
+		t.Errorf("versions = %d/%d, want 99/2", sv.Database, sv.Binary)
 	}
 }
 

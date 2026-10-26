@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Project status values (tech design §3.2). The integer is the canonical value
 // stored in projects.status; the names are code aliases and are never
@@ -35,10 +38,105 @@ const (
 	MaterialKindReport = 3
 )
 
-// TaskStatusDone is the tasks.status value counted as finished by
-// task_stats.done. The full task state machine lands in Task-06; the numeric
-// value is fixed by the tech design (§3.2) and the API contract (§6.2).
-const TaskStatusDone = 4
+// Decision is one human verdict on a review gate. The persisted form is the
+// string carried by the request body; the state machine only accepts the two
+// values below.
+type Decision string
+
+const (
+	// DecisionApprove accepts the reviewed artifact and advances the state.
+	DecisionApprove Decision = "approve"
+	// DecisionReject sends the artifact back and requires a reason.
+	DecisionReject Decision = "reject"
+)
+
+// Valid reports whether d is one of the two supported verdicts.
+func (d Decision) Valid() bool {
+	return d == DecisionApprove || d == DecisionReject
+}
+
+// ParseDecision normalises a wire value into a Decision.
+func ParseDecision(value string) (Decision, bool) {
+	d := Decision(value)
+	return d, d.Valid()
+}
+
+// Project actions. "accept" starts the review, "decide" records a verdict and
+// "cancel" aborts a project that has not been accepted.
+const (
+	// ProjectActionAccept moves draft to spec_review.
+	ProjectActionAccept = "accept"
+	// ProjectActionDecide records an approve/reject verdict.
+	ProjectActionDecide = "decide"
+	// ProjectActionCancel moves any non-terminal project to cancelled.
+	ProjectActionCancel = "cancel"
+)
+
+// ProjectTransition is one legal edge of the project state machine. It is the
+// single authoritative allow-list: every (from, action, decision) combination
+// absent from projectTransitions is rejected with 409 invalid_state.
+//
+// Decision is empty for accept and cancel, which carry no verdict.
+type ProjectTransition struct {
+	From     int
+	Action   string
+	Decision Decision
+	To       int
+}
+
+// projectTransitions mirrors tech design §3.3 exactly. Terminal statuses
+// (accepted, cancelled) have no outgoing edge, which is what makes every
+// action on them an invalid state.
+var projectTransitions = []ProjectTransition{
+	{From: StatusDraft, Action: ProjectActionAccept, Decision: "", To: StatusSpecReview},
+
+	{From: StatusSpecReview, Action: ProjectActionDecide, Decision: DecisionApprove, To: StatusPlanning},
+	{From: StatusSpecReview, Action: ProjectActionDecide, Decision: DecisionReject, To: StatusSpecReview},
+	{From: StatusPlanReview, Action: ProjectActionDecide, Decision: DecisionApprove, To: StatusDeveloping},
+	{From: StatusPlanReview, Action: ProjectActionDecide, Decision: DecisionReject, To: StatusPlanning},
+	{From: StatusDeliveryReview, Action: ProjectActionDecide, Decision: DecisionApprove, To: StatusAccepted},
+	{From: StatusDeliveryReview, Action: ProjectActionDecide, Decision: DecisionReject, To: StatusDeveloping},
+
+	{From: StatusDraft, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusSpecReview, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusPlanning, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusPlanReview, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusDeveloping, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusDeliveryReview, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+}
+
+// IsTerminalProjectStatus reports whether a project status accepts no further
+// action.
+func IsTerminalProjectStatus(status int) bool {
+	return status == StatusAccepted || status == StatusCancelled
+}
+
+// ProjectNextStatus returns the target status for one step. An unknown or
+// illegal combination yields an InvalidStateError: the caller must re-read the
+// resource instead of retrying blindly.
+func ProjectNextStatus(current int, action string, decision Decision) (int, error) {
+	for _, transition := range projectTransitions {
+		if transition.From == current && transition.Action == action && transition.Decision == decision {
+			return transition.To, nil
+		}
+	}
+	return 0, &InvalidStateError{Reason: fmt.Sprintf(
+		"project status %q does not accept %s", StatusName(current), describeAction(action, decision))}
+}
+
+// ValidateProjectTransition is ProjectNextStatus without the target value.
+func ValidateProjectTransition(current int, action string, decision Decision) error {
+	_, err := ProjectNextStatus(current, action, decision)
+	return err
+}
+
+// describeAction renders an action/decision pair for error messages.
+func describeAction(action string, decision Decision) string {
+	if decision == "" {
+		return action
+	}
+	return action + "=" + string(decision)
+}
 
 // statusNames is the single place that turns projects.status into a name. The
 // column only ever stores the integer.
@@ -104,6 +202,7 @@ type Project struct {
 	Title                 string
 	Status                int
 	Reason                string
+	LastActor             string
 	Version               int
 	RequirementMaterialID int64
 	SpecMaterialID        int64

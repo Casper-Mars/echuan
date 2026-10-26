@@ -51,6 +51,12 @@ type writeRequirementRequest struct {
 	BodyMD string `json:"body_md"`
 }
 
+// decideProjectRequest is the POST /v1/projects/decide body.
+type decideProjectRequest struct {
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
+}
+
 // taskStatsResponse summarises tasks; by_status is only filled in by the
 // detail endpoint and is omitted when empty.
 type taskStatsResponse struct {
@@ -69,6 +75,7 @@ type projectResponse struct {
 	Status     int               `json:"status"`
 	StatusName string            `json:"status_name"`
 	Reason     *string           `json:"reason"`
+	LastActor  *string           `json:"last_actor"`
 	Version    int               `json:"version"`
 	TaskStats  taskStatsResponse `json:"task_stats"`
 	CreateTime string            `json:"create_time"`
@@ -281,6 +288,126 @@ func (h *projectsHandler) bodyLimit() int64 {
 	return h.service.MaxMaterialBytes() + extraBodyBytes
 }
 
+// acceptProject handles POST /v1/projects/accept?id=APP-1: draft → spec_review.
+func (h *projectsHandler) acceptProject(w http.ResponseWriter, r *http.Request) {
+	projectID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if projectID == "" {
+		writeDomainError(w, r, h.logger, invalidField("id", "is required"))
+		return
+	}
+	WithSubject(r.Context(), projectID)
+
+	result, err := h.service.AcceptProject(r.Context(), projectID, ActorFromContext(r.Context()))
+	if err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	h.logProjectTransition(r, domain.ProjectActionAccept, "", result)
+	writeJSON(w, http.StatusOK, toProjectResponse(*result.Project))
+}
+
+// decideProject handles POST /v1/projects/decide?id=APP-1.
+func (h *projectsHandler) decideProject(w http.ResponseWriter, r *http.Request) {
+	projectID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if projectID == "" {
+		writeDomainError(w, r, h.logger, invalidField("id", "is required"))
+		return
+	}
+	WithSubject(r.Context(), projectID)
+
+	version, err := ifMatchVersion(r)
+	if err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+
+	var req decideProjectRequest
+	if verr := decodeJSONBody(w, r, &req); verr != nil {
+		writeDomainError(w, r, h.logger, verr)
+		return
+	}
+
+	decision, ok := domain.ParseDecision(strings.TrimSpace(req.Decision))
+	if !ok {
+		writeDomainError(w, r, h.logger, invalidField("decision", "must be approve or reject"))
+		return
+	}
+
+	result, err := h.service.Decide(r.Context(), app.DecideInput{
+		Kind:          app.DecideKindProject,
+		ID:            projectID,
+		Decision:      decision,
+		Reason:        req.Reason,
+		ExpectVersion: &version,
+		Actor:         ActorFromContext(r.Context()),
+	})
+	if err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	h.logProjectTransition(r, domain.ProjectActionDecide, decision, result)
+	writeJSON(w, http.StatusOK, toProjectResponse(*result.Project))
+}
+
+// cancelProject handles POST /v1/projects/cancel?id=APP-1. Cancelling is a
+// final action, so no If-Match is required; the state machine still rejects
+// terminal projects with 409 invalid_state.
+func (h *projectsHandler) cancelProject(w http.ResponseWriter, r *http.Request) {
+	projectID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if projectID == "" {
+		writeDomainError(w, r, h.logger, invalidField("id", "is required"))
+		return
+	}
+	WithSubject(r.Context(), projectID)
+
+	result, err := h.service.CancelProject(r.Context(), projectID, ActorFromContext(r.Context()), "")
+	if err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	h.logProjectTransition(r, domain.ProjectActionCancel, "", result)
+	writeJSON(w, http.StatusOK, toProjectResponse(*result.Project))
+}
+
+// logProjectTransition records one decision with the fields required by §7 of
+// the tech design: subject, decision, from_status, to_status and version.
+func (h *projectsHandler) logProjectTransition(r *http.Request, action string, decision domain.Decision, result app.DecideResult) {
+	if result.Project == nil {
+		return
+	}
+	attrs := []any{
+		"request_id", RequestIDFromContext(r.Context()),
+		"subject", result.Project.ProjectID,
+		"action", action,
+		"from_status", domain.StatusName(result.FromStatus),
+		"to_status", domain.StatusName(result.ToStatus),
+		"version", result.Project.Version,
+	}
+	if decision != "" {
+		attrs = append(attrs, "decision", string(decision))
+	}
+	h.logger.Info("project decision", attrs...)
+}
+
+// ifMatchVersion parses the If-Match header as a positive integer version.
+// Both a missing and a malformed header are 400 invalid_argument; only a
+// well-formed version that no longer matches is 409 invalid_version.
+func ifMatchVersion(r *http.Request) (int, error) {
+	raw := strings.TrimSpace(r.Header.Get("If-Match"))
+	if raw == "" {
+		return 0, invalidField("If-Match", "is required")
+	}
+	// Accept the quoted ETag form as well as the bare integer.
+	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		raw = raw[1 : len(raw)-1]
+	}
+	version, err := strconv.Atoi(raw)
+	if err != nil || version < 1 {
+		return 0, invalidField("If-Match", "must be a positive integer version")
+	}
+	return version, nil
+}
+
 // toProjectResponse maps the domain entity to the list DTO.
 func toProjectResponse(p domain.Project) projectResponse {
 	var reason *string
@@ -297,6 +424,7 @@ func toProjectResponse(p domain.Project) projectResponse {
 		Status:     p.Status,
 		StatusName: domain.StatusName(p.Status),
 		Reason:     reason,
+		LastActor:  nullableString(p.LastActor),
 		Version:    p.Version,
 		TaskStats: taskStatsResponse{
 			Total:    p.TaskStats.Total,
@@ -306,6 +434,14 @@ func toProjectResponse(p domain.Project) projectResponse {
 		CreateTime: p.CreateTime.UTC().Format(time.RFC3339Nano),
 		UpdateTime: p.UpdateTime.UTC().Format(time.RFC3339Nano),
 	}
+}
+
+// nullableString renders an empty domain string as JSON null.
+func nullableString(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // toMaterialResponse maps one material version to the wire DTO.

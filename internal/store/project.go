@@ -17,7 +17,7 @@ import (
 // depend on domain (the dependency runs domain ← store ← app ← api).
 const projectColumns = `p.id, p.project_id, pr.product_id AS product_code, p.seq_no,
 	p.title, p.requirement_material_id, p.spec_material_id, p.status, p.reason,
-	p.version,
+	p.last_actor, p.version,
 	(SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_total,
 	(SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 4) AS task_done,
 	p.create_time, p.update_time`
@@ -36,6 +36,7 @@ type Project struct {
 	SpecMaterialID        *int64  `db:"spec_material_id"`
 	Status                int     `db:"status"`
 	Reason                *string `db:"reason"`
+	LastActor             *string `db:"last_actor"`
 	Version               int     `db:"version"`
 	TaskTotal             int64   `db:"task_total"`
 	TaskDone              int64   `db:"task_done"`
@@ -151,6 +152,29 @@ func UpdateProjectTitle(ctx context.Context, tx *sql.Tx, id int64, title, update
 		return fmt.Errorf("store: update project %d: %w", id, sql.ErrNoRows)
 	}
 	return nil
+}
+
+// TransitionProject applies one state-machine edge with a conditional UPDATE.
+//
+// The WHERE clause carries both the status and the version that were read
+// inside the same transaction, so a concurrent writer can never be overwritten
+// even if the transaction is retried. The returned count is 0 when the row
+// moved between the read and the write; the caller turns that into
+// invalid_version (or invalid_state) after re-reading.
+func TransitionProject(ctx context.Context, tx *sql.Tx, id int64, expectStatus, expectVersion, nextStatus int, reason *string, lastActor, updateTime string) (int64, error) {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE projects
+		   SET status = ?, reason = ?, last_actor = ?, version = version + 1, update_time = ?
+		 WHERE id = ? AND status = ? AND version = ?`,
+		nextStatus, reason, lastActor, updateTime, id, expectStatus, expectVersion)
+	if err != nil {
+		return 0, fmt.Errorf("store: transition project %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: transition project %d: rows affected: %w", id, err)
+	}
+	return n, nil
 }
 
 // AttachRequirementPointer sets requirement_material_id right after a project

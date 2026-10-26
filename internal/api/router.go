@@ -33,6 +33,9 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 //	PATCH /v1/projects               rename a project (?id=)
 //	DELETE /v1/projects              delete a draft/cancelled project (?id=)
 //	POST /v1/projects/requirement    append a requirement version (?id=)
+//	POST /v1/projects/accept         draft → spec_review (?id=)
+//	POST /v1/projects/decide         approve/reject a review gate (?id=, If-Match)
+//	POST /v1/projects/cancel         cancel a non-terminal project (?id=)
 //	GET /v1/materials                download a material object (?id=)
 //	GET /v1/projects/materials       version chain of one kind (?id=&kind=)
 //	/                                fallback handler (embedded frontend), when provided
@@ -63,6 +66,9 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		mux.HandleFunc("PATCH /v1/projects", projectsHandler.updateProject)
 		mux.HandleFunc("DELETE /v1/projects", projectsHandler.deleteProject)
 		mux.HandleFunc("POST /v1/projects/requirement", projectsHandler.writeRequirement)
+		mux.HandleFunc("POST /v1/projects/accept", projectsHandler.acceptProject)
+		mux.HandleFunc("POST /v1/projects/decide", projectsHandler.decideProject)
+		mux.HandleFunc("POST /v1/projects/cancel", projectsHandler.cancelProject)
 	}
 	if materials != nil {
 		materialHandler := newMaterialsHandler(materials, logger)
