@@ -1,4 +1,4 @@
-package store
+package store_test
 
 import (
 	"context"
@@ -6,10 +6,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/Casper-Mars/echuan/internal/api"
 	"github.com/Casper-Mars/echuan/internal/platform"
+	"github.com/Casper-Mars/echuan/internal/store"
 )
 
 // readyzBody mirrors the API readiness response for assertions.
@@ -18,11 +20,41 @@ type readyzBody struct {
 	Checks map[string]string `json:"checks"`
 }
 
-func readyzServer(st *Store) http.Handler {
+// openReadyzStore opens a migrated store with a read pool. The test lives in
+// the external store_test package because the API router now depends on the
+// application layer, which in turn depends on store: importing api from
+// package store would be an import cycle.
+func openReadyzStore(t *testing.T, readPoolSize int) *store.Store {
+	t.Helper()
+
+	st, err := store.Open(store.Config{
+		Path:         filepath.Join(t.TempDir(), "state.db"),
+		ReadPoolSize: readPoolSize,
+	})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("store.Close: %v", err)
+		}
+	})
+
+	if _, err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if err := st.OpenReadPool(context.Background()); err != nil {
+		t.Fatalf("OpenReadPool: %v", err)
+	}
+	return st
+}
+
+func readyzServer(st *store.Store) http.Handler {
 	return api.NewRouter(
 		platform.NewLogger("error", io.Discard),
 		nil,
-		[]api.HealthChecker{NewDBChecker(st), NewMigrationChecker(st)},
+		[]api.HealthChecker{store.NewDBChecker(st), store.NewMigrationChecker(st)},
+		nil,
 	)
 }
 
@@ -39,7 +71,7 @@ func getReadyz(t *testing.T, h http.Handler) (int, readyzBody) {
 }
 
 func TestReadyzHealthy(t *testing.T) {
-	st := openTestStore(t, 2)
+	st := openReadyzStore(t, 2)
 
 	status, body := getReadyz(t, readyzServer(st))
 	if status != http.StatusOK {
@@ -54,7 +86,7 @@ func TestReadyzHealthy(t *testing.T) {
 }
 
 func TestReadyzClosedStore(t *testing.T) {
-	st := openTestStore(t, 1)
+	st := openReadyzStore(t, 1)
 	if err := st.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -72,7 +104,7 @@ func TestReadyzClosedStore(t *testing.T) {
 }
 
 func TestReadyzMigrationMismatch(t *testing.T) {
-	st := openTestStore(t, 1)
+	st := openReadyzStore(t, 1)
 
 	// Simulate a schema left behind by another binary version.
 	if _, err := st.Write().ExecContext(context.Background(), "PRAGMA user_version = 0"); err != nil {

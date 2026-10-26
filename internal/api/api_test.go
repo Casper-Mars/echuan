@@ -26,7 +26,7 @@ func testLogger(buf io.Writer) *slog.Logger {
 func testServer(t *testing.T, checks ...HealthChecker) http.Handler {
 	t.Helper()
 	return Chain(
-		NewRouter(testLogger(io.Discard), nil, checks),
+		NewRouter(testLogger(io.Discard), nil, checks, nil),
 		Recover(testLogger(io.Discard)),
 		RequestID(),
 		AccessLog(testLogger(io.Discard)),
@@ -209,7 +209,9 @@ func TestPanicRecovered(t *testing.T) {
 
 func TestErrorBodyShape(t *testing.T) {
 	h := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, r, http.StatusBadRequest, "bad_request", "subject is required", []string{"subject"})
+		writeError(w, r, http.StatusBadRequest, "bad_request", "subject is required", []ErrorDetail{
+			{Field: "subject", Reason: "is required"},
+		})
 	}), RequestID())
 
 	rec := doRequest(t, h, http.MethodGet, "/any", nil)
@@ -227,7 +229,7 @@ func TestErrorBodyShape(t *testing.T) {
 	if body.Message != "subject is required" {
 		t.Errorf("message = %q", body.Message)
 	}
-	if len(body.Details) != 1 || body.Details[0] != "subject" {
+	if len(body.Details) != 1 || body.Details[0].Field != "subject" || body.Details[0].Reason != "is required" {
 		t.Errorf("details = %v", body.Details)
 	}
 	if body.RequestID == "" {
@@ -235,7 +237,7 @@ func TestErrorBodyShape(t *testing.T) {
 	}
 
 	// details must always be encoded as an array, never null.
-	if raw := rec.Body.String(); !strings.Contains(raw, `"details":["subject"]`) {
+	if raw := rec.Body.String(); !strings.Contains(raw, `"details":[{"field":"subject","reason":"is required"}]`) {
 		t.Errorf("body = %s, want inline details array", raw)
 	}
 }
@@ -254,7 +256,7 @@ func TestAccessLogFields(t *testing.T) {
 	logger := testLogger(&logBuf)
 
 	h := Chain(
-		NewRouter(logger, nil, nil),
+		NewRouter(logger, nil, nil, nil),
 		Recover(logger),
 		RequestID(),
 		AccessLog(logger),
@@ -302,7 +304,7 @@ func TestAccessLogUnknownActor(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := testLogger(&logBuf)
 
-	h := Chain(NewRouter(logger, nil, nil), RequestID(), AccessLog(logger))
+	h := Chain(NewRouter(logger, nil, nil, nil), RequestID(), AccessLog(logger))
 	doRequest(t, h, http.MethodGet, "/healthz", nil)
 
 	var entry map[string]any

@@ -2,8 +2,8 @@
 // invariants. It must not perform I/O and only depends on the standard
 // library.
 //
-// Task-01 only defines the task status constants; the full model (projects,
-// tasks, attempts, materials, inbox) is added by Task-03.
+// Task-03 adds the Product entity and the shared error types; projects, tasks,
+// attempts, materials and inbox follow in later tasks.
 package domain
 
 // Task status values.

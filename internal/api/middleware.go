@@ -90,6 +90,9 @@ func AccessLog(logger *slog.Logger) Middleware {
 			rec := &statusRecorder{ResponseWriter: w}
 			start := time.Now()
 
+			slot := &subjectSlot{}
+			r = r.WithContext(context.WithValue(r.Context(), subjectSlotKey, slot))
+
 			next.ServeHTTP(rec, r)
 
 			attrs := []any{
@@ -100,7 +103,7 @@ func AccessLog(logger *slog.Logger) Middleware {
 				"status", rec.Status(),
 				"duration_ms", float64(time.Since(start).Microseconds()) / 1000,
 			}
-			if subject := SubjectFromContext(r.Context()); subject != "" {
+			if subject := slot.get(); subject != "" {
 				attrs = append(attrs, "subject", subject)
 			}
 			logger.Info("request", attrs...)

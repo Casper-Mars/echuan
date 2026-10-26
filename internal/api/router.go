@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/Casper-Mars/echuan/internal/app"
 	"github.com/Casper-Mars/echuan/internal/platform"
 )
 
@@ -20,20 +21,34 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 
 // NewRouter builds the service router:
 //
-//	GET /healthz  liveness
-//	GET /readyz   readiness
-//	GET /version  build information
-//	/             fallback handler (embedded frontend), when provided
+//	GET /healthz            liveness
+//	GET /readyz             readiness
+//	GET /version            build information
+//	POST /v1/products       create a product
+//	GET /v1/products        list products (or fetch one with ?id=)
+//	PATCH /v1/products      patch a product (?id=)
+//	DELETE /v1/products     delete a product (?id=)
+//	/                       fallback handler (embedded frontend), when provided
+//
+// Product routes are only registered when products is non-nil, which lets
+// health-only tests build a router without a database.
 //
 // The returned handler is meant to be wrapped by Chain with the standard
 // middleware stack.
-func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker) http.Handler {
+func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService) http.Handler {
 	h := NewHandler(logger, checks)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 	mux.HandleFunc("GET /version", h.version)
+	if products != nil {
+		productsHandler := newProductsHandler(products, logger)
+		mux.HandleFunc("POST /v1/products", productsHandler.createProduct)
+		mux.HandleFunc("GET /v1/products", productsHandler.listOrGetProduct)
+		mux.HandleFunc("PATCH /v1/products", productsHandler.updateProduct)
+		mux.HandleFunc("DELETE /v1/products", productsHandler.deleteProduct)
+	}
 	if fallback != nil {
 		mux.Handle("/", fallback)
 	}

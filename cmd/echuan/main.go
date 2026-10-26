@@ -78,8 +78,10 @@ func run() error {
 		}
 	}()
 
+	products := app.NewProductService(st)
+
 	handler := api.Chain(
-		api.NewRouter(logger, web.Handler(), checks),
+		api.NewRouter(logger, web.Handler(), checks, products),
 		api.Recover(logger),
 		api.RequestID(),
 		api.AccessLog(logger),
