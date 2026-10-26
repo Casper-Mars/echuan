@@ -178,7 +178,11 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 		for _, field := range validation.Fields {
 			details = append(details, ErrorDetail{Field: field.Field, Reason: field.Reason})
 		}
-		writeError(w, r, http.StatusBadRequest, "invalid_argument", "invalid argument", details)
+		message := "invalid argument"
+		if validation.Message != "" {
+			message = validation.Message
+		}
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", message, details)
 	case errors.As(err, &notFound):
 		writeError(w, r, http.StatusNotFound, "not_found", notFound.Error(), nil)
 	case errors.As(err, &conflict):

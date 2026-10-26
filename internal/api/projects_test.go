@@ -18,6 +18,14 @@ import (
 // endpoints on a temporary migrated database with a real material writer.
 func newProjectTestServer(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
+	return newProjectTestServerWithMaxAttempts(t, 0)
+}
+
+// newProjectTestServerWithMaxAttempts is newProjectTestServer with an explicit
+// task attempt budget (0 keeps the service default). Plan tests use it to prove
+// max_attempts comes from configuration.
+func newProjectTestServerWithMaxAttempts(t *testing.T, maxAttempts int) (http.Handler, *store.Store) {
+	t.Helper()
 
 	dir := t.TempDir()
 	st, err := store.Open(store.Config{Path: filepath.Join(dir, "state.db"), ReadPoolSize: 2})
@@ -42,8 +50,12 @@ func newProjectTestServer(t *testing.T) (http.Handler, *store.Store) {
 	}
 
 	logger := testLogger(io.Discard)
+	projects := app.NewProjectService(st, writer)
+	if maxAttempts > 0 {
+		projects.SetMaxAttempts(maxAttempts)
+	}
 	h := Chain(
-		NewRouter(logger, nil, nil, app.NewProductService(st), app.NewProjectService(st, writer),
+		NewRouter(logger, nil, nil, app.NewProductService(st), projects,
 			app.NewMaterialService(st, writer)),
 		Recover(logger),
 		RequestID(),

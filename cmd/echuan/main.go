@@ -88,6 +88,9 @@ func run() error {
 		return fmt.Errorf("prepare material store: %w", err)
 	}
 	projects := app.NewProjectService(st, materials)
+	// The task attempt budget is configuration, not a constant: every task
+	// created through the plan or a rework inherits it.
+	projects.SetMaxAttempts(cfg.MaxAttempts)
 	materialService := app.NewMaterialService(st, materials)
 
 	handler := api.Chain(

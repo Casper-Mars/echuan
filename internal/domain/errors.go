@@ -39,8 +39,15 @@ type FieldError struct {
 }
 
 // ValidationError carries every field that failed validation.
+//
+// Message is an optional human-readable summary of a cross-field failure that
+// cannot be expressed as a single field (a dependency cycle, for example).
+// When empty the HTTP layer renders the generic "invalid argument" message;
+// when set it becomes body.message, so the caller still sees the diagnostic
+// while details keeps pointing at the offending field.
 type ValidationError struct {
-	Fields []FieldError
+	Fields  []FieldError
+	Message string
 }
 
 // Error implements error.

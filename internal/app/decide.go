@@ -216,14 +216,16 @@ func (s *ProjectService) createReworkTask(ctx context.Context, tx *sql.Tx, proje
 
 	body := "返工说明：\n\n" + reason
 	id, err := store.CreateTask(ctx, tx, store.NewTask{
-		TaskID:     taskID,
-		ProjectID:  project.ID,
-		SeqNo:      seq,
-		Title:      "返工：" + project.Title,
-		BodyMD:     body,
-		Status:     domain.TaskBacklog,
-		CreateTime: updateTime,
-		UpdateTime: updateTime,
+		TaskID:      taskID,
+		ProjectID:   project.ID,
+		SeqNo:       seq,
+		Title:       "返工：" + project.Title,
+		BodyMD:      body,
+		Status:      domain.TaskBacklog,
+		MaxAttempts: s.maxAttempts,
+		LastActor:   actor,
+		CreateTime:  updateTime,
+		UpdateTime:  updateTime,
 	})
 	if err != nil {
 		return err

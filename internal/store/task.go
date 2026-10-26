@@ -37,17 +37,28 @@ type Task struct {
 	UpdateTime   string  `db:"update_time"`
 }
 
+// defaultTaskMaxAttempts mirrors the tasks.max_attempts column default. It is
+// only used when the caller leaves MaxAttempts unset, so a plain CreateTask
+// keeps the schema default instead of writing 0.
+const defaultTaskMaxAttempts = 3
+
 // NewTask is the write model for INSERT.
+//
+// MaxAttempts is the per-task attempt budget (configurable via max_attempts);
+// values <= 0 fall back to the column default. LastActor records who created
+// the row and is stored as NULL when empty.
 type NewTask struct {
-	TaskID     string
-	ProjectID  int64
-	SeqNo      int
-	Title      string
-	BodyMD     string
-	Priority   int
-	Status     int
-	CreateTime string
-	UpdateTime string
+	TaskID      string
+	ProjectID   int64
+	SeqNo       int
+	Title       string
+	BodyMD      string
+	Priority    int
+	Status      int
+	MaxAttempts int
+	LastActor   string
+	CreateTime  string
+	UpdateTime  string
 }
 
 // GetTaskByTaskID returns the task with the given business id.
@@ -71,12 +82,22 @@ func ListTasksByProject(ctx context.Context, q Querier, projectID int64) ([]Task
 // stored as given: callers that need an edge (backlog → ready) apply it
 // through TransitionTask so the state machine stays the single authority.
 func CreateTask(ctx context.Context, tx *sql.Tx, t NewTask) (int64, error) {
+	maxAttempts := t.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultTaskMaxAttempts
+	}
+	var lastActor *string
+	if t.LastActor != "" {
+		lastActor = &t.LastActor
+	}
+
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO tasks (task_id, project_id, seq_no, title, body_md, priority,
-		                   status, attempt_count, version, create_time, update_time)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+		                   status, attempt_count, max_attempts, last_actor, version,
+		                   create_time, update_time)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, ?, ?)`,
 		t.TaskID, t.ProjectID, t.SeqNo, t.Title, t.BodyMD, t.Priority,
-		t.Status, t.CreateTime, t.UpdateTime)
+		t.Status, maxAttempts, lastActor, t.CreateTime, t.UpdateTime)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return 0, fmt.Errorf("%w: %v", ErrUniqueViolation, err)
@@ -84,6 +105,63 @@ func CreateTask(ctx context.Context, tx *sql.Tx, t NewTask) (int64, error) {
 		return 0, fmt.Errorf("store: insert task %s: %w", t.TaskID, err)
 	}
 	return res.LastInsertId()
+}
+
+// TaskDependency is one persisted task_deps row. Both columns are physical
+// tasks.id values; the API layer maps them back to business task ids.
+type TaskDependency struct {
+	TaskID    int64 `db:"task_id"`
+	DependsOn int64 `db:"depends_on"`
+}
+
+// InsertTaskDependency records that taskID depends on dependsOn.
+//
+// The caller must resolve batch sequence numbers to physical ids first; the
+// UNIQUE(task_id, depends_on) constraint is what keeps a duplicate edge out
+// even if a caller forgets to de-duplicate. createTime/updateTime are the same
+// instant as the task rows of the batch.
+func InsertTaskDependency(ctx context.Context, tx *sql.Tx, taskID, dependsOn int64, createTime string) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO task_deps (task_id, depends_on, create_time, update_time)
+		VALUES (?, ?, ?, ?)`, taskID, dependsOn, createTime, createTime)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: %v", ErrUniqueViolation, err)
+		}
+		return fmt.Errorf("store: insert task dependency %d -> %d: %w", taskID, dependsOn, err)
+	}
+	return nil
+}
+
+// ListTaskDependencies returns every dependency edge whose owning task belongs
+// to projectID, ordered by owning task and dependency.
+//
+// Task-08 uses it to rebuild the submit response from what was actually
+// persisted; Task-09 (claim queue) can use the same rows to compute readiness.
+func ListTaskDependencies(ctx context.Context, q Querier, projectID int64) ([]TaskDependency, error) {
+	return All[TaskDependency](ctx, q, `
+		SELECT td.task_id, td.depends_on
+		  FROM task_deps td
+		  JOIN tasks t ON t.id = td.task_id
+		 WHERE t.project_id = ?
+		 ORDER BY td.task_id ASC, td.depends_on ASC`, projectID)
+}
+
+// CountUnfinishedDependencies returns how many dependencies of taskID are not
+// done (4) or cancelled (7). Task-09 turns "0 unfinished" into "ready"; it is
+// kept here so the readiness rule has one SQL home.
+func CountUnfinishedDependencies(ctx context.Context, q Querier, taskID int64) (int64, error) {
+	row, err := One[struct {
+		Count int64 `db:"count"`
+	}](ctx, q, `
+		SELECT COUNT(*) AS count
+		  FROM task_deps td
+		  JOIN tasks t ON t.id = td.depends_on
+		 WHERE td.task_id = ? AND t.status NOT IN (4, 7)`, taskID)
+	if err != nil {
+		return 0, fmt.Errorf("store: count unfinished dependencies of task %d: %w", taskID, err)
+	}
+	return row.Count, nil
 }
 
 // TransitionTask applies one task state-machine edge with a conditional UPDATE

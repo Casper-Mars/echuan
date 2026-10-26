@@ -56,15 +56,20 @@ type ProjectService struct {
 	store     *store.Store
 	materials *material.Writer
 	now       func() time.Time
+	// maxAttempts is the attempt budget written to new task rows. It comes
+	// from cfg.max_attempts through SetMaxAttempts; the default matches the
+	// column default so a service built without config still behaves.
+	maxAttempts int
 }
 
 // NewProjectService builds the project service on top of an open store and the
 // material writer that owns data_dir/objects.
 func NewProjectService(st *store.Store, materials *material.Writer) *ProjectService {
 	return &ProjectService{
-		store:     st,
-		materials: materials,
-		now:       func() time.Time { return time.Now().UTC() },
+		store:       st,
+		materials:   materials,
+		now:         func() time.Time { return time.Now().UTC() },
+		maxAttempts: defaultTaskMaxAttempts,
 	}
 }
 
