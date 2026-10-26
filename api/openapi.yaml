@@ -1,0 +1,9 @@
+# OpenAPI 规范占位文件
+#
+# 完整的 api/openapi.yaml 由 Task-13 提供，本任务（Task-01）仅占位，
+# 保证目录结构符合技术方案 §2.1。
+openapi: 3.0.3
+info:
+  title: echuan API (placeholder)
+  version: 0.0.0
+paths: {}

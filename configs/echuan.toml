@@ -1,0 +1,32 @@
+# echuan 配置样例
+#
+# 生效优先级：环境变量（ECHUAN_*） > 本文件 > 内置默认值。
+# 默认读取 ./echuan.toml，可用 -config 指定其他路径；文件不存在时全部走默认值。
+# 解析器支持 flat 的 key = "value" / 123 / true 与 # 注释；[section] 行会被忽略。
+
+# HTTP 监听地址
+listen = "127.0.0.1:8720"
+
+# 数据目录（SQLite 库、运行期数据），支持 ~ 展开
+data_dir = "~/.echuan"
+
+# 任务工作区根目录
+workspace_dir = "~/.echuan/workspaces"
+
+# 任务租约有效期，超过未续租则租约失效（Go duration 语法）
+lease_ttl = "90s"
+
+# 单个任务允许的最大尝试次数
+max_attempts = 3
+
+# claim 长轮询超时
+poll_timeout = "25s"
+
+# 评审超过该小时数未处理视为 stale
+review_stale_hours = 72
+
+# 单个素材允许的最大字节数（默认 20 MiB）
+material_max_bytes = 20971520
+
+# 日志级别：debug / info / warn / error
+log_level = "info"
