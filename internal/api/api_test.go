@@ -26,7 +26,7 @@ func testLogger(buf io.Writer) *slog.Logger {
 func testServer(t *testing.T, checks ...HealthChecker) http.Handler {
 	t.Helper()
 	return Chain(
-		NewRouter(testLogger(io.Discard), nil, checks, nil, nil),
+		NewRouter(testLogger(io.Discard), nil, checks, nil, nil, nil),
 		Recover(testLogger(io.Discard)),
 		RequestID(),
 		AccessLog(testLogger(io.Discard)),
@@ -256,7 +256,7 @@ func TestAccessLogFields(t *testing.T) {
 	logger := testLogger(&logBuf)
 
 	h := Chain(
-		NewRouter(logger, nil, nil, nil, nil),
+		NewRouter(logger, nil, nil, nil, nil, nil),
 		Recover(logger),
 		RequestID(),
 		AccessLog(logger),
@@ -304,7 +304,7 @@ func TestAccessLogUnknownActor(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := testLogger(&logBuf)
 
-	h := Chain(NewRouter(logger, nil, nil, nil, nil), RequestID(), AccessLog(logger))
+	h := Chain(NewRouter(logger, nil, nil, nil, nil, nil), RequestID(), AccessLog(logger))
 	doRequest(t, h, http.MethodGet, "/healthz", nil)
 
 	var entry map[string]any

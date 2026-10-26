@@ -137,7 +137,7 @@ func (s *ProjectService) CreateProject(ctx context.Context, in CreateProjectInpu
 			UploadedBy: normalized.UploadedBy,
 		})
 		if err != nil {
-			return err
+			return materialWriteError("requirement_md", err)
 		}
 
 		if err := store.AttachRequirementPointer(ctx, tx, id, written.Material.ID); err != nil {
@@ -347,7 +347,7 @@ func (s *ProjectService) WriteRequirement(ctx context.Context, projectID string,
 			PreviousMaterialID: row.RequirementMaterialID,
 		})
 		if err != nil {
-			return err
+			return materialWriteError("body_md", err)
 		}
 
 		if err := store.MoveRequirementPointer(ctx, tx, row.ID, written.Material.ID,
@@ -452,15 +452,15 @@ func (s *ProjectService) validateCreateProject(in CreateProjectInput) (CreatePro
 // validateRequirementBody checks a requirement body without rewriting it: the
 // markdown is stored byte-for-byte, but whitespace-only content is rejected.
 // field is the request field name the error should name.
+//
+// The size limit is deliberately not checked here: material.Writer enforces
+// material_max_bytes while it copies and hashes the body, and that single
+// enforcement point is what turns an oversized body into 413 too_large. A
+// second check here would reject the same input earlier with a different error
+// class and leave the writer path untested.
 func (s *ProjectService) validateRequirementBody(field, body string) ([]byte, []domain.FieldError) {
 	if strings.TrimSpace(body) == "" {
 		return nil, []domain.FieldError{{Field: field, Reason: "is required"}}
-	}
-	if int64(len(body)) > s.materials.MaxBytes() {
-		return nil, []domain.FieldError{{
-			Field:  field,
-			Reason: fmt.Sprintf("must be at most %d bytes", s.materials.MaxBytes()),
-		}}
 	}
 	return []byte(body), nil
 }
@@ -570,6 +570,18 @@ func (s *ProjectService) nextTimestamp(previous string) time.Time {
 		return old.Add(time.Millisecond)
 	}
 	return next
+}
+
+// materialWriteError translates the writer's sentinels into domain errors. An
+// oversized body is the one writer failure the HTTP layer must answer with 413;
+// everything else stays an internal error. Task-07 (spec) and Task-11 (report)
+// reuse this helper when they start writing other material kinds.
+func materialWriteError(field string, err error) error {
+	var tooLarge *material.TooLargeError
+	if errors.As(err, &tooLarge) {
+		return &domain.TooLargeError{Field: field, Limit: tooLarge.Limit, Actual: tooLarge.Size}
+	}
+	return err
 }
 
 // int64Value maps a nullable physical id to 0 ("no pointer").

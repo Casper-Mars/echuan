@@ -51,7 +51,7 @@ func newProductTestServerWithLogger(t *testing.T, logger *slog.Logger) (http.Han
 
 	service := app.NewProductService(st)
 	h := Chain(
-		NewRouter(logger, nil, nil, service, nil),
+		NewRouter(logger, nil, nil, service, nil, nil),
 		Recover(logger),
 		RequestID(),
 		AccessLog(logger),

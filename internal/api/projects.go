@@ -76,7 +76,7 @@ type projectResponse struct {
 }
 
 // materialResponse is the metadata view of one material version; the bytes are
-// served by /v1/materials (Task-05).
+// served by GET /v1/materials.
 type materialResponse struct {
 	MaterialID string `json:"material_id"`
 	Kind       int    `json:"kind"`

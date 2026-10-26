@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -148,8 +149,25 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 	var notFound *domain.NotFoundError
 	var conflict *domain.ConflictError
 	var invalidState *domain.InvalidStateError
+	var tooLarge *domain.TooLargeError
 
 	switch {
+	case errors.As(err, &tooLarge):
+		// Both the HTTP body cap and the material writer land here, so the 413
+		// body and the warning are identical whichever layer noticed the size.
+		if logger != nil {
+			logger.Warn("request body too large",
+				"request_id", RequestIDFromContext(r.Context()),
+				"actor", actorOrUnknown(r),
+				"method", r.Method,
+				"path", r.URL.Path,
+				"field", tooLarge.Field,
+				"limit_bytes", tooLarge.Limit,
+				"actual_bytes", tooLarge.Actual,
+			)
+		}
+		writeError(w, r, http.StatusRequestEntityTooLarge, "too_large", "request body is too large",
+			[]ErrorDetail{{Field: tooLarge.Field, Reason: fmt.Sprintf("exceeds %d bytes", tooLarge.Limit)}})
 	case errors.As(err, &validation):
 		details := make([]ErrorDetail, 0, len(validation.Fields))
 		for _, field := range validation.Fields {

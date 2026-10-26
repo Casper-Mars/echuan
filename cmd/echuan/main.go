@@ -81,16 +81,17 @@ func run() error {
 
 	products := app.NewProductService(st)
 
-	// The material writer owns data_dir/objects; the project service is the
-	// first (and, until Task-05, only) writer of material rows.
+	// The material writer owns data_dir/objects; the project service writes
+	// requirement rows and the material service serves them back.
 	materials, err := material.NewWriter(cfg.DataDir, cfg.MaterialMaxBytes)
 	if err != nil {
 		return fmt.Errorf("prepare material store: %w", err)
 	}
 	projects := app.NewProjectService(st, materials)
+	materialService := app.NewMaterialService(st, materials)
 
 	handler := api.Chain(
-		api.NewRouter(logger, web.Handler(), checks, products, projects),
+		api.NewRouter(logger, web.Handler(), checks, products, projects, materialService),
 		api.Recover(logger),
 		api.RequestID(),
 		api.AccessLog(logger),

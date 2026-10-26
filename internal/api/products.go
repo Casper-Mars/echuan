@@ -231,20 +231,26 @@ func toProductResponse(p domain.Product) productResponse {
 }
 
 // decodeJSONBody decodes exactly one JSON object, rejecting unknown fields and
-// trailing data. Every failure is a field-level validation error.
-func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) *domain.ValidationError {
+// trailing data. A body above the cap is reported as domain.TooLargeError (413);
+// every other failure is a field-level validation error.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	return decodeJSONBodyLimit(w, r, dst, maxRequestBodyBytes)
 }
 
 // decodeJSONBodyLimit is decodeJSONBody with an explicit body size limit. The
 // requirement endpoints need a limit above material_max_bytes because the
 // markdown body is carried inline in JSON.
-func decodeJSONBodyLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) *domain.ValidationError {
+//
+// The cap is enforced by http.MaxBytesReader while the decoder reads, so an
+// oversized upload is cut off at limit+1 bytes instead of being buffered: a
+// 30 MB body against a 21 MB cap costs 21 MB, not 30 MB, and the handler
+// answers 413 without ever touching the database.
+func decodeJSONBodyLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) error {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	decoder.DisallowUnknownFields()
 
 	if err := decoder.Decode(dst); err != nil {
-		return bodyDecodeError(err)
+		return bodyDecodeError(err, limit)
 	}
 	if err := decoder.Decode(&json.RawMessage{}); !errors.Is(err, io.EOF) {
 		return invalidField("body", "unexpected trailing data")
@@ -252,8 +258,8 @@ func decodeJSONBodyLimit(w http.ResponseWriter, r *http.Request, dst any, limit 
 	return nil
 }
 
-// bodyDecodeError translates encoding/json failures into field errors.
-func bodyDecodeError(err error) *domain.ValidationError {
+// bodyDecodeError translates encoding/json failures into domain errors.
+func bodyDecodeError(err error, limit int64) error {
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &typeErr) {
 		field := typeErr.Field
@@ -265,7 +271,9 @@ func bodyDecodeError(err error) *domain.ValidationError {
 
 	var maxErr *http.MaxBytesError
 	if errors.As(err, &maxErr) {
-		return invalidField("body", "request body is too large")
+		// The body cap, not material_max_bytes: this is the layer that noticed
+		// the size, and the client needs to know what it actually hit.
+		return &domain.TooLargeError{Field: "body", Limit: limit}
 	}
 	if errors.Is(err, io.EOF) {
 		return invalidField("body", "request body is required")

@@ -20,13 +20,29 @@ import (
 )
 
 var (
-	// ErrTooLarge reports a body above the configured material_max_bytes.
-	// Task-05 maps it to HTTP 413 too_large; until then the app layer turns it
-	// into a validation error.
+	// ErrTooLarge reports a body above the configured material_max_bytes. The
+	// app layer maps it to HTTP 413 too_large; the concrete error is
+	// *TooLargeError so the response can report the limit and the size seen.
 	ErrTooLarge = errors.New("material: content exceeds material_max_bytes")
 	// ErrEmpty reports a zero-length body.
 	ErrEmpty = errors.New("material: content is empty")
 )
+
+// TooLargeError reports a body that exceeded material_max_bytes. Size is the
+// number of bytes actually seen before the write was aborted.
+type TooLargeError struct {
+	Size  int64
+	Limit int64
+}
+
+// Error implements error.
+func (e *TooLargeError) Error() string {
+	return fmt.Sprintf("%s: %d bytes > %d", ErrTooLarge.Error(), e.Size, e.Limit)
+}
+
+// Unwrap reports ErrTooLarge so errors.Is keeps working for callers that only
+// care about the class of failure.
+func (e *TooLargeError) Unwrap() error { return ErrTooLarge }
 
 // On-disk layout names.
 const (
@@ -198,22 +214,57 @@ func (w *Writer) Write(ctx context.Context, tx *sql.Tx, in WriteInput) (Stored, 
 	}, nil
 }
 
-// Read returns the body of a material version.
+// Read returns the whole body of a material version.
+//
+// The HTTP download path uses Open instead, so a large object is streamed to
+// the client rather than buffered in memory; Read stays for the small bodies
+// embedded in project responses.
 func (w *Writer) Read(m store.Material) ([]byte, error) {
-	if strings.TrimSpace(m.Path) == "" {
-		return nil, fmt.Errorf("material: material %s has no object path", m.MaterialID)
-	}
-	full := filepath.Join(w.dataDir, filepath.FromSlash(m.Path))
-	// The path is written by this package, but a defensive containment check
-	// keeps a corrupted row from reading outside data_dir.
-	if !strings.HasPrefix(full, w.dataDir+string(os.PathSeparator)) {
-		return nil, fmt.Errorf("material: object path %q escapes the data directory", m.Path)
+	full, err := w.objectPath(m)
+	if err != nil {
+		return nil, err
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
 		return nil, fmt.Errorf("material: read object %s: %w", m.Path, err)
 	}
 	return data, nil
+}
+
+// Open returns a read seeker over the stored object. The caller streams it and
+// must close it; http.ServeContent accepts the *os.File directly, which also
+// gives HEAD and Range support for free.
+func (w *Writer) Open(m store.Material) (*os.File, error) {
+	full, err := w.objectPath(m)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		return nil, fmt.Errorf("material: open object %s: %w", m.Path, err)
+	}
+	return f, nil
+}
+
+// objectPath resolves a stored relative path to an absolute object file path.
+//
+// The path is written by this package, but a corrupted (or hand-edited) row
+// must not be able to read outside data_dir/objects: the cleaned path is
+// checked for containment instead of trusting the column.
+func (w *Writer) objectPath(m store.Material) (string, error) {
+	if strings.TrimSpace(m.Path) == "" {
+		return "", fmt.Errorf("material: material %s has no object path", m.MaterialID)
+	}
+	clean := filepath.Clean(filepath.FromSlash(m.Path))
+	if filepath.IsAbs(clean) {
+		return "", fmt.Errorf("material: object path %q escapes the data directory", m.Path)
+	}
+	full := filepath.Join(w.dataDir, clean)
+	rel, err := filepath.Rel(w.objectsDir(), full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("material: object path %q escapes the objects directory", m.Path)
+	}
+	return full, nil
 }
 
 // RemoveNewObject deletes the object file created by the given write. It is a
@@ -263,9 +314,11 @@ func (w *Writer) writeTemp(body []byte) (path, sum string, size int64, err error
 		_ = os.Remove(path)
 		return "", "", 0, fmt.Errorf("material: write temporary file: %w", copyErr)
 	case written > w.maxBytes:
+		// The limit is enforced while copying, so an oversized body never
+		// reaches the objects directory and its scratch file is dropped here.
 		_ = f.Close()
 		_ = os.Remove(path)
-		return "", "", 0, fmt.Errorf("%w: %d bytes > %d", ErrTooLarge, written, w.maxBytes)
+		return "", "", 0, &TooLargeError{Size: written, Limit: w.maxBytes}
 	}
 
 	if err := f.Sync(); err != nil {

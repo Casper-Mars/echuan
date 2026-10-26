@@ -43,7 +43,8 @@ func newProjectTestServer(t *testing.T) (http.Handler, *store.Store) {
 
 	logger := testLogger(io.Discard)
 	h := Chain(
-		NewRouter(logger, nil, nil, app.NewProductService(st), app.NewProjectService(st, writer)),
+		NewRouter(logger, nil, nil, app.NewProductService(st), app.NewProjectService(st, writer),
+			app.NewMaterialService(st, writer)),
 		Recover(logger),
 		RequestID(),
 		AccessLog(logger),

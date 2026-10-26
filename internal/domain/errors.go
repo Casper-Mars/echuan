@@ -20,6 +20,10 @@ var (
 	// not accept (tech design §4.7: 409 invalid_state). Task-06 reuses it for
 	// the remaining project state transitions.
 	ErrInvalidState = errors.New("invalid state")
+	// ErrTooLarge reports a body above a configured limit (tech design §4.7:
+	// 413 too_large). Both the HTTP body reader and the material writer raise
+	// it, and both must produce the same response.
+	ErrTooLarge = errors.New("too large")
 )
 
 // FieldError is one field-level validation failure. It is rendered as an item
@@ -83,3 +87,24 @@ func (e *NotFoundError) Error() string {
 
 // Unwrap reports ErrNotFound.
 func (e *NotFoundError) Unwrap() error { return ErrNotFound }
+
+// TooLargeError reports a body that exceeded a limit. Field names the request
+// member that carried it ("body" when the request body reader hit its cap,
+// "body_md" when the material writer aborted). Actual is 0 when the size is not
+// known, as is the case for the HTTP body cap.
+type TooLargeError struct {
+	Field  string
+	Limit  int64
+	Actual int64
+}
+
+// Error implements error.
+func (e *TooLargeError) Error() string {
+	if e.Actual > 0 {
+		return fmt.Sprintf("%s exceeds %d bytes (got %d bytes)", e.Field, e.Limit, e.Actual)
+	}
+	return fmt.Sprintf("%s exceeds %d bytes", e.Field, e.Limit)
+}
+
+// Unwrap reports ErrTooLarge.
+func (e *TooLargeError) Unwrap() error { return ErrTooLarge }

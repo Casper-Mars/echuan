@@ -33,6 +33,8 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 //	PATCH /v1/projects               rename a project (?id=)
 //	DELETE /v1/projects              delete a draft/cancelled project (?id=)
 //	POST /v1/projects/requirement    append a requirement version (?id=)
+//	GET /v1/materials                download a material object (?id=)
+//	GET /v1/projects/materials       version chain of one kind (?id=&kind=)
 //	/                                fallback handler (embedded frontend), when provided
 //
 // Resource routes are only registered when their service is non-nil, which
@@ -40,7 +42,7 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 //
 // The returned handler is meant to be wrapped by Chain with the standard
 // middleware stack.
-func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService) http.Handler {
+func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, materials *app.MaterialService) http.Handler {
 	h := NewHandler(logger, checks)
 
 	mux := http.NewServeMux()
@@ -61,6 +63,15 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		mux.HandleFunc("PATCH /v1/projects", projectsHandler.updateProject)
 		mux.HandleFunc("DELETE /v1/projects", projectsHandler.deleteProject)
 		mux.HandleFunc("POST /v1/projects/requirement", projectsHandler.writeRequirement)
+	}
+	if materials != nil {
+		materialHandler := newMaterialsHandler(materials, logger)
+		// "GET" also matches HEAD in a ServeMux pattern; the method-less
+		// patterns catch every other verb so the 405 keeps the unified body.
+		mux.HandleFunc("GET /v1/materials", materialHandler.download)
+		mux.HandleFunc("/v1/materials", materialHandler.methodNotAllowed)
+		mux.HandleFunc("GET /v1/projects/materials", materialHandler.chain)
+		mux.HandleFunc("/v1/projects/materials", materialHandler.methodNotAllowed)
 	}
 	if fallback != nil {
 		mux.Handle("/", fallback)

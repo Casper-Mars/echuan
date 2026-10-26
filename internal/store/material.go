@@ -3,8 +3,15 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
+
+// ErrChainBroken reports a material chain that cannot be walked back to its
+// root: a previous_material_id pointing at a missing row, a repeated row (cycle)
+// or a link that jumps version or kind. It is data corruption rather than a
+// client error, so the API layer answers 500 and logs it.
+var ErrChainBroken = errors.New("store: material chain is broken")
 
 // materialColumns selects one full materials row.
 //
@@ -88,4 +95,61 @@ func CountMaterialsBySHA(ctx context.Context, q Querier, sha256 string) (int64, 
 		return 0, fmt.Errorf("store: count materials for sha256 %s: %w", sha256, err)
 	}
 	return row.Count, nil
+}
+
+// ListChainByHead walks the version chain back from headID and returns it
+// ordered by version ASC (oldest first).
+//
+// The chain is read through previous_material_id, never guessed from kind and
+// timestamps: the head is whatever the holder (projects.requirement_material_id
+// or spec_material_id) points at. A broken link (missing row, cycle, or a jump
+// in version or kind) is reported as ErrChainBroken instead of returning a
+// partial chain, because a partial chain would silently misrepresent the
+// project history.
+func ListChainByHead(ctx context.Context, q Querier, headID int64) ([]Material, error) {
+	if headID <= 0 {
+		return nil, fmt.Errorf("%w: invalid head id %d", ErrChainBroken, headID)
+	}
+
+	var reversed []Material
+	seen := make(map[int64]struct{})
+	current := headID
+
+	for {
+		if _, ok := seen[current]; ok {
+			return nil, fmt.Errorf("%w: cycle at material id %d", ErrChainBroken, current)
+		}
+		seen[current] = struct{}{}
+
+		row, err := GetMaterialByID(ctx, q, current)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("%w: material id %d does not exist", ErrChainBroken, current)
+			}
+			return nil, fmt.Errorf("store: read material chain link %d: %w", current, err)
+		}
+
+		if len(reversed) > 0 {
+			child := reversed[len(reversed)-1]
+			if row.Kind != child.Kind {
+				return nil, fmt.Errorf("%w: material %d has kind %d but its child %d has kind %d",
+					ErrChainBroken, row.ID, row.Kind, child.ID, child.Kind)
+			}
+			if row.Version != child.Version-1 {
+				return nil, fmt.Errorf("%w: material %d has version %d but its child %d has version %d",
+					ErrChainBroken, row.ID, row.Version, child.ID, child.Version)
+			}
+		}
+
+		reversed = append(reversed, row)
+		if row.PreviousMaterialID == nil {
+			break
+		}
+		current = *row.PreviousMaterialID
+	}
+
+	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
+		reversed[i], reversed[j] = reversed[j], reversed[i]
+	}
+	return reversed, nil
 }
