@@ -39,6 +39,24 @@ func postTask(t *testing.T, h http.Handler, projectID, title, body string, prior
 	return decodeTaskDetail(t, rec)
 }
 
+// requirePlatformFieldDetail asserts that body carries a detail for field whose
+// reason says the column is maintained by the platform. Asserting only on the
+// field name would also pass for a 400 raised by the unknown-field branch, which
+// is exactly the regression this guards against.
+func requirePlatformFieldDetail(t *testing.T, body ErrorBody, field string) {
+	t.Helper()
+	for _, detail := range body.Details {
+		if detail.Field != field {
+			continue
+		}
+		if !strings.Contains(detail.Reason, "maintained by the platform") {
+			t.Fatalf("detail.reason = %q for field %q, want the platform-maintained reason", detail.Reason, field)
+		}
+		return
+	}
+	t.Fatalf("details = %+v, want a platform-maintained detail for field %q", body.Details, field)
+}
+
 func decodeTaskDetail(t *testing.T, rec *httptest.ResponseRecorder) taskDetailResponse {
 	t.Helper()
 	var detail taskDetailResponse
@@ -387,18 +405,37 @@ func TestPatchTaskHTTP(t *testing.T) {
 	}
 
 	// Every platform-maintained column is rejected with 400 invalid_argument
-	// and a detail naming it. status in particular is a 400, not a 409.
-	for _, field := range taskPlatformFields {
-		t.Run("reject "+field, func(t *testing.T) {
-			var value any = "x"
-			switch field {
-			case "status", "seq_no", "attempt_count", "max_attempts", "version":
-				value = 2
-			case "reason":
-				value = "理由"
-			}
+	// and a detail naming it with the platform-maintained reason. status in
+	// particular is a 400, not a 409.
+	//
+	// The matrix is hard-coded on purpose instead of ranging over
+	// taskPlatformFields: ranging over the list under test makes the matrix
+	// shrink with the list, so dropping a column (e.g. status or reason) would
+	// leave every remaining case green. With a fixed matrix a dropped column
+	// falls through to the "unknown field" branch and the reason assertion
+	// below turns red.
+	for _, tc := range []struct {
+		field string
+		value any
+	}{
+		{"status", 2},
+		{"task_id", "APP-1-T9999"},
+		{"seq_no", 7},
+		{"project_id", "APP-2"},
+		{"attempt_count", 1},
+		{"max_attempts", 9},
+		{"lease_id", "lease-1"},
+		{"lease_until", "2026-01-01T00:00:00Z"},
+		{"report_material_id", "mat-1"},
+		{"last_actor", "human:pm"},
+		{"version", 5},
+		{"create_time", "2026-01-01T00:00:00Z"},
+		{"update_time", "2026-01-01T00:00:00Z"},
+		{"reason", "理由"},
+	} {
+		t.Run("reject "+tc.field, func(t *testing.T) {
 			rec := doJSONHeaders(t, h, http.MethodPatch, "/v1/tasks?id="+created.ID,
-				map[string]any{field: value}, nil)
+				map[string]any{tc.field: tc.value}, nil)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
 			}
@@ -406,7 +443,10 @@ func TestPatchTaskHTTP(t *testing.T) {
 			if body.Code != "invalid_argument" {
 				t.Errorf("code = %q, want invalid_argument", body.Code)
 			}
-			requireFieldDetail(t, body, field)
+			// The reason must come from the platform-maintained branch, not
+			// from the generic unknown-field branch: a 400 alone cannot tell
+			// the two apart, so a weakened guard would still pass.
+			requirePlatformFieldDetail(t, body, tc.field)
 		})
 	}
 
