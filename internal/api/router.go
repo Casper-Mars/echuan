@@ -42,6 +42,8 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 //	GET /v1/tasks                    list tasks (or fetch one with ?id=)
 //	PATCH /v1/tasks                  patch title/body_md/priority (?id=)
 //	DELETE /v1/tasks                 delete an unclaimed backlog task (?id=)
+//	POST /v1/tasks/claim             lease the next claimable task of a product
+//	POST /v1/tasks/heartbeat         renew the lease of one task (?id=)
 //	GET /v1/materials                download a material object (?id=)
 //	GET /v1/projects/materials       version chain of one kind (?id=&kind=)
 //	/                                fallback handler (embedded frontend), when provided
@@ -51,7 +53,7 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 //
 // The returned handler is meant to be wrapped by Chain with the standard
 // middleware stack.
-func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, tasks *app.TaskService, materials *app.MaterialService) http.Handler {
+func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, tasks *app.TaskService, claims *app.ClaimService, materials *app.MaterialService) http.Handler {
 	h := NewHandler(logger, checks)
 
 	mux := http.NewServeMux()
@@ -84,6 +86,11 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		mux.HandleFunc("GET /v1/tasks", tasksHandler.listOrGetTask)
 		mux.HandleFunc("PATCH /v1/tasks", tasksHandler.updateTask)
 		mux.HandleFunc("DELETE /v1/tasks", tasksHandler.deleteTask)
+	}
+	if claims != nil {
+		claimsHandler := newClaimHandler(claims, logger)
+		mux.HandleFunc("POST /v1/tasks/claim", claimsHandler.claim)
+		mux.HandleFunc("POST /v1/tasks/heartbeat", claimsHandler.heartbeat)
 	}
 	if materials != nil {
 		materialHandler := newMaterialsHandler(materials, logger)

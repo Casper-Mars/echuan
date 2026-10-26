@@ -98,8 +98,18 @@ func run() error {
 	tasks := app.NewTaskService(st)
 	tasks.SetMaxAttempts(cfg.MaxAttempts)
 
+	// Pull mode: workers claim a card, hold a lease and renew it. The reclaimer
+	// returns expired leases to the queue even when nobody is claiming.
+	claims := app.NewClaimService(st, logger, cfg.LeaseTTL, cfg.WorkspaceDir)
+	reclaimer := app.NewReclaimer(st, logger, app.DefaultReclaimInterval)
+	application.SetReclaimer(reclaimer)
+
+	reclaimCtx, stopReclaim := context.WithCancel(context.Background())
+	defer stopReclaim()
+	go reclaimer.Run(reclaimCtx)
+
 	handler := api.Chain(
-		api.NewRouter(logger, web.Handler(), checks, products, projects, tasks, materialService),
+		api.NewRouter(logger, web.Handler(), checks, products, projects, tasks, claims, materialService),
 		api.Recover(logger),
 		api.RequestID(),
 		api.AccessLog(logger),
@@ -141,8 +151,12 @@ func run() error {
 		banner.Info("shutdown signal received", "signal", sig.String())
 	}
 
+	// Stop the reclaim loop before the listener drains: a sweep in flight when
+	// the store closes would log a "database is locked" error on the way out.
+	stopReclaim()
+	reclaimer.Stop()
+
 	// Stop accepting new requests, then wait for in-flight ones (≤10s).
-	// TODO(Task-10): stop the lease reclaim loop before closing the store.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {

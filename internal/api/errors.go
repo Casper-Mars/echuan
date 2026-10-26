@@ -151,8 +151,14 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 	var invalidState *domain.InvalidStateError
 	var invalidVersion *domain.InvalidVersionError
 	var tooLarge *domain.TooLargeError
+	var leaseLost *domain.LeaseLostError
 
 	switch {
+	case errors.As(err, &leaseLost):
+		// A lost lease is a conflict with the task's current owner, but the
+		// code is distinct so a worker knows to stop working on the card
+		// instead of retrying the heartbeat.
+		writeError(w, r, http.StatusConflict, "lease_lost", leaseLost.Error(), nil)
 	case errors.As(err, &invalidVersion):
 		// A conditional write lost the race: the message carries the current
 		// version so the client can re-read and retry without a probe call.

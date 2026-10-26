@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Casper-Mars/echuan/internal/app"
 	"github.com/Casper-Mars/echuan/internal/material"
@@ -60,7 +61,8 @@ func newProjectTestServerWithMaxAttempts(t *testing.T, maxAttempts int) (http.Ha
 	}
 	h := Chain(
 		NewRouter(logger, nil, nil, app.NewProductService(st), projects,
-			tasks, app.NewMaterialService(st, writer)),
+			tasks, app.NewClaimService(st, logger, 90*time.Second, filepath.Join(dir, "workspaces")),
+			app.NewMaterialService(st, writer)),
 		Recover(logger),
 		RequestID(),
 		AccessLog(logger),

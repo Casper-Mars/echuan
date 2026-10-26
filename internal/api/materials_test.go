@@ -64,6 +64,7 @@ func newMaterialServerEnv(t *testing.T, maxBytes int64, logWriter io.Writer) *ma
 			app.NewProductService(st),
 			app.NewProjectService(st, writer),
 			app.NewTaskService(st),
+			nil,
 			app.NewMaterialService(st, writer)),
 		Recover(logger),
 		RequestID(),

@@ -29,6 +29,10 @@ var (
 	// 413 too_large). Both the HTTP body reader and the material writer raise
 	// it, and both must produce the same response.
 	ErrTooLarge = errors.New("too large")
+	// ErrLeaseLost reports a heartbeat (or, from Task-11 on, a report) that
+	// no longer owns the task: the lease expired, was reclaimed, or the lease
+	// id belongs to another worker (tech design §4.4: 409 lease_lost).
+	ErrLeaseLost = errors.New("lease lost")
 )
 
 // FieldError is one field-level validation failure. It is rendered as an item
@@ -137,3 +141,20 @@ func (e *TooLargeError) Error() string {
 
 // Unwrap reports ErrTooLarge.
 func (e *TooLargeError) Unwrap() error { return ErrTooLarge }
+
+// LeaseLostError reports that the caller no longer holds the lease of an
+// in-progress task. Reason names which condition failed so a worker can tell
+// "my lease expired" from "another worker owns this card" without guessing.
+type LeaseLostError struct {
+	TaskID string
+	Reason string
+}
+
+// Error implements error.
+func (e *LeaseLostError) Error() string {
+	return fmt.Sprintf("lease for task %q is lost: %s", e.TaskID, e.Reason)
+}
+
+// Unwrap reports ErrLeaseLost so errors.Is works for callers that only care
+// about the class of failure.
+func (e *LeaseLostError) Unwrap() error { return ErrLeaseLost }
