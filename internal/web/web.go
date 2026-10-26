@@ -10,6 +10,8 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+
+	"github.com/Casper-Mars/echuan/internal/api"
 )
 
 //go:embed dist
@@ -39,7 +41,10 @@ func Handler() http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/v1/") {
+		// API paths never fall back to the SPA, including typo variants such
+		// as "/healthz/" or "/HEALTHZ": a 200 HTML page would make a broken
+		// health probe look healthy.
+		if api.IsReservedPath(r.URL.Path) {
 			http.NotFound(w, r)
 			return
 		}

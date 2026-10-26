@@ -346,3 +346,27 @@ func TestMethodNotAllowed(t *testing.T) {
 		t.Fatalf("status = %d, want 405", rec.Code)
 	}
 }
+
+func TestIsReservedPath(t *testing.T) {
+	reserved := []string{
+		"/v1", "/v1/", "/v1/nope", "/v1/a/b",
+		"/healthz", "/healthz/", "/healthz//", "/HEALTHZ", "/Healthz/",
+		"/readyz", "/READYZ/",
+		"/version", "/version/", "/Version",
+	}
+	for _, p := range reserved {
+		if !IsReservedPath(p) {
+			t.Errorf("IsReservedPath(%q) = false, want true", p)
+		}
+	}
+
+	free := []string{
+		"/", "", "/tasks/42", "/index.html", "/health", "/healthzz",
+		"/healthz.json", "/v10/x", "/assets/app.js",
+	}
+	for _, p := range free {
+		if IsReservedPath(p) {
+			t.Errorf("IsReservedPath(%q) = true, want false", p)
+		}
+	}
+}

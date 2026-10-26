@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -40,6 +41,10 @@ func run() error {
 	}
 
 	logger := platform.NewLogger(cfg.LogLevel, os.Stdout)
+	// The banner logger ignores log_level: the effective listen address and
+	// data directories must stay observable even when business logs are
+	// configured to warn/error.
+	banner := platform.NewBannerLogger(os.Stdout)
 
 	for _, dir := range []string{cfg.DataDir, cfg.WorkspaceDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -84,14 +89,7 @@ func run() error {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	logger.Info("echuan starting",
-		"version", platform.Version,
-		"commit", platform.Commit,
-		"listen", listener.Addr().String(),
-		"data_dir", cfg.DataDir,
-		"workspace_dir", cfg.WorkspaceDir,
-		"log_level", cfg.LogLevel,
-	)
+	logStartup(banner, cfg, listener.Addr().String())
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -108,7 +106,7 @@ func run() error {
 	case err := <-serveErr:
 		return fmt.Errorf("http server: %w", err)
 	case sig := <-sigCh:
-		logger.Info("shutdown signal received", "signal", sig.String())
+		banner.Info("shutdown signal received", "signal", sig.String())
 	}
 
 	// Stop accepting new requests, then wait for in-flight ones (≤10s).
@@ -119,6 +117,19 @@ func run() error {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
 
-	logger.Info("shutdown complete")
+	banner.Info("shutdown complete")
 	return nil
+}
+
+// logStartup writes the startup banner. It must be called with the banner
+// logger so that the actual listen address is logged at every log_level.
+func logStartup(banner *slog.Logger, cfg platform.Config, listenAddr string) {
+	banner.Info("echuan starting",
+		"version", platform.Version,
+		"commit", platform.Commit,
+		"listen", listenAddr,
+		"data_dir", cfg.DataDir,
+		"workspace_dir", cfg.WorkspaceDir,
+		"log_level", cfg.LogLevel,
+	)
 }
