@@ -95,13 +95,15 @@ type materialResponse struct {
 	CreateTime string `json:"create_time"`
 }
 
-// projectDetailResponse adds the requirement body, the current spec and the
-// per-status task histogram to the list representation.
+// projectDetailResponse adds the requirement body, the current spec (plus a
+// bounded excerpt of its body) and the per-status task histogram to the list
+// representation. spec_excerpt is null when the project has no spec.
 type projectDetailResponse struct {
 	projectResponse
 	Requirement   *materialResponse `json:"requirement"`
 	RequirementMD string            `json:"requirement_md"`
 	Spec          *materialResponse `json:"spec"`
+	SpecExcerpt   *string           `json:"spec_excerpt"`
 }
 
 // projectListResponse is the list envelope; next_cursor is omitted on the last
@@ -463,6 +465,7 @@ func toProjectDetailResponse(detail domain.ProjectDetail) projectDetailResponse 
 	response := projectDetailResponse{
 		projectResponse: toProjectResponse(detail.Project),
 		RequirementMD:   detail.RequirementMD,
+		SpecExcerpt:     detail.SpecExcerpt,
 	}
 	if detail.Requirement != nil {
 		requirement := toMaterialResponse(*detail.Requirement)

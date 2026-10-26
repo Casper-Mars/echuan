@@ -28,6 +28,14 @@ type projectTestEnv struct {
 
 func newProjectTestEnv(t *testing.T) *projectTestEnv {
 	t.Helper()
+	return newProjectTestEnvWithLimit(t, 1<<20)
+}
+
+// newProjectTestEnvWithLimit builds the same environment with an explicit
+// material_max_bytes, so the 413 path (Task-05, reused by Task-07) can be
+// driven without building a megabyte body.
+func newProjectTestEnvWithLimit(t *testing.T, maxBytes int64) *projectTestEnv {
+	t.Helper()
 
 	dir := t.TempDir()
 	st, err := store.Open(store.Config{Path: filepath.Join(dir, "state.db"), ReadPoolSize: 2})
@@ -47,7 +55,7 @@ func newProjectTestEnv(t *testing.T) *projectTestEnv {
 	}
 
 	dataDir := filepath.Join(dir, "data")
-	writer, err := material.NewWriter(dataDir, 1<<20)
+	writer, err := material.NewWriter(dataDir, maxBytes)
 	if err != nil {
 		t.Fatalf("material.NewWriter: %v", err)
 	}

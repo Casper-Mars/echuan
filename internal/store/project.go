@@ -216,6 +216,31 @@ func MoveRequirementPointer(ctx context.Context, tx *sql.Tx, id, materialID int6
 	return nil
 }
 
+// MoveSpecPointer points spec_material_id at a new material version and bumps
+// the project version.
+//
+// It deliberately leaves status, reason and the requirement pointer untouched:
+// submitting a spec does not move the gate (decide does), and a rejection reason
+// stays readable until the next approval (tech design §3.3). last_actor records
+// who submitted the version.
+func MoveSpecPointer(ctx context.Context, tx *sql.Tx, id, materialID int64, lastActor, updateTime string) error {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE projects
+		   SET spec_material_id = ?, last_actor = ?, version = version + 1, update_time = ?
+		 WHERE id = ?`, materialID, lastActor, updateTime, id)
+	if err != nil {
+		return fmt.Errorf("store: move spec pointer of project %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: move spec pointer of project %d: rows affected: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("store: move spec pointer of project %d: %w", id, sql.ErrNoRows)
+	}
+	return nil
+}
+
 // DeleteProject removes one project by physical id. Materials are not touched:
 // they are content-addressed versions, not project children (tech design
 // §5.7 — no physical deletion).

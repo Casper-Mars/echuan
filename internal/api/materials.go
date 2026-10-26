@@ -117,17 +117,7 @@ func (h *materialsHandler) chain(w http.ResponseWriter, r *http.Request) {
 			value := version.PreviousMaterialID
 			previous = &value
 		}
-		items = append(items, materialVersionResponse{
-			MaterialID:         version.Material.MaterialID,
-			Kind:               version.Material.Kind,
-			Version:            version.Material.Version,
-			Title:              version.Material.Title,
-			SHA256:             version.Material.SHA256,
-			Size:               version.Material.Size,
-			UploadedBy:         version.Material.UploadedBy,
-			PreviousMaterialID: previous,
-			CreateTime:         version.Material.CreateTime.UTC().Format(time.RFC3339Nano),
-		})
+		items = append(items, toMaterialVersionResponse(version.Material, previous))
 	}
 
 	response := materialChainResponse{Items: items, Count: len(items)}

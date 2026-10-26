@@ -416,6 +416,16 @@ func (s *ProjectService) detail(ctx context.Context, q store.Querier, projectPhy
 			return domain.ProjectDetail{}, err
 		}
 		detail.Spec = &mapped
+
+		// The excerpt is read from the object store rather than the row: the
+		// row carries metadata only. It is bounded (200 runes), so previewing a
+		// multi-megabyte spec stays a constant-size response field.
+		body, err := s.materials.Read(spec)
+		if err != nil {
+			return domain.ProjectDetail{}, err
+		}
+		excerpt := excerptRunes(string(body), specExcerptRunes)
+		detail.SpecExcerpt = &excerpt
 	}
 
 	return detail, nil
