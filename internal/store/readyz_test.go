@@ -55,6 +55,7 @@ func readyzServer(st *store.Store) http.Handler {
 		nil,
 		[]api.HealthChecker{store.NewDBChecker(st), store.NewMigrationChecker(st)},
 		nil,
+		nil,
 	)
 }
 

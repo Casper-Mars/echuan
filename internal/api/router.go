@@ -21,21 +21,26 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 
 // NewRouter builds the service router:
 //
-//	GET /healthz            liveness
-//	GET /readyz             readiness
-//	GET /version            build information
-//	POST /v1/products       create a product
-//	GET /v1/products        list products (or fetch one with ?id=)
-//	PATCH /v1/products      patch a product (?id=)
-//	DELETE /v1/products     delete a product (?id=)
-//	/                       fallback handler (embedded frontend), when provided
+//	GET /healthz                     liveness
+//	GET /readyz                      readiness
+//	GET /version                     build information
+//	POST /v1/products                create a product
+//	GET /v1/products                 list products (or fetch one with ?id=)
+//	PATCH /v1/products               patch a product (?id=)
+//	DELETE /v1/products              delete a product (?id=)
+//	POST /v1/projects                create a project (= requirement)
+//	GET /v1/projects                 list projects (or fetch one with ?id=)
+//	PATCH /v1/projects               rename a project (?id=)
+//	DELETE /v1/projects              delete a draft/cancelled project (?id=)
+//	POST /v1/projects/requirement    append a requirement version (?id=)
+//	/                                fallback handler (embedded frontend), when provided
 //
-// Product routes are only registered when products is non-nil, which lets
-// health-only tests build a router without a database.
+// Resource routes are only registered when their service is non-nil, which
+// lets health-only tests build a router without a database.
 //
 // The returned handler is meant to be wrapped by Chain with the standard
 // middleware stack.
-func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService) http.Handler {
+func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService) http.Handler {
 	h := NewHandler(logger, checks)
 
 	mux := http.NewServeMux()
@@ -48,6 +53,14 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		mux.HandleFunc("GET /v1/products", productsHandler.listOrGetProduct)
 		mux.HandleFunc("PATCH /v1/products", productsHandler.updateProduct)
 		mux.HandleFunc("DELETE /v1/products", productsHandler.deleteProduct)
+	}
+	if projects != nil {
+		projectsHandler := newProjectsHandler(projects, logger)
+		mux.HandleFunc("POST /v1/projects", projectsHandler.createProject)
+		mux.HandleFunc("GET /v1/projects", projectsHandler.listOrGetProject)
+		mux.HandleFunc("PATCH /v1/projects", projectsHandler.updateProject)
+		mux.HandleFunc("DELETE /v1/projects", projectsHandler.deleteProject)
+		mux.HandleFunc("POST /v1/projects/requirement", projectsHandler.writeRequirement)
 	}
 	if fallback != nil {
 		mux.Handle("/", fallback)

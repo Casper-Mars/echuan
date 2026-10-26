@@ -233,7 +233,14 @@ func toProductResponse(p domain.Product) productResponse {
 // decodeJSONBody decodes exactly one JSON object, rejecting unknown fields and
 // trailing data. Every failure is a field-level validation error.
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) *domain.ValidationError {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBodyBytes))
+	return decodeJSONBodyLimit(w, r, dst, maxRequestBodyBytes)
+}
+
+// decodeJSONBodyLimit is decodeJSONBody with an explicit body size limit. The
+// requirement endpoints need a limit above material_max_bytes because the
+// markdown body is carried inline in JSON.
+func decodeJSONBodyLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) *domain.ValidationError {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	decoder.DisallowUnknownFields()
 
 	if err := decoder.Decode(dst); err != nil {

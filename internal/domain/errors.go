@@ -16,6 +16,10 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrConflict reports a request that conflicts with the current state.
 	ErrConflict = errors.New("conflict")
+	// ErrInvalidState reports a request that the resource's current status does
+	// not accept (tech design §4.7: 409 invalid_state). Task-06 reuses it for
+	// the remaining project state transitions.
+	ErrInvalidState = errors.New("invalid state")
 )
 
 // FieldError is one field-level validation failure. It is rendered as an item
@@ -48,6 +52,20 @@ func (e *ConflictError) Error() string { return e.Reason }
 
 // Unwrap reports ErrConflict.
 func (e *ConflictError) Unwrap() error { return ErrConflict }
+
+// InvalidStateError reports an action rejected by the current status, as
+// opposed to a ConflictError which reports a remaining child object. Both map
+// to HTTP 409, but they carry different codes: invalid_state tells the caller
+// to re-read the state before deciding whether the request is retryable.
+type InvalidStateError struct {
+	Reason string
+}
+
+// Error implements error.
+func (e *InvalidStateError) Error() string { return e.Reason }
+
+// Unwrap reports ErrInvalidState.
+func (e *InvalidStateError) Unwrap() error { return ErrInvalidState }
 
 // NotFoundError names the resource (and optionally its key) that was missing.
 type NotFoundError struct {

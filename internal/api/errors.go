@@ -147,6 +147,7 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 	var validation *domain.ValidationError
 	var notFound *domain.NotFoundError
 	var conflict *domain.ConflictError
+	var invalidState *domain.InvalidStateError
 
 	switch {
 	case errors.As(err, &validation):
@@ -159,6 +160,10 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 		writeError(w, r, http.StatusNotFound, "not_found", notFound.Error(), nil)
 	case errors.As(err, &conflict):
 		writeError(w, r, http.StatusConflict, "conflict", conflict.Error(), nil)
+	case errors.As(err, &invalidState):
+		// Same status as a conflict, distinct code: the caller must re-read
+		// the state before deciding whether the request is retryable (§4.7).
+		writeError(w, r, http.StatusConflict, "invalid_state", invalidState.Error(), nil)
 	default:
 		logger.Error("request failed",
 			"request_id", RequestIDFromContext(r.Context()),

@@ -18,6 +18,7 @@ import (
 
 	"github.com/Casper-Mars/echuan/internal/api"
 	"github.com/Casper-Mars/echuan/internal/app"
+	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
 	"github.com/Casper-Mars/echuan/internal/web"
@@ -80,8 +81,16 @@ func run() error {
 
 	products := app.NewProductService(st)
 
+	// The material writer owns data_dir/objects; the project service is the
+	// first (and, until Task-05, only) writer of material rows.
+	materials, err := material.NewWriter(cfg.DataDir, cfg.MaterialMaxBytes)
+	if err != nil {
+		return fmt.Errorf("prepare material store: %w", err)
+	}
+	projects := app.NewProjectService(st, materials)
+
 	handler := api.Chain(
-		api.NewRouter(logger, web.Handler(), checks, products),
+		api.NewRouter(logger, web.Handler(), checks, products, projects),
 		api.Recover(logger),
 		api.RequestID(),
 		api.AccessLog(logger),
