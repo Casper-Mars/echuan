@@ -23,6 +23,9 @@ type Config struct {
 	Listen string
 	// DataDir is the directory holding the SQLite database and runtime data.
 	DataDir string
+	// ReadPoolSize is the maximum number of concurrent SQLite read
+	// connections. Writes always use a single connection.
+	ReadPoolSize int
 	// WorkspaceDir is the root directory for per-task workspaces.
 	WorkspaceDir string
 	// LeaseTTL is how long a task lease stays valid without a heartbeat.
@@ -45,6 +48,7 @@ func DefaultConfig() Config {
 	return Config{
 		Listen:           "127.0.0.1:8720",
 		DataDir:          "~/.echuan",
+		ReadPoolSize:     4,
 		WorkspaceDir:     "~/.echuan/workspaces",
 		LeaseTTL:         90 * time.Second,
 		MaxAttempts:      3,
@@ -88,6 +92,7 @@ func Load(path string) (Config, error) {
 var envKeys = map[string]string{
 	"listen":             "ECHUAN_LISTEN",
 	"data_dir":           "ECHUAN_DATA_DIR",
+	"read_pool_size":     "ECHUAN_READ_POOL_SIZE",
 	"workspace_dir":      "ECHUAN_WORKSPACE_DIR",
 	"lease_ttl":          "ECHUAN_LEASE_TTL",
 	"max_attempts":       "ECHUAN_MAX_ATTEMPTS",
@@ -114,6 +119,12 @@ func (c *Config) set(key, raw string) error {
 		c.Listen = raw
 	case "data_dir":
 		c.DataDir = raw
+	case "read_pool_size":
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("read_pool_size: invalid integer %q", raw)
+		}
+		c.ReadPoolSize = n
 	case "workspace_dir":
 		c.WorkspaceDir = raw
 	case "lease_ttl":
@@ -174,6 +185,9 @@ func (c *Config) normalize() error {
 
 	if c.Listen == "" {
 		return errors.New("listen: must not be empty")
+	}
+	if c.ReadPoolSize <= 0 {
+		return fmt.Errorf("read_pool_size: must be positive, got %d", c.ReadPoolSize)
 	}
 	if c.LeaseTTL <= 0 {
 		return fmt.Errorf("lease_ttl: must be positive, got %s", c.LeaseTTL)

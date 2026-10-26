@@ -12,12 +12,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/Casper-Mars/echuan/internal/api"
 	"github.com/Casper-Mars/echuan/internal/app"
 	"github.com/Casper-Mars/echuan/internal/platform"
+	"github.com/Casper-Mars/echuan/internal/store"
 	"github.com/Casper-Mars/echuan/internal/web"
 )
 
@@ -52,20 +54,29 @@ func run() error {
 		}
 	}
 
-	application := app.New(cfg, logger)
+	// Database first: open, migrate, then start readers. A failure here
+	// returns before net.Listen, so a broken schema never accepts traffic.
+	st, err := openStore(cfg, logger)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			logger.Error("close store", "error", err)
+		}
+	}()
+
+	checks := []api.HealthChecker{
+		store.NewDBChecker(st),
+		store.NewMigrationChecker(st),
+	}
+
+	application := app.New(cfg, logger, st)
 	defer func() {
 		if err := application.Close(); err != nil {
 			logger.Error("close application", "error", err)
 		}
 	}()
-
-	// TODO(Task-02): open the SQLite store (WAL, busy_timeout, foreign_keys),
-	// apply pending migrations and start the lease reclaim loop before the
-	// listener is created. A migration failure must abort without listening.
-	checks := []api.HealthChecker{
-		api.NewPendingChecker("db"),
-		api.NewPendingChecker("migration"),
-	}
 
 	handler := api.Chain(
 		api.NewRouter(logger, web.Handler(), checks),
@@ -89,6 +100,7 @@ func run() error {
 		MaxHeaderBytes:    1 << 20,
 	}
 
+	banner.Info("database ready", "path", st.Path(), "schema_version", schemaVersion(st))
 	logStartup(banner, cfg, listener.Addr().String())
 
 	serveErr := make(chan error, 1)
@@ -110,15 +122,58 @@ func run() error {
 	}
 
 	// Stop accepting new requests, then wait for in-flight ones (≤10s).
-	// TODO(Task-02): afterwards stop the reclaim loop and close the store.
+	// TODO(Task-10): stop the lease reclaim loop before closing the store.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
 
+	if err := application.Close(); err != nil {
+		logger.Error("close application", "error", err)
+	}
 	banner.Info("shutdown complete")
 	return nil
+}
+
+// openStore opens the SQLite file, applies pending migrations and starts the
+// read pool. Any failure aborts startup before the listener exists.
+func openStore(cfg platform.Config, logger *slog.Logger) (*store.Store, error) {
+	dbPath := filepath.Join(cfg.DataDir, "state.db")
+
+	st, err := store.Open(store.Config{
+		Path:         dbPath,
+		ReadPoolSize: cfg.ReadPoolSize,
+		Logger:       logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	applied, err := st.Migrate(context.Background())
+	if err != nil {
+		// The wrapped error names the failing migration version.
+		logger.Error("database migration failed", "db", dbPath, "error", err)
+		_ = st.Close()
+		return nil, fmt.Errorf("migrate database %s: %w", dbPath, err)
+	}
+	logger.Info("database migrated", "db", dbPath, "applied", applied)
+
+	if err := st.OpenReadPool(context.Background()); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+// schemaVersion returns the applied schema version, or 0 when it cannot be
+// read; the readiness probe reports such a database as unavailable anyway.
+func schemaVersion(st *store.Store) int {
+	version, err := st.MigrationVersion(context.Background())
+	if err != nil {
+		return 0
+	}
+	return version
 }
 
 // logStartup writes the startup banner. It must be called with the banner

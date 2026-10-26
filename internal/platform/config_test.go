@@ -45,6 +45,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LogLevel != "info" {
 		t.Errorf("LogLevel = %q", cfg.LogLevel)
 	}
+	if cfg.ReadPoolSize != 4 {
+		t.Errorf("ReadPoolSize = %d, want 4", cfg.ReadPoolSize)
+	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -74,6 +77,7 @@ func TestLoadFromTOML(t *testing.T) {
 		"poll_timeout = \"5s\"",
 		"review_stale_hours = 12",
 		"material_max_bytes = 1024",
+		"read_pool_size = 6",
 		"log_level = \"debug\"",
 	}, "\n")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -109,6 +113,9 @@ func TestLoadFromTOML(t *testing.T) {
 	if cfg.MaterialMaxBytes != 1024 {
 		t.Errorf("MaterialMaxBytes = %d", cfg.MaterialMaxBytes)
 	}
+	if cfg.ReadPoolSize != 6 {
+		t.Errorf("ReadPoolSize = %d, want 6", cfg.ReadPoolSize)
+	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q", cfg.LogLevel)
 	}
@@ -143,6 +150,7 @@ func TestEnvOverridesFile(t *testing.T) {
 	t.Setenv("ECHUAN_LISTEN", "127.0.0.1:9100")
 	t.Setenv("ECHUAN_LEASE_TTL", "10s")
 	t.Setenv("ECHUAN_LOG_LEVEL", "warn")
+	t.Setenv("ECHUAN_READ_POOL_SIZE", "8")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -160,6 +168,9 @@ func TestEnvOverridesFile(t *testing.T) {
 	// Untouched values still come from the file.
 	if cfg.MaxAttempts != 2 {
 		t.Errorf("MaxAttempts = %d, want file value", cfg.MaxAttempts)
+	}
+	if cfg.ReadPoolSize != 8 {
+		t.Errorf("ReadPoolSize = %d, want env value", cfg.ReadPoolSize)
 	}
 }
 
@@ -192,6 +203,10 @@ func TestLoadInvalidValues(t *testing.T) {
 			wantSub: "max_attempts: must be positive",
 		},
 		{
+			name:    "non-positive read pool size",
+			toml:    "read_pool_size = 0\n",
+			wantSub: "read_pool_size: must be positive",
+		}, {
 			name:    "invalid env duration",
 			envKey:  "ECHUAN_POLL_TIMEOUT",
 			envVal:  "soon",
