@@ -73,7 +73,7 @@ func TestHandlerReservedPathVariantsReturn404(t *testing.T) {
 // work, typo variants 404, and frontend deep links still serve index.html.
 func TestRouterWithSPAFallback(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := api.NewRouter(logger, Handler(), nil, nil, nil, nil)
+	h := api.NewRouter(logger, Handler(), nil, nil, nil, nil, nil)
 
 	cases := []struct {
 		path     string

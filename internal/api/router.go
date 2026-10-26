@@ -38,6 +38,10 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 //	POST /v1/projects/accept         draft → spec_review (?id=)
 //	POST /v1/projects/decide         approve/reject a review gate (?id=, If-Match)
 //	POST /v1/projects/cancel         cancel a non-terminal project (?id=)
+//	POST /v1/tasks                    add one task to a planning project (?project_id=)
+//	GET /v1/tasks                    list tasks (or fetch one with ?id=)
+//	PATCH /v1/tasks                  patch title/body_md/priority (?id=)
+//	DELETE /v1/tasks                 delete an unclaimed backlog task (?id=)
 //	GET /v1/materials                download a material object (?id=)
 //	GET /v1/projects/materials       version chain of one kind (?id=&kind=)
 //	/                                fallback handler (embedded frontend), when provided
@@ -47,7 +51,7 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 //
 // The returned handler is meant to be wrapped by Chain with the standard
 // middleware stack.
-func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, materials *app.MaterialService) http.Handler {
+func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, tasks *app.TaskService, materials *app.MaterialService) http.Handler {
 	h := NewHandler(logger, checks)
 
 	mux := http.NewServeMux()
@@ -73,6 +77,13 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		mux.HandleFunc("POST /v1/projects/accept", projectsHandler.acceptProject)
 		mux.HandleFunc("POST /v1/projects/decide", projectsHandler.decideProject)
 		mux.HandleFunc("POST /v1/projects/cancel", projectsHandler.cancelProject)
+	}
+	if tasks != nil {
+		tasksHandler := newTasksHandler(tasks, logger)
+		mux.HandleFunc("POST /v1/tasks", tasksHandler.createTask)
+		mux.HandleFunc("GET /v1/tasks", tasksHandler.listOrGetTask)
+		mux.HandleFunc("PATCH /v1/tasks", tasksHandler.updateTask)
+		mux.HandleFunc("DELETE /v1/tasks", tasksHandler.deleteTask)
 	}
 	if materials != nil {
 		materialHandler := newMaterialsHandler(materials, logger)

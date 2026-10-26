@@ -63,6 +63,7 @@ func newMaterialServerEnv(t *testing.T, maxBytes int64, logWriter io.Writer) *ma
 		NewRouter(logger, nil, nil,
 			app.NewProductService(st),
 			app.NewProjectService(st, writer),
+			app.NewTaskService(st),
 			app.NewMaterialService(st, writer)),
 		Recover(logger),
 		RequestID(),

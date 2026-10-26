@@ -93,8 +93,13 @@ func run() error {
 	projects.SetMaxAttempts(cfg.MaxAttempts)
 	materialService := app.NewMaterialService(st, materials)
 
+	// Tasks are reachable through the board and the single-card endpoints; the
+	// attempt budget is the same configuration the plan path uses.
+	tasks := app.NewTaskService(st)
+	tasks.SetMaxAttempts(cfg.MaxAttempts)
+
 	handler := api.Chain(
-		api.NewRouter(logger, web.Handler(), checks, products, projects, materialService),
+		api.NewRouter(logger, web.Handler(), checks, products, projects, tasks, materialService),
 		api.Recover(logger),
 		api.RequestID(),
 		api.AccessLog(logger),
