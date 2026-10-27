@@ -1,0 +1,34 @@
+# 版本控制与本地环境
+.git
+.gitignore
+.gitattributes
+.github
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# 前端依赖与产物（前端在 builder 阶段独立构建）
+node_modules
+**/node_modules
+web/dist
+internal/web/dist
+
+# 运行期数据与备份（绝不进入构建上下文）
+data
+.data
+echuan-data
+echuan-backups
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+objects
+workspaces
+
+# 本地产物与日志
+echuan
+dist
+*.log
+*.out
+coverage.*

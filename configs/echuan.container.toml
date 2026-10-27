@@ -1,0 +1,32 @@
+# echuan 容器配置（只读挂载到 /etc/echuan/echuan.toml）
+#
+# 生效优先级：环境变量（ECHUAN_*） > 本文件 > 内置默认值。
+# 容器内监听必须为 0.0.0.0，否则宿主机端口映射无法访问。
+# 数据目录固定为 /data，由 docker-compose.yml 绑定到宿主机 ~/echuan-data。
+
+listen = "0.0.0.0:8720"
+
+# SQLite 库、objects、workspaces 的根目录（容器内路径）
+data_dir = "/data"
+workspace_dir = "/data/workspaces"
+
+# SQLite 读连接池大小（写池固定为 1）
+read_pool_size = 4
+
+# 任务租约有效期（Go duration 语法）
+lease_ttl = "90s"
+
+# 单个任务允许的最大尝试次数
+max_attempts = 3
+
+# claim 长轮询超时
+poll_timeout = "25s"
+
+# 评审超过该小时数未处理视为 stale
+review_stale_hours = 72
+
+# 单个素材允许的最大字节数（20 MiB）
+material_max_bytes = 20971520
+
+# 日志级别：debug / info / warn / error
+log_level = "info"

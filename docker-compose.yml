@@ -1,0 +1,61 @@
+# echuan 生产部署编排（单服务）
+#
+# 常用命令：
+#   docker compose build
+#   docker compose up -d
+#   docker compose logs -f --tail=100
+#   docker compose down
+#
+# 可覆盖变量见 .env.example（复制为 .env 后生效）。
+
+services:
+  echuan:
+    image: ${ECHUAN_IMAGE:-echuan:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${ECHUAN_VERSION:-dev}
+        COMMIT: ${ECHUAN_COMMIT:-none}
+        GOPROXY: ${DOCKER_BUILD_GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}
+        # Docker Desktop 会把全局代理注入构建容器。默认清空（直连），
+        # 需要代理的环境在 .env 里设置 DOCKER_BUILD_*_PROXY。
+        HTTP_PROXY: ${DOCKER_BUILD_HTTP_PROXY:-}
+        HTTPS_PROXY: ${DOCKER_BUILD_HTTPS_PROXY:-}
+        http_proxy: ${DOCKER_BUILD_HTTP_PROXY:-}
+        https_proxy: ${DOCKER_BUILD_HTTPS_PROXY:-}
+        ALL_PROXY: ${DOCKER_BUILD_ALL_PROXY:-}
+        all_proxy: ${DOCKER_BUILD_ALL_PROXY:-}
+    container_name: ${ECHUAN_CONTAINER_NAME:-echuan}
+    restart: unless-stopped
+
+    # 仅本机可访问；公网入口请放在宿主机反向代理之后。
+    ports:
+      - "127.0.0.1:${ECHUAN_PORT:-8720}:8720"
+
+    # 默认 UID/GID 10001；Linux 宿主机请让数据目录属主与其一致。
+    user: "${ECHUAN_UID:-10001}:${ECHUAN_GID:-10001}"
+
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 留空时配置文件生效；非空时覆盖 TOML（ECHUAN_* 优先级最高）。
+      ECHUAN_LOG_LEVEL: ${ECHUAN_LOG_LEVEL:-}
+
+    volumes:
+      # 数据库 / objects / workspaces 全部落在宿主机目录，删容器不丢数据。
+      - "${ECHUAN_DATA_DIR:-${HOME}/echuan-data}:/data"
+      # 配置只读挂载；容器启动参数见 Dockerfile 的 CMD。
+      - "./configs/echuan.container.toml:/etc/echuan/echuan.toml:ro"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8720/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
