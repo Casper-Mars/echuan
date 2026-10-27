@@ -305,3 +305,142 @@ func TestCreateTaskDependencyByTaskIDsResolvesAndOrders(t *testing.T) {
 		t.Fatalf("missing task error = %v, want sql.ErrNoRows", err)
 	}
 }
+
+// TestTaskWorkerIDFollowsStatus pins the read-side rule of task-07: worker_id
+// is rendered only while a task is in progress (2), the join never duplicates a
+// row, and a dangling workers pointer on any other status stays invisible.
+func TestTaskWorkerIDFollowsStatus(t *testing.T) {
+	st := openTestStore(t, 1)
+	ctx := context.Background()
+	projectID := seedProjectRow(t, st)
+
+	ids := insertTasks(t, st, projectID, "APP-1", []int{10, 5, 0})
+	inProgress, done, unbound := ids[0], ids[1], ids[2]
+
+	const (
+		workerID       = "w_00000000000000000000000001"
+		danglingID     = "w_00000000000000000000000002"
+		updateTime     = "2026-01-02T00:00:00.000Z"
+		workerLastSeen = "2026-01-02T00:00:00.000Z"
+	)
+	err := st.Tx(ctx, func(tx *sql.Tx) error {
+		for _, id := range []struct {
+			worker string
+			state  string
+		}{{workerID, "busy"}, {danglingID, "busy"}} {
+			if _, err := UpsertWorker(ctx, tx, WorkerUpsert{
+				WorkerID:   id.worker,
+				State:      id.state,
+				LastSeen:   workerLastSeen,
+				UpdateTime: updateTime,
+			}); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET status = 2 WHERE id IN (?, ?)`, inProgress, unbound); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET status = 4 WHERE id = ?`, done); err != nil {
+			return err
+		}
+		// One pointer on an in-progress card, one on a done card (a stale
+		// pointer that the read side must ignore).
+		if err := BindTask(ctx, tx, workerID, inProgress, "lease-1", updateTime); err != nil {
+			return err
+		}
+		return BindTask(ctx, tx, danglingID, done, "lease-2", updateTime)
+	})
+	if err != nil {
+		t.Fatalf("seed workers: %v", err)
+	}
+
+	byTaskID, err := GetTaskByTaskID(ctx, st.Read(), taskCode("APP-1", 1))
+	if err != nil {
+		t.Fatalf("GetTaskByTaskID: %v", err)
+	}
+	if byTaskID.WorkerID == nil || *byTaskID.WorkerID != workerID {
+		t.Errorf("detail worker_id = %v, want %s", byTaskID.WorkerID, workerID)
+	}
+
+	byID, err := GetTaskByID(ctx, st.Read(), inProgress)
+	if err != nil {
+		t.Fatalf("GetTaskByID: %v", err)
+	}
+	if byID.WorkerID == nil || *byID.WorkerID != workerID {
+		t.Errorf("GetTaskByID worker_id = %v, want %s", byID.WorkerID, workerID)
+	}
+
+	// unbounded in-progress card: no pointer, so null (not "").
+	unboundTask, err := GetTaskByID(ctx, st.Read(), unbound)
+	if err != nil {
+		t.Fatalf("GetTaskByID unbound: %v", err)
+	}
+	if unboundTask.WorkerID != nil {
+		t.Errorf("unbound in-progress worker_id = %q, want nil", *unboundTask.WorkerID)
+	}
+
+	// dangling pointer on a done card: status wins, the join value is dropped.
+	doneTask, err := GetTaskByID(ctx, st.Read(), done)
+	if err != nil {
+		t.Fatalf("GetTaskByID done: %v", err)
+	}
+	if doneTask.WorkerID != nil {
+		t.Errorf("done worker_id = %q, want nil", *doneTask.WorkerID)
+	}
+
+	// The join must not duplicate rows: one in-progress card, one done card,
+	// one unbound in-progress card = three rows.
+	rows, err := ListTasks(ctx, st.Read(), TaskFilter{ProjectID: projectID, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("ListTasks rows = %d, want 3 (join duplicated rows?)", len(rows))
+	}
+	seen := make(map[string]*string, len(rows))
+	for _, row := range rows {
+		seen[row.TaskID] = row.WorkerID
+	}
+	if got := seen[taskCode("APP-1", 1)]; got == nil || *got != workerID {
+		t.Errorf("list worker_id of in-progress = %v, want %s", got, workerID)
+	}
+	for _, taskID := range []string{taskCode("APP-1", 2), taskCode("APP-1", 3)} {
+		if got := seen[taskID]; got != nil {
+			t.Errorf("list worker_id of %s = %q, want nil", taskID, *got)
+		}
+	}
+
+	// Keyset pages keep the same row count and the same worker column.
+	firstPage, err := ListTasks(ctx, st.Read(), TaskFilter{ProjectID: projectID, Limit: 2})
+	if err != nil {
+		t.Fatalf("ListTasks page 1: %v", err)
+	}
+	if len(firstPage) != 2 {
+		t.Fatalf("page 1 rows = %d, want 2", len(firstPage))
+	}
+	last := firstPage[len(firstPage)-1]
+	secondPage, err := ListTasks(ctx, st.Read(), TaskFilter{
+		ProjectID: projectID,
+		Limit:     2,
+		After:     &TaskCursor{Priority: last.Priority, SeqNo: last.SeqNo, ID: last.ID},
+	})
+	if err != nil {
+		t.Fatalf("ListTasks page 2: %v", err)
+	}
+	if len(secondPage) != 1 {
+		t.Fatalf("page 2 rows = %d, want 1", len(secondPage))
+	}
+
+	byProject, err := ListTasksByProject(ctx, st.Read(), projectID)
+	if err != nil {
+		t.Fatalf("ListTasksByProject: %v", err)
+	}
+	if len(byProject) != 3 {
+		t.Fatalf("ListTasksByProject rows = %d, want 3", len(byProject))
+	}
+	if byProject[0].WorkerID == nil || *byProject[0].WorkerID != workerID {
+		t.Errorf("ListTasksByProject worker_id = %v, want %s", byProject[0].WorkerID, workerID)
+	}
+}

@@ -23,7 +23,8 @@ type TaskLease struct {
 
 // TaskView is the read model the task endpoints render. DependsOn holds
 // business ids ordered by the dependency's seq_no; Lease is nil unless the task
-// is in progress and the lease is still valid.
+// is in progress and the lease is still valid. WorkerID is the executor of an
+// in-progress card and nil for every other status.
 type TaskView struct {
 	ID           string
 	TaskID       string
@@ -33,6 +34,7 @@ type TaskView struct {
 	BodyMD       string
 	Priority     int
 	Status       int
+	WorkerID     *string
 	AttemptCount int
 	MaxAttempts  int
 	Reason       string
@@ -582,6 +584,7 @@ func (s *TaskService) viewFromRow(row store.Task, dependsOn []string) (TaskView,
 		BodyMD:       row.BodyMD,
 		Priority:     row.Priority,
 		Status:       row.Status,
+		WorkerID:     row.WorkerID,
 		AttemptCount: row.AttemptCount,
 		MaxAttempts:  row.MaxAttempts,
 		Reason:       stringValue(row.Reason),

@@ -10,11 +10,25 @@ import (
 // taskColumns selects one task with its project's business id.
 //
 // tasks.status values are domain.Task* integers; the store spells the numbers
-// out as literals (4 = done, 7 = cancelled) because the dependency runs
-// domain ← store.
+// out as literals (2 = in_progress, 4 = done, 7 = cancelled) because the
+// dependency runs domain ← store.
+//
+// worker_id is derived from the task status rather than read straight off the
+// join: workers.current_task_id is a denormalized pointer that can dangle (a
+// reclaimed card, a hand-edited row), and only an in-progress task has an
+// executor to show. The CASE makes the status the single authority, so a stale
+// pointer can never leak into a response.
+//
+// Every statement using this list must therefore join the workers table as
+//
+//	LEFT JOIN workers w ON w.current_task_id = t.id
+//
+// ux_workers_current_task (partial UNIQUE) keeps the join at one row per task,
+// so the extra column adds no duplicate rows to a list or detail read.
 const taskColumns = `t.id, t.task_id, p.project_id AS project_code, t.seq_no,
 	t.title, t.body_md, t.priority, t.status, t.attempt_count, t.max_attempts,
 	t.lease_id, t.lease_until, t.last_actor, t.report_material_id, t.reason, t.version,
+	CASE WHEN t.status = 2 THEN w.worker_id END AS worker_id,
 	t.create_time, t.update_time`
 
 // Task is the read model of one tasks row.
@@ -27,6 +41,7 @@ type Task struct {
 	BodyMD           string  `db:"body_md"`
 	Priority         int     `db:"priority"`
 	Status           int     `db:"status"`
+	WorkerID         *string `db:"worker_id"`
 	AttemptCount     int     `db:"attempt_count"`
 	MaxAttempts      int     `db:"max_attempts"`
 	LeaseID          *string `db:"lease_id"`
@@ -68,6 +83,7 @@ func GetTaskByTaskID(ctx context.Context, q Querier, taskID string) (Task, error
 	return One[Task](ctx, q,
 		`SELECT `+taskColumns+`
 		   FROM tasks t JOIN projects p ON p.id = t.project_id
+		   LEFT JOIN workers w ON w.current_task_id = t.id
 		  WHERE t.task_id = ?`, taskID)
 }
 
@@ -76,6 +92,7 @@ func ListTasksByProject(ctx context.Context, q Querier, projectID int64) ([]Task
 	return All[Task](ctx, q,
 		`SELECT `+taskColumns+`
 		   FROM tasks t JOIN projects p ON p.id = t.project_id
+		   LEFT JOIN workers w ON w.current_task_id = t.id
 		  WHERE t.project_id = ?
 		  ORDER BY t.seq_no ASC`, projectID)
 }
@@ -336,6 +353,7 @@ func GetTaskByID(ctx context.Context, q Querier, id int64) (Task, error) {
 	return One[Task](ctx, q,
 		`SELECT `+taskColumns+`
 		   FROM tasks t JOIN projects p ON p.id = t.project_id
+		   LEFT JOIN workers w ON w.current_task_id = t.id
 		  WHERE t.id = ?`, id)
 }
 
@@ -392,6 +410,7 @@ func ListTasks(ctx context.Context, q Querier, filter TaskFilter) ([]Task, error
 
 	query := `SELECT ` + taskColumns + `
 	            FROM tasks t JOIN projects p ON p.id = t.project_id
+	            LEFT JOIN workers w ON w.current_task_id = t.id
 	           WHERE ` + strings.Join(where, " AND ") + `
 	           ORDER BY t.priority DESC, t.seq_no ASC, t.id ASC
 	           LIMIT ?`

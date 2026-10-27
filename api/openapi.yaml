@@ -1459,7 +1459,7 @@ components:
     Task:
       type: object
       additionalProperties: false
-      required: [id, task_id, project_id, seq_no, title, body_md, priority, status, status_name, attempt_count, max_attempts, reason, last_actor, version, depends_on, create_time, update_time]
+      required: [id, task_id, project_id, seq_no, title, body_md, priority, status, status_name, worker_id, attempt_count, max_attempts, reason, last_actor, version, depends_on, create_time, update_time]
       properties:
         id:
           type: string
@@ -1479,6 +1479,9 @@ components:
           type: integer
         status_name:
           type: string
+        worker_id:
+          type: string
+          nullable: true
         attempt_count:
           type: integer
         max_attempts:
@@ -1514,7 +1517,7 @@ components:
     TaskDetail:
       type: object
       additionalProperties: false
-      required: [id, task_id, project_id, seq_no, title, body_md, priority, status, status_name, attempt_count, max_attempts, reason, last_actor, version, depends_on, create_time, update_time, report, lease]
+      required: [id, task_id, project_id, seq_no, title, body_md, priority, status, status_name, worker_id, attempt_count, max_attempts, reason, last_actor, version, depends_on, create_time, update_time, report, lease]
       properties:
         id:
           type: string
@@ -1534,6 +1537,9 @@ components:
           type: integer
         status_name:
           type: string
+        worker_id:
+          type: string
+          nullable: true
         attempt_count:
           type: integer
         max_attempts:

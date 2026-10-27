@@ -71,6 +71,10 @@ type createTaskRequest struct {
 }
 
 // taskResponse is the wire representation of one task (§4.2).
+//
+// worker_id is always encoded (null when the card is not in progress): the
+// client renders "who is executing" without a second lookup and a missing
+// member would be indistinguishable from an older server.
 type taskResponse struct {
 	ID           string   `json:"id"`
 	TaskID       string   `json:"task_id"`
@@ -81,6 +85,7 @@ type taskResponse struct {
 	Priority     int      `json:"priority"`
 	Status       int      `json:"status"`
 	StatusName   string   `json:"status_name"`
+	WorkerID     *string  `json:"worker_id"`
 	AttemptCount int      `json:"attempt_count"`
 	MaxAttempts  int      `json:"max_attempts"`
 	Reason       *string  `json:"reason"`
@@ -486,6 +491,7 @@ func toTaskResponse(task app.TaskView) taskResponse {
 		Priority:     task.Priority,
 		Status:       task.Status,
 		StatusName:   domain.TaskStatusName(task.Status),
+		WorkerID:     task.WorkerID,
 		AttemptCount: task.AttemptCount,
 		MaxAttempts:  task.MaxAttempts,
 		Reason:       nullableString(task.Reason),
