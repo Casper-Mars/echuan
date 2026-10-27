@@ -120,6 +120,7 @@ func run() error {
 		api.NewRouter(logger, web.Handler(), checks, products, projects, tasks, claims, materialService, inboxService),
 		api.Recover(logger),
 		api.RequestID(),
+		api.UnifiedErrors(),
 		api.AccessLog(logger),
 		api.Timeout(api.DefaultRequestTimeout),
 	)

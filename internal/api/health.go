@@ -45,8 +45,9 @@ type healthResponse struct {
 }
 
 type readinessResponse struct {
-	Status string            `json:"status"`
-	Checks map[string]string `json:"checks"`
+	Status    string            `json:"status"`
+	Checks    map[string]string `json:"checks"`
+	RequestID string            `json:"request_id"`
 }
 
 // healthz reports process liveness without touching external dependencies.
@@ -78,5 +79,9 @@ func (h *Handler) readyz(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, httpStatus, readinessResponse{Status: status, Checks: checks})
+	writeJSON(w, httpStatus, readinessResponse{
+		Status:    status,
+		Checks:    checks,
+		RequestID: RequestIDFromContext(r.Context()),
+	})
 }

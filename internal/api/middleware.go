@@ -82,6 +82,62 @@ func RequestID() Middleware {
 	}
 }
 
+// UnifiedErrors replaces the plain-text 404/405 produced by net/http and the
+// SPA fallback with the unified error envelope. Responses that already carry a
+// JSON body (every handler error goes through writeError) are left untouched,
+// so a business not_found keeps its message and details.
+//
+// It sits inside RequestID (so the envelope carries the same X-Request-Id as
+// the header) and outside AccessLog (so the recorded status is the real one).
+func UnifiedErrors() Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			uw := &unifiedErrorWriter{ResponseWriter: w}
+			next.ServeHTTP(uw, r)
+			if !uw.intercepted {
+				return
+			}
+			code, message := "not_found", "not found"
+			if uw.status == http.StatusMethodNotAllowed {
+				code, message = "method_not_allowed", "method not allowed"
+			}
+			writeError(w, r, uw.status, code, message, nil)
+		})
+	}
+}
+
+// unifiedErrorWriter buffers the body of a 404/405 so it can be replaced by the
+// unified envelope. Headers such as Allow survive because they were already set
+// on the underlying header map before WriteHeader.
+type unifiedErrorWriter struct {
+	http.ResponseWriter
+	intercepted bool
+	status      int
+}
+
+func (u *unifiedErrorWriter) WriteHeader(status int) {
+	if (status == http.StatusNotFound || status == http.StatusMethodNotAllowed) &&
+		!isJSONContentType(u.Header().Get("Content-Type")) {
+		u.intercepted = true
+		u.status = status
+		return
+	}
+	u.ResponseWriter.WriteHeader(status)
+}
+
+func (u *unifiedErrorWriter) Write(b []byte) (int, error) {
+	if u.intercepted {
+		return len(b), nil
+	}
+	return u.ResponseWriter.Write(b)
+}
+
+// isJSONContentType reports whether the handler already committed a JSON body,
+// which means the error envelope (and its message/details) must be preserved.
+func isJSONContentType(contentType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "application/json")
+}
+
 // AccessLog emits one structured log line per request with the fields defined
 // in tech design §7.4.
 func AccessLog(logger *slog.Logger) Middleware {

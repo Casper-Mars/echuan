@@ -1,9 +1,1639 @@
-# OpenAPI 规范占位文件
-#
-# 完整的 api/openapi.yaml 由 Task-13 提供，本任务（Task-01）仅占位，
-# 保证目录结构符合技术方案 §2.1。
 openapi: 3.0.3
 info:
-  title: echuan API (placeholder)
-  version: 0.0.0
-paths: {}
+  title: 驿传平台 API
+  version: 1.0.0
+  description: |
+    驿传（echuan）HTTP 接口契约。所有 /v1 响应都携带 X-Request-Id 头；
+    错误响应统一使用 Error 错误体，details 永远是数组（无明细时为 []）。
+    资源列表与详情共用同一路径（?id= 选择详情），因此一个 method+path
+    只计一个 operation。
+servers:
+  - url: /
+tags:
+  - name: health
+    description: 存活、就绪与版本信息
+  - name: products
+    description: 产品
+  - name: projects
+    description: 项目（需求、规格、方案与评审）
+  - name: tasks
+    description: 任务、领取、心跳、报告与验收
+  - name: materials
+    description: 物料下载与版本链
+  - name: inbox
+    description: 待评审收件箱
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: 存活探针
+      tags: [health]
+      responses:
+        "200":
+          description: 进程存活
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /readyz:
+    get:
+      operationId: getReadyz
+      summary: 就绪探针
+      tags: [health]
+      responses:
+        "200":
+          description: 就绪
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: 未就绪（保留 checks 并带 request_id）
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+  /version:
+    get:
+      operationId: getVersion
+      summary: 构建版本
+      tags: [health]
+      responses:
+        "200":
+          description: 版本信息
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Version"
+  /v1/products:
+    post:
+      operationId: createProduct
+      summary: 创建产品
+      tags: [products]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductCreateRequest"
+      responses:
+        "201":
+          description: 已创建
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+    get:
+      operationId: listOrGetProducts
+      summary: 列出产品，或按 ?id= 取详情
+      tags: [products]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - name: id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 详情（?id=）或分页列表
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Product"
+                  - $ref: "#/components/schemas/ProductList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateProduct
+      summary: 修改产品
+      tags: [products]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductPatchRequest"
+      responses:
+        "200":
+          description: 已修改
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteProduct
+      summary: 删除没有项目的产品
+      tags: [products]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: 已删除
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/projects:
+    post:
+      operationId: createProject
+      summary: 创建项目并写入首个需求版本
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectCreateRequest"
+      responses:
+        "201":
+          description: 已创建
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+    get:
+      operationId: listOrGetProjects
+      summary: 列出项目，或按 ?id= 取详情
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - name: id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: product_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 详情（?id=）或分页列表
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ProjectDetail"
+                  - $ref: "#/components/schemas/ProjectList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateProject
+      summary: 修改项目标题
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectPatchRequest"
+      responses:
+        "200":
+          description: 已修改
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteProject
+      summary: 删除草稿或已取消的项目
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: 已删除
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/projects/requirement:
+    post:
+      operationId: writeProjectRequirement
+      summary: 追加需求版本
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequirementRequest"
+      responses:
+        "200":
+          description: 需求版本已追加
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+  /v1/projects/specs:
+    post:
+      operationId: submitProjectSpec
+      summary: 提交规格版本
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpecRequest"
+      responses:
+        "200":
+          description: 规格版本已提交
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpecResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+  /v1/projects/plans:
+    post:
+      operationId: submitProjectPlan
+      summary: 提交任务拆解
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanRequest"
+      responses:
+        "201":
+          description: 方案已提交
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+  /v1/projects/accept:
+    post:
+      operationId: acceptProject
+      summary: 需求转规格评审
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: 已进入 spec_review
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/projects/decide:
+    post:
+      operationId: decideProject
+      summary: 审批项目评审门
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectDecideRequest"
+      responses:
+        "200":
+          description: 已审批
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/projects/cancel:
+    post:
+      operationId: cancelProject
+      summary: 取消非终态项目
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: 已取消
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/projects/materials:
+    get:
+      operationId: listProjectMaterials
+      summary: 查询某一类物料的版本链
+      tags: [materials]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+        - name: kind
+          in: query
+          required: true
+          schema:
+            type: integer
+            enum: [1, 2]
+      responses:
+        "200":
+          description: 版本链
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaterialChain"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/tasks:
+    post:
+      operationId: createTask
+      summary: 在规划中的项目里新增任务
+      tags: [tasks]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - name: project_id
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskCreateRequest"
+      responses:
+        "201":
+          description: 已创建
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+    get:
+      operationId: listOrGetTasks
+      summary: 列出任务，或按 ?id= 取详情
+      tags: [tasks]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - name: id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: integer
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 详情（?id=）或分页列表
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/TaskDetail"
+                  - $ref: "#/components/schemas/TaskList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateTask
+      summary: 修改任务标题、正文或优先级
+      tags: [tasks]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskPatchRequest"
+      responses:
+        "200":
+          description: 已修改
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteTask
+      summary: 删除未领取的待办任务
+      tags: [tasks]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "204":
+          description: 已删除
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/tasks/claim:
+    post:
+      operationId: claimTask
+      summary: 领取下一张可执行任务
+      tags: [tasks]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimRequest"
+      responses:
+        "200":
+          description: 已领取
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimResponse"
+        "204":
+          description: 没有可领取的任务（空响应体）
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/tasks/heartbeat:
+    post:
+      operationId: heartbeatTask
+      summary: 续租任务
+      tags: [tasks]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatRequest"
+      responses:
+        "200":
+          description: 已续租
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/tasks/report:
+    post:
+      operationId: reportTask
+      summary: 提交报告并转入待验收
+      tags: [tasks]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReportRequest"
+      responses:
+        "200":
+          description: 报告已提交
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+        "422":
+          description: 报告内容为空
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/tasks/decide:
+    post:
+      operationId: decideTask
+      summary: 验收、返工、重试或放弃任务
+      tags: [tasks]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskDecideRequest"
+      responses:
+        "200":
+          description: 已处理
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/materials:
+    get:
+      operationId: downloadMaterial
+      summary: 下载物料字节流
+      tags: [materials]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: 物料字节流（支持 HEAD 与 Range）
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              description: 物料内容的 SHA-256
+              schema:
+                type: string
+            X-Material-Id:
+              description: 物料业务 id
+              schema:
+                type: string
+            X-Material-Version:
+              description: 物料版本号
+              schema:
+                type: integer
+            Content-Disposition:
+              description: inline 文件名
+              schema:
+                type: string
+          content:
+            text/markdown:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/inbox:
+    get:
+      operationId: listInbox
+      summary: 待处理评审与任务验收
+      tags: [inbox]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: 待办收件箱
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+components:
+  headers:
+    RequestId:
+      description: 请求关联 id；入站值原样回显，缺省时服务端生成。
+      schema:
+        type: string
+  parameters:
+    Actor:
+      name: X-Actor
+      in: header
+      required: false
+      description: 调用者声明（非认证）。
+      schema:
+        type: string
+    ResourceID:
+      name: id
+      in: query
+      required: true
+      schema:
+        type: string
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: 期望的乐观锁版本号（裸整数，或带引号的 ETag 形式）。
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: 请求参数或请求体不合法
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: 资源不存在
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: 状态、版本、租约或唯一性冲突
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooLarge:
+      description: 请求体超过限制
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status, checks, request_id]
+      properties:
+        status:
+          type: string
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+        request_id:
+          type: string
+    Version:
+      type: object
+      additionalProperties: false
+      required: [version, commit, go_version]
+      properties:
+        version:
+          type: string
+        commit:
+          type: string
+        go_version:
+          type: string
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      properties:
+        field:
+          type: string
+        reason:
+          type: string
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message, details, request_id]
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid_argument
+            - not_found
+            - invalid_state
+            - invalid_version
+            - conflict
+            - lease_lost
+            - material_required
+            - too_large
+            - rate_limited
+            - internal
+            - method_not_allowed
+            - timeout
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            $ref: "#/components/schemas/ErrorDetail"
+        request_id:
+          type: string
+    ProductCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [product_id, name, git_url]
+      properties:
+        product_id:
+          type: string
+        name:
+          type: string
+        git_url:
+          type: string
+        description:
+          type: string
+        license:
+          type: string
+    ProductPatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        product_id:
+          type: string
+        name:
+          type: string
+        git_url:
+          type: string
+        description:
+          type: string
+        license:
+          type: string
+    Product:
+      type: object
+      additionalProperties: false
+      required: [id, product_id, name, git_url, description, license, project_count, create_time, update_time]
+      properties:
+        id:
+          type: string
+        product_id:
+          type: string
+        name:
+          type: string
+        git_url:
+          type: string
+        description:
+          type: string
+        license:
+          type: string
+        project_count:
+          type: integer
+        create_time:
+          type: string
+          format: date-time
+        update_time:
+          type: string
+          format: date-time
+    ProductList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Product"
+        next_cursor:
+          type: string
+    TaskStats:
+      type: object
+      additionalProperties: false
+      required: [total, done]
+      properties:
+        total:
+          type: integer
+        done:
+          type: integer
+        by_status:
+          type: object
+          additionalProperties:
+            type: integer
+    Material:
+      type: object
+      additionalProperties: false
+      required: [material_id, kind, version, title, sha256, size, uploaded_by, create_time]
+      properties:
+        material_id:
+          type: string
+        kind:
+          type: integer
+        version:
+          type: integer
+        title:
+          type: string
+        sha256:
+          type: string
+        size:
+          type: integer
+        uploaded_by:
+          type: string
+        create_time:
+          type: string
+          format: date-time
+    MaterialVersion:
+      type: object
+      additionalProperties: false
+      required: [material_id, kind, version, title, sha256, size, uploaded_by, previous_material_id, create_time]
+      properties:
+        material_id:
+          type: string
+        kind:
+          type: integer
+        version:
+          type: integer
+        title:
+          type: string
+        sha256:
+          type: string
+        size:
+          type: integer
+        uploaded_by:
+          type: string
+        previous_material_id:
+          type: string
+          nullable: true
+        create_time:
+          type: string
+          format: date-time
+    MaterialChain:
+      type: object
+      additionalProperties: false
+      required: [items, count]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MaterialVersion"
+        current_material_id:
+          type: string
+        count:
+          type: integer
+    Project:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, task_stats, create_time, update_time]
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        product_id:
+          type: string
+        seq_no:
+          type: integer
+        title:
+          type: string
+        status:
+          type: integer
+        status_name:
+          type: string
+        reason:
+          type: string
+          nullable: true
+        last_actor:
+          type: string
+          nullable: true
+        version:
+          type: integer
+        task_stats:
+          $ref: "#/components/schemas/TaskStats"
+        create_time:
+          type: string
+          format: date-time
+        update_time:
+          type: string
+          format: date-time
+    ProjectDetail:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, task_stats, create_time, update_time, requirement, requirement_md, spec, spec_excerpt]
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        product_id:
+          type: string
+        seq_no:
+          type: integer
+        title:
+          type: string
+        status:
+          type: integer
+        status_name:
+          type: string
+        reason:
+          type: string
+          nullable: true
+        last_actor:
+          type: string
+          nullable: true
+        version:
+          type: integer
+        task_stats:
+          $ref: "#/components/schemas/TaskStats"
+        create_time:
+          type: string
+          format: date-time
+        update_time:
+          type: string
+          format: date-time
+        requirement:
+          $ref: "#/components/schemas/Material"
+          nullable: true
+        requirement_md:
+          type: string
+        spec:
+          $ref: "#/components/schemas/Material"
+          nullable: true
+        spec_excerpt:
+          type: string
+          nullable: true
+    ProjectCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [product_id, title, requirement_md]
+      properties:
+        product_id:
+          type: string
+        title:
+          type: string
+        requirement_md:
+          type: string
+    ProjectPatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+        status:
+          type: integer
+        product_id:
+          type: string
+    RequirementRequest:
+      type: object
+      additionalProperties: false
+      required: [body_md]
+      properties:
+        body_md:
+          type: string
+    SpecRequest:
+      type: object
+      additionalProperties: false
+      required: [body_md]
+      properties:
+        title:
+          type: string
+          nullable: true
+        body_md:
+          type: string
+    SpecResponse:
+      type: object
+      additionalProperties: false
+      required: [project_id, status, status_name, project_version, spec]
+      properties:
+        project_id:
+          type: string
+        status:
+          type: integer
+        status_name:
+          type: string
+        project_version:
+          type: integer
+        spec:
+          $ref: "#/components/schemas/MaterialVersion"
+    ProjectList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+        next_cursor:
+          type: string
+    PlanTaskRequest:
+      type: object
+      additionalProperties: false
+      required: [title, body_md]
+      properties:
+        title:
+          type: string
+        body_md:
+          type: string
+        priority:
+          type: integer
+          minimum: -1000
+          maximum: 1000
+        depends_on:
+          type: array
+          items:
+            type: integer
+    PlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tasks]
+      properties:
+        tasks:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/PlanTaskRequest"
+    PlanTaskResponse:
+      type: object
+      additionalProperties: false
+      required: [id, seq_no, title, priority, status, status_name, depends_on]
+      properties:
+        id:
+          type: string
+        seq_no:
+          type: integer
+        title:
+          type: string
+        priority:
+          type: integer
+        status:
+          type: integer
+        status_name:
+          type: string
+        depends_on:
+          type: array
+          items:
+            type: string
+    PlanResponse:
+      type: object
+      additionalProperties: false
+      required: [project_id, status, status_name, project_version, tasks]
+      properties:
+        project_id:
+          type: string
+        status:
+          type: integer
+        status_name:
+          type: string
+        project_version:
+          type: integer
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanTaskResponse"
+    ProjectDecideRequest:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, reject]
+        reason:
+          type: string
+    Task:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, project_id, seq_no, title, body_md, priority, status, status_name, attempt_count, max_attempts, reason, last_actor, version, depends_on, create_time, update_time]
+      properties:
+        id:
+          type: string
+        task_id:
+          type: string
+        project_id:
+          type: string
+        seq_no:
+          type: integer
+        title:
+          type: string
+        body_md:
+          type: string
+        priority:
+          type: integer
+        status:
+          type: integer
+        status_name:
+          type: string
+        attempt_count:
+          type: integer
+        max_attempts:
+          type: integer
+        reason:
+          type: string
+          nullable: true
+        last_actor:
+          type: string
+          nullable: true
+        version:
+          type: integer
+        depends_on:
+          type: array
+          items:
+            type: string
+        create_time:
+          type: string
+          format: date-time
+        update_time:
+          type: string
+          format: date-time
+    TaskLease:
+      type: object
+      additionalProperties: false
+      required: [lease_id, until]
+      properties:
+        lease_id:
+          type: string
+        until:
+          type: string
+          format: date-time
+    TaskDetail:
+      type: object
+      additionalProperties: false
+      required: [id, task_id, project_id, seq_no, title, body_md, priority, status, status_name, attempt_count, max_attempts, reason, last_actor, version, depends_on, create_time, update_time, report, lease]
+      properties:
+        id:
+          type: string
+        task_id:
+          type: string
+        project_id:
+          type: string
+        seq_no:
+          type: integer
+        title:
+          type: string
+        body_md:
+          type: string
+        priority:
+          type: integer
+        status:
+          type: integer
+        status_name:
+          type: string
+        attempt_count:
+          type: integer
+        max_attempts:
+          type: integer
+        reason:
+          type: string
+          nullable: true
+        last_actor:
+          type: string
+          nullable: true
+        version:
+          type: integer
+        depends_on:
+          type: array
+          items:
+            type: string
+        create_time:
+          type: string
+          format: date-time
+        update_time:
+          type: string
+          format: date-time
+        report:
+          $ref: "#/components/schemas/Material"
+          nullable: true
+        lease:
+          $ref: "#/components/schemas/TaskLease"
+          nullable: true
+    TaskCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [title, body_md]
+      properties:
+        title:
+          type: string
+        body_md:
+          type: string
+        priority:
+          type: integer
+          minimum: -1000
+          maximum: 1000
+        depends_on:
+          type: array
+          items:
+            type: string
+    TaskPatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+        body_md:
+          type: string
+        priority:
+          type: integer
+          minimum: -1000
+          maximum: 1000
+    TaskList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+        next_cursor:
+          type: string
+    ClaimRequest:
+      type: object
+      additionalProperties: false
+      required: [product]
+      properties:
+        product:
+          type: string
+        task_id:
+          type: string
+    ClaimedTask:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, title, body_md, attempt, priority]
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        title:
+          type: string
+        body_md:
+          type: string
+        attempt:
+          type: integer
+        priority:
+          type: integer
+    ClaimLease:
+      type: object
+      additionalProperties: false
+      required: [lease_id, until, ttl_seconds]
+      properties:
+        lease_id:
+          type: string
+        until:
+          type: string
+          format: date-time
+        ttl_seconds:
+          type: integer
+    ClaimProduct:
+      type: object
+      additionalProperties: false
+      required: [id, name, git_url]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        git_url:
+          type: string
+    ClaimContext:
+      type: object
+      additionalProperties: false
+      required: [spec_version, spec_digest, product, workdir]
+      properties:
+        spec_version:
+          type: integer
+        spec_digest:
+          type: string
+        product:
+          $ref: "#/components/schemas/ClaimProduct"
+        workdir:
+          type: string
+    ClaimResponse:
+      type: object
+      additionalProperties: false
+      required: [task, lease, context]
+      properties:
+        task:
+          $ref: "#/components/schemas/ClaimedTask"
+        lease:
+          $ref: "#/components/schemas/ClaimLease"
+        context:
+          $ref: "#/components/schemas/ClaimContext"
+    HeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [lease_id]
+      properties:
+        lease_id:
+          type: string
+    HeartbeatResponse:
+      type: object
+      additionalProperties: false
+      required: [lease_id, until, ttl_seconds]
+      properties:
+        lease_id:
+          type: string
+        until:
+          type: string
+          format: date-time
+        ttl_seconds:
+          type: integer
+    ReportRequest:
+      type: object
+      additionalProperties: false
+      required: [lease_id, summary_md]
+      properties:
+        lease_id:
+          type: string
+        summary_md:
+          type: string
+    TaskDecideRequest:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [accept, rework, retry, abandon]
+        reason:
+          type: string
+    InboxItem:
+      type: object
+      additionalProperties: false
+      required: [kind, id, state, state_name, title, update_time, age_seconds, stale, reason]
+      properties:
+        kind:
+          type: string
+        id:
+          type: string
+        state:
+          type: integer
+        state_name:
+          type: string
+        title:
+          type: string
+        update_time:
+          type: string
+        age_seconds:
+          type: integer
+        stale:
+          type: boolean
+        reason:
+          type: string
+          nullable: true
+    InboxResponse:
+      type: object
+      additionalProperties: false
+      required: [items, count, review_stale_hours, generated_at]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/InboxItem"
+        count:
+          type: integer
+        review_stale_hours:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time

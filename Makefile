@@ -9,7 +9,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Version=$(VERSION) \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT)
 
-.PHONY: all build test lint fmt web clean
+.PHONY: all build test lint fmt web contract clean
 
 all: build
 
@@ -30,6 +30,10 @@ lint:
 	else \
 		echo "staticcheck 未安装，跳过（安装：go install honnef.co/go/tools/cmd/staticcheck@latest）"; \
 	fi
+
+## contract: 接口契约校验（28 个 operation + 校验器自测）
+contract:
+	go test ./internal/contract -count=1
 
 ## fmt: 格式化代码
 fmt:
