@@ -538,6 +538,19 @@ func TestContractEndpoints(t *testing.T) {
 	e.call(http.MethodPost, "/v1/workers/heartbeat",
 		map[string]any{"worker_id": "w_00000000000000ff"}, nil, http.StatusConflict)
 
+	// The pull-mode claim carries the same worker semantics: an unknown id is
+	// 409 worker_unknown, and a registered worker with an empty queue is 204
+	// that must not leave a pointer behind (a client would otherwise read the
+	// next heartbeat as "busy").
+	e.call(http.MethodPost, "/v1/tasks/claim",
+		map[string]any{"product": "APP", "worker_id": "w_00000000000000ff"}, nil, http.StatusConflict)
+	e.call(http.MethodPost, "/v1/tasks/claim",
+		map[string]any{"product": "APP", "worker_id": workerID}, nil, http.StatusNoContent)
+	raw, _ = e.call(http.MethodGet, "/v1/workers?id="+workerID, nil, nil, http.StatusOK)
+	if pointed := object(t, raw)["current_task_id"]; pointed != nil {
+		t.Errorf("claim 204 set the worker pointer to %v, want null", pointed)
+	}
+
 	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
 	mainDetail := object(t, raw)
 	e.decideProject(mainID, intField(t, mainDetail, "version"), "approve", "")

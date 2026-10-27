@@ -677,7 +677,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ClaimResponse"
         "204":
-          description: 没有可领取的任务（空响应体）
+          description: |
+            没有可领取的任务（空响应体，不写任务租约，也不动 worker 指针）。
+            带 `worker_id` 时同样返回 204：队列为空，或该卡在同一事务里已被另一个
+            worker 抢走。**不同 worker 并发抢同一张卡时，失败方一律按"无任务可领"
+            返回 204**（不是 409），这是并发抢卡失败的唯一口径。客户端应按退避
+            轮询，不应把 204 当错误重试。
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -685,6 +690,21 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            仅在请求体带 `worker_id` 时出现，两个码都由 worker 注册表决定：
+            - `worker_unknown`：id 不在注册表中（未注册或已被保留期回收），
+              worker 应先调 `POST /v1/workers/heartbeat` 重新注册拿新 id；
+            - `worker_busy`：该 worker 已持有任务卡（`current_task_id` 非空）。
+              并发抢卡失败不属于本码，见 204。
+            与 200 同属一次事务：返回 409 时任务、租约、指针均未被修改。
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/tasks/heartbeat:
     post:
       operationId: heartbeatTask
@@ -791,6 +811,25 @@ paths:
     post:
       operationId: heartbeatWorker
       summary: Worker 注册与心跳（空闲时携带派单命令）
+      description: |
+        一次往返完成注册、续活、续租与派单（技术方案 v0.6 §4.1），
+        全部步骤在同一个写事务里执行。
+        - 首次调用不带 `worker_id`，服务端生成 `w_` 前缀的 id 并在响应的
+          `worker.worker_id` 里返回；此后必须复用该 id（客户端不能自选 id）。
+        - 带未知 `worker_id` 返回 409 `worker_unknown`：该行已被保留期回收，
+          worker 应丢弃旧 id 重新注册，而不是原样重试。
+        - `state` 缺省为 `idle`。三个概念相互独立，不要混为一谈：
+          - **占用判定**：只看注册表指针 `current_task_id`，与 `state` 无关；
+            `state=idle` 但仍持卡仍算占用。
+          - **派单条件**：`state=idle` **且** 指针为空才会被派单；
+            `state=busy` 即使无卡也不会被派单。
+          - **续租条件**：指针非空 **且** `state=busy` 才会续租；
+            持卡却发 `state=idle` 时只保留指针、不续租，卡在租约到期后
+            由回收流程释放。
+        - 空闲且未持卡的 worker 拿到下一张可领卡：`commands` 出现一条 `kind=run_task`，
+          其 `task`/`lease`/`context` 与 `POST /v1/tasks/claim` 的 200 响应同构
+          （复用 `ClaimedTask` / `ClaimLease` / `ClaimContext`）。
+        - 无任务可派时 `commands` 为 `[]`，不是 null。
       tags: [workers]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -802,7 +841,11 @@ paths:
               $ref: "#/components/schemas/WorkerHeartbeatRequest"
       responses:
         "200":
-          description: 心跳成功；commands 为空数组表示暂无任务
+          description: |
+            心跳成功。`commands` 为空数组表示暂无任务；`worker` 是写入后的快照，
+            `presence` 由 `last_seen` 与 `worker_ttl` 推导（不落库），
+            `heartbeat_interval_ms` / `lease_ttl_seconds` 来自服务端配置，
+            worker 不应硬编码这两个节奏。
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -810,27 +853,106 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkerHeartbeatResponse"
+              examples:
+                idleNoCommands:
+                  summary: 空闲且队列为空（注册后的稳定心跳）
+                  value:
+                    worker:
+                      worker_id: w_01M5Z45MXYVDV3FAHG543RZ5JQ
+                      presence: active
+                      state: idle
+                      current_task_id: null
+                      metadata:
+                        host: build-01
+                        os: linux
+                        agent_version: 0.6.0
+                      first_seen: "2026-10-27T16:47:51.23Z"
+                      last_seen: "2026-10-27T16:47:51.23Z"
+                      heartbeat_interval_ms: 15000
+                      lease_ttl_seconds: 90
+                    commands: []
+                dispatchRunTask:
+                  summary: 空闲 worker 被派单（队列有可领取任务）
+                  value:
+                    worker:
+                      worker_id: w_01M5Z45MXYVDV3FAHG543RZ5JQ
+                      presence: active
+                      state: busy
+                      current_task_id: APP-1-T0001
+                      metadata:
+                        host: build-01
+                        os: linux
+                        agent_version: 0.6.0
+                      first_seen: "2026-10-27T16:47:51.23Z"
+                      last_seen: "2026-10-27T16:47:55.157Z"
+                      heartbeat_interval_ms: 15000
+                      lease_ttl_seconds: 90
+                    commands:
+                      - kind: run_task
+                        task:
+                          id: APP-1-T0001
+                          project_id: APP-1
+                          title: 实现登录接口
+                          body_md: "# 任务正文\n"
+                          attempt: 1
+                          priority: 10
+                        lease:
+                          lease_id: l_9f8b7b09ff971dd1
+                          until: "2026-10-27T16:49:25.157Z"
+                          ttl_seconds: 90
+                        context:
+                          spec_version: 1
+                          spec_digest: "sha256:bb23da360a3b21e827138bad027ef3f30a29699e84014bc520e4f40131ea2d76"
+                          product:
+                            id: APP
+                            name: 驿传示例产品
+                            git_url: git@example.com:APP.git
+                          workdir: /var/lib/echuan/workspaces/APP-1
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
-          $ref: "#/components/responses/Conflict"
+          description: |
+            `worker_unknown`：请求带了注册表中不存在的 `worker_id`
+            （未注册，或行已被保留期回收）。这是唯一一个"换新 id 重新注册即可恢复"
+            的 409；返回时 `worker` 状态未做任何写入。
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "413":
           $ref: "#/components/responses/TooLarge"
   /v1/workers:
     get:
       operationId: listWorkers
       summary: 列出 Worker，或按 ?id= 取详情
+      description: |
+        同一个 path+method 承载两种读形态，由 `?id=` 是否出现区分：
+        - 不带 `id`：分页列表，按 `last_seen` 倒序；`limit` 缺省 50、范围 1~200；
+          `cursor` 为不透明游标，`next_cursor` 只在还有下一页时出现。
+        - 带 `id`：单条详情，返回裸 `Worker`（没有 `items` 包装）；
+          `?id=` 为空是 400，id 不存在是 404 `not_found`；
+          查询语义用 404，与心跳的 409 `worker_unknown` 区分。
+
+        为什么不拆成 `GET /v1/workers/{id}`：实现与既有客户端用查询参数寻址，
+        而 OpenAPI 3.0 的一个 method+path 只能定义一个 operation，
+        无法把两种响应结构声明成两个 operation。因此这里用
+        `oneOf: [Worker, WorkerList]` 表达，客户端按响应中是否存在 `items` 区分形态。
       tags: [workers]
       parameters:
         - $ref: "#/components/parameters/Actor"
         - name: id
           in: query
           required: false
+          description: 出现即进入详情形态；空值为 400，未知 id 为 404。
           schema:
             type: string
         - name: limit
           in: query
           required: false
+          description: 列表形态的分页大小，缺省 50、范围 1~200；详情形态忽略。
           schema:
             type: integer
             minimum: 1
@@ -838,11 +960,12 @@ paths:
         - name: cursor
           in: query
           required: false
+          description: 列表形态的不透明游标（上一页的 next_cursor）；详情形态忽略。
           schema:
             type: string
       responses:
         "200":
-          description: 详情（?id=）或分页列表（last_seen 倒序）
+          description: 详情（带 `id` 时返回 `Worker`）或分页列表（返回 `WorkerList`，last_seen 倒序）
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -852,6 +975,48 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/Worker"
                   - $ref: "#/components/schemas/WorkerList"
+              examples:
+                detail:
+                  summary: 详情（?id=）
+                  value:
+                    worker_id: w_01M5Z45MXYVDV3FAHG543RZ5JQ
+                    presence: active
+                    state: busy
+                    current_task_id: APP-1-T0001
+                    metadata:
+                      host: build-01
+                      os: linux
+                      agent_version: 0.6.0
+                    first_seen: "2026-10-27T16:47:51.23Z"
+                    last_seen: "2026-10-27T16:47:55.157Z"
+                    heartbeat_interval_ms: 15000
+                    lease_ttl_seconds: 90
+                list:
+                  summary: 列表（不带 id，按 last_seen 倒序）
+                  value:
+                    items:
+                      - worker_id: w_01M5Z46001XPF5KM50RT9QKR48
+                        presence: active
+                        state: idle
+                        current_task_id: null
+                        metadata:
+                          host: build-02
+                        first_seen: "2026-10-27T16:48:02.561Z"
+                        last_seen: "2026-10-27T16:48:02.561Z"
+                        heartbeat_interval_ms: 15000
+                        lease_ttl_seconds: 90
+                      - worker_id: w_01M5Z45MXYVDV3FAHG543RZ5JQ
+                        presence: active
+                        state: busy
+                        current_task_id: APP-1-T0001
+                        metadata:
+                          host: build-01
+                          os: linux
+                          agent_version: 0.6.0
+                        first_seen: "2026-10-27T16:47:51.23Z"
+                        last_seen: "2026-10-27T16:47:55.157Z"
+                        heartbeat_interval_ms: 15000
+                        lease_ttl_seconds: 90
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -1482,6 +1647,12 @@ components:
         worker_id:
           type: string
           nullable: true
+          description: |
+            当前持有该卡的 worker 业务 id；仅 `status=2`（in_progress，已派单/已领取）
+            且领取时绑定了 worker 时才有值，其余状态（含 report/decide 后）一律为 `null`。
+            任务-06 之前领取的 in_progress 卡没有 worker 指针（旧式 claim，只发租约），
+            此时 `status=2` 但该字段同样为 `null`。
+            与 `status` 同源：指针在领取/派单时写入，在报告、回收或重新派单时清空。
         attempt_count:
           type: integer
         max_attempts:
@@ -1540,6 +1711,11 @@ components:
         worker_id:
           type: string
           nullable: true
+          description: |
+            当前持有该卡的 worker 业务 id；仅 `status=2`（in_progress）且领取时
+            绑定了 worker 时才有值，其余状态一律为 `null`。
+            任务-06 之前领取的 in_progress 卡没有 worker 指针（旧式 claim），
+            此时 `status=2` 但该字段同样为 `null`。与列表里的同名字段一致。
         attempt_count:
           type: integer
         max_attempts:
@@ -1617,10 +1793,23 @@ components:
       properties:
         product:
           type: string
+          description: 产品业务 id；不存在返回 404 not_found。
         task_id:
           type: string
+          description: 只领这一张卡（可选）；不可领取时按"无可领任务"返回 204。
         worker_id:
           type: string
+          description: |
+            可选的 worker 业务 id（`w_` 前缀）。省略时保持无注册表的旧行为：
+            只发租约、不写 worker 指针。
+            提供时在同一事务内校验并绑定指针：
+            - 未知 worker → 409 `worker_unknown`；
+            - worker 已持卡（`current_task_id` 非空）→ 409 `worker_busy`；
+            - 无可领任务 → 204，且**不写指针、不发租约**；
+            - 不同 worker 并发抢同一张卡时，失败方按"无可领任务"返回 204
+              （写连接串行 + 唯一索引决定，失败方看到的是已被领走，而不是 409）。
+            worker_busy 只描述"这个 worker 已经有卡"，不用于表达"队列空了"，
+            也不用于并发抢卡失败（后者一律为 204）。
     ClaimedTask:
       type: object
       additionalProperties: false
@@ -1708,67 +1897,97 @@ components:
       type: object
       additionalProperties: false
       required: [worker_id, presence, state, current_task_id, metadata, first_seen, last_seen, heartbeat_interval_ms, lease_ttl_seconds]
+      description: |
+        注册表里一个 worker 的读模型。九个字段在每条响应（心跳、列表、详情）里
+        恒定出现：`current_task_id` 空闲时为 `null`，`metadata` 未提供时为 `{}`，
+        所以 `required` 覆盖全部字段——缺键即违约，而不是"可选字段未出现"。
       properties:
         worker_id:
           type: string
+          description: 服务端生成的 `w_` 前缀业务 id；客户端只读。
         presence:
           type: string
           enum: [active, offline]
+          description: 由 last_seen 与 worker_ttl 推导的在线状态（不落库）。
         state:
           type: string
           enum: [idle, busy]
+          description: |
+            worker 最近一次心跳声明的状态，是"声明值"而非占用事实：
+            声明 idle 但 current_task_id 非空仍算占用。占用只以指针为准。
         current_task_id:
           type: string
           nullable: true
+          description: 当前持有的任务业务 id（`APP-1-T0001` 形态）；空闲为 null。
         metadata:
           type: object
           additionalProperties: true
+          description: |
+            worker 自报的自由格式对象（列默认 `{}`，非对象在心跳时被 400 拒绝）。
         first_seen:
           type: string
           format: date-time
+          description: 首次注册时间（RFC3339，UTC）。
         last_seen:
           type: string
           format: date-time
+          description: 最近一次成功心跳时间（RFC3339，UTC）。
         heartbeat_interval_ms:
           type: integer
+          description: 服务端期望的心跳间隔（毫秒），来自配置。
         lease_ttl_seconds:
           type: integer
+          description: 服务端发放的租约时长（秒），来自配置，与 claim 的 ttl_seconds 同源。
     WorkerHeartbeatRequest:
       type: object
       additionalProperties: false
+      description: |
+        三个字段都可省略。worker_id 缺省表示首次注册；state 缺省为 idle；
+        metadata 缺省表示不修改已存文档。
       properties:
         worker_id:
           type: string
+          description: |
+            首次注册留空（服务端生成并返回）；之后每次心跳必须回填响应里的
+            `worker.worker_id`。未知 id 返回 409 worker_unknown。
         state:
           type: string
           enum: [idle, busy]
+          description: 缺省 idle。busy 时续租已持有的卡；不等于"占用"，占用看指针。
         metadata:
           type: object
           additionalProperties: true
+          description: |
+            自由格式对象，必须为 JSON object（数组/字符串/null 返回 400），
+            序列化后超过 worker_metadata_max_bytes 返回 413。
+            提供即整体替换已存文档。
     WorkerCommand:
       type: object
       additionalProperties: false
-      required: [kind]
+      required: [kind, task, lease, context]
+      description: |
+        心跳返回给 worker 的一条指令。当前 kind 枚举只有 `run_task`，故
+        `kind`/`task`/`lease`/`context` 四者恒定同时出现（后三者非 null）。
+        注意：OpenAPI 3.0 无法表达条件必填，将来新增 kind（如不携带任务的指令）
+        时，必须改为按 kind 分支的 schema，不能沿用这份 required。
       properties:
         kind:
           type: string
           enum: [run_task]
         task:
-          nullable: true
           allOf:
             - $ref: "#/components/schemas/ClaimedTask"
         lease:
-          nullable: true
           allOf:
             - $ref: "#/components/schemas/ClaimLease"
         context:
-          nullable: true
           allOf:
             - $ref: "#/components/schemas/ClaimContext"
     WorkerHeartbeatResponse:
       type: object
       additionalProperties: false
       required: [worker, commands]
+      description: 心跳 200 响应；`commands` 恒为数组（无任务时 `[]`，不会省略或为 null）。
       properties:
         worker:
           $ref: "#/components/schemas/Worker"

@@ -108,6 +108,7 @@ type Schema struct {
 	Properties           map[string]*Schema    `yaml:"properties"`
 	Items                *Schema               `yaml:"items"`
 	AdditionalProperties *AdditionalProperties `yaml:"additionalProperties"`
+	Description          string                `yaml:"description"`
 	Nullable             bool                  `yaml:"nullable"`
 	Enum                 []any                 `yaml:"enum"`
 	Minimum              *float64              `yaml:"minimum"`
@@ -119,12 +120,15 @@ type Schema struct {
 
 // schemaKeywords is the exact vocabulary the checker understands. A keyword
 // outside this set is a hard error: silently ignoring a constraint would make
-// a green contract result meaningless.
+// a green contract result meaningless. description is admitted because it is a
+// pure annotation (it constrains nothing), and documenting worker_id
+// nullability in prose is part of the contract even though no validator can
+// enforce prose.
 var schemaKeywords = map[string]bool{
 	"$ref": true, "type": true, "format": true, "required": true,
 	"properties": true, "items": true, "additionalProperties": true,
-	"nullable": true, "enum": true, "minimum": true, "maximum": true,
-	"minItems": true, "allOf": true, "oneOf": true,
+	"description": true, "nullable": true, "enum": true, "minimum": true,
+	"maximum": true, "minItems": true, "allOf": true, "oneOf": true,
 }
 
 // UnmarshalYAML decodes a schema and rejects keywords the validator would not
