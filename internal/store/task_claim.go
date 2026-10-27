@@ -23,7 +23,14 @@ import (
 // "2026-10-27T00:40:00.000Z"): with variable-width RFC3339Nano a lease ending
 // ".500" would sort before one ending "Z" in the same second.
 
-// claimableTaskSQL picks the next claimable task of one product.
+// claimableTaskSQL picks the next claimable task of one queue scope.
+//
+// The first %s is the scope predicate: a product filter for ClaimTask or the
+// constant-true predicate productAnyScope for ClaimNextTask (the worker
+// heartbeat, which is not scoped to a product). The second %s is the optional
+// directed-claim filter. Both fragments are compile-time constants owned by
+// this file, and every caller value travels as a bound parameter, so the
+// template never interpolates request data.
 //
 // Conditions (tech design §5.4): status=ready, all dependencies done, attempt
 // budget left; ordered by priority DESC, seq_no ASC, id ASC so the queue is
@@ -33,7 +40,7 @@ const claimableTaskSQL = `
 	  SELECT t.id
 	    FROM tasks t
 	    JOIN projects p ON p.id = t.project_id
-	   WHERE p.product_id = ?
+	   WHERE %s
 	     AND t.status = 1
 	     AND t.attempt_count < t.max_attempts
 	     AND NOT EXISTS (
@@ -55,6 +62,14 @@ const claimableTaskSQL = `
 	       update_time = ?
 	 WHERE id = (SELECT id FROM next)
 	RETURNING id`
+
+// The two queue scopes. productScoped rests on the products foreign key;
+// productAnyScope is a literal TRUE, so the planner drops the predicate instead
+// of comparing a column to itself.
+const (
+	productScoped   = "p.product_id = ?"
+	productAnyScope = "1 = 1"
+)
 
 // ClaimRequest is one atomic claim attempt.
 //
@@ -88,15 +103,42 @@ func ClaimTask(ctx context.Context, tx *sql.Tx, req ClaimRequest) (Task, bool, e
 	}
 	args = append(args, req.LeaseID, req.LeaseUntil, req.Actor, req.UpdateTime)
 
-	query := fmt.Sprintf(claimableTaskSQL, filter)
+	query := fmt.Sprintf(claimableTaskSQL, productScoped, filter)
+	return runClaim(ctx, tx, query, args, fmt.Sprintf("task of product %d", req.ProductID))
+}
 
+// ClaimNextRequest is one atomic claim against the whole queue, with no product
+// scope. It is what a worker heartbeat uses: the worker is handed the next card
+// of any product, because its registration is not bound to one product.
+type ClaimNextRequest struct {
+	LeaseID    string
+	LeaseUntil string
+	Actor      string
+	UpdateTime string
+}
+
+// ClaimNextTask leases the next claimable task across every product.
+//
+// It shares claimableTaskSQL with ClaimTask, so the queue order, the dependency
+// check and the attempt budget keep one definition. Only the scope predicate
+// differs: productAnyScope instead of a product filter. ok is false when the
+// queue is empty.
+func ClaimNextTask(ctx context.Context, tx *sql.Tx, req ClaimNextRequest) (Task, bool, error) {
+	query := fmt.Sprintf(claimableTaskSQL, productAnyScope, "")
+	args := []any{req.LeaseID, req.LeaseUntil, req.Actor, req.UpdateTime}
+	return runClaim(ctx, tx, query, args, "next task")
+}
+
+// runClaim executes one rendered claim statement and reads the claimed row
+// back. subject names the queue scope in error messages.
+func runClaim(ctx context.Context, tx *sql.Tx, query string, args []any, subject string) (Task, bool, error) {
 	var id int64
 	err := tx.QueryRowContext(ctx, query, args...).Scan(&id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Task{}, false, nil
 		}
-		return Task{}, false, fmt.Errorf("store: claim task of product %d: %w", req.ProductID, err)
+		return Task{}, false, fmt.Errorf("store: claim %s: %w", subject, err)
 	}
 
 	row, err := GetTaskByID(ctx, tx, id)
@@ -140,8 +182,11 @@ func HeartbeatLease(ctx context.Context, tx *sql.Tx, req HeartbeatRequest) (stri
 	return until, true, nil
 }
 
-// ReclaimedTask is one task moved by ReclaimExpired.
+// ReclaimedTask is one task moved by ReclaimExpired. ID is the physical
+// tasks.id, which a caller needs to release the worker pointer that may still
+// reference the reclaimed row (ClearTaskByTaskID).
 type ReclaimedTask struct {
+	ID           int64   `db:"id"`
 	TaskID       string  `db:"task_id"`
 	AttemptCount int     `db:"attempt_count"`
 	Status       int     `db:"status"`
@@ -173,7 +218,7 @@ func ReclaimExpired(ctx context.Context, tx *sql.Tx, now, updateTime string) ([]
 		 WHERE status = 2
 		   AND lease_until IS NOT NULL
 		   AND lease_until < ?
-		RETURNING task_id, attempt_count, status, reason`, updateTime, now)
+		RETURNING id, task_id, attempt_count, status, reason`, updateTime, now)
 	if err != nil {
 		return nil, fmt.Errorf("store: reclaim expired leases: %w", err)
 	}

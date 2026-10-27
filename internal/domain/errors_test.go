@@ -81,6 +81,30 @@ func TestTypedErrorsUnwrapToSentinels(t *testing.T) {
 			sentinel: ErrMaterialRequired,
 			want:     "material required",
 		},
+		{
+			name:     "worker unknown",
+			err:      &WorkerUnknownError{WorkerID: "w_01JBC9Z3K4QW8V0M2X7Y5N6P8R"},
+			sentinel: ErrWorkerUnknown,
+			want:     `worker "w_01JBC9Z3K4QW8V0M2X7Y5N6P8R" is unknown`,
+		},
+		{
+			name:     "worker busy with task",
+			err:      &WorkerBusyError{WorkerID: "w_1", TaskID: "APP-1-T0001"},
+			sentinel: ErrWorkerBusy,
+			want:     `worker "w_1" is busy with task "APP-1-T0001"`,
+		},
+		{
+			name:     "worker busy with reason",
+			err:      &WorkerBusyError{WorkerID: "w_1", Reason: "the card is already bound to another worker"},
+			sentinel: ErrWorkerBusy,
+			want:     `worker "w_1" is busy: the card is already bound to another worker`,
+		},
+		{
+			name:     "worker busy without detail",
+			err:      &WorkerBusyError{WorkerID: "w_1"},
+			sentinel: ErrWorkerBusy,
+			want:     `worker "w_1" is busy`,
+		},
 	}
 
 	for _, tc := range cases {
@@ -95,6 +119,7 @@ func TestTypedErrorsUnwrapToSentinels(t *testing.T) {
 			for _, other := range []error{
 				ErrInvalidArgument, ErrNotFound, ErrConflict, ErrInvalidState,
 				ErrInvalidVersion, ErrTooLarge, ErrLeaseLost, ErrMaterialRequired,
+				ErrWorkerUnknown, ErrWorkerBusy,
 			} {
 				if other == tc.sentinel {
 					continue

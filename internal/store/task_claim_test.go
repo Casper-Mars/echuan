@@ -373,3 +373,93 @@ func TestReclaimExpiredIsSingleShot(t *testing.T) {
 		t.Fatalf("second ReclaimExpired: %v", err)
 	}
 }
+
+// TestClaimNextTaskIgnoresProductScope covers the worker heartbeat entry point:
+// the same statement and order as ClaimTask, but with a constant-true scope
+// predicate instead of one product.
+func TestClaimNextTaskIgnoresProductScope(t *testing.T) {
+	st := openTestStore(t, 1)
+	ctx := context.Background()
+	seedProjectRow(t, st) // product APP / project APP-1, deliberately empty
+
+	if _, err := st.Write().ExecContext(ctx, `
+		INSERT INTO products (product_id, name, git_url, create_time, update_time)
+		VALUES ('WEB', 'WEB 产品', 'git@example.com:WEB.git', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert second product: %v", err)
+	}
+	res, err := st.Write().ExecContext(ctx, `
+		INSERT INTO projects (project_id, product_id, seq_no, title, status, version, create_time, update_time)
+		VALUES ('WEB-1', 2, 1, '项目', 2, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	if err != nil {
+		t.Fatalf("insert second project: %v", err)
+	}
+	secondProject, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("second project id: %v", err)
+	}
+	insertSeededTasks(t, st, secondProject, []taskSeed{
+		{taskID: "WEB-1-T0001", seq: 1, status: 1},
+	})
+
+	// A product-scoped claim of the empty product finds nothing.
+	if err := st.Tx(ctx, func(tx *sql.Tx) error {
+		_, ok, err := ClaimTask(ctx, tx, ClaimRequest{
+			ProductID: 1, LeaseID: "l_scoped", LeaseUntil: leaseFuture,
+			Actor: "worker", UpdateTime: leaseTestTime,
+		})
+		if err != nil {
+			return err
+		}
+		if ok {
+			t.Error("ClaimTask(product 1) claimed a card of another product")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("scoped claim: %v", err)
+	}
+
+	var claimed Task
+	var ok bool
+	if err := st.Tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		claimed, ok, err = ClaimNextTask(ctx, tx, ClaimNextRequest{
+			LeaseID: "l_next", LeaseUntil: leaseFuture,
+			Actor: "worker", UpdateTime: leaseTestTime,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("ClaimNextTask: %v", err)
+	}
+	if !ok {
+		t.Fatal("ClaimNextTask found no work, want WEB-1-T0001")
+	}
+	if claimed.TaskID != "WEB-1-T0001" || claimed.ProjectCode != "WEB-1" {
+		t.Errorf("claimed = %s/%s, want WEB-1-T0001/WEB-1", claimed.TaskID, claimed.ProjectCode)
+	}
+	if claimed.Status != 2 || claimed.AttemptCount != 1 {
+		t.Errorf("status/attempt = %d/%d, want 2/1", claimed.Status, claimed.AttemptCount)
+	}
+	if claimed.LeaseID == nil || *claimed.LeaseID != "l_next" {
+		t.Errorf("lease_id = %v, want l_next", claimed.LeaseID)
+	}
+	if claimed.LastActor == nil || *claimed.LastActor != "worker" {
+		t.Errorf("last_actor = %v, want worker", claimed.LastActor)
+	}
+
+	// The queue is empty now: ok is false, not an error.
+	if err := st.Tx(ctx, func(tx *sql.Tx) error {
+		_, ok, err := ClaimNextTask(ctx, tx, ClaimNextRequest{
+			LeaseID: "l_more", LeaseUntil: leaseFuture,
+			Actor: "worker", UpdateTime: leaseTestTime,
+		})
+		if err != nil {
+			return err
+		}
+		if ok {
+			t.Error("ClaimNextTask found work in an empty queue")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("second ClaimNextTask: %v", err)
+	}
+}

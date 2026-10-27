@@ -278,10 +278,23 @@ func (s *ClaimService) Heartbeat(ctx context.Context, taskID, leaseID string) (L
 	return renewal, nil
 }
 
-// executionContext loads the project and its spec to build the claim response.
+// executionContext builds the claim response for one freshly leased task.
+//
 // It runs inside the claim transaction, so the returned spec is the version the
 // project pointed at when the card was leased.
 func (s *ClaimService) executionContext(ctx context.Context, tx *sql.Tx, task store.Task, product store.Product) (*ClaimResult, error) {
+	return buildClaimResult(ctx, tx, task, product,
+		s.leaseTTL, s.clock.Now().UTC(), s.workspaceDir)
+}
+
+// buildClaimResult assembles the task/lease/context triple of a claim.
+//
+// It is package-level rather than a ClaimService method because the worker
+// heartbeat dispatches cards too (tech design v0.6 §4.3) and must return
+// exactly the same payload as a pull-mode claim: one definition, two callers.
+// The lease deadline is read from the task row written by the claim statement;
+// now and ttl are only the fallback when the row carries no deadline.
+func buildClaimResult(ctx context.Context, tx *sql.Tx, task store.Task, product store.Product, ttl time.Duration, now time.Time, workspaceDir string) (*ClaimResult, error) {
 	project, err := store.GetProjectByProjectID(ctx, tx, task.ProjectCode)
 	if err != nil {
 		return nil, err
@@ -301,7 +314,7 @@ func (s *ClaimService) executionContext(ctx context.Context, tx *sql.Tx, task st
 	if task.LeaseID != nil {
 		leaseID = *task.LeaseID
 	}
-	until := s.clock.Now().UTC().Add(s.leaseTTL)
+	until := now.Add(ttl)
 	if task.LeaseUntil != nil {
 		parsed, err := parseTimestamp(*task.LeaseUntil)
 		if err != nil {
@@ -319,7 +332,7 @@ func (s *ClaimService) executionContext(ctx context.Context, tx *sql.Tx, task st
 			Attempt:   task.AttemptCount,
 			Priority:  task.Priority,
 		},
-		Lease: ClaimLease{LeaseID: leaseID, Until: until, TTL: s.leaseTTL},
+		Lease: ClaimLease{LeaseID: leaseID, Until: until, TTL: ttl},
 		Context: ClaimContext{
 			SpecVersion: specVersion,
 			SpecDigest:  specDigest,
@@ -328,15 +341,15 @@ func (s *ClaimService) executionContext(ctx context.Context, tx *sql.Tx, task st
 				Name:   product.Name,
 				GitURL: product.GitURL,
 			},
-			Workdir: s.workdir(task.ProjectCode),
+			Workdir: workdir(workspaceDir, task.ProjectCode),
 		},
 	}, nil
 }
 
 // workdir renders <workspace_dir>/<project_id>. The directory is not created:
 // the worker owns its workspace layout.
-func (s *ClaimService) workdir(projectID string) string {
-	return filepath.Join(s.workspaceDir, projectID)
+func workdir(workspaceDir, projectID string) string {
+	return filepath.Join(workspaceDir, projectID)
 }
 
 // lostLeaseError names the condition that made a heartbeat fail, from the

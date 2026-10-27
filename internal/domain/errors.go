@@ -37,6 +37,16 @@ var (
 	// (tech design §4.6 / §4.7: 422 material_required). It is the project's
 	// first 422: the request is syntactically valid but carries no artifact.
 	ErrMaterialRequired = errors.New("material required")
+	// ErrWorkerUnknown reports a heartbeat that named a worker id the registry
+	// does not know (tech design v0.6 §4.1: 404 worker_unknown). A worker id is
+	// only ever minted by a first registration, so an unknown id means the row
+	// was pruned or the client is holding a stale id.
+	ErrWorkerUnknown = errors.New("worker unknown")
+	// ErrWorkerBusy reports a dispatch that would give one worker a second card
+	// or one card a second worker (tech design v0.6 §4.3: 409 worker_busy). The
+	// database constraints behind it (ux_workers_current_task and the explicit
+	// pre-check in store.BindTask) are the authority, not a read-then-write.
+	ErrWorkerBusy = errors.New("worker busy")
 )
 
 // FieldError is one field-level validation failure. It is rendered as an item
@@ -182,3 +192,42 @@ func (e *MaterialRequiredError) Error() string {
 // Unwrap reports ErrMaterialRequired so errors.Is works for callers that only
 // care about the class of failure.
 func (e *MaterialRequiredError) Unwrap() error { return ErrMaterialRequired }
+
+// WorkerUnknownError names the worker id the registry could not find.
+type WorkerUnknownError struct {
+	WorkerID string
+}
+
+// Error implements error.
+func (e *WorkerUnknownError) Error() string {
+	return fmt.Sprintf("worker %q is unknown", e.WorkerID)
+}
+
+// Unwrap reports ErrWorkerUnknown so errors.Is works for callers that only care
+// about the class of failure.
+func (e *WorkerUnknownError) Unwrap() error { return ErrWorkerUnknown }
+
+// WorkerBusyError reports a dispatch that could not be bound: the worker is
+// already holding another card, or the chosen card is already owned by another
+// worker. TaskID may be empty when only the worker side is known.
+type WorkerBusyError struct {
+	WorkerID string
+	TaskID   string
+	Reason   string
+}
+
+// Error implements error.
+func (e *WorkerBusyError) Error() string {
+	switch {
+	case e.Reason != "":
+		return fmt.Sprintf("worker %q is busy: %s", e.WorkerID, e.Reason)
+	case e.TaskID != "":
+		return fmt.Sprintf("worker %q is busy with task %q", e.WorkerID, e.TaskID)
+	default:
+		return fmt.Sprintf("worker %q is busy", e.WorkerID)
+	}
+}
+
+// Unwrap reports ErrWorkerBusy so errors.Is works for callers that only care
+// about the class of failure.
+func (e *WorkerBusyError) Unwrap() error { return ErrWorkerBusy }
