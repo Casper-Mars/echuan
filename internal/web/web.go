@@ -29,9 +29,33 @@ func mustSub(fsys fs.FS, dir string) fs.FS {
 	return sub
 }
 
+// isStaticRequest reports whether a path that does not exist in the embedded
+// bundle should be treated as a request for a static file rather than as a
+// client-side route.
+//
+// Two rules, both meaning "the browser asked for a file":
+//   - the path lives in the assets/ directory (build artifacts), or
+//   - the final path segment contains a ".", i.e. it carries a file extension.
+//
+// The SPA never routes to such paths, so a miss must surface as 404. Answering
+// with index.html would return 200 text/html for a missing script or
+// stylesheet (for example /assets/index-<oldhash>.js after a redeploy), which
+// misleads browsers and troubleshooting tools and hides the real failure.
+func isStaticRequest(name string) bool {
+	if name == "assets" || strings.HasPrefix(name, "assets/") {
+		return true
+	}
+	last := name
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		last = name[i+1:]
+	}
+	return strings.Contains(last, ".")
+}
+
 // Handler returns a handler serving the embedded frontend. Existing files are
-// served as-is; any other path falls back to index.html so that client-side
-// (hash) routing keeps working. API paths are left to the API router.
+// served as-is; extension-less paths outside assets/ fall back to index.html so
+// that client-side (hash) routing keeps working. Missing static files are
+// answered with 404 and API paths are left to the API router.
 func Handler() http.Handler {
 	files := http.FileServer(http.FS(assets))
 
@@ -53,8 +77,21 @@ func Handler() http.Handler {
 		if name == "" {
 			name = "index.html"
 		}
-		if info, err := fs.Stat(assets, name); err == nil && !info.IsDir() {
+		info, statErr := fs.Stat(assets, name)
+		if statErr == nil && info.IsDir() {
+			// Directories in the bundle have no listing of their own; never
+			// answer them with the SPA.
+			http.NotFound(w, r)
+			return
+		}
+		if statErr == nil {
 			files.ServeHTTP(w, r)
+			return
+		}
+
+		// Missing path: only client-side routes get the SPA fallback.
+		if isStaticRequest(name) {
+			http.NotFound(w, r)
 			return
 		}
 
