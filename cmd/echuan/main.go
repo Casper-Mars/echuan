@@ -104,6 +104,18 @@ func run() error {
 	// Pull mode: workers claim a card, hold a lease and renew it. The reclaimer
 	// returns expired leases to the queue even when nobody is claiming.
 	claims := app.NewClaimService(st, logger, cfg.LeaseTTL, cfg.WorkspaceDir)
+
+	// The worker registry and worker-side dispatch. Every option is passed
+	// explicitly: a zero value silently falls back to the service default, so
+	// forgetting one would make the service disagree with the configuration
+	// (worker_ttl, heartbeat_interval, worker_metadata_max_bytes).
+	workers := app.NewWorkerService(st, logger, app.WorkerServiceOptions{
+		LeaseTTL:          cfg.LeaseTTL,
+		WorkerTTL:         cfg.WorkerTTL,
+		HeartbeatInterval: cfg.HeartbeatInterval,
+		MetadataMaxBytes:  cfg.WorkerMetadataMaxBytes,
+		WorkspaceDir:      cfg.WorkspaceDir,
+	})
 	reclaimer := app.NewReclaimer(st, logger, app.DefaultReclaimInterval)
 	application.SetReclaimer(reclaimer)
 
@@ -117,7 +129,7 @@ func run() error {
 	go reclaimer.Run(reclaimCtx)
 
 	handler := api.Chain(
-		api.NewRouter(logger, web.Handler(), checks, products, projects, tasks, claims, materialService, inboxService),
+		api.NewRouter(logger, web.Handler(), checks, products, projects, tasks, claims, workers, materialService, inboxService),
 		api.Recover(logger),
 		api.RequestID(),
 		api.UnifiedErrors(),

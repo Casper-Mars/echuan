@@ -206,7 +206,7 @@ func TestHandlerRejectsNonReadMethods(t *testing.T) {
 // missing static assets 404 instead of falling back.
 func TestRouterWithSPAFallback(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := api.NewRouter(logger, Handler(), nil, nil, nil, nil, nil, nil, nil)
+	h := api.NewRouter(logger, Handler(), nil, nil, nil, nil, nil, nil, nil, nil)
 
 	cases := []struct {
 		path     string

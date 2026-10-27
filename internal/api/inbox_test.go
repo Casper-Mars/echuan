@@ -50,7 +50,7 @@ func newInboxHTTPEnv(t *testing.T, staleHours int, now time.Time) (http.Handler,
 	inboxService.SetClock(clock)
 
 	h := Chain(
-		NewRouter(logger, nil, nil, nil, nil, nil, nil, nil, inboxService),
+		NewRouter(logger, nil, nil, nil, nil, nil, nil, nil, nil, inboxService),
 		Recover(logger),
 		RequestID(),
 		AccessLog(logger),

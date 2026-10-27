@@ -71,6 +71,9 @@ var routeSpecs = []routeSpec{
 	{http.MethodPost, "/v1/tasks/claim", "claims"},
 	{http.MethodPost, "/v1/tasks/heartbeat", "claims"},
 
+	{http.MethodPost, "/v1/workers/heartbeat", "workers"},
+	{http.MethodGet, "/v1/workers", "workers"},
+
 	{http.MethodGet, "/v1/materials", "materials"},
 	{http.MethodGet, "/v1/inbox", "inbox"},
 }
@@ -113,6 +116,8 @@ func Routes() []Route {
 //	POST /v1/tasks/heartbeat         renew the lease of one task (?id=)
 //	POST /v1/tasks/report            submit a report and complete the task (?id=)
 //	POST /v1/tasks/decide            accept/rework/retry/abandon a task (?id=, If-Match)
+//	POST /v1/workers/heartbeat       register a worker, refresh it and dispatch work
+//	GET /v1/workers                  list workers (or fetch one with ?id=)
 //	GET /v1/materials                download a material object (?id=)
 //	GET /v1/projects/materials       version chain of one kind (?id=&kind=)
 //	GET /v1/inbox                    pending reviews and task decisions
@@ -123,7 +128,7 @@ func Routes() []Route {
 //
 // The returned handler is meant to be wrapped by Chain with the standard
 // middleware stack.
-func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, tasks *app.TaskService, claims *app.ClaimService, materials *app.MaterialService, inbox *app.InboxService) http.Handler {
+func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, tasks *app.TaskService, claims *app.ClaimService, workers *app.WorkerService, materials *app.MaterialService, inbox *app.InboxService) http.Handler {
 	h := NewHandler(logger, checks)
 
 	// Handlers are collected per method+path; routeSpecs decides which of them
@@ -173,6 +178,12 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		claimsHandler := newClaimHandler(claims, logger)
 		handlers["POST /v1/tasks/claim"] = claimsHandler.claim
 		handlers["POST /v1/tasks/heartbeat"] = claimsHandler.heartbeat
+	}
+	if workers != nil {
+		enabled["workers"] = true
+		workersHandler := newWorkersHandler(workers, logger)
+		handlers["POST /v1/workers/heartbeat"] = workersHandler.heartbeat
+		handlers["GET /v1/workers"] = workersHandler.listOrGetWorker
 	}
 	if materials != nil {
 		enabled["materials"] = true

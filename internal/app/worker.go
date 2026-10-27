@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -39,6 +40,10 @@ const CommandRunTask = "run_task"
 // built without an explicit configuration still reports presence sensibly.
 const defaultWorkerTTL = 45 * time.Second
 
+// defaultWorkerHeartbeatInterval mirrors
+// platform.DefaultConfig().HeartbeatInterval.
+const defaultWorkerHeartbeatInterval = 15 * time.Second
+
 // defaultWorkerMetadataMaxBytes mirrors
 // platform.DefaultConfig().WorkerMetadataMaxBytes.
 const defaultWorkerMetadataMaxBytes = 8192
@@ -53,6 +58,9 @@ type WorkerServiceOptions struct {
 	LeaseTTL time.Duration
 	// WorkerTTL is how long a worker stays "active" after its last heartbeat.
 	WorkerTTL time.Duration
+	// HeartbeatInterval is the cadence workers are told to heartbeat at. It is
+	// reported back on every heartbeat so a worker never has to hard-code it.
+	HeartbeatInterval time.Duration
 	// MetadataMaxBytes caps the free-form metadata document.
 	MetadataMaxBytes int64
 	// WorkspaceDir is the root of the per-project workdirs reported back.
@@ -64,13 +72,14 @@ type WorkerServiceOptions struct {
 // It deliberately does not own HTTP concerns (Task-05 maps the results) and it
 // does not touch the pull-mode claim endpoint (Task-06).
 type WorkerService struct {
-	store            *store.Store
-	logger           *slog.Logger
-	clock            platform.Clock
-	leaseTTL         time.Duration
-	workerTTL        time.Duration
-	metadataMaxBytes int64
-	workspaceDir     string
+	store             *store.Store
+	logger            *slog.Logger
+	clock             platform.Clock
+	leaseTTL          time.Duration
+	workerTTL         time.Duration
+	heartbeatInterval time.Duration
+	metadataMaxBytes  int64
+	workspaceDir      string
 }
 
 // NewWorkerService builds the worker service on top of an open store.
@@ -84,17 +93,21 @@ func NewWorkerService(st *store.Store, logger *slog.Logger, opts WorkerServiceOp
 	if opts.WorkerTTL <= 0 {
 		opts.WorkerTTL = defaultWorkerTTL
 	}
+	if opts.HeartbeatInterval <= 0 {
+		opts.HeartbeatInterval = defaultWorkerHeartbeatInterval
+	}
 	if opts.MetadataMaxBytes <= 0 {
 		opts.MetadataMaxBytes = defaultWorkerMetadataMaxBytes
 	}
 	return &WorkerService{
-		store:            st,
-		logger:           logger,
-		clock:            platform.RealClock{},
-		leaseTTL:         opts.LeaseTTL,
-		workerTTL:        opts.WorkerTTL,
-		metadataMaxBytes: opts.MetadataMaxBytes,
-		workspaceDir:     opts.WorkspaceDir,
+		store:             st,
+		logger:            logger,
+		clock:             platform.RealClock{},
+		leaseTTL:          opts.LeaseTTL,
+		workerTTL:         opts.WorkerTTL,
+		heartbeatInterval: opts.HeartbeatInterval,
+		metadataMaxBytes:  opts.MetadataMaxBytes,
+		workspaceDir:      opts.WorkspaceDir,
 	}
 }
 
@@ -111,6 +124,9 @@ func (s *WorkerService) LeaseTTL() time.Duration { return s.leaseTTL }
 
 // WorkerTTL returns the configured presence window.
 func (s *WorkerService) WorkerTTL() time.Duration { return s.workerTTL }
+
+// HeartbeatInterval returns the heartbeat cadence reported to workers.
+func (s *WorkerService) HeartbeatInterval() time.Duration { return s.heartbeatInterval }
 
 // HeartbeatInput is the body of POST /v1/workers/heartbeat (§4.1).
 //
@@ -514,4 +530,112 @@ func workerHoldsTask(worker store.Worker, task store.Task) bool {
 		task.LeaseID != nil &&
 		worker.CurrentLeaseID != nil &&
 		*task.LeaseID == *worker.CurrentLeaseID
+}
+
+// WorkerPage is one page of the worker registry. NextID is the physical id of
+// the last returned row and is zero on the last page; it is what the HTTP layer
+// turns into an opaque cursor.
+type WorkerPage struct {
+	Items  []WorkerSnapshot
+	NextID int64
+}
+
+// ListWorkers returns one page of the registry ordered by last_seen DESC.
+//
+// The ordering is the store's (keyset on last_seen, id); the API layer must not
+// re-sort. "Online first" is a presentation concern of the operator UI
+// (Task-10), so the page only reports the derived presence of each row.
+//
+// limit+1 rows are read to learn whether another page exists, exactly like
+// ListProducts. A worker whose pointer names a task that no longer exists is
+// reported with a nil CurrentTaskID: the maintenance sweep owns clearing the
+// column, and a dangling pointer must not make the listing fail.
+func (s *WorkerService) ListWorkers(ctx context.Context, afterID int64, limit int) (WorkerPage, error) {
+	if limit < 1 || limit > maxListLimit {
+		return WorkerPage{}, invalidField("limit", fmt.Sprintf("must be between 1 and %d", maxListLimit))
+	}
+	if afterID < 0 {
+		return WorkerPage{}, invalidField("cursor", "is invalid")
+	}
+
+	db := s.store.Read()
+	rows, err := store.ListWorkers(ctx, db, afterID, limit+1)
+	if err != nil {
+		return WorkerPage{}, err
+	}
+
+	now := s.clock.Now().UTC()
+	page := WorkerPage{Items: make([]WorkerSnapshot, 0, min(len(rows), limit))}
+	for i, row := range rows {
+		if i == limit {
+			page.NextID = rows[limit-1].ID
+			break
+		}
+		snapshot, err := s.snapshotFromRow(ctx, db, row, now)
+		if err != nil {
+			return WorkerPage{}, err
+		}
+		page.Items = append(page.Items, snapshot)
+	}
+	return page, nil
+}
+
+// GetWorker returns one worker by business id. A missing row is the domain
+// not_found error (404 at the HTTP layer), not worker_unknown: worker_unknown
+// is the heartbeat telling a worker its own id is stale.
+func (s *WorkerService) GetWorker(ctx context.Context, workerID string) (WorkerSnapshot, error) {
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return WorkerSnapshot{}, invalidField("id", "is required")
+	}
+	db := s.store.Read()
+	row, err := store.GetWorker(ctx, db, workerID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return WorkerSnapshot{}, &domain.NotFoundError{Resource: "worker", Key: workerID}
+		}
+		return WorkerSnapshot{}, err
+	}
+	return s.snapshotFromRow(ctx, db, row, s.clock.Now().UTC())
+}
+
+// snapshotFromRow renders one persisted row as the read model the API exposes.
+//
+// CurrentTaskID is resolved from the physical pointer to the business task id;
+// occupancy is decided by the pointer alone (a worker that declares idle while
+// still holding a card stays occupied, §4.1 step 5), never by State.
+func (s *WorkerService) snapshotFromRow(ctx context.Context, q store.Querier, row store.Worker, now time.Time) (WorkerSnapshot, error) {
+	firstSeen, err := parseTimestamp(row.FirstSeen)
+	if err != nil {
+		return WorkerSnapshot{}, err
+	}
+	lastSeen, err := parseTimestamp(row.LastSeen)
+	if err != nil {
+		return WorkerSnapshot{}, err
+	}
+
+	var currentTaskID *string
+	if row.CurrentTaskID != nil {
+		task, taskErr := store.GetTaskByID(ctx, q, *row.CurrentTaskID)
+		switch {
+		case taskErr == nil:
+			id := task.TaskID
+			currentTaskID = &id
+		case store.IsNotFound(taskErr):
+			// The pointer outlived its task. Report free capacity instead of a
+			// dangling id; the sweep clears the column.
+		default:
+			return WorkerSnapshot{}, taskErr
+		}
+	}
+
+	return WorkerSnapshot{
+		WorkerID:      row.WorkerID,
+		Metadata:      json.RawMessage(row.MetadataJSON),
+		State:         row.State,
+		Presence:      domain.Presence(lastSeen, now, s.workerTTL),
+		CurrentTaskID: currentTaskID,
+		FirstSeen:     firstSeen,
+		LastSeen:      lastSeen,
+	}, nil
 }

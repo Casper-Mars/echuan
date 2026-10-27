@@ -144,28 +144,44 @@ func (h *claimHandler) heartbeat(w http.ResponseWriter, r *http.Request) {
 // toClaimResponse maps the use-case result to the wire DTO.
 func toClaimResponse(result app.ClaimResult) claimResponse {
 	return claimResponse{
-		Task: claimedTaskResponse{
-			ID:        result.Task.ID,
-			ProjectID: result.Task.ProjectID,
-			Title:     result.Task.Title,
-			BodyMD:    result.Task.BodyMD,
-			Attempt:   result.Task.Attempt,
-			Priority:  result.Task.Priority,
+		Task:    toClaimedTaskResponse(result.Task),
+		Lease:   toClaimLeaseResponse(result.Lease),
+		Context: toClaimContextResponse(result.Context),
+	}
+}
+
+// The three mappers below are shared with the worker heartbeat response: a card
+// dispatched by a heartbeat carries exactly the same task/lease/context
+// payloads as one returned by the pull-mode claim, so there is only one place
+// that renders them.
+func toClaimedTaskResponse(task app.ClaimedTask) claimedTaskResponse {
+	return claimedTaskResponse{
+		ID:        task.ID,
+		ProjectID: task.ProjectID,
+		Title:     task.Title,
+		BodyMD:    task.BodyMD,
+		Attempt:   task.Attempt,
+		Priority:  task.Priority,
+	}
+}
+
+func toClaimLeaseResponse(lease app.ClaimLease) claimLeaseResponse {
+	return claimLeaseResponse{
+		LeaseID:    lease.LeaseID,
+		Until:      lease.Until.UTC().Format(time.RFC3339Nano),
+		TTLSeconds: int(lease.TTL / time.Second),
+	}
+}
+
+func toClaimContextResponse(context app.ClaimContext) claimContextResponse {
+	return claimContextResponse{
+		SpecVersion: context.SpecVersion,
+		SpecDigest:  context.SpecDigest,
+		Product: claimProductResponse{
+			ID:     context.Product.ID,
+			Name:   context.Product.Name,
+			GitURL: context.Product.GitURL,
 		},
-		Lease: claimLeaseResponse{
-			LeaseID:    result.Lease.LeaseID,
-			Until:      result.Lease.Until.UTC().Format(time.RFC3339Nano),
-			TTLSeconds: int(result.Lease.TTL / time.Second),
-		},
-		Context: claimContextResponse{
-			SpecVersion: result.Context.SpecVersion,
-			SpecDigest:  result.Context.SpecDigest,
-			Product: claimProductResponse{
-				ID:     result.Context.Product.ID,
-				Name:   result.Context.Product.Name,
-				GitURL: result.Context.Product.GitURL,
-			},
-			Workdir: result.Context.Workdir,
-		},
+		Workdir: context.Workdir,
 	}
 }

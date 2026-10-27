@@ -153,6 +153,8 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 	var tooLarge *domain.TooLargeError
 	var leaseLost *domain.LeaseLostError
 	var materialRequired *domain.MaterialRequiredError
+	var workerUnknown *domain.WorkerUnknownError
+	var workerBusy *domain.WorkerBusyError
 
 	switch {
 	case errors.As(err, &leaseLost):
@@ -160,6 +162,15 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 		// code is distinct so a worker knows to stop working on the card
 		// instead of retrying the heartbeat.
 		writeError(w, r, http.StatusConflict, "lease_lost", leaseLost.Error(), nil)
+	case errors.As(err, &workerUnknown):
+		// A heartbeat named a worker id the registry does not know: the client
+		// is holding a stale id and must register again. 409 rather than 404
+		// because the request conflicts with registry state, not with a URL.
+		writeError(w, r, http.StatusConflict, "worker_unknown", workerUnknown.Error(), nil)
+	case errors.As(err, &workerBusy):
+		// The worker already holds another card, or the chosen card is owned by
+		// another worker. The transaction rolled back, so nothing was bound.
+		writeError(w, r, http.StatusConflict, "worker_busy", workerBusy.Error(), nil)
 	case errors.As(err, &invalidVersion):
 		// A conditional write lost the race: the message carries the current
 		// version so the client can re-read and retry without a probe call.

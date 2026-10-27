@@ -87,6 +87,13 @@ func newEndpointEnv(t *testing.T) *endpointEnv {
 	tasks := app.NewTaskService(st)
 	tasks.SetMaterialWriter(writer)
 	claims := app.NewClaimService(st, logger, 90*time.Second, filepath.Join(dir, "workspaces"))
+	workers := app.NewWorkerService(st, logger, app.WorkerServiceOptions{
+		LeaseTTL:          90 * time.Second,
+		WorkerTTL:         45 * time.Second,
+		HeartbeatInterval: 15 * time.Second,
+		MetadataMaxBytes:  8 << 10,
+		WorkspaceDir:      filepath.Join(dir, "workspaces"),
+	})
 	materials := app.NewMaterialService(st, writer)
 	inbox := app.NewInboxService(st, logger, 72)
 
@@ -96,7 +103,7 @@ func newEndpointEnv(t *testing.T) *endpointEnv {
 	handler := api.Chain(
 		api.NewRouter(logger, web.Handler(),
 			[]api.HealthChecker{store.NewDBChecker(st), store.NewMigrationChecker(st)},
-			products, projects, tasks, claims, materials, inbox),
+			products, projects, tasks, claims, workers, materials, inbox),
 		api.Recover(logger),
 		api.RequestID(),
 		api.UnifiedErrors(),
@@ -320,8 +327,8 @@ func TestContractEndpoints(t *testing.T) {
 
 	// The operation set is pinned: adding or dropping one is a contract change.
 	operations := e.doc.Operations()
-	if len(operations) != 28 {
-		t.Fatalf("openapi operations = %d, want exactly 28", len(operations))
+	if len(operations) != 30 {
+		t.Fatalf("openapi operations = %d, want exactly 30", len(operations))
 	}
 
 	// ---- health & version -------------------------------------------------
@@ -346,7 +353,7 @@ func TestContractEndpoints(t *testing.T) {
 	// The 503 form keeps checks and gains request_id.
 	failingHandler := api.Chain(
 		api.NewRouter(platform.NewLogger("error", io.Discard), nil,
-			[]api.HealthChecker{failingChecker{}}, nil, nil, nil, nil, nil, nil),
+			[]api.HealthChecker{failingChecker{}}, nil, nil, nil, nil, nil, nil, nil),
 		api.Recover(platform.NewLogger("error", io.Discard)),
 		api.RequestID(),
 		api.UnifiedErrors(),
@@ -507,6 +514,29 @@ func TestContractEndpoints(t *testing.T) {
 
 	// All work done: the queue is empty and the project waits for acceptance.
 	e.call(http.MethodPost, "/v1/tasks/claim", map[string]any{"product": "APP"}, nil, http.StatusNoContent)
+
+	// ---- worker registry: heartbeat, list, detail -------------------------
+	// The queue is empty here, so a heartbeat exercises the "no work" shape:
+	// commands must be [] and the worker must come back idle.
+	raw, _ = e.call(http.MethodPost, "/v1/workers/heartbeat", map[string]any{}, nil, http.StatusOK)
+	workerBody := object(t, raw)
+	worker := objectField(t, workerBody, "worker")
+	workerID := stringField(t, worker, "worker_id")
+	if !strings.HasPrefix(workerID, "w_") {
+		t.Errorf("worker_id = %q, want a w_ id", workerID)
+	}
+	if presence := stringField(t, worker, "presence"); presence != "active" {
+		t.Errorf("worker presence = %q, want active", presence)
+	}
+	if commands := arrayField(t, workerBody, "commands"); len(commands) != 0 {
+		t.Errorf("heartbeat commands = %d, want 0 with an empty queue", len(commands))
+	}
+	e.call(http.MethodGet, "/v1/workers", nil, nil, http.StatusOK)
+	e.call(http.MethodGet, "/v1/workers?id="+workerID, nil, nil, http.StatusOK)
+	// An id the registry never minted is worker_unknown, not not_found: the
+	// worker must register again instead of retrying the heartbeat.
+	e.call(http.MethodPost, "/v1/workers/heartbeat",
+		map[string]any{"worker_id": "w_00000000000000ff"}, nil, http.StatusConflict)
 
 	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
 	mainDetail := object(t, raw)
@@ -681,7 +711,7 @@ func TestContractEndpoints(t *testing.T) {
 			t.Errorf("observed code %q (%d times) is not in Error.code enum", code, count)
 		}
 	}
-	for _, code := range []string{"invalid_argument", "not_found", "invalid_state", "invalid_version", "conflict", "lease_lost", "material_required", "too_large", "method_not_allowed", "range_not_satisfiable"} {
+	for _, code := range []string{"invalid_argument", "not_found", "invalid_state", "invalid_version", "conflict", "lease_lost", "material_required", "too_large", "method_not_allowed", "range_not_satisfiable", "worker_unknown"} {
 		if e.codes[code] == 0 {
 			t.Errorf("error code %q was never exercised", code)
 		}
@@ -737,8 +767,8 @@ func TestRoutesMatchOpenAPI(t *testing.T) {
 	for _, route := range api.Routes() {
 		got[route.Method+" "+route.Path] = true
 	}
-	if len(want) != 28 {
-		t.Fatalf("openapi operations = %d, want 28", len(want))
+	if len(want) != 30 {
+		t.Fatalf("openapi operations = %d, want 30", len(want))
 	}
 	for key := range want {
 		if !got[key] {

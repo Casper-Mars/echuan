@@ -22,6 +22,8 @@ tags:
     description: 物料下载与版本链
   - name: inbox
     description: 待评审收件箱
+  - name: workers
+    description: Worker 注册、心跳与在线查询
 paths:
   /healthz:
     get:
@@ -785,6 +787,75 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+  /v1/workers/heartbeat:
+    post:
+      operationId: heartbeatWorker
+      summary: Worker 注册与心跳（空闲时携带派单命令）
+      tags: [workers]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerHeartbeatRequest"
+      responses:
+        "200":
+          description: 心跳成功；commands 为空数组表示暂无任务
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerHeartbeatResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+  /v1/workers:
+    get:
+      operationId: listWorkers
+      summary: 列出 Worker，或按 ?id= 取详情
+      tags: [workers]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - name: id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 详情（?id=）或分页列表（last_seen 倒序）
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Worker"
+                  - $ref: "#/components/schemas/WorkerList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /v1/materials:
     get:
       operationId: downloadMaterial
@@ -1015,6 +1086,8 @@ components:
             - method_not_allowed
             - timeout
             - range_not_satisfiable
+            - worker_unknown
+            - worker_busy
         message:
           type: string
         details:
@@ -1623,6 +1696,89 @@ components:
           format: date-time
         ttl_seconds:
           type: integer
+    Worker:
+      type: object
+      additionalProperties: false
+      required: [worker_id, presence, state, current_task_id, metadata, first_seen, last_seen, heartbeat_interval_ms, lease_ttl_seconds]
+      properties:
+        worker_id:
+          type: string
+        presence:
+          type: string
+          enum: [active, offline]
+        state:
+          type: string
+          enum: [idle, busy]
+        current_task_id:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+        first_seen:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+        heartbeat_interval_ms:
+          type: integer
+        lease_ttl_seconds:
+          type: integer
+    WorkerHeartbeatRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        worker_id:
+          type: string
+        state:
+          type: string
+          enum: [idle, busy]
+        metadata:
+          type: object
+          additionalProperties: true
+    WorkerCommand:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [run_task]
+        task:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/ClaimedTask"
+        lease:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/ClaimLease"
+        context:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/ClaimContext"
+    WorkerHeartbeatResponse:
+      type: object
+      additionalProperties: false
+      required: [worker, commands]
+      properties:
+        worker:
+          $ref: "#/components/schemas/Worker"
+        commands:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkerCommand"
+    WorkerList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Worker"
+        next_cursor:
+          type: string
     ReportRequest:
       type: object
       additionalProperties: false
