@@ -48,6 +48,7 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 //	POST /v1/tasks/decide            accept/rework/retry/abandon a task (?id=, If-Match)
 //	GET /v1/materials                download a material object (?id=)
 //	GET /v1/projects/materials       version chain of one kind (?id=&kind=)
+//	GET /v1/inbox                    pending reviews and task decisions
 //	/                                fallback handler (embedded frontend), when provided
 //
 // Resource routes are only registered when their service is non-nil, which
@@ -55,7 +56,7 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 //
 // The returned handler is meant to be wrapped by Chain with the standard
 // middleware stack.
-func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, tasks *app.TaskService, claims *app.ClaimService, materials *app.MaterialService) http.Handler {
+func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, tasks *app.TaskService, claims *app.ClaimService, materials *app.MaterialService, inbox *app.InboxService) http.Handler {
 	h := NewHandler(logger, checks)
 
 	mux := http.NewServeMux()
@@ -104,6 +105,14 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		mux.HandleFunc("/v1/materials", materialHandler.methodNotAllowed)
 		mux.HandleFunc("GET /v1/projects/materials", materialHandler.chain)
 		mux.HandleFunc("/v1/projects/materials", materialHandler.methodNotAllowed)
+	}
+	// The inbox is the single human entry point: which reviews and task
+	// decisions are waiting right now. It is registered last so the more
+	// specific /v1 paths above keep precedence.
+	if inbox != nil {
+		inboxHandler := newInboxHandler(inbox, logger)
+		mux.HandleFunc("GET /v1/inbox", inboxHandler.list)
+		mux.HandleFunc("/v1/inbox", inboxHandler.methodNotAllowed)
 	}
 	if fallback != nil {
 		mux.Handle("/", fallback)

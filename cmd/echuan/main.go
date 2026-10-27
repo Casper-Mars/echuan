@@ -107,12 +107,17 @@ func run() error {
 	reclaimer := app.NewReclaimer(st, logger, app.DefaultReclaimInterval)
 	application.SetReclaimer(reclaimer)
 
+	// The inbox is the single human entry point: it re-reads pending reviews
+	// and task decisions on every request, with the stale threshold coming
+	// from configuration (review_stale_hours, default 72).
+	inboxService := app.NewInboxService(st, logger, cfg.ReviewStaleHours)
+
 	reclaimCtx, stopReclaim := context.WithCancel(context.Background())
 	defer stopReclaim()
 	go reclaimer.Run(reclaimCtx)
 
 	handler := api.Chain(
-		api.NewRouter(logger, web.Handler(), checks, products, projects, tasks, claims, materialService),
+		api.NewRouter(logger, web.Handler(), checks, products, projects, tasks, claims, materialService, inboxService),
 		api.Recover(logger),
 		api.RequestID(),
 		api.AccessLog(logger),

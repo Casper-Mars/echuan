@@ -59,6 +59,7 @@ func readyzServer(st *store.Store) http.Handler {
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 }
 
