@@ -123,9 +123,9 @@ func (s *TaskService) ReportTask(ctx context.Context, in ReportInput) (TaskDetai
 			return materialWriteError("summary_md", err)
 		}
 
+		updateTime := formatTimestamp(s.nextTimestamp(row.UpdateTime))
 		affected, err := store.CompleteTaskReport(ctx, tx, row.ID, written.Material.ID,
-			leaseID, formatLeaseTime(now), actor,
-			formatTimestamp(s.nextTimestamp(row.UpdateTime)))
+			leaseID, formatLeaseTime(now), actor, updateTime)
 		if err != nil {
 			return err
 		}
@@ -133,6 +133,14 @@ func (s *TaskService) ReportTask(ctx context.Context, in ReportInput) (TaskDetai
 			// Defensive: the single-writer pool serialises the read and the
 			// write, but a zero row count still means "you lost the lease".
 			return &domain.LeaseLostError{TaskID: row.TaskID, Reason: "lease is no longer valid"}
+		}
+
+		// The card left in_progress, so the worker no longer holds it: clear the
+		// registry pointer in the same transaction and with the same timestamp
+		// as the completion. A worker that reported is immediately free for the
+		// next heartbeat, instead of waiting for the 30s maintenance sweep.
+		if _, err := store.ClearTaskByTaskID(ctx, tx, row.ID, updateTime); err != nil {
+			return err
 		}
 
 		out, err = s.detail(ctx, tx, row.ID)

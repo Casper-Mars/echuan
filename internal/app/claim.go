@@ -24,6 +24,10 @@ const DefaultReclaimInterval = 30 * time.Second
 // forgets to pass the configuration still produces usable leases.
 const defaultLeaseTTL = 90 * time.Second
 
+// defaultWorkerRetention mirrors platform.DefaultConfig().WorkerRetention so a
+// reclaimer built without configuration still keeps the documented 7 days.
+const defaultWorkerRetention = 168 * time.Hour
+
 // leaseTimeLayout is the fixed-width UTC layout of tasks.lease_until.
 //
 // Fixed width is load-bearing: claim, heartbeat and reclaim compare the column
@@ -42,6 +46,10 @@ type ClaimInput struct {
 	Product string
 	TaskID  string
 	Actor   string
+	// WorkerID binds the claimed card to a registered worker (tech design v0.6
+	// §4.2). Empty keeps the pre-worker behaviour: the card is leased but no
+	// registry pointer is written.
+	WorkerID string
 }
 
 // ClaimedTask is the task part of a claim response.
@@ -145,6 +153,11 @@ func (s *ClaimService) LeaseTTL() time.Duration { return s.leaseTTL }
 // leases are returned to the queue first, then the next claimable card is
 // taken. A nil result means "no claimable work" — the HTTP layer answers 204.
 //
+// When WorkerID is set the same transaction also validates the worker (unknown
+// → worker_unknown, pointer set → worker_busy) and binds the card through the
+// registry pointer. An empty WorkerID keeps the pre-worker behaviour: the card
+// is leased but no registry row is touched.
+//
 // Running the reclaim here, instead of waiting for the 30s sweep, is what makes
 // a card abandoned a moment ago immediately available again.
 func (s *ClaimService) Claim(ctx context.Context, in ClaimInput) (*ClaimResult, error) {
@@ -153,9 +166,12 @@ func (s *ClaimService) Claim(ctx context.Context, in ClaimInput) (*ClaimResult, 
 		return nil, invalidField("product", "is required")
 	}
 	taskID := strings.TrimSpace(in.TaskID)
+	workerID := strings.TrimSpace(in.WorkerID)
 	actor := actorOrDefault(in.Actor)
 
 	now := s.clock.Now().UTC()
+	updateTime := formatTimestamp(now)
+	leaseID := platform.NewLeaseID()
 
 	var (
 		reclaimed []store.ReclaimedTask
@@ -170,24 +186,64 @@ func (s *ClaimService) Claim(ctx context.Context, in ClaimInput) (*ClaimResult, 
 			return err
 		}
 
+		// The lazy reclaim also releases the pointer of every worker whose
+		// lease just expired (see reclaimExpired), so a worker asking again
+		// after its own lease died is free by the time it is checked below.
 		reclaimed, err = reclaimExpired(ctx, tx, now)
 		if err != nil {
 			return err
 		}
 
+		// A named worker must exist and hold no card. Occupancy is decided by
+		// the pointer alone: a worker that declared idle while still bound is
+		// still busy (tech design v0.6 §4.1 step 5).
+		if workerID != "" {
+			worker, err := store.GetWorker(ctx, tx, workerID)
+			if err != nil {
+				if store.IsNotFound(err) {
+					return &domain.WorkerUnknownError{WorkerID: workerID}
+				}
+				return err
+			}
+			if worker.CurrentTaskID != nil {
+				return &domain.WorkerBusyError{
+					WorkerID: workerID,
+					Reason:   "already holds a task",
+				}
+			}
+		}
+
 		task, claimed, err := store.ClaimTask(ctx, tx, store.ClaimRequest{
 			ProductID:  product.ID,
 			TaskID:     taskID,
-			LeaseID:    platform.NewLeaseID(),
+			LeaseID:    leaseID,
 			LeaseUntil: formatLeaseTime(now.Add(s.leaseTTL)),
 			Actor:      actor,
-			UpdateTime: formatTimestamp(now),
+			UpdateTime: updateTime,
 		})
 		if err != nil {
 			return err
 		}
 		if !claimed {
+			// No work: the worker pointer is deliberately left untouched.
 			return nil
+		}
+
+		if workerID != "" {
+			// BindTask re-checks both directions under the same write lock:
+			// this worker is still free and no other worker owns the card. The
+			// partial UNIQUE index on current_task_id is the authority when a
+			// stale pointer made a ready-looking card already owned.
+			if err := store.BindTask(ctx, tx, workerID, task.ID, leaseID, updateTime); err != nil {
+				if errors.Is(err, store.ErrUniqueViolation) {
+					return &domain.WorkerBusyError{
+						WorkerID: workerID,
+						TaskID:   task.TaskID,
+						Reason:   "the card is already bound to another worker",
+					}
+				}
+				return err
+			}
 		}
 
 		result, err = s.executionContext(ctx, tx, task, product)
@@ -212,6 +268,7 @@ func (s *ClaimService) Claim(ctx context.Context, in ClaimInput) (*ClaimResult, 
 		"lease_id", result.Lease.LeaseID,
 		"lease_until", result.Lease.Until.Format(time.RFC3339Nano),
 		"ttl_seconds", int(result.Lease.TTL/time.Second),
+		"worker_id", workerID,
 	)
 	return result, nil
 }
@@ -376,8 +433,24 @@ func lostLeaseError(row store.Task, leaseID string, now time.Time) error {
 // reclaimExpired runs one reclaim sweep inside tx. now is rendered in both the
 // lease layout (for the deadline comparison) and the regular timestamp layout
 // (for update_time).
+//
+// Releasing the worker pointer belongs to the reclaim itself: the lease no
+// longer represents live work, so leaving the pointer would keep that worker
+// "busy" with a card that is already back in the queue. Keeping the two writes
+// together is what makes claim, heartbeat dispatch and the background reclaimer
+// converge on one implementation instead of three drifting copies.
 func reclaimExpired(ctx context.Context, tx *sql.Tx, now time.Time) ([]store.ReclaimedTask, error) {
-	return store.ReclaimExpired(ctx, tx, formatLeaseTime(now), formatTimestamp(now))
+	updateTime := formatTimestamp(now)
+	reclaimed, err := store.ReclaimExpired(ctx, tx, formatLeaseTime(now), updateTime)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range reclaimed {
+		if _, err := store.ClearTaskByTaskID(ctx, tx, row.ID, updateTime); err != nil {
+			return nil, err
+		}
+	}
+	return reclaimed, nil
 }
 
 // logReclaimed emits one line per reclaimed task with the fields the design
@@ -408,6 +481,10 @@ type Reclaimer struct {
 	logger   *slog.Logger
 	clock    platform.Clock
 	interval time.Duration
+	// workerRetention is how long an offline, task-free worker row is kept.
+	// It only bounds the maintenance delete; presence itself is derived from
+	// worker_ttl.
+	workerRetention time.Duration
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -427,11 +504,12 @@ func NewReclaimer(st *store.Store, logger *slog.Logger, interval time.Duration) 
 		interval = DefaultReclaimInterval
 	}
 	return &Reclaimer{
-		store:    st,
-		logger:   logger,
-		clock:    platform.RealClock{},
-		interval: interval,
-		stop:     make(chan struct{}),
+		store:           st,
+		logger:          logger,
+		clock:           platform.RealClock{},
+		interval:        interval,
+		workerRetention: defaultWorkerRetention,
+		stop:            make(chan struct{}),
 	}
 }
 
@@ -445,6 +523,20 @@ func (r *Reclaimer) SetClock(clock platform.Clock) {
 
 // Interval returns the sweep period.
 func (r *Reclaimer) Interval() time.Duration { return r.interval }
+
+// SetWorkerRetention sets how long an offline worker that holds no card is
+// kept before the maintenance sweep deletes its row. A non-positive value
+// falls back to the 168h default, mirroring the configuration validation.
+// It is meant to be called during wiring, before Run starts.
+func (r *Reclaimer) SetWorkerRetention(d time.Duration) {
+	if d <= 0 {
+		d = defaultWorkerRetention
+	}
+	r.workerRetention = d
+}
+
+// WorkerRetention returns the configured retention window.
+func (r *Reclaimer) WorkerRetention() time.Duration { return r.workerRetention }
 
 // Run blocks, sweeping until ctx is cancelled or Stop is called. It is meant to
 // be started in its own goroutine; a second concurrent Run returns immediately.
@@ -504,9 +596,56 @@ func (r *Reclaimer) Reclaim(ctx context.Context) (int, error) {
 	return len(reclaimed), nil
 }
 
+// maintenanceResult reports how many rows the two worker maintenance
+// statements touched in one sweep.
+type maintenanceResult struct {
+	Dangling int64
+	Pruned   int64
+}
+
+// maintain runs the worker-registry maintenance statements in one transaction
+// (tech design §5):
+//
+//  1. clear pointers that no longer name an in-progress card, so a worker is
+//     never stuck busy on a card completed or cancelled elsewhere;
+//  2. delete offline workers that hold no card and whose last_seen is older
+//     than the retention window.
+//
+// The order matters: clearing dangling pointers first can only make more rows
+// eligible for the delete, and both statements see one consistent snapshot.
+func (r *Reclaimer) maintain(ctx context.Context, now time.Time) (maintenanceResult, error) {
+	var out maintenanceResult
+	updateTime := formatTimestamp(now)
+	before := store.FormatWorkerTime(now.Add(-r.workerRetention))
+
+	err := r.store.Tx(ctx, func(tx *sql.Tx) error {
+		dangling, err := store.ClearDanglingPointers(ctx, tx, updateTime)
+		if err != nil {
+			return err
+		}
+		out.Dangling = dangling
+
+		pruned, err := store.PruneStaleWorkers(ctx, tx, before)
+		if err != nil {
+			return err
+		}
+		out.Pruned = pruned
+		return nil
+	})
+	if err != nil {
+		return maintenanceResult{}, err
+	}
+	return out, nil
+}
+
 // sweep runs one pass and keeps a failing database from stopping the loop: the
 // next tick retries. A cancelled context or a closed store is silent because
 // both are part of an orderly shutdown.
+//
+// Each pass reclaims expired leases first and then runs the worker maintenance
+// statements. Keeping maintenance out of Reclaim itself preserves that
+// method's documented contract for the callers (inbox, tests) that only want a
+// lease sweep.
 func (r *Reclaimer) sweep(ctx context.Context) {
 	n, err := r.Reclaim(ctx)
 	switch {
@@ -518,6 +657,22 @@ func (r *Reclaimer) sweep(ctx context.Context) {
 		return
 	default:
 		r.logger.Error("lease reclaim sweep failed", "error", err)
+		return
+	}
+
+	stats, err := r.maintain(ctx, r.clock.Now().UTC())
+	switch {
+	case err == nil:
+		if stats.Dangling > 0 || stats.Pruned > 0 {
+			r.logger.Debug("worker maintenance sweep finished",
+				"dangling_cleared", stats.Dangling,
+				"pruned", stats.Pruned,
+			)
+		}
+	case errors.Is(err, context.Canceled), errors.Is(err, store.ErrClosed):
+		return
+	default:
+		r.logger.Error("worker maintenance sweep failed", "error", err)
 	}
 }
 

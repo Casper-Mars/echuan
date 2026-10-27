@@ -306,6 +306,27 @@ func DeleteStaleWorker(ctx context.Context, tx *sql.Tx, id int64) error {
 	return nil
 }
 
+// PruneStaleWorkers deletes the workers that have not been seen since before
+// the cut-off and hold no task, and returns how many rows were removed.
+//
+// before must be rendered with FormatWorkerTime (see ListStaleWorkers, which
+// applies the same boundary one row at a time). The bulk form exists for the
+// 30s maintenance sweep: a registry of long-dead agents must not grow forever,
+// while a stale row that still holds a card is kept because it is the only
+// record of who was working on the card until the lease reclaimer moves it.
+func PruneStaleWorkers(ctx context.Context, tx *sql.Tx, before string) (int64, error) {
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM workers WHERE current_task_id IS NULL AND last_seen < ?`, before)
+	if err != nil {
+		return 0, fmt.Errorf("store: prune stale workers before %s: %w", before, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: prune stale workers before %s: rows affected: %w", before, err)
+	}
+	return n, nil
+}
+
 // ClearDanglingPointers releases every worker whose pointer references a task
 // that is no longer in progress (status 2), and returns how many rows changed.
 //

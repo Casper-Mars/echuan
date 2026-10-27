@@ -1613,6 +1613,8 @@ components:
           type: string
         task_id:
           type: string
+        worker_id:
+          type: string
     ClaimedTask:
       type: object
       additionalProperties: false

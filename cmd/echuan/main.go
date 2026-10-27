@@ -117,6 +117,9 @@ func run() error {
 		WorkspaceDir:      cfg.WorkspaceDir,
 	})
 	reclaimer := app.NewReclaimer(st, logger, app.DefaultReclaimInterval)
+	// worker_retention bounds how long an offline, task-free worker row is
+	// kept; the same 30s pass that reclaims leases prunes the registry.
+	reclaimer.SetWorkerRetention(cfg.WorkerRetention)
 	application.SetReclaimer(reclaimer)
 
 	// The inbox is the single human entry point: it re-reads pending reviews

@@ -27,10 +27,12 @@ func newClaimHandler(service *app.ClaimService, logger *slog.Logger) *claimHandl
 }
 
 // claimRequest is the POST /v1/tasks/claim body. product is the business
-// product id; task_id restricts the attempt to that single card.
+// product id; task_id restricts the attempt to that single card; worker_id
+// optionally binds the card to a registered worker (tech design v0.6 §4.2).
 type claimRequest struct {
-	Product string `json:"product"`
-	TaskID  string `json:"task_id"`
+	Product  string `json:"product"`
+	TaskID   string `json:"task_id"`
+	WorkerID string `json:"worker_id"`
 }
 
 // claimedTaskResponse is the task part of a claim (§4.4).
@@ -96,9 +98,10 @@ func (h *claimHandler) claim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := h.service.Claim(r.Context(), app.ClaimInput{
-		Product: req.Product,
-		TaskID:  req.TaskID,
-		Actor:   ActorFromContext(r.Context()),
+		Product:  req.Product,
+		TaskID:   req.TaskID,
+		Actor:    ActorFromContext(r.Context()),
+		WorkerID: req.WorkerID,
 	})
 	if err != nil {
 		writeDomainError(w, r, h.logger, err)

@@ -247,18 +247,12 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 			return err
 		}
 
-		// 4. Reclaim expired leases, then release the pointer of the worker that
-		// held each reclaimed card: the lease no longer represents live work, so
-		// leaving the pointer would keep that worker "busy" with a card that is
-		// already back in the queue.
+		// 4. Reclaim expired leases. reclaimExpired also releases the pointer of
+		// each worker that held a reclaimed card, so this step and the claim /
+		// background sweeps share one implementation.
 		reclaimed, err = reclaimExpired(ctx, tx, now)
 		if err != nil {
 			return err
-		}
-		for _, row := range reclaimed {
-			if _, err := store.ClearTaskByTaskID(ctx, tx, row.ID, updateTime); err != nil {
-				return err
-			}
 		}
 
 		// Step 4 may have cleared this very worker's pointer, so the row read
