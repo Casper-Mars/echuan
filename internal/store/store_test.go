@@ -98,7 +98,7 @@ func schemaColumns(t *testing.T, st *Store, table string) map[string]bool {
 func TestMigrateCreatesSchema(t *testing.T) {
 	st := openTestStore(t, 4)
 
-	wantTables := []string{"products", "projects", "tasks", "task_deps", "materials"}
+	wantTables := []string{"products", "projects", "tasks", "task_deps", "materials", "workers"}
 	tables := schemaObjects(t, st, "table")
 	for _, name := range wantTables {
 		if !tables[name] {
@@ -106,7 +106,7 @@ func TestMigrateCreatesSchema(t *testing.T) {
 		}
 	}
 
-	wantIndexes := []string{"ix_projects_inbox", "ix_tasks_queue", "ix_tasks_lease", "ix_materials_chain"}
+	wantIndexes := []string{"ix_projects_inbox", "ix_tasks_queue", "ix_tasks_lease", "ix_materials_chain", "ix_workers_last_seen", "ux_workers_current_task"}
 	indexes := schemaObjects(t, st, "index")
 	for _, name := range wantIndexes {
 		if !indexes[name] {
@@ -118,8 +118,8 @@ func TestMigrateCreatesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 2 {
-		t.Errorf("user_version = %d, want 2", version)
+	if version != 3 {
+		t.Errorf("user_version = %d, want 3", version)
 	}
 
 	columns := schemaColumns(t, st, "projects")
@@ -147,8 +147,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if applied != 2 {
-		t.Errorf("first applied = %d, want 2", applied)
+	if applied != 3 {
+		t.Errorf("first applied = %d, want 3", applied)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first: %v", err)
@@ -172,14 +172,15 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 2 {
-		t.Errorf("user_version = %d, want 2", version)
+	if version != 3 {
+		t.Errorf("user_version = %d, want 3", version)
 	}
 }
 
 // TestMigrate0002PreservesExistingProjects starts from a version-1 database
-// with real rows, applies the embedded 0002 migration and checks that the new
-// column is present and the existing project survived untouched.
+// with real rows, applies the remaining embedded migrations (0002, 0003) and
+// checks that the new column is present and the existing project survived
+// untouched.
 func TestMigrate0002PreservesExistingProjects(t *testing.T) {
 	st, err := Open(Config{Path: filepath.Join(t.TempDir(), "state.db")})
 	if err != nil {
@@ -223,11 +224,11 @@ func TestMigrate0002PreservesExistingProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("applied = %d, want 1 (only 0002)", applied)
+	if applied != 2 {
+		t.Fatalf("applied = %d, want 2 (0002 and 0003)", applied)
 	}
-	if version, err := st.MigrationVersion(ctx); err != nil || version != 2 {
-		t.Fatalf("version = %d (%v), want 2", version, err)
+	if version, err := st.MigrationVersion(ctx); err != nil || version != 3 {
+		t.Fatalf("version = %d (%v), want 3", version, err)
 	}
 	if !schemaColumns(t, st, "projects")["last_actor"] {
 		t.Fatal("projects.last_actor missing after 0002")
@@ -535,8 +536,8 @@ func TestMigrateRejectsNewerSchema(t *testing.T) {
 	if !errors.As(err, &sv) {
 		t.Fatalf("error = %v, want SchemaVersionError", err)
 	}
-	if sv.Database != 99 || sv.Binary != 2 {
-		t.Errorf("versions = %d/%d, want 99/2", sv.Database, sv.Binary)
+	if sv.Database != 99 || sv.Binary != 3 {
+		t.Errorf("versions = %d/%d, want 99/3", sv.Database, sv.Binary)
 	}
 }
 

@@ -28,3 +28,5 @@ NNNN_<description>.sql
 | 版本 | 文件 | 内容 |
 |------|------|------|
 | 1 | `0001_init.sql` | products / materials / projects / tasks / task_deps 五张表与四个索引 |
+| 2 | `0002_project_last_actor.sql` | projects 新增 `last_actor` 列（可空） |
+| 3 | `0003_workers.sql` | workers 表（worker 心跳与任务占用）、`ix_workers_last_seen` 与部分唯一索引 `ux_workers_current_task` |
