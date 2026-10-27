@@ -104,3 +104,60 @@ func TestTaskStatusName(t *testing.T) {
 		t.Errorf("TaskStatusDone = %d, want %d", TaskStatusDone, TaskDone)
 	}
 }
+
+func TestTaskDecisionNextStatus(t *testing.T) {
+	cases := []struct {
+		from     int
+		decision TaskDecision
+		to       int
+	}{
+		{TaskPendingAcceptance, TaskDecisionAccept, TaskDone},
+		{TaskPendingAcceptance, TaskDecisionRework, TaskReady},
+		{TaskFailed, TaskDecisionRetry, TaskReady},
+		{TaskFailed, TaskDecisionAbandon, TaskCancelled},
+	}
+	for _, tc := range cases {
+		got, err := TaskDecisionNextStatus(tc.from, tc.decision)
+		if err != nil {
+			t.Fatalf("%s from %d: %v", tc.decision, tc.from, err)
+		}
+		if got != tc.to {
+			t.Errorf("%s from %d = %d, want %d", tc.decision, tc.from, got, tc.to)
+		}
+	}
+
+	illegal := []struct {
+		from     int
+		decision TaskDecision
+	}{
+		{TaskFailed, TaskDecisionAccept},
+		{TaskFailed, TaskDecisionRework},
+		{TaskPendingAcceptance, TaskDecisionRetry},
+		{TaskPendingAcceptance, TaskDecisionAbandon},
+		{TaskReady, TaskDecisionAccept},
+		{TaskDone, TaskDecisionAccept},
+	}
+	for _, tc := range illegal {
+		if _, err := TaskDecisionNextStatus(tc.from, tc.decision); !errors.Is(err, ErrInvalidState) {
+			t.Errorf("%s from %d: error = %v, want invalid_state", tc.decision, tc.from, err)
+		}
+	}
+}
+
+func TestTaskDecisionHelpers(t *testing.T) {
+	if !TaskDecisionRequiresReason(TaskDecisionRework) || !TaskDecisionRequiresReason(TaskDecisionAbandon) {
+		t.Error("rework/abandon must require a reason")
+	}
+	if TaskDecisionRequiresReason(TaskDecisionAccept) || TaskDecisionRequiresReason(TaskDecisionRetry) {
+		t.Error("accept/retry must not require a reason")
+	}
+	if !TaskDecisionResetsAttempts(TaskDecisionRetry) {
+		t.Error("retry must reset attempts")
+	}
+	if TaskDecisionResetsAttempts(TaskDecisionAccept) {
+		t.Error("accept must keep attempts")
+	}
+	if _, ok := ParseTaskDecision("maybe"); ok {
+		t.Error("maybe parsed as a valid decision")
+	}
+}

@@ -184,6 +184,106 @@ func TransitionTask(ctx context.Context, tx *sql.Tx, id int64, expectStatus, exp
 	return n, nil
 }
 
+// TaskDecisionWrite is one task verdict applied to one row.
+//
+// ExpectStatus/ExpectVersion repeat the values read before the write, so the
+// UPDATE cannot overwrite a row that moved in between. ResetAttempts clears
+// attempt_count (retry); the other verdicts leave it alone.
+type TaskDecisionWrite struct {
+	ID            int64
+	ExpectStatus  int
+	ExpectVersion int
+	NextStatus    int
+	Reason        *string
+	ResetAttempts bool
+	LastActor     string
+	UpdateTime    string
+}
+
+// TransitionTaskDecision applies one task verdict with a conditional UPDATE on
+// (status, version) and returns how many rows matched.
+//
+// It is TransitionTask plus the optional attempt reset, because retry is the
+// only edge that touches attempt_count. status and reason remain owned by the
+// state machine: callers pass the target status and the reason column value
+// they already validated.
+func TransitionTaskDecision(ctx context.Context, tx *sql.Tx, w TaskDecisionWrite) (int64, error) {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE tasks
+		   SET status = ?,
+		       reason = ?,
+		       attempt_count = CASE WHEN ? THEN 0 ELSE attempt_count END,
+		       last_actor = ?,
+		       version = version + 1,
+		       update_time = ?
+		 WHERE id = ? AND status = ? AND version = ?`,
+		w.NextStatus, w.Reason, boolInt(w.ResetAttempts), w.LastActor,
+		w.UpdateTime, w.ID, w.ExpectStatus, w.ExpectVersion)
+	if err != nil {
+		return 0, fmt.Errorf("store: decide task %d: %w", w.ID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: decide task %d: rows affected: %w", w.ID, err)
+	}
+	return n, nil
+}
+
+// CompleteTaskReport moves an in-progress task to pending_acceptance and points
+// it at the freshly written report version.
+//
+// The WHERE clause repeats the lease predicate (status, lease_id, unexpired
+// deadline) so the report cannot be attached to a lease that was reclaimed
+// between the read and the write. A zero row count means the lease is gone;
+// the caller turns that into 409 lease_lost and rolls the transaction back.
+// now uses the fixed-width lease layout (see task_claim.go).
+func CompleteTaskReport(ctx context.Context, tx *sql.Tx, id, materialID int64, leaseID, now, lastActor, updateTime string) (int64, error) {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE tasks
+		   SET report_material_id = ?,
+		       status = 3,
+		       lease_id = NULL,
+		       lease_until = NULL,
+		       last_actor = ?,
+		       version = version + 1,
+		       update_time = ?
+		 WHERE id = ? AND status = 2 AND lease_id = ?
+		   AND lease_until IS NOT NULL AND lease_until > ?`,
+		materialID, lastActor, updateTime, id, leaseID, now)
+	if err != nil {
+		return 0, fmt.Errorf("store: complete report of task %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: complete report of task %d: rows affected: %w", id, err)
+	}
+	return n, nil
+}
+
+// CountUnsettledTasksByProject counts the tasks of one project that are
+// neither done (4) nor cancelled (7) — the terminal statuses of the task
+// machine. Task-11 uses zero as the trigger for developing → delivery_review.
+func CountUnsettledTasksByProject(ctx context.Context, q Querier, projectID int64) (int64, error) {
+	row, err := One[struct {
+		Count int64 `db:"count"`
+	}](ctx, q, `
+		SELECT COUNT(*) AS count
+		  FROM tasks
+		 WHERE project_id = ? AND status NOT IN (4, 7)`, projectID)
+	if err != nil {
+		return 0, fmt.Errorf("store: count unsettled tasks of project %d: %w", projectID, err)
+	}
+	return row.Count, nil
+}
+
+// boolInt renders a bool as the 0/1 SQLite uses in CASE expressions.
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 // SetTasksReadyByProject moves every backlog task of one project to ready. It
 // is the side effect of an approved plan review; already-ready tasks are left
 // untouched.

@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
+	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/store"
 )
 
@@ -97,6 +98,7 @@ type UpdateTaskInput struct {
 // transaction boundaries; SQL stays in the store package.
 type TaskService struct {
 	store       *store.Store
+	materials   *material.Writer
 	now         func() time.Time
 	maxAttempts int
 }

@@ -235,99 +235,46 @@ func (s *ProjectService) createReworkTask(ctx context.Context, tx *sql.Tx, proje
 	return err
 }
 
-// decideTask is the task half of the unified decision entry point. Only a
-// pending_acceptance task can be decided: approve → done, reject → ready
-// (rework) with the reason persisted. Task-11 will expose it over HTTP.
+// decideTask is the legacy task branch of the unified decision entry point.
+//
+// Task-11 gives tasks their own four-value verdicts; approve/reject stay here
+// as aliases (accept/rework) so Task-06 callers and their tests keep working.
+// The transaction is the TaskService one, which also advances a developing
+// project whose last card was just accepted.
 func (s *ProjectService) decideTask(ctx context.Context, in DecideInput) (DecideResult, error) {
-	taskID := strings.TrimSpace(in.ID)
-	if taskID == "" {
-		return DecideResult{}, &domain.ValidationError{Fields: []domain.FieldError{
-			{Field: "id", Reason: "is required"},
-		}}
-	}
-	if !in.Decision.Valid() {
+	var decision domain.TaskDecision
+	switch in.Decision {
+	case domain.DecisionApprove:
+		decision = domain.TaskDecisionAccept
+	case domain.DecisionReject:
+		decision = domain.TaskDecisionRework
+	default:
 		return DecideResult{}, &domain.ValidationError{Fields: []domain.FieldError{
 			{Field: "decision", Reason: "must be approve or reject"},
 		}}
 	}
-	reason := strings.TrimSpace(in.Reason)
-	if in.Decision == domain.DecisionReject && reason == "" {
-		return DecideResult{}, &domain.ValidationError{Fields: []domain.FieldError{
-			{Field: "reason", Reason: "is required when decision is reject"},
-		}}
+
+	tasks := NewTaskService(s.store)
+	if s.materials != nil {
+		tasks.SetMaterialWriter(s.materials)
 	}
-	if in.ExpectVersion == nil {
-		return DecideResult{}, &domain.ValidationError{Fields: []domain.FieldError{
-			{Field: "If-Match", Reason: "is required"},
-		}}
-	}
-	actor := actorOrDefault(in.Actor)
-
-	var result DecideResult
-	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
-		row, err := store.GetTaskByTaskID(ctx, tx, taskID)
-		if err != nil {
-			if store.IsNotFound(err) {
-				return &domain.NotFoundError{Resource: "task", Key: taskID}
-			}
-			return err
-		}
-
-		// Version first, for the same reason as the project branch: a stale
-		// request must re-read rather than learn a misleading state error.
-		if row.Version != *in.ExpectVersion {
-			return &domain.InvalidVersionError{Current: row.Version, Expected: *in.ExpectVersion}
-		}
-
-		// A decision is only meaningful while the report waits for review.
-		if row.Status != domain.TaskPendingAcceptance {
-			return &domain.InvalidStateError{Reason: fmt.Sprintf(
-				"task %q is in status %s; a decision requires pending_acceptance",
-				taskID, domain.TaskStatusName(row.Status))}
-		}
-
-		next := domain.TaskDone
-		if in.Decision == domain.DecisionReject {
-			next = domain.TaskReady
-		}
-		if err := domain.ValidateTaskTransition(row.Status, next); err != nil {
-			return err
-		}
-
-		var reasonPtr *string
-		if reason != "" {
-			reasonPtr = &reason
-		}
-		updateTime := formatTimestamp(s.nextTimestamp(row.UpdateTime))
-
-		affected, err := store.TransitionTask(ctx, tx, row.ID,
-			row.Status, row.Version, next, reasonPtr, actor, updateTime)
-		if err != nil {
-			return err
-		}
-		if affected == 0 {
-			fresh, readErr := store.GetTaskByTaskID(ctx, tx, taskID)
-			if readErr != nil {
-				return readErr
-			}
-			return &domain.InvalidVersionError{Current: fresh.Version, Expected: row.Version}
-		}
-
-		fresh, err := store.GetTaskByTaskID(ctx, tx, taskID)
-		if err != nil {
-			return err
-		}
-		task, err := taskFromRow(fresh)
-		if err != nil {
-			return err
-		}
-		result = DecideResult{Task: &task, FromStatus: row.Status, ToStatus: next}
-		return nil
+	result, err := tasks.DecideTask(ctx, TaskDecisionInput{
+		TaskID:        in.ID,
+		Decision:      decision,
+		Reason:        in.Reason,
+		ExpectVersion: in.ExpectVersion,
+		Actor:         in.Actor,
 	})
 	if err != nil {
 		return DecideResult{}, err
 	}
-	return result, nil
+
+	task := taskDomainFromView(result.Detail.Task)
+	return DecideResult{
+		Task:       &task,
+		FromStatus: result.FromStatus,
+		ToStatus:   result.ToStatus,
+	}, nil
 }
 
 // decideReason computes the reason column for one project transition:

@@ -97,6 +97,9 @@ func run() error {
 	// attempt budget is the same configuration the plan path uses.
 	tasks := app.NewTaskService(st)
 	tasks.SetMaxAttempts(cfg.MaxAttempts)
+	// Reports are material kind=3; the same writer that owns
+	// data_dir/objects appends the version chain behind tasks.report_material_id.
+	tasks.SetMaterialWriter(materials)
 
 	// Pull mode: workers claim a card, hold a lease and renew it. The reclaimer
 	// returns expired leases to the queue even when nobody is claiming.

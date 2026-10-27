@@ -59,6 +59,7 @@ func newProjectTestServerWithMaxAttempts(t *testing.T, maxAttempts int) (http.Ha
 	if maxAttempts > 0 {
 		tasks.SetMaxAttempts(maxAttempts)
 	}
+	tasks.SetMaterialWriter(writer)
 	h := Chain(
 		NewRouter(logger, nil, nil, app.NewProductService(st), projects,
 			tasks, app.NewClaimService(st, logger, 90*time.Second, filepath.Join(dir, "workspaces")),

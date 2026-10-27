@@ -33,6 +33,10 @@ var (
 	// no longer owns the task: the lease expired, was reclaimed, or the lease
 	// id belongs to another worker (tech design §4.4: 409 lease_lost).
 	ErrLeaseLost = errors.New("lease lost")
+	// ErrMaterialRequired reports a report submission whose content is blank
+	// (tech design §4.6 / §4.7: 422 material_required). It is the project's
+	// first 422: the request is syntactically valid but carries no artifact.
+	ErrMaterialRequired = errors.New("material required")
 )
 
 // FieldError is one field-level validation failure. It is rendered as an item
@@ -158,3 +162,23 @@ func (e *LeaseLostError) Error() string {
 // Unwrap reports ErrLeaseLost so errors.Is works for callers that only care
 // about the class of failure.
 func (e *LeaseLostError) Unwrap() error { return ErrLeaseLost }
+
+// MaterialRequiredError reports a request that parsed correctly but supplied
+// no usable content for a material. Field names the missing member and Reason
+// explains what was wrong with it; the HTTP layer renders both as details.
+type MaterialRequiredError struct {
+	Field  string
+	Reason string
+}
+
+// Error implements error.
+func (e *MaterialRequiredError) Error() string {
+	if e.Field == "" {
+		return ErrMaterialRequired.Error()
+	}
+	return fmt.Sprintf("%s: %s", e.Field, e.Reason)
+}
+
+// Unwrap reports ErrMaterialRequired so errors.Is works for callers that only
+// care about the class of failure.
+func (e *MaterialRequiredError) Unwrap() error { return ErrMaterialRequired }

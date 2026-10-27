@@ -50,6 +50,78 @@ func TaskStatusName(status int) string {
 	return taskStatusNames[status]
 }
 
+// TaskDecision is one human verdict on a task report (tech design §3.3 /
+// §4.2). Unlike a project decision it has four values: the review gate can
+// accept or rework a report, while a failed card can be retried or abandoned.
+type TaskDecision string
+
+const (
+	// TaskDecisionAccept finishes a pending_acceptance task (3 → 4).
+	TaskDecisionAccept TaskDecision = "accept"
+	// TaskDecisionRework sends a pending_acceptance task back to ready (3 → 1)
+	// with the reviewer's reason persisted.
+	TaskDecisionRework TaskDecision = "rework"
+	// TaskDecisionRetry re-queues a failed task and resets its attempt budget
+	// (5 → 1).
+	TaskDecisionRetry TaskDecision = "retry"
+	// TaskDecisionAbandon cancels a failed task (5 → 7) with a reason.
+	TaskDecisionAbandon TaskDecision = "abandon"
+)
+
+// valid reports whether d is one of the four supported verdicts.
+func (d TaskDecision) Valid() bool {
+	switch d {
+	case TaskDecisionAccept, TaskDecisionRework, TaskDecisionRetry, TaskDecisionAbandon:
+		return true
+	}
+	return false
+}
+
+// ParseTaskDecision normalises a wire value into a TaskDecision.
+func ParseTaskDecision(value string) (TaskDecision, bool) {
+	d := TaskDecision(value)
+	return d, d.Valid()
+}
+
+// TaskDecisionRequiresReason reports whether the verdict must carry a reason.
+func TaskDecisionRequiresReason(d TaskDecision) bool {
+	return d == TaskDecisionRework || d == TaskDecisionAbandon
+}
+
+// TaskDecisionResetsAttempts reports whether the verdict clears attempt_count.
+func TaskDecisionResetsAttempts(d TaskDecision) bool {
+	return d == TaskDecisionRetry
+}
+
+// taskDecisionTransition is one legal (current status, verdict) pair.
+type taskDecisionTransition struct {
+	From     int
+	Decision TaskDecision
+	To       int
+}
+
+// taskDecisionTransitions is the authoritative allow-list of the four task
+// verdicts. Every pair absent here is 409 invalid_state.
+var taskDecisionTransitions = []taskDecisionTransition{
+	{From: TaskPendingAcceptance, Decision: TaskDecisionAccept, To: TaskDone},
+	{From: TaskPendingAcceptance, Decision: TaskDecisionRework, To: TaskReady},
+	{From: TaskFailed, Decision: TaskDecisionRetry, To: TaskReady},
+	{From: TaskFailed, Decision: TaskDecisionAbandon, To: TaskCancelled},
+}
+
+// TaskDecisionNextStatus returns the target status for one verdict on a task
+// in the given status. An illegal combination yields an InvalidStateError so
+// the caller knows to re-read the task before deciding whether to retry.
+func TaskDecisionNextStatus(current int, d TaskDecision) (int, error) {
+	for _, transition := range taskDecisionTransitions {
+		if transition.From == current && transition.Decision == d {
+			return transition.To, nil
+		}
+	}
+	return 0, &InvalidStateError{Reason: fmt.Sprintf(
+		"task status %q does not accept %s", TaskStatusName(current), d)}
+}
+
 // TaskTransition is one legal edge of the task state machine.
 //
 // The task machine is defined by (from, to) only: unlike a project decision

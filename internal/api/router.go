@@ -44,6 +44,8 @@ func NewHandler(logger *slog.Logger, checks []HealthChecker) *Handler {
 //	DELETE /v1/tasks                 delete an unclaimed backlog task (?id=)
 //	POST /v1/tasks/claim             lease the next claimable task of a product
 //	POST /v1/tasks/heartbeat         renew the lease of one task (?id=)
+//	POST /v1/tasks/report            submit a report and complete the task (?id=)
+//	POST /v1/tasks/decide            accept/rework/retry/abandon a task (?id=, If-Match)
 //	GET /v1/materials                download a material object (?id=)
 //	GET /v1/projects/materials       version chain of one kind (?id=&kind=)
 //	/                                fallback handler (embedded frontend), when provided
@@ -86,6 +88,8 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		mux.HandleFunc("GET /v1/tasks", tasksHandler.listOrGetTask)
 		mux.HandleFunc("PATCH /v1/tasks", tasksHandler.updateTask)
 		mux.HandleFunc("DELETE /v1/tasks", tasksHandler.deleteTask)
+		mux.HandleFunc("POST /v1/tasks/report", tasksHandler.reportTask)
+		mux.HandleFunc("POST /v1/tasks/decide", tasksHandler.decideTask)
 	}
 	if claims != nil {
 		claimsHandler := newClaimHandler(claims, logger)
