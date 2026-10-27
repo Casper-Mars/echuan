@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
 )
 
@@ -346,21 +347,20 @@ func randomName() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
-// materialIDEncoding renders the ULID-shaped business id: 48-bit millisecond
-// timestamp followed by 80 random bits, base32 (no padding) → 26 characters.
-// The timestamp prefix keeps ids roughly sortable by creation time.
+// materialIDEncoding renders material ids. It is the historical RFC 4648
+// base32 alphabet ("A"-"Z" + "2"-"7") without padding: 16 bytes → 26
+// characters, with the spare bits padded at the tail. Existing rows use this
+// exact alphabet and layout, so it must not follow platform.NewULID's
+// Crockford rendering; only the raw 128 bits (timestamp + monotonic entropy)
+// are shared.
 var materialIDEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
+// newMaterialID keeps the historical material id shape: 48-bit millisecond
+// prefix plus 80 bits of monotonic entropy from the shared platform generator,
+// encoded as RFC 4648 base32 without padding.
 func newMaterialID(now time.Time) (string, error) {
-	var raw [16]byte
-	ms := uint64(now.UnixMilli())
-	raw[0] = byte(ms >> 40)
-	raw[1] = byte(ms >> 32)
-	raw[2] = byte(ms >> 24)
-	raw[3] = byte(ms >> 16)
-	raw[4] = byte(ms >> 8)
-	raw[5] = byte(ms)
-	if _, err := rand.Read(raw[6:]); err != nil {
+	raw, err := platform.NewULIDBytes(now)
+	if err != nil {
 		return "", fmt.Errorf("material: generate material id: %w", err)
 	}
 	return materialIDEncoding.EncodeToString(raw[:]), nil

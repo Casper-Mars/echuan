@@ -42,6 +42,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MaterialMaxBytes != 20971520 {
 		t.Errorf("MaterialMaxBytes = %d", cfg.MaterialMaxBytes)
 	}
+	if cfg.WorkerTTL != 45*time.Second {
+		t.Errorf("WorkerTTL = %s", cfg.WorkerTTL)
+	}
+	if cfg.HeartbeatInterval != 15*time.Second {
+		t.Errorf("HeartbeatInterval = %s", cfg.HeartbeatInterval)
+	}
+	if cfg.WorkerMetadataMaxBytes != 8192 {
+		t.Errorf("WorkerMetadataMaxBytes = %d", cfg.WorkerMetadataMaxBytes)
+	}
+	if cfg.WorkerRetention != 168*time.Hour {
+		t.Errorf("WorkerRetention = %s", cfg.WorkerRetention)
+	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("LogLevel = %q", cfg.LogLevel)
 	}
@@ -77,6 +89,10 @@ func TestLoadFromTOML(t *testing.T) {
 		"poll_timeout = \"5s\"",
 		"review_stale_hours = 12",
 		"material_max_bytes = 1024",
+		"worker_ttl = \"50s\"",
+		"heartbeat_interval = \"20s\"",
+		"worker_metadata_max_bytes = 4096",
+		"worker_retention = \"24h\"",
 		"read_pool_size = 6",
 		"log_level = \"debug\"",
 	}, "\n")
@@ -112,6 +128,18 @@ func TestLoadFromTOML(t *testing.T) {
 	}
 	if cfg.MaterialMaxBytes != 1024 {
 		t.Errorf("MaterialMaxBytes = %d", cfg.MaterialMaxBytes)
+	}
+	if cfg.WorkerTTL != 50*time.Second {
+		t.Errorf("WorkerTTL = %s", cfg.WorkerTTL)
+	}
+	if cfg.HeartbeatInterval != 20*time.Second {
+		t.Errorf("HeartbeatInterval = %s", cfg.HeartbeatInterval)
+	}
+	if cfg.WorkerMetadataMaxBytes != 4096 {
+		t.Errorf("WorkerMetadataMaxBytes = %d", cfg.WorkerMetadataMaxBytes)
+	}
+	if cfg.WorkerRetention != 24*time.Hour {
+		t.Errorf("WorkerRetention = %s", cfg.WorkerRetention)
 	}
 	if cfg.ReadPoolSize != 6 {
 		t.Errorf("ReadPoolSize = %d, want 6", cfg.ReadPoolSize)
@@ -151,6 +179,10 @@ func TestEnvOverridesFile(t *testing.T) {
 	t.Setenv("ECHUAN_LEASE_TTL", "10s")
 	t.Setenv("ECHUAN_LOG_LEVEL", "warn")
 	t.Setenv("ECHUAN_READ_POOL_SIZE", "8")
+	t.Setenv("ECHUAN_WORKER_TTL", "30s")
+	t.Setenv("ECHUAN_HEARTBEAT_INTERVAL", "10s")
+	t.Setenv("ECHUAN_WORKER_METADATA_MAX_BYTES", "2048")
+	t.Setenv("ECHUAN_WORKER_RETENTION", "72h")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -171,6 +203,46 @@ func TestEnvOverridesFile(t *testing.T) {
 	}
 	if cfg.ReadPoolSize != 8 {
 		t.Errorf("ReadPoolSize = %d, want env value", cfg.ReadPoolSize)
+	}
+	if cfg.WorkerTTL != 30*time.Second {
+		t.Errorf("WorkerTTL = %s, want env value", cfg.WorkerTTL)
+	}
+	if cfg.HeartbeatInterval != 10*time.Second {
+		t.Errorf("HeartbeatInterval = %s, want env value", cfg.HeartbeatInterval)
+	}
+	if cfg.WorkerMetadataMaxBytes != 2048 {
+		t.Errorf("WorkerMetadataMaxBytes = %d, want env value", cfg.WorkerMetadataMaxBytes)
+	}
+	if cfg.WorkerRetention != 72*time.Hour {
+		t.Errorf("WorkerRetention = %s, want env value", cfg.WorkerRetention)
+	}
+}
+
+// TestEnvOverridesWorkerDefaults checks the new worker keys resolve from the
+// environment without any TOML file present.
+func TestEnvOverridesWorkerDefaults(t *testing.T) {
+	clearEnv(t)
+
+	t.Setenv("ECHUAN_WORKER_TTL", "90s")
+	t.Setenv("ECHUAN_HEARTBEAT_INTERVAL", "30s")
+	t.Setenv("ECHUAN_WORKER_METADATA_MAX_BYTES", "16384")
+	t.Setenv("ECHUAN_WORKER_RETENTION", "336h")
+
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.WorkerTTL != 90*time.Second {
+		t.Errorf("WorkerTTL = %s", cfg.WorkerTTL)
+	}
+	if cfg.HeartbeatInterval != 30*time.Second {
+		t.Errorf("HeartbeatInterval = %s", cfg.HeartbeatInterval)
+	}
+	if cfg.WorkerMetadataMaxBytes != 16384 {
+		t.Errorf("WorkerMetadataMaxBytes = %d", cfg.WorkerMetadataMaxBytes)
+	}
+	if cfg.WorkerRetention != 336*time.Hour {
+		t.Errorf("WorkerRetention = %s", cfg.WorkerRetention)
 	}
 }
 
@@ -211,6 +283,48 @@ func TestLoadInvalidValues(t *testing.T) {
 			envKey:  "ECHUAN_POLL_TIMEOUT",
 			envVal:  "soon",
 			wantSub: "poll_timeout: invalid duration",
+		},
+		{
+			name:    "invalid worker ttl",
+			toml:    "worker_ttl = \"forever\"\n",
+			wantSub: "worker_ttl: invalid duration",
+		},
+		{
+			name:    "invalid heartbeat interval",
+			toml:    "heartbeat_interval = \"15\"\n",
+			wantSub: "heartbeat_interval: invalid duration",
+		},
+		{
+			name:    "invalid worker retention",
+			envKey:  "ECHUAN_WORKER_RETENTION",
+			envVal:  "week",
+			wantSub: "worker_retention: invalid duration",
+		},
+		{
+			name:    "invalid worker metadata bytes",
+			toml:    "worker_metadata_max_bytes = \"8k\"\n",
+			wantSub: "worker_metadata_max_bytes: invalid integer",
+		},
+		{
+			name:    "zero worker ttl",
+			toml:    "worker_ttl = \"0s\"\n",
+			wantSub: "worker_ttl: must be positive",
+		},
+		{
+			name:    "negative heartbeat interval",
+			toml:    "heartbeat_interval = \"-1s\"\n",
+			wantSub: "heartbeat_interval: must be positive",
+		},
+		{
+			name:    "zero worker metadata bytes",
+			envKey:  "ECHUAN_WORKER_METADATA_MAX_BYTES",
+			envVal:  "0",
+			wantSub: "worker_metadata_max_bytes: must be positive",
+		},
+		{
+			name:    "zero worker retention",
+			toml:    "worker_retention = \"0h\"\n",
+			wantSub: "worker_retention: must be positive",
 		},
 	}
 

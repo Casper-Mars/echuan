@@ -38,6 +38,18 @@ type Config struct {
 	ReviewStaleHours int
 	// MaterialMaxBytes is the maximum accepted size of an uploaded material.
 	MaterialMaxBytes int64
+	// WorkerTTL is how long a registered worker stays alive without a
+	// heartbeat before it is considered gone.
+	WorkerTTL time.Duration
+	// HeartbeatInterval is the interval at which workers are expected to send
+	// heartbeats; it must stay well below WorkerTTL.
+	HeartbeatInterval time.Duration
+	// WorkerMetadataMaxBytes is the maximum accepted size of the free-form
+	// metadata document attached to a worker registration.
+	WorkerMetadataMaxBytes int64
+	// WorkerRetention is how long state of workers that stopped reporting is
+	// kept before it may be pruned.
+	WorkerRetention time.Duration
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string
 }
@@ -46,16 +58,20 @@ type Config struct {
 // environment variables provide a value.
 func DefaultConfig() Config {
 	return Config{
-		Listen:           "127.0.0.1:8720",
-		DataDir:          "~/.echuan",
-		ReadPoolSize:     4,
-		WorkspaceDir:     "~/.echuan/workspaces",
-		LeaseTTL:         90 * time.Second,
-		MaxAttempts:      3,
-		PollTimeout:      25 * time.Second,
-		ReviewStaleHours: 72,
-		MaterialMaxBytes: 20971520,
-		LogLevel:         "info",
+		Listen:                 "127.0.0.1:8720",
+		DataDir:                "~/.echuan",
+		ReadPoolSize:           4,
+		WorkspaceDir:           "~/.echuan/workspaces",
+		LeaseTTL:               90 * time.Second,
+		MaxAttempts:            3,
+		PollTimeout:            25 * time.Second,
+		ReviewStaleHours:       72,
+		MaterialMaxBytes:       20971520,
+		WorkerTTL:              45 * time.Second,
+		HeartbeatInterval:      15 * time.Second,
+		WorkerMetadataMaxBytes: 8192,
+		WorkerRetention:        168 * time.Hour,
+		LogLevel:               "info",
 	}
 }
 
@@ -90,16 +106,20 @@ func Load(path string) (Config, error) {
 
 // envKeys maps configuration keys to their environment variable names.
 var envKeys = map[string]string{
-	"listen":             "ECHUAN_LISTEN",
-	"data_dir":           "ECHUAN_DATA_DIR",
-	"read_pool_size":     "ECHUAN_READ_POOL_SIZE",
-	"workspace_dir":      "ECHUAN_WORKSPACE_DIR",
-	"lease_ttl":          "ECHUAN_LEASE_TTL",
-	"max_attempts":       "ECHUAN_MAX_ATTEMPTS",
-	"poll_timeout":       "ECHUAN_POLL_TIMEOUT",
-	"review_stale_hours": "ECHUAN_REVIEW_STALE_HOURS",
-	"material_max_bytes": "ECHUAN_MATERIAL_MAX_BYTES",
-	"log_level":          "ECHUAN_LOG_LEVEL",
+	"listen":                    "ECHUAN_LISTEN",
+	"data_dir":                  "ECHUAN_DATA_DIR",
+	"read_pool_size":            "ECHUAN_READ_POOL_SIZE",
+	"workspace_dir":             "ECHUAN_WORKSPACE_DIR",
+	"lease_ttl":                 "ECHUAN_LEASE_TTL",
+	"max_attempts":              "ECHUAN_MAX_ATTEMPTS",
+	"poll_timeout":              "ECHUAN_POLL_TIMEOUT",
+	"review_stale_hours":        "ECHUAN_REVIEW_STALE_HOURS",
+	"material_max_bytes":        "ECHUAN_MATERIAL_MAX_BYTES",
+	"worker_ttl":                "ECHUAN_WORKER_TTL",
+	"heartbeat_interval":        "ECHUAN_HEARTBEAT_INTERVAL",
+	"worker_metadata_max_bytes": "ECHUAN_WORKER_METADATA_MAX_BYTES",
+	"worker_retention":          "ECHUAN_WORKER_RETENTION",
+	"log_level":                 "ECHUAN_LOG_LEVEL",
 }
 
 // apply assigns raw string values onto cfg. source is only used to build
@@ -157,6 +177,30 @@ func (c *Config) set(key, raw string) error {
 			return fmt.Errorf("material_max_bytes: invalid integer %q", raw)
 		}
 		c.MaterialMaxBytes = n
+	case "worker_ttl":
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("worker_ttl: invalid duration %q", raw)
+		}
+		c.WorkerTTL = d
+	case "heartbeat_interval":
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("heartbeat_interval: invalid duration %q", raw)
+		}
+		c.HeartbeatInterval = d
+	case "worker_metadata_max_bytes":
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return fmt.Errorf("worker_metadata_max_bytes: invalid integer %q", raw)
+		}
+		c.WorkerMetadataMaxBytes = n
+	case "worker_retention":
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("worker_retention: invalid duration %q", raw)
+		}
+		c.WorkerRetention = d
 	case "log_level":
 		c.LogLevel = raw
 	default:
@@ -203,6 +247,18 @@ func (c *Config) normalize() error {
 	}
 	if c.MaterialMaxBytes <= 0 {
 		return fmt.Errorf("material_max_bytes: must be positive, got %d", c.MaterialMaxBytes)
+	}
+	if c.WorkerTTL <= 0 {
+		return fmt.Errorf("worker_ttl: must be positive, got %s", c.WorkerTTL)
+	}
+	if c.HeartbeatInterval <= 0 {
+		return fmt.Errorf("heartbeat_interval: must be positive, got %s", c.HeartbeatInterval)
+	}
+	if c.WorkerMetadataMaxBytes <= 0 {
+		return fmt.Errorf("worker_metadata_max_bytes: must be positive, got %d", c.WorkerMetadataMaxBytes)
+	}
+	if c.WorkerRetention <= 0 {
+		return fmt.Errorf("worker_retention: must be positive, got %s", c.WorkerRetention)
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":

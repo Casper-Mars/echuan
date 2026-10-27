@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base32"
 	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Casper-Mars/echuan/internal/store"
 )
@@ -287,5 +290,75 @@ func TestReadRejectsEscapingPath(t *testing.T) {
 	_, err := writer.Read(store.Material{MaterialID: "x", Path: "../../etc/passwd"})
 	if err == nil {
 		t.Fatal("Read of an escaping path succeeded, want error")
+	}
+}
+
+// TestNewMaterialIDFormat pins the historical material id shape: 26 base32
+// (RFC 4648, no padding) characters whose first 48 bits are the millisecond
+// timestamp. Material ids keep this alphabet even though platform.NewULID
+// renders worker ids with Crockford, so this guards the compatibility
+// contract for existing rows.
+func TestNewMaterialIDFormat(t *testing.T) {
+	// Real clock: the shared ULID generator keeps the greatest millisecond it
+	// has seen, so a synthetic past timestamp would be clamped.
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	id, err := newMaterialID(now)
+	if err != nil {
+		t.Fatalf("newMaterialID: %v", err)
+	}
+	if len(id) != 26 {
+		t.Fatalf("len(id) = %d, want 26 (%q)", len(id), id)
+	}
+	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+	for _, r := range id {
+		if !strings.ContainsRune(charset, r) {
+			t.Fatalf("id %q contains %q outside the base32 alphabet", id, r)
+		}
+	}
+
+	raw, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(id)
+	if err != nil {
+		t.Fatalf("decode id: %v", err)
+	}
+	if len(raw) != 16 {
+		t.Fatalf("decoded %d bytes, want 16", len(raw))
+	}
+	var ms int64
+	for _, b := range raw[:6] {
+		ms = ms<<8 | int64(b)
+	}
+	if ms != now.UnixMilli() {
+		t.Errorf("timestamp prefix = %d, want %d", ms, now.UnixMilli())
+	}
+
+	again, err := newMaterialID(now)
+	if err != nil {
+		t.Fatalf("newMaterialID: %v", err)
+	}
+	if again == id {
+		t.Errorf("two ids generated in the same millisecond are equal: %q", id)
+	}
+
+	// A same-millisecond burst must stay unique (the 80-bit entropy is
+	// incremented, not re-randomised) and keep the RFC 4648 alphabet.
+	seen := map[string]struct{}{id: {}, again: {}}
+	for i := 0; i < 1000; i++ {
+		more, err := newMaterialID(now)
+		if err != nil {
+			t.Fatalf("newMaterialID: %v", err)
+		}
+		if len(more) != 26 {
+			t.Fatalf("len(id) = %d, want 26 (%q)", len(more), more)
+		}
+		for _, r := range more {
+			if !strings.ContainsRune(charset, r) {
+				t.Fatalf("id %q contains %q outside the base32 alphabet", more, r)
+			}
+		}
+		if _, dup := seen[more]; dup {
+			t.Fatalf("duplicate material id in one millisecond: %q", more)
+		}
+		seen[more] = struct{}{}
 	}
 }

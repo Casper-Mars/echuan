@@ -31,5 +31,17 @@ review_stale_hours = 72
 # 单个素材允许的最大字节数（默认 20 MiB）
 material_max_bytes = 20971520
 
+# Worker 存活时间：注册后超过该时长未心跳即视为离线（Go duration 语法）
+worker_ttl = "45s"
+
+# Worker 心跳间隔，需显著小于 worker_ttl
+heartbeat_interval = "15s"
+
+# Worker 注册时 metadata 允许的最大字节数（默认 8 KiB）
+worker_metadata_max_bytes = 8192
+
+# 离线 Worker 状态的保留时长（默认 7 天，Go duration 语法）
+worker_retention = "168h"
+
 # 日志级别：debug / info / warn / error
 log_level = "info"
