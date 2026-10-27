@@ -24,6 +24,30 @@ export interface TaskStats {
   by_status?: Record<string, number>
 }
 
+/** 一个物料版本（需求 / 方案 / 报告共用）。 */
+export interface Material {
+  material_id: string
+  kind: number
+  version: number
+  title: string
+  sha256: string
+  size: number
+  uploaded_by: string
+  create_time: string
+}
+
+/** 版本链上的一环；首版 previous_material_id 为 null。 */
+export interface MaterialVersion extends Material {
+  previous_material_id: string | null
+}
+
+/** GET /v1/projects/materials 的响应。 */
+export interface MaterialChain {
+  items: MaterialVersion[]
+  current_material_id?: string
+  count: number
+}
+
 export interface Project {
   id: string
   project_id: string
@@ -43,6 +67,14 @@ export interface Project {
 export interface ProjectList {
   items: Project[]
   next_cursor?: string
+}
+
+/** GET /v1/projects?id= 的详情：在列表字段上追加正文与当前版元信息。 */
+export interface ProjectDetail extends Project {
+  requirement: Material | null
+  requirement_md: string
+  spec: Material | null
+  spec_excerpt: string | null
 }
 
 export interface Task {
@@ -69,6 +101,41 @@ export interface TaskList {
   items: Task[]
   next_cursor?: string
 }
+
+/** 任务进行中的租约（lease_id + 到期时间）。 */
+export interface TaskLease {
+  lease_id: string
+  until: string
+}
+
+/** GET /v1/tasks?id= 的详情：在列表字段上追加报告与租约。 */
+export interface TaskDetail extends Task {
+  report: Material | null
+  lease: TaskLease | null
+}
+
+/** POST /v1/products 的请求体。 */
+export interface ProductCreateRequest {
+  product_id: string
+  name: string
+  git_url: string
+  description?: string
+  license?: string
+}
+
+/** PATCH /v1/products?id= 的请求体；product_id 不可修改。 */
+export interface ProductPatchRequest {
+  name?: string
+  git_url?: string
+  description?: string
+  license?: string
+}
+
+/** 项目评审门的裁决（approve/reject，reject 必带 reason）。 */
+export type ProjectDecision = 'approve' | 'reject'
+
+/** 任务裁决（accept/rework 作用于待验收，retry/abandon 作用于已失败）。 */
+export type TaskDecision = 'accept' | 'rework' | 'retry' | 'abandon'
 
 /** 统一错误体 {code,message,details,request_id}。 */
 export interface ErrorBody {

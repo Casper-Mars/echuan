@@ -56,6 +56,9 @@ export function usePolling<T>(
     let cancelled = false
     let inFlight = false
     let failing = false
+    // 写操作成功后的手动刷新：若刚好有请求在飞，则在它结束后立即补拉一次，
+    // 而不是等下一个 5s 周期（列表状态必须在 5s 内，实际上立即更新）。
+    let pendingRefresh = false
 
     const clearTimer = () => {
       if (timerRef.current !== null) {
@@ -75,7 +78,14 @@ export function usePolling<T>(
     }
 
     const tick = async (manual: boolean) => {
-      if (cancelled || inFlight) return
+      if (cancelled) return
+      if (inFlight) {
+        if (manual) {
+          pendingRefresh = true
+          setRefreshing(true)
+        }
+        return
+      }
       inFlight = true
       const controller = new AbortController()
       abortRef.current = controller
@@ -97,7 +107,12 @@ export function usePolling<T>(
         if (!cancelled) {
           setLoading(false)
           setRefreshing(false)
-          schedule()
+          if (pendingRefresh) {
+            pendingRefresh = false
+            void tick(false)
+          } else {
+            schedule()
+          }
         }
       }
     }

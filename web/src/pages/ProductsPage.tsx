@@ -1,24 +1,31 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { listProducts } from '../api/client'
+import type { Product } from '../api/types'
 import { itemsOf } from '../api/types'
 import { useDrawer } from '../components/DrawerContext'
+import { ProductFormDialog } from '../components/ProductFormDialog'
 import {
   DetailButton,
-  DrawerPlaceholder,
   EmptyState,
   ErrorNotice,
   LoadingState,
   RefreshBar,
 } from '../components/States'
 import { usePolling } from '../hooks/usePolling'
+import { formatDateTime } from '../lib/format'
 import { isInteractiveTarget } from '../lib/interaction'
 
-/** 产品列表：卡片展示编号、名称、git 地址、证书等信息，点击进入项目列表。 */
+/**
+ * 产品列表：卡片展示编号、名称、git 地址、证书与项目数；
+ * 支持新建产品、编辑产品（改名等），点击卡片进入项目列表。
+ */
 export function ProductsPage() {
   const navigate = useNavigate()
   const openDrawer = useDrawer()
   const { data, error, loading, refreshing, lastUpdated, refresh } = usePolling(listProducts, [])
   const products = itemsOf(data)
+  const [form, setForm] = useState<{ product?: Product } | null>(null)
 
   return (
     <section className="page">
@@ -27,12 +34,17 @@ export function ProductsPage() {
           <h1>产品</h1>
           <p className="muted">选择一个产品，查看其需求项目与任务看板。</p>
         </div>
-        <RefreshBar
-          lastUpdated={lastUpdated}
-          refreshing={refreshing}
-          error={error}
-          onRefresh={refresh}
-        />
+        <div className="page-head-actions">
+          <RefreshBar
+            lastUpdated={lastUpdated}
+            refreshing={refreshing}
+            error={error}
+            onRefresh={refresh}
+          />
+          <button type="button" className="action action-primary" onClick={() => setForm({})}>
+            新建产品
+          </button>
+        </div>
       </header>
 
       <ErrorNotice error={error} onRetry={refresh} />
@@ -42,7 +54,7 @@ export function ProductsPage() {
         <EmptyState title="产品加载失败" hint="页面会自动重试；也可以点击上方“重试”。" />
       )}
       {data && products.length === 0 && (
-        <EmptyState title="还没有产品" hint="创建产品后，这里会显示产品卡片。" />
+        <EmptyState title="还没有产品" hint="点击右上角“新建产品”创建第一个产品。" />
       )}
 
       {products.length > 0 && (
@@ -72,16 +84,20 @@ export function ProductsPage() {
                     onClick={() =>
                       openDrawer({
                         title: `产品 ${product.product_id}`,
-                        body: (
-                          <DrawerPlaceholder
-                            kind="产品"
-                            id={product.product_id}
-                            status={product.name}
-                          />
-                        ),
+                        body: <ProductDetail product={product} />,
                       })
                     }
                   />
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setForm({ product })
+                    }}
+                  >
+                    编辑
+                  </button>
                   <span className="link">查看项目 →</span>
                 </div>
               </footer>
@@ -89,6 +105,51 @@ export function ProductsPage() {
           ))}
         </div>
       )}
+
+      {form && (
+        <ProductFormDialog
+          product={form.product}
+          onClose={() => setForm(null)}
+          onSaved={refresh}
+        />
+      )}
     </section>
+  )
+}
+
+function ProductDetail({ product }: { product: Product }) {
+  return (
+    <div className="detail">
+      <div className="detail-summary">
+        <span className="code">{product.product_id}</span>
+        <span>{product.project_count} 个项目</span>
+      </div>
+      <dl className="meta-grid">
+        <div>
+          <dt>名称</dt>
+          <dd>{product.name || '—'}</dd>
+        </div>
+        <div>
+          <dt>证书</dt>
+          <dd>{product.license || '—'}</dd>
+        </div>
+        <div>
+          <dt>create_time</dt>
+          <dd>{formatDateTime(product.create_time)}</dd>
+        </div>
+        <div>
+          <dt>update_time</dt>
+          <dd>{formatDateTime(product.update_time)}</dd>
+        </div>
+      </dl>
+      <section className="detail-section">
+        <h3>git 地址</h3>
+        <p className="mono">{product.git_url || '—'}</p>
+      </section>
+      <section className="detail-section">
+        <h3>描述</h3>
+        <p className={product.description ? '' : 'muted'}>{product.description || '—'}</p>
+      </section>
+    </div>
   )
 }

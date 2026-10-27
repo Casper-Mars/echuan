@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react'
 import { ApiError, describeError } from '../api/client'
 import { formatClock } from '../lib/format'
 
@@ -104,31 +103,5 @@ export function DetailButton({ onClick, label = '详情' }: { onClick: () => voi
     >
       {label}
     </button>
-  )
-}
-
-/** 本任务仅提供占位内容，真正的详情/决策交互属于任务-15。 */
-export function DrawerPlaceholder({
-  kind,
-  id,
-  status,
-}: {
-  kind: string
-  id: string
-  status?: string
-  children?: ReactNode
-}) {
-  return (
-    <div className="placeholder">
-      <p className="placeholder-badge">
-        {kind} · {id}
-      </p>
-      {status && <p>当前状态：{status}</p>}
-      <p className="muted">抽屉容器已就绪；详情内容与决策交互将在任务-15 实现。</p>
-      <label className="field">
-        <span>备注（占位输入，用于验证轮询不覆盖输入）</span>
-        <textarea rows={4} placeholder="在此输入时，页面轮询不会覆盖已有数据…" />
-      </label>
-    </div>
   )
 }

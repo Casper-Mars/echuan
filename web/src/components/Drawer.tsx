@@ -15,7 +15,10 @@ export function Drawer({ open, title, onClose, children }: DrawerProps) {
   useEffect(() => {
     if (!open) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key !== 'Escape') return
+      // 抽屉内打开的决策/确认弹窗优先消费 ESC，避免一次按键同时关闭两层。
+      if (document.querySelector('[data-modal]')) return
+      onClose()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)

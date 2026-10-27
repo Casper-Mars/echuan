@@ -1,10 +1,17 @@
 import type {
   ErrorBody,
+  MaterialChain,
   Product,
+  ProductCreateRequest,
   ProductList,
+  ProductPatchRequest,
   Project,
+  ProjectDecision,
+  ProjectDetail,
   ProjectList,
   Task,
+  TaskDecision,
+  TaskDetail,
   TaskList,
 } from './types'
 
@@ -130,12 +137,113 @@ export function getProduct(id: string, signal?: AbortSignal): Promise<Product | 
   return request<Product | ProductList>('/v1/products', { query: { id }, signal })
 }
 
+/** 产品详情（?id= 固定返回 Product，而非列表）。 */
+export function getProductDetail(id: string, signal?: AbortSignal): Promise<Product> {
+  return request<Product>('/v1/products', { query: { id }, signal })
+}
+
+export function createProduct(body: ProductCreateRequest): Promise<Product> {
+  return request<Product>('/v1/products', { method: 'POST', body })
+}
+
+export function updateProduct(id: string, body: ProductPatchRequest): Promise<Product> {
+  return request<Product>('/v1/products', { method: 'PATCH', query: { id }, body })
+}
+
+/**
+ * 项目列表。后端 status 只接受单个整数，而“待我决策”包含 1/3/5，
+ * 因此统一拉全量（上限 200）后在页面内过滤。
+ */
 export function listProjects(productId: string, signal?: AbortSignal): Promise<ProjectList> {
-  return request<ProjectList>('/v1/projects', { query: { product_id: productId }, signal })
+  return request<ProjectList>('/v1/projects', {
+    query: { product_id: productId, limit: 200 },
+    signal,
+  })
+}
+
+export function getProject(id: string, signal?: AbortSignal): Promise<ProjectDetail> {
+  return request<ProjectDetail>('/v1/projects', { query: { id }, signal })
+}
+
+/** kind=1 需求 / kind=2 方案，返回该物料的完整版本链。 */
+export function listProjectMaterials(
+  projectId: string,
+  kind: 1 | 2,
+  signal?: AbortSignal,
+): Promise<MaterialChain> {
+  return request<MaterialChain>('/v1/projects/materials', {
+    query: { id: projectId, kind },
+    signal,
+  })
+}
+
+/** 立项：draft → spec_review，无 If-Match。 */
+export function acceptProject(id: string): Promise<Project> {
+  return request<Project>('/v1/projects/accept', { method: 'POST', query: { id } })
+}
+
+/** 评审门裁决；必须带 If-Match（version）。 */
+export function decideProject(
+  id: string,
+  decision: ProjectDecision,
+  reason: string,
+  version: number,
+): Promise<Project> {
+  return request<Project>('/v1/projects/decide', {
+    method: 'POST',
+    query: { id },
+    body: { decision, reason },
+    version,
+  })
+}
+
+/** 取消项目；无 If-Match，终态由后端 409 invalid_state 兜底。 */
+export function cancelProject(id: string): Promise<Project> {
+  return request<Project>('/v1/projects/cancel', { method: 'POST', query: { id } })
 }
 
 export function listTasks(projectId: string, signal?: AbortSignal): Promise<TaskList> {
-  return request<TaskList>('/v1/tasks', { query: { project_id: projectId }, signal })
+  return request<TaskList>('/v1/tasks', {
+    query: { project_id: projectId, limit: 200 },
+    signal,
+  })
+}
+
+export function getTask(id: string, signal?: AbortSignal): Promise<TaskDetail> {
+  return request<TaskDetail>('/v1/tasks', { query: { id }, signal })
+}
+
+/** 任务裁决；必须带 If-Match（version）。 */
+export function decideTask(
+  id: string,
+  decision: TaskDecision,
+  reason: string,
+  version: number,
+): Promise<TaskDetail> {
+  return request<TaskDetail>('/v1/tasks/decide', {
+    method: 'POST',
+    query: { id },
+    body: { decision, reason },
+    version,
+  })
+}
+
+/** 物料下载地址（同源字节流，支持 HEAD/Range）。 */
+export function materialDownloadUrl(materialId: string): string {
+  return `/v1/materials?id=${encodeURIComponent(materialId)}`
+}
+
+/** 写操作失败时的单行提示：message + code + request_id。 */
+export function errorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    const parts = [error.message || '请求失败']
+    parts.push(`code: ${error.code}`)
+    if (error.requestId) parts.push(`request_id: ${error.requestId}`)
+    return parts.join(' · ')
+  }
+  if (error instanceof NetworkError) return `${error.message} · code: ${error.code}`
+  if (error instanceof Error) return error.message
+  return String(error)
 }
 
 export function isProduct(value: Product | ProductList): value is Product {

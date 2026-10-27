@@ -65,3 +65,47 @@ export function formatClock(date: Date | null): string {
   if (!date) return '—'
   return date.toLocaleTimeString('zh-CN', { hour12: false })
 }
+
+/** 绝对时间（详情里展示 create_time / update_time）。 */
+export function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+/** 字节数人性化：报告/物料大小。 */
+export function formatBytes(size: number): string {
+  if (!Number.isFinite(size) || size < 0) return '—'
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** 全部项目状态（按整数升序，用于筛选下拉/按钮）。 */
+export const PROJECT_STATUS_OPTIONS: { status: number; label: string }[] = Object.keys(PROJECT_STATUS)
+  .map(Number)
+  .sort((a, b) => a - b)
+  .map((status) => ({ status, label: projectStatusLabel(status) }))
+
+/** 需要人工决策的项目状态：规格评审 / 方案评审 / 交付评审。 */
+export const PROJECT_PENDING_STATUSES = [1, 3, 5] as const
+
+/** 待决策超过 72 小时视为滞留（阈值可在此统一调整）。 */
+export const PENDING_STALE_MS = 72 * 60 * 60 * 1000
+
+export function isPendingProjectStatus(status: number): boolean {
+  return (PROJECT_PENDING_STATUSES as readonly number[]).includes(status)
+}
+
+/** 基于 update_time 判断待决策是否已滞留超阈值。 */
+export function isPendingStale(
+  updateTime: string | undefined,
+  now = Date.now(),
+  threshold = PENDING_STALE_MS,
+): boolean {
+  if (!updateTime) return false
+  const started = Date.parse(updateTime)
+  if (Number.isNaN(started)) return false
+  return now - started > threshold
+}

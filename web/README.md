@@ -1,13 +1,15 @@
 # echuan web
 
-驿传平台的 React + Vite 前端（任务-14：骨架与三级路由）。
+驿传平台的 React + Vite 前端（任务-15：三页面与决策交互）。
 
 ## 目录
 
-- `src/api` — 同源请求层（X-Actor / If-Match / 统一错误体）。
-- `src/hooks` — 5s 轮询封装 `usePolling`、产品名称。
-- `src/components` — 布局、面包屑、详情抽屉容器、状态组件。
-- `src/pages` — 产品列表 / 项目列表 / 任务看板三个最小页面。
+- `src/api` — 同源请求层（X-Actor / If-Match / 统一错误体）与契约类型。
+- `src/hooks` — 5s 轮询封装 `usePolling`（写操作后立即补拉）、产品名称。
+- `src/components` — 布局、面包屑、抽屉、弹窗、Markdown 安全渲染、详情与动作组件。
+- `src/pages` — 产品列表 / 项目列表 / 任务看板；所有跳转只靠点击，不要求手输 ID。
+
+Markdown（需求/方案/报告正文）由 `marked` 解析、`DOMPurify` 净化后渲染。
 
 ## 路由
 
