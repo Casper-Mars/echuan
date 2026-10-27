@@ -18,8 +18,8 @@ import (
 //
 // Ordering uses julianday() rather than the raw text column: update_time is
 // stored as RFC3339Nano, whose fractional part is variable length, so a plain
-// string ORDER BY would sort "…:00.500Z" after "…:00Z" even though .5s is
-// earlier. kind/id break ties deterministically.
+// string ORDER BY would sort "…:00.500Z" before "…:00Z" even though .5s is
+// later. kind/id break ties deterministically.
 const listInboxQuery = `SELECT kind, id, state, title, update_time, reason
 FROM (
   SELECT 'project' AS kind, p.project_id AS id, p.status AS state,
