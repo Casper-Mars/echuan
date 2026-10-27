@@ -153,9 +153,9 @@ func DecodeULIDMillis(id string) (int64, error) {
 // layout: the 128-bit value is left-padded with 2 zero bits to 130 bits and
 // split into 26 groups of 5 bits, most significant group first.
 //
-// Group i (0-based) covers bits (129-5i) down to (125-5i) of the padded
-// value, i.e. bits (125-5i)..(127-5i) of the value plus the padding bits
-// above bit 127, which are simply not present.
+// Group i (0-based) covers padded bits (129-5i) down to (125-5i). Only the
+// first group (i = 0) reaches above bit 127, where the two padding bits of
+// the 130-bit layout sit; every later group maps entirely onto value bits.
 func encodeULID(raw [16]byte) string {
 	var out [ULIDLength]byte
 	for i := 0; i < ULIDLength; i++ {
