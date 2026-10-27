@@ -142,6 +142,12 @@ func (s *Schema) UnmarshalYAML(value *yaml.Node) error {
 			return fmt.Errorf("unsupported schema keyword %q", keyword)
 		}
 	}
+	// OpenAPI 3.0 does not allow $ref to carry sibling keywords: everything
+	// next to a $ref is ignored by tooling. Nullability of a reference is
+	// expressed as `nullable: true` plus an allOf holding the $ref.
+	if _, hasRef := raw["$ref"]; hasRef && len(raw) > 1 {
+		return fmt.Errorf("$ref must not be combined with sibling keywords")
+	}
 	type plain Schema
 	var decoded plain
 	if err := value.Decode(&decoded); err != nil {
@@ -460,10 +466,10 @@ func (d *Document) validateWith(s *Schema, value any, path string, depth int, ex
 	if s == nil {
 		return fmt.Errorf("%s: nil schema", path)
 	}
+	if value == nil && s.Nullable {
+		return nil
+	}
 	if s.Ref != "" {
-		if value == nil && s.Nullable {
-			return nil
-		}
 		name, err := d.refName(s.Ref)
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
@@ -509,9 +515,6 @@ func (d *Document) validateWith(s *Schema, value any, path string, depth int, ex
 	}
 
 	if value == nil {
-		if s.Nullable {
-			return nil
-		}
 		return fmt.Errorf("%s: is null but schema is not nullable", path)
 	}
 	if err := d.checkEnum(s.Enum, value, path); err != nil {

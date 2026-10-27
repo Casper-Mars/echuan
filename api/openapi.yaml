@@ -8,7 +8,7 @@ info:
     资源列表与详情共用同一路径（?id= 选择详情），因此一个 method+path
     只计一个 operation。
 servers:
-  - url: /
+  - url: http://127.0.0.1:8720
 tags:
   - name: health
     description: 存活、就绪与版本信息
@@ -820,10 +820,50 @@ paths:
               schema:
                 type: string
                 format: binary
+        "206":
+          description: 部分内容（Range 请求命中）
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            Content-Range:
+              description: 返回的字节区间与总长度
+              schema:
+                type: string
+            ETag:
+              description: 物料内容的 SHA-256
+              schema:
+                type: string
+          content:
+            text/markdown:
+              schema:
+                type: string
+                format: binary
+        "304":
+          description: 未修改（If-None-Match 命中 ETag，无响应体）
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              description: 物料内容的 SHA-256
+              schema:
+                type: string
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "416":
+          description: 请求的字节范围不可满足
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            Content-Range:
+              description: 资源总长度（bytes */<size>）
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /v1/inbox:
     get:
       operationId: listInbox
@@ -974,6 +1014,7 @@ components:
             - internal
             - method_not_allowed
             - timeout
+            - range_not_satisfiable
         message:
           type: string
         details:
@@ -1191,13 +1232,15 @@ components:
           type: string
           format: date-time
         requirement:
-          $ref: "#/components/schemas/Material"
           nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Material"
         requirement_md:
           type: string
         spec:
-          $ref: "#/components/schemas/Material"
           nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Material"
         spec_excerpt:
           type: string
           nullable: true
@@ -1441,11 +1484,13 @@ components:
           type: string
           format: date-time
         report:
-          $ref: "#/components/schemas/Material"
           nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Material"
         lease:
-          $ref: "#/components/schemas/TaskLease"
           nullable: true
+          allOf:
+            - $ref: "#/components/schemas/TaskLease"
     TaskCreateRequest:
       type: object
       additionalProperties: false

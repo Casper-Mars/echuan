@@ -111,11 +111,3 @@ func (h *inboxHandler) list(w http.ResponseWriter, r *http.Request) {
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 }
-
-// methodNotAllowed answers every verb /v1/inbox does not serve. The mux would
-// answer 405 on its own, but with a plain-text body; routing it here keeps the
-// unified error envelope on every response.
-func (h *inboxHandler) methodNotAllowed(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Allow", "GET, HEAD")
-	writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
-}

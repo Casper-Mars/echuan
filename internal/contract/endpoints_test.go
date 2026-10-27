@@ -21,6 +21,7 @@ import (
 	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
+	"github.com/Casper-Mars/echuan/internal/web"
 )
 
 const contractDocPath = "../../api/openapi.yaml"
@@ -89,8 +90,11 @@ func newEndpointEnv(t *testing.T) *endpointEnv {
 	materials := app.NewMaterialService(st, writer)
 	inbox := app.NewInboxService(st, logger, 72)
 
+	// The production SPA fallback must take part in the contract: with a nil
+	// fallback the router's /v1 semantics hide behind ServeMux defaults and the
+	// 404/405 behaviour silently diverges from what users see.
 	handler := api.Chain(
-		api.NewRouter(logger, nil,
+		api.NewRouter(logger, web.Handler(),
 			[]api.HealthChecker{store.NewDBChecker(st), store.NewMigrationChecker(st)},
 			products, projects, tasks, claims, materials, inbox),
 		api.Recover(logger),
@@ -576,30 +580,63 @@ func TestContractEndpoints(t *testing.T) {
 		t.Error("Range response missing X-Request-Id")
 	}
 
-	// ---- unified 404 / 405 ------------------------------------------------
-	for _, target := range []string{"/v1/nope", "/v1/nope/deeper"} {
-		raw, headers = e.call(http.MethodGet, target, nil, nil, http.StatusNotFound)
-		body := object(t, raw)
-		if code := stringField(t, body, "code"); code != "not_found" {
-			t.Errorf("GET %s code = %q", target, code)
-		}
-		if details, ok := body["details"].([]any); !ok || len(details) != 0 {
-			t.Errorf("GET %s details = %v, want []", target, body["details"])
-		}
-		if got := stringField(t, body, "request_id"); got != headers.Get(api.HeaderRequestID) {
-			t.Errorf("GET %s request_id mismatch", target)
-		}
+	// An unsatisfiable range must keep the unified error envelope and the
+	// Content-Range header that tells the client the real size.
+	raw, rangeHeaders := e.call(http.MethodGet, "/v1/materials?id="+reportMaterial, nil,
+		map[string]string{"Range": "bytes=999999999-"}, http.StatusRequestedRangeNotSatisfiable)
+	if ct := rangeHeaders.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("unsatisfiable Range Content-Type = %q, want application/json", ct)
+	}
+	if cr := rangeHeaders.Get("Content-Range"); !strings.HasPrefix(cr, "bytes */") {
+		t.Errorf("unsatisfiable Range Content-Range = %q, want bytes */<size>", cr)
+	}
+	rangeBody := object(t, raw)
+	if code := stringField(t, rangeBody, "code"); code != "range_not_satisfiable" {
+		t.Errorf("unsatisfiable Range code = %q", code)
+	}
+	if details, ok := rangeBody["details"].([]any); !ok || len(details) != 0 {
+		t.Errorf("unsatisfiable Range details = %v, want []", rangeBody["details"])
 	}
 
-	raw, headers = e.call(http.MethodPut, "/v1/products", nil, nil, http.StatusMethodNotAllowed)
-	methodBody := object(t, raw)
-	if code := stringField(t, methodBody, "code"); code != "method_not_allowed" {
-		t.Errorf("PUT /v1/products code = %q", code)
+	// ---- unified 404 / 405 under the production fallback ------------------
+	// Each case pins the full Allow header, not just its presence: a truncated
+	// list is exactly the bug the SPA fallback used to produce.
+	fallbackCases := []struct {
+		name       string
+		method     string
+		target     string
+		wantStatus int
+		wantCode   string
+		wantAllow  string
+	}{
+		{"unknown path PUT", http.MethodPut, "/v1/nope", http.StatusNotFound, "not_found", ""},
+		{"unknown path PATCH", http.MethodPatch, "/v1/nope", http.StatusNotFound, "not_found", ""},
+		{"unknown path GET", http.MethodGet, "/v1/nope", http.StatusNotFound, "not_found", ""},
+		{"unknown nested path", http.MethodGet, "/v1/nope/deeper", http.StatusNotFound, "not_found", ""},
+		{"products wrong method", http.MethodPut, "/v1/products", http.StatusMethodNotAllowed, "method_not_allowed", "DELETE, GET, HEAD, PATCH, POST"},
+		{"plans wrong method", http.MethodGet, "/v1/projects/plans", http.StatusMethodNotAllowed, "method_not_allowed", "POST"},
+		{"claim wrong method", http.MethodGet, "/v1/tasks/claim", http.StatusMethodNotAllowed, "method_not_allowed", "POST"},
+		{"healthz wrong method", http.MethodPost, "/healthz", http.StatusMethodNotAllowed, "method_not_allowed", "GET, HEAD"},
 	}
-	if allow := headers.Get("Allow"); !strings.Contains(allow, "POST") {
-		t.Errorf("Allow = %q, want it to contain POST", allow)
+	for _, tc := range fallbackCases {
+		raw, headers = e.call(tc.method, tc.target, nil, nil, tc.wantStatus)
+		body := object(t, raw)
+		if code := stringField(t, body, "code"); code != tc.wantCode {
+			t.Errorf("%s: code = %q, want %q", tc.name, code, tc.wantCode)
+		}
+		if details, ok := body["details"].([]any); !ok || len(details) != 0 {
+			t.Errorf("%s: details = %v, want []", tc.name, body["details"])
+		}
+		if got := stringField(t, body, "request_id"); got != headers.Get(api.HeaderRequestID) {
+			t.Errorf("%s: request_id = %q, header = %q", tc.name, got, headers.Get(api.HeaderRequestID))
+		}
+		if ct := headers.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Errorf("%s: Content-Type = %q, want application/json", tc.name, ct)
+		}
+		if allow := headers.Get("Allow"); allow != tc.wantAllow {
+			t.Errorf("%s: Allow = %q, want %q", tc.name, allow, tc.wantAllow)
+		}
 	}
-	e.call(http.MethodPost, "/healthz", nil, nil, http.StatusMethodNotAllowed)
 
 	// A business error must keep its own envelope rather than being replaced.
 	raw, _ = e.call(http.MethodPost, "/v1/projects/accept?id="+mainID, nil, nil, http.StatusConflict)
@@ -644,7 +681,7 @@ func TestContractEndpoints(t *testing.T) {
 			t.Errorf("observed code %q (%d times) is not in Error.code enum", code, count)
 		}
 	}
-	for _, code := range []string{"invalid_argument", "not_found", "invalid_state", "invalid_version", "conflict", "lease_lost", "material_required", "too_large", "method_not_allowed"} {
+	for _, code := range []string{"invalid_argument", "not_found", "invalid_state", "invalid_version", "conflict", "lease_lost", "material_required", "too_large", "method_not_allowed", "range_not_satisfiable"} {
 		if e.codes[code] == 0 {
 			t.Errorf("error code %q was never exercised", code)
 		}
@@ -680,6 +717,38 @@ func TestContractEndpoints(t *testing.T) {
 	requiredSchema.Required = append(requiredSchema.Required, "definitely_missing")
 	if err := required.Validate(http.MethodGet, "/healthz", 200, healthBody); err == nil {
 		t.Error("validator accepted a response missing a newly required field")
+	}
+}
+
+// TestRoutesMatchOpenAPI keeps the router's method table and the documented
+// operation set in lockstep: a route added on one side alone fails here instead
+// of being discovered by a client hitting a 404/405 in production.
+func TestRoutesMatchOpenAPI(t *testing.T) {
+	doc, err := Load(contractDocPath)
+	if err != nil {
+		t.Fatalf("load %s: %v", contractDocPath, err)
+	}
+
+	want := map[string]bool{}
+	for _, op := range doc.Operations() {
+		want[op.Method+" "+op.Path] = true
+	}
+	got := map[string]bool{}
+	for _, route := range api.Routes() {
+		got[route.Method+" "+route.Path] = true
+	}
+	if len(want) != 28 {
+		t.Fatalf("openapi operations = %d, want 28", len(want))
+	}
+	for key := range want {
+		if !got[key] {
+			t.Errorf("operation %s is documented but not routed", key)
+		}
+	}
+	for key := range got {
+		if !want[key] {
+			t.Errorf("route %s is served but not documented", key)
+		}
 	}
 }
 

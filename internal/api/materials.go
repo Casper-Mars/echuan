@@ -128,14 +128,6 @@ func (h *materialsHandler) chain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-// methodNotAllowed answers every method the two material routes do not serve.
-// The mux would answer 405 on its own, but with a plain-text body; routing it
-// here keeps the unified error envelope on every response.
-func (h *materialsHandler) methodNotAllowed(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Allow", "GET, HEAD")
-	writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
-}
-
 // parseMaterialKind validates ?kind=. Only requirement (1) and spec (2) have a
 // chain endpoint today; a report chain belongs to a task, not a project.
 func parseMaterialKind(raw string) (int, *domain.ValidationError) {

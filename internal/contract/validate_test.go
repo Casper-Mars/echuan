@@ -39,6 +39,15 @@ components:
         - type: object
           properties:
             extra: {type: string}
+    Box:
+      type: object
+      additionalProperties: false
+      required: [item]
+      properties:
+        item:
+          nullable: true
+          allOf:
+            - {$ref: "#/components/schemas/Sample"}
 `
 
 func decodeJSON(t *testing.T, raw string) any {
@@ -107,6 +116,23 @@ func TestValidateAllOf(t *testing.T) {
 	}
 }
 
+// TestValidateNullableAllOf covers the OpenAPI 3.0 way of making a reference
+// nullable: null passes, a value is validated against the referenced schema.
+func TestValidateNullableAllOf(t *testing.T) {
+	doc := fixture(t)
+	if err := doc.ValidateComponent("Box", decodeJSON(t, `{"item":null}`)); err != nil {
+		t.Fatalf("nullable allOf with null: %v", err)
+	}
+	valid := `{"item":{"name":"x","count":1,"when":"2026-10-27T02:00:00Z"}}`
+	if err := doc.ValidateComponent("Box", decodeJSON(t, valid)); err != nil {
+		t.Fatalf("nullable allOf with object: %v", err)
+	}
+	invalid := `{"item":{"name":"x","when":"2026-10-27T02:00:00Z"}}`
+	if err := doc.ValidateComponent("Box", decodeJSON(t, invalid)); err == nil {
+		t.Fatal("nullable allOf accepted an object missing a referenced field")
+	}
+}
+
 func TestParseRejectsBrokenDocuments(t *testing.T) {
 	cases := []struct {
 		name string
@@ -161,6 +187,31 @@ paths:
             application/json:
               schema: {type: string, pattern: "^x"}
 `, "unsupported schema keyword"},
+		{"ref with sibling", `
+openapi: 3.0.3
+info: {title: t, version: "1"}
+paths:
+  /x:
+    get:
+      operationId: getX
+      summary: x
+      tags: [x]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item:
+                    $ref: "#/components/schemas/Sample"
+                    nullable: true
+components:
+  schemas:
+    Sample:
+      type: string
+`, "$ref must not be combined with sibling keywords"},
 		{"duplicate operationId", `
 openapi: 3.0.3
 info: {title: t, version: "1"}
