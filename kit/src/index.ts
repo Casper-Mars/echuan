@@ -4,7 +4,8 @@
  * 职责边界（技术方案 v0.6 §1）：
  * - 声明插件标识 `name` 与依赖服务 `inject`；
  * - 在 `apply(ctx, config)` 里解析 5 项配置、落加载日志；
- * - 注册 3 个写工具（领卡 / 续租 / 交报告），只调平台契约、不提供门禁动作；
+ * - 注册 7 个工具：3 个写（领卡 / 续租 / 交报告）+ 4 个只读（待办 / 项目 / 任务 / 资料），
+ *   只调平台契约、不提供门禁动作；
  * - `worker.poll.enable=false`（默认）时**零请求、零定时器**，心跳循环完全不创建；
  * - `worker.metadata` 序列化后超过 8KiB 时只 warn 一条并**不启动心跳循环**（R-02），
  *   避免每轮都被平台拒（413）而永久刷屏；
@@ -143,8 +144,9 @@ export function apply(ctx: Context, config?: ConfigInput): void {
             },
           },
         })
-        log(`${TAG} 已注册 ${toolsModule.WRITE_TOOL_NAMES.length} 个写工具：`
-          + toolsModule.WRITE_TOOL_NAMES.join(', '))
+        log(`${TAG} 已注册 ${toolsModule.TOOL_NAMES.length} 个工具`
+          + `（${toolsModule.WRITE_TOOL_NAMES.length} 写 + ${toolsModule.READ_TOOL_NAMES.length} 读）：`
+          + toolsModule.TOOL_NAMES.join(', '))
       } catch (err) {
         warn(`${TAG} 工具注册失败：${messageOf(err)}`)
       }
