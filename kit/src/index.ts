@@ -80,7 +80,13 @@ export function apply(ctx: Context, config?: ConfigInput): void {
       + `timeout=${resolved.requestTimeoutMs}ms poll=${resolved.worker.poll.enable}`,
   )
 
-  reportMetadataBudget(resolved, log)
+  try {
+    reportMetadataBudget(resolved, log)
+  } catch (err) {
+    // S-04：metadata 不可序列化（循环引用 / BigInt）时只告警，不让插件装载失败。
+    const reason = err instanceof Error ? err.message : String(err)
+    log(`${TAG} 警告：${reason}`)
+  }
 
   // 所有运行期资源（当前只有定时器骨架，后续为工具注册 + HTTP 客户端）都挂在
   // 同一个 effect 上：fiber dispose（含 HMR 重载、profile 停用）时按逆序清理。

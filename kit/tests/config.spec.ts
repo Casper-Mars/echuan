@@ -68,6 +68,24 @@ describe('resolveConfig：覆盖与归一化', () => {
     expect(resolveConfig({ baseUrl: '   ' }).baseUrl).toBe(DEFAULT_BASE_URL)
   })
 
+  it('S-02：actor 做 trim；trim 后为空回落默认值', () => {
+    expect(resolveConfig({ actor: '  agent:echuan:worker-7  ' }).actor).toBe('agent:echuan:worker-7')
+    expect(resolveConfig({ actor: '   ' }).actor).toBe(DEFAULT_ACTOR)
+    expect(resolveConfig({ actor: '' }).actor).toBe(DEFAULT_ACTOR)
+  })
+
+  it('S-03：baseUrl 做 URL 形态校验，非法时抛可读错误', () => {
+    expect(() => resolveConfig({ baseUrl: 'not a url' })).toThrow(/baseUrl 不是合法的 URL/)
+    expect(() => resolveConfig({ baseUrl: 'http://' })).toThrow(/baseUrl 不是合法的 URL/)
+    expect(() => resolveConfig({ baseUrl: 'ftp://host:21' })).toThrow(/只支持 http\/https/)
+    expect(() => resolveConfig({ baseUrl: 'http://user:pw@host:8720' })).toThrow(/不能包含账号或密码/)
+    expect(() => resolveConfig({ baseUrl: 'http://host:8720/?a=1' })).toThrow(/不能带查询串或片段/)
+    expect(() => resolveConfig({ baseUrl: 'http://host:8720/#x' })).toThrow(/不能带查询串或片段/)
+
+    expect(resolveConfig({ baseUrl: 'https://echuan.example.com/prefix/' }).baseUrl)
+      .toBe('https://echuan.example.com/prefix')
+  })
+
   it('非法类型按 Schema 语义抛错，不静默兜底', () => {
     // @ts-expect-error 故意传错类型：运行期应被 Schema 拒绝
     expect(() => resolveConfig({ requestTimeoutMs: 'abc' })).toThrow(TypeError)
@@ -81,9 +99,14 @@ describe('metadataByteLength', () => {
     expect(metadataByteLength({ k: '驿传' })).toBe(Buffer.byteLength('{"k":"驿传"}', 'utf8'))
   })
 
-  it('不可序列化时返回 0，不抛错', () => {
+  it('S-04：循环引用抛可读错误，不再静默返回 0', () => {
     const cyclic: Record<string, unknown> = {}
     cyclic.self = cyclic
-    expect(metadataByteLength(cyclic)).toBe(0)
+    expect(() => metadataByteLength(cyclic)).toThrow(/无法序列化为 JSON/)
+    expect(() => metadataByteLength(cyclic)).toThrow(/循环引用/)
+  })
+
+  it('S-04：BigInt 同样抛可读错误', () => {
+    expect(() => metadataByteLength({ n: 1n })).toThrow(/无法序列化为 JSON/)
   })
 })

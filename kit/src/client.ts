@@ -1,0 +1,713 @@
+/**
+ * 驿传平台 HTTP 客户端 —— 工具层与平台交互的**唯一出口**。
+ *
+ * 职责：
+ * 1. 拼接 `baseUrl + path`，query 参数统一编码；
+ * 2. 每个请求带 `X-Actor`，有 body 时才带 `content-type: application/json`；
+ * 3. 按 `config.requestTimeoutMs` 超时，超时/网络失败都转成可读中文错误；
+ * 4. 解析成功体与错误体，把平台错误码翻译成「下一步该做什么」；
+ * 5. 204 = 「无活」，返回明确结果而不是抛异常。
+ *
+ * 设计约束：
+ * - 本文件是 `kit/src` 里**唯一**调用 `fetch(` 的地方；
+ * - `fetchImpl` 可注入（默认 `globalThis.fetch`），单测不连真实平台；
+ * - 不读环境变量、不写磁盘、不缓存响应、不存业务状态；
+ * - 只暴露工具包需要的 7 个动作（{@link TOOL_METHODS}），**没有任何门禁动作**
+ *   （accept / decide / cancel / rework / approve / reject 一律不提供）；
+ * - 与 `api/openapi.yaml` 一一对应：{@link TOOL_OPERATIONS} 记录每个方法对应的
+ *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 7 条确实存在。
+ *
+ * 任务-03 的 worker 注册/心跳方法**不在本文件**：核心 `requestRaw` /
+ * `requestJson` 与 7 个工具方法已经分离，worker 方法走独立命名空间，
+ * 不会破坏「恰好 7 个」的断言。
+ */
+import {
+  WORKER_METADATA_MAX_BYTES,
+  metadataByteLength,
+  type ResolvedConfig,
+} from './config.js'
+import {
+  DEFAULT_RETRY_AFTER_MS,
+  EchuanApiError,
+  EchuanClientError,
+  EchuanNetworkError,
+  EchuanTimeoutError,
+  EchuanValidationError,
+  composeApiMessage,
+  fallbackCodeForStatus,
+  hintForCode,
+  parseRetryAfter,
+  type ErrorDetail,
+} from './errors.js'
+
+/** `fetch` 的最小签名；注入假实现时无需依赖 DOM 类型。 */
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
+
+/** query 参数值；数组按 `key=v1&key=v2` 展开（openapi `explode: true`）。 */
+export type QueryValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | readonly (string | number)[]
+
+export type QueryParams = Record<string, QueryValue>
+
+/** 核心请求层依赖，单独创建便于测试与任务-03 复用。 */
+export interface RequestContext {
+  config: ResolvedConfig
+  fetchImpl: FetchLike
+}
+
+/** 客户端构造项。 */
+export interface ClientOptions {
+  /** 默认 `globalThis.fetch`；单测注入假实现。 */
+  fetchImpl?: FetchLike
+}
+
+/** 一次请求的描述。 */
+export interface RequestSpec {
+  method: 'GET' | 'POST'
+  /** 必须以 `/` 开头（契约里都是 `/v1/...`）。 */
+  path: string
+  query?: QueryParams
+  /** 有值时序列化为 JSON 并带 `content-type`；GET 不传。 */
+  body?: unknown
+}
+
+/** 核心请求层的原始响应（未解析业务语义）。 */
+export interface RawResponse {
+  status: number
+  text: string
+  headers: Headers
+  requestId: string | undefined
+}
+
+/** 成功结果：`data` 已按方法声明解析。 */
+export interface OkResult<T> {
+  kind: 'ok'
+  status: number
+  data: T
+  requestId?: string
+}
+
+/** 204「无活」结果：不是错误，任何 204 都走这条路径。 */
+export interface NoWorkResult {
+  kind: 'empty'
+  status: 204
+  message: string
+  requestId?: string
+}
+
+export type ApiResult<T> = OkResult<T> | NoWorkResult
+
+/** 204 的统一文案。 */
+export const NO_WORK_MESSAGE =
+  '无活：平台当前没有可领取的任务（HTTP 204）。'
+  + '下一步：按退避策略稍后再试，不要把 204 当错误重试。'
+
+// ---------------------------------------------------------------------------
+// 平台数据结构（只声明本工具包实际读取的字段，其余透传）
+// ---------------------------------------------------------------------------
+
+export interface ClaimedTask {
+  id: string
+  project_id: string
+  title: string
+  body_md: string
+  attempt: number
+  priority: number
+}
+
+export interface ClaimLease {
+  lease_id: string
+  until: string
+  ttl_seconds: number
+}
+
+export interface ClaimContext {
+  spec_version: number
+  spec_digest: string
+  product: { id: string; name: string; git_url: string }
+  workdir: string
+}
+
+export interface ClaimResponse {
+  task: ClaimedTask
+  lease: ClaimLease
+  context: ClaimContext
+}
+
+export interface HeartbeatResponse {
+  lease_id: string
+  until: string
+  ttl_seconds: number
+}
+
+export interface TaskDetail {
+  id?: string
+  task_id?: string
+  project_id?: string
+  status?: number
+  status_name?: string
+  [key: string]: unknown
+}
+
+export interface Task {
+  id?: string
+  [key: string]: unknown
+}
+
+export interface TaskList {
+  items: Task[]
+  next_cursor?: string
+}
+
+export interface Project {
+  id?: string
+  [key: string]: unknown
+}
+
+export interface ProjectList {
+  items: Project[]
+  next_cursor?: string
+}
+
+export interface InboxItem {
+  kind?: string
+  id?: string
+  state?: number
+  state_name?: string
+  title?: string
+  update_time?: string
+  age_seconds?: number
+  stale?: boolean
+  reason?: string | null
+  [key: string]: unknown
+}
+
+export interface InboxResponse {
+  items: InboxItem[]
+  count: number
+  review_stale_hours: number
+  generated_at: string
+}
+
+export interface MaterialBody {
+  /** 物料字节流（按文本读取；物料契约是 markdown）。 */
+  content: string
+  contentType: string
+  etag: string | undefined
+  materialId: string | undefined
+  materialVersion: number | undefined
+}
+
+// ---------------------------------------------------------------------------
+// 方法入参
+// ---------------------------------------------------------------------------
+
+export interface ClaimTaskInput {
+  product: string
+  task_id?: string
+  worker_id?: string
+}
+
+export interface RenewLeaseInput {
+  /** 任务 id，走 query `?id=`。 */
+  id: string
+  lease_id: string
+}
+
+export interface ReportTaskInput {
+  id: string
+  lease_id: string
+  summary_md: string
+}
+
+export interface InboxQuery {
+  limit?: number
+}
+
+export interface ProjectsQuery {
+  id?: string
+  product_id?: string
+  limit?: number
+  cursor?: string
+}
+
+export interface TasksQuery {
+  id?: string
+  project_id?: string
+  status?: readonly number[]
+  limit?: number
+  cursor?: string
+}
+
+export interface MaterialsQuery {
+  id: string
+}
+
+/** 7 个工具方法的集合（顺序即客户端对象属性顺序）。 */
+export const TOOL_METHODS = [
+  'claimTask',
+  'renewLease',
+  'reportTask',
+  'getInbox',
+  'listProjects',
+  'listTasks',
+  'getMaterials',
+] as const
+
+export type ToolMethodName = (typeof TOOL_METHODS)[number]
+
+/**
+ * 7 个方法 ↔ openapi operation 的对应表。
+ *
+ * `tool` 是客户端方法名；`method`/`path`/`operationId` 必须能在
+ * `api/openapi.yaml` 的 `paths` 下原样找到（单测解析 yaml 校验）。
+ */
+export const TOOL_OPERATIONS = [
+  { tool: 'claimTask', method: 'POST', path: '/v1/tasks/claim', operationId: 'claimTask' },
+  { tool: 'renewLease', method: 'POST', path: '/v1/tasks/heartbeat', operationId: 'heartbeatTask' },
+  { tool: 'reportTask', method: 'POST', path: '/v1/tasks/report', operationId: 'reportTask' },
+  { tool: 'getInbox', method: 'GET', path: '/v1/inbox', operationId: 'listInbox' },
+  { tool: 'listProjects', method: 'GET', path: '/v1/projects', operationId: 'listOrGetProjects' },
+  { tool: 'listTasks', method: 'GET', path: '/v1/tasks', operationId: 'listOrGetTasks' },
+  { tool: 'getMaterials', method: 'GET', path: '/v1/materials', operationId: 'downloadMaterial' },
+] as const
+
+/** 客户端对外的 7 个动作。 */
+export interface EchuanClient {
+  /**
+   * `POST /v1/tasks/claim`（operationId `claimTask`）。
+   * 无卡可领时平台返回 204，本方法返回 {@link NoWorkResult}，不抛错。
+   */
+  claimTask(input: ClaimTaskInput): Promise<ApiResult<ClaimResponse>>
+  /** `POST /v1/tasks/heartbeat`（operationId `heartbeatTask`）。 */
+  renewLease(input: RenewLeaseInput): Promise<ApiResult<HeartbeatResponse>>
+  /** `POST /v1/tasks/report`（operationId `reportTask`）。 */
+  reportTask(input: ReportTaskInput): Promise<ApiResult<TaskDetail>>
+  /** `GET /v1/inbox`（operationId `listInbox`）。 */
+  getInbox(query?: InboxQuery): Promise<ApiResult<InboxResponse>>
+  /** `GET /v1/projects`（operationId `listOrGetProjects`）；带 `id` 时为详情。 */
+  listProjects(query?: ProjectsQuery): Promise<ApiResult<Project | ProjectList>>
+  /** `GET /v1/tasks`（operationId `listOrGetTasks`）；带 `id` 时为详情。 */
+  listTasks(query?: TasksQuery): Promise<ApiResult<TaskDetail | TaskList>>
+  /** `GET /v1/materials`（operationId `downloadMaterial`）；`?id=` 必填。 */
+  getMaterials(query: MaterialsQuery): Promise<ApiResult<MaterialBody>>
+}
+
+// ---------------------------------------------------------------------------
+// 核心请求层
+// ---------------------------------------------------------------------------
+
+/** 校验并创建请求上下文；`baseUrl` 非法时在发请求前直接报错。 */
+export function createRequestContext(
+  config: ResolvedConfig,
+  options: ClientOptions = {},
+): RequestContext {
+  assertUsableBaseUrl(config.baseUrl)
+  return {
+    config,
+    fetchImpl: options.fetchImpl ?? ((input, init) => fetch(input, init)),
+  }
+}
+
+/**
+ * `worker.metadata` 超过 {@link WORKER_METADATA_MAX_BYTES} 时在本地直接拒绝，
+ * 不等服务端 413。任务-03 的 worker 心跳发送 `{ metadata }` 时会自动经过这条校验。
+ */
+export function assertWorkerMetadataSize(metadata: Record<string, unknown>): void {
+  let bytes: number
+  try {
+    bytes = metadataByteLength(metadata)
+  } catch (err) {
+    throw new EchuanValidationError(messageOf(err), 'invalid_argument', 'metadata')
+  }
+  if (bytes > WORKER_METADATA_MAX_BYTES) {
+    throw new EchuanValidationError(
+      `worker.metadata 序列化后 ${bytes}B，超过平台上限 ${WORKER_METADATA_MAX_BYTES}B。`
+        + '下一步：缩小 metadata（删减字段或缩短取值）后再发送，不要原样重试。',
+      'too_large',
+      'metadata',
+    )
+  }
+}
+
+/**
+ * 发起一次请求并返回原始响应；非 2xx 抛 {@link EchuanApiError}。
+ *
+ * 这是插件里唯一接触 `fetch` 的地方。请求发出前会做序列化与 metadata 预算校验，
+ * 因此 D-01（metadata > 8KiB）不会消耗一次网络往返。
+ */
+export async function requestRaw(
+  ctx: RequestContext,
+  spec: RequestSpec,
+): Promise<RawResponse> {
+  if (!spec.path.startsWith('/')) {
+    throw new EchuanValidationError(
+      `请求路径必须以 / 开头，收到 ${JSON.stringify(spec.path)}。`
+        + '下一步：修正客户端实现（契约路径都形如 /v1/...）。',
+      'invalid_argument',
+      'path',
+    )
+  }
+
+  const bodyText = serializeBody(spec.body)
+  const url = buildUrl(ctx.config.baseUrl, spec.path, spec.query)
+  const headers: Record<string, string> = { 'X-Actor': ctx.config.actor }
+  if (bodyText !== undefined) headers['content-type'] = 'application/json'
+
+  const timeoutMs = ctx.config.requestTimeoutMs
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  const startedAt = Date.now()
+  let response: Response
+  try {
+    response = await ctx.fetchImpl(url, {
+      method: spec.method,
+      headers,
+      ...(bodyText === undefined ? {} : { body: bodyText }),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    // fetch 失败时立刻释放定时器；响应体读取阶段仍复用同一超时。
+    clearTimeout(timer)
+    const elapsedMs = Date.now() - startedAt
+    if (timedOut || isAbortError(err)) {
+      throw new EchuanTimeoutError(timeoutMs, elapsedMs)
+    }
+    throw new EchuanNetworkError(elapsedMs)
+  }
+
+  let text: string
+  try {
+    text = await response.text()
+  } catch (err) {
+    const elapsedMs = Date.now() - startedAt
+    if (timedOut || isAbortError(err)) {
+      throw new EchuanTimeoutError(timeoutMs, elapsedMs)
+    }
+    throw new EchuanNetworkError(elapsedMs)
+  } finally {
+    clearTimeout(timer)
+  }
+
+  if (!response.ok) {
+    throw toApiError(response, text)
+  }
+
+  const requestId = response.headers.get('x-request-id') ?? undefined
+  return { status: response.status, text, headers: response.headers, requestId }
+}
+
+/** JSON 响应包装：204 统一转成「无活」，2xx 解析 JSON。 */
+export async function requestJson<T>(
+  ctx: RequestContext,
+  spec: RequestSpec,
+): Promise<ApiResult<T>> {
+  const raw = await requestRaw(ctx, spec)
+  if (raw.status === 204) return emptyResult(raw.requestId)
+  return okResult(raw.status, parseSuccessJson<T>(raw), raw.requestId)
+}
+
+// ---------------------------------------------------------------------------
+// 客户端工厂
+// ---------------------------------------------------------------------------
+
+/**
+ * 创建客户端。返回对象**恰好**有 {@link TOOL_METHODS} 里的 7 个方法。
+ *
+ * @param config 已归一化的配置（见 `resolveConfig`）
+ * @param options `fetchImpl` 可注入，单测用假 fetch
+ */
+export function createClient(
+  config: ResolvedConfig,
+  options: ClientOptions = {},
+): EchuanClient {
+  const ctx = createRequestContext(config, options)
+
+  return {
+    async claimTask(input) {
+      const product = requireNonEmpty(input?.product, 'product')
+      const body: Record<string, string> = { product }
+      if (input?.task_id !== undefined) body.task_id = requireNonEmpty(input.task_id, 'task_id')
+      if (input?.worker_id !== undefined) body.worker_id = requireNonEmpty(input.worker_id, 'worker_id')
+      return requestJson<ClaimResponse>(ctx, {
+        method: 'POST',
+        path: '/v1/tasks/claim',
+        body,
+      })
+    },
+
+    async renewLease(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      const lease_id = requireNonEmpty(input?.lease_id, 'lease_id')
+      return requestJson<HeartbeatResponse>(ctx, {
+        method: 'POST',
+        path: '/v1/tasks/heartbeat',
+        query: { id },
+        body: { lease_id },
+      })
+    },
+
+    async reportTask(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      const lease_id = requireNonEmpty(input?.lease_id, 'lease_id')
+      const summary_md = requireString(input?.summary_md, 'summary_md')
+      return requestJson<TaskDetail>(ctx, {
+        method: 'POST',
+        path: '/v1/tasks/report',
+        query: { id },
+        body: { lease_id, summary_md },
+      })
+    },
+
+    async getInbox(query) {
+      return requestJson<InboxResponse>(ctx, {
+        method: 'GET',
+        path: '/v1/inbox',
+        ...(query === undefined ? {} : { query: toQuery(query) }),
+      })
+    },
+
+    async listProjects(query) {
+      return requestJson<Project | ProjectList>(ctx, {
+        method: 'GET',
+        path: '/v1/projects',
+        ...(query === undefined ? {} : { query: toQuery(query) }),
+      })
+    },
+
+    async listTasks(query) {
+      return requestJson<TaskDetail | TaskList>(ctx, {
+        method: 'GET',
+        path: '/v1/tasks',
+        ...(query === undefined ? {} : { query: toQuery(query) }),
+      })
+    },
+
+    async getMaterials(query) {
+      const id = requireNonEmpty(query?.id, 'id')
+      const raw = await requestRaw(ctx, {
+        method: 'GET',
+        path: '/v1/materials',
+        query: { id },
+      })
+      if (raw.status === 204) return emptyResult(raw.requestId)
+
+      const versionHeader = raw.headers.get('x-material-version')
+      const version = versionHeader === null ? undefined : Number.parseInt(versionHeader, 10)
+      const material: MaterialBody = {
+        content: raw.text,
+        contentType: raw.headers.get('content-type') ?? '',
+        etag: raw.headers.get('etag') ?? undefined,
+        materialId: raw.headers.get('x-material-id') ?? undefined,
+        materialVersion: version !== undefined && Number.isFinite(version) ? version : undefined,
+      }
+      return okResult(raw.status, material, raw.requestId)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 内部工具
+// ---------------------------------------------------------------------------
+
+function assertUsableBaseUrl(baseUrl: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(baseUrl)
+  } catch {
+    throw new EchuanValidationError(
+      `baseUrl 不是合法的 URL：${baseUrl}。下一步：改成 http://host:port 形式。`,
+      'invalid_argument',
+      'baseUrl',
+    )
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new EchuanValidationError(
+      `baseUrl 只支持 http/https，收到 ${parsed.protocol}//。下一步：检查配置项 baseUrl。`,
+      'invalid_argument',
+      'baseUrl',
+    )
+  }
+}
+
+function buildUrl(baseUrl: string, path: string, query?: QueryParams): string {
+  const url = new URL(`${baseUrl}${path}`)
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value === undefined || value === null) continue
+    if (Array.isArray(value)) {
+      for (const item of value) url.searchParams.append(key, String(item))
+    } else {
+      url.searchParams.set(key, String(value))
+    }
+  }
+  return url.toString()
+}
+
+/** 序列化 body，并在发出前执行 metadata 预算校验（D-01）。 */
+function serializeBody(body: unknown): string | undefined {
+  if (body === undefined) return undefined
+
+  if (body !== null && typeof body === 'object' && 'metadata' in body) {
+    const metadata = (body as { metadata?: unknown }).metadata
+    if (metadata !== null && typeof metadata === 'object') {
+      assertWorkerMetadataSize(metadata as Record<string, unknown>)
+    }
+  }
+
+  let text: string | undefined
+  try {
+    text = JSON.stringify(body)
+  } catch (err) {
+    throw new EchuanValidationError(
+      `请求体无法序列化为 JSON（${messageOf(err)}）。`
+        + '下一步：移除循环引用或 BigInt 等不可序列化值后再试。',
+      'invalid_argument',
+      'body',
+    )
+  }
+  if (text === undefined) {
+    throw new EchuanValidationError(
+      '请求体无法序列化为 JSON。下一步：传入普通对象，而不是函数或 Symbol。',
+      'invalid_argument',
+      'body',
+    )
+  }
+  return text
+}
+
+function toApiError(response: Response, text: string): EchuanApiError {
+  const payload = parseJsonObject(text)
+  const headerRequestId = response.headers.get('x-request-id') ?? undefined
+
+  const rawCode = payload?.code
+  const code = typeof rawCode === 'string' && rawCode !== ''
+    ? rawCode
+    : fallbackCodeForStatus(response.status)
+
+  const rawMessage = payload?.message
+  const platformMessage = typeof rawMessage === 'string' && rawMessage !== ''
+    ? rawMessage
+    : `${response.status} ${response.statusText}`.trim()
+
+  const details = toDetails(payload?.details)
+
+  const rawRequestId = payload?.request_id
+  const requestId = typeof rawRequestId === 'string' && rawRequestId !== ''
+    ? rawRequestId
+    : headerRequestId
+
+  const hint = hintForCode(code, response.status)
+  let retryAfterMs: number | undefined
+  let retryNote: string | undefined
+  if (response.status === 429 || code === 'rate_limited') {
+    const parsed = parseRetryAfter(response.headers.get('retry-after'))
+    if (parsed === undefined) {
+      retryAfterMs = DEFAULT_RETRY_AFTER_MS
+      retryNote = ` 平台未提供 Retry-After，按保守默认 ${DEFAULT_RETRY_AFTER_MS}ms 退避后再试，本客户端不会自动重试。`
+    } else {
+      retryAfterMs = parsed
+      retryNote = ` 平台建议等待 ${parsed}ms 后再试（按 Retry-After 计算），本客户端不会自动重试。`
+    }
+  }
+
+  return new EchuanApiError({
+    code,
+    status: response.status,
+    message: composeApiMessage(response.status, code, platformMessage, hint, retryNote),
+    platformMessage,
+    hint,
+    details,
+    ...(requestId === undefined ? {} : { requestId }),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+  })
+}
+
+function parseSuccessJson<T>(raw: RawResponse): T {
+  const text = raw.text.trim()
+  if (text === '') return undefined as T
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    const requestId = raw.requestId === undefined ? '' : `，requestId=${raw.requestId}`
+    throw new EchuanClientError(
+      'invalid_response',
+      `平台返回 ${raw.status}，但响应体不是合法 JSON（${requestId || '无 requestId'}）。`
+        + '下一步：重试；若持续出现，把该信息反馈给平台维护者。',
+    )
+  }
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | undefined {
+  if (text.trim() === '') return undefined
+  try {
+    const value: unknown = JSON.parse(text)
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function toDetails(value: unknown): ErrorDetail[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(item => item !== null && typeof item === 'object')
+    .map(item => item as ErrorDetail)
+}
+
+function emptyResult(requestId: string | undefined): NoWorkResult {
+  return requestId === undefined
+    ? { kind: 'empty', status: 204, message: NO_WORK_MESSAGE }
+    : { kind: 'empty', status: 204, message: NO_WORK_MESSAGE, requestId }
+}
+
+function okResult<T>(status: number, data: T, requestId: string | undefined): OkResult<T> {
+  return requestId === undefined
+    ? { kind: 'ok', status, data }
+    : { kind: 'ok', status, data, requestId }
+}
+
+function toQuery(input: object): QueryParams {
+  return input as unknown as QueryParams
+}
+
+function requireNonEmpty(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new EchuanValidationError(
+      `${field} 不能为空。下一步：检查调用参数，按 api/openapi.yaml 传入非空字符串。`,
+      'invalid_argument',
+      field,
+    )
+  }
+  return value.trim()
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== 'string') {
+    throw new EchuanValidationError(
+      `${field} 必须是字符串。下一步：检查调用参数，按 api/openapi.yaml 传入正确的字段类型。`,
+      'invalid_argument',
+      field,
+    )
+  }
+  return value
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}

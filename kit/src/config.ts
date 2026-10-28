@@ -102,10 +102,12 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
  */
 export function resolveConfig(input?: ConfigInput | null): ResolvedConfig {
   const resolved = Config(input ?? {})
-  const baseUrl = (resolved.baseUrl ?? '').trim().replace(/\/+$/, '')
+  const baseUrl = normalizeBaseUrl(resolved.baseUrl)
+  const actor = (resolved.actor ?? '').trim()
   return {
-    baseUrl: baseUrl === '' ? DEFAULT_BASE_URL : baseUrl,
-    actor: resolved.actor,
+    baseUrl,
+    // S-02：actor 是写操作身份，前后空白没有语义；trim 后为空则回落默认值。
+    actor: actor === '' ? DEFAULT_ACTOR : actor,
     requestTimeoutMs: resolved.requestTimeoutMs,
     worker: {
       poll: { enable: resolved.worker.poll.enable },
@@ -115,16 +117,70 @@ export function resolveConfig(input?: ConfigInput | null): ResolvedConfig {
 }
 
 /**
+ * 归一化并校验 `baseUrl`（S-03）。
+ *
+ * - 空白 → 默认值；
+ * - 必须是合法 URL，且协议为 http/https；
+ * - 不允许带账号、查询串或片段（它们会与 `/v1` 路径拼接产生歧义）；
+ * - 去掉结尾斜杠，避免与 `/v1/...` 拼出双斜杠。
+ *
+ * 非法输入直接抛带中文说明的 `TypeError`，**不要**把坏 URL 交给 fetch。
+ */
+function normalizeBaseUrl(value?: string | null): string {
+  const raw = (value ?? '').trim()
+  if (raw === '') return DEFAULT_BASE_URL
+
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new TypeError(
+      `baseUrl 不是合法的 URL：${raw}。请改成 http://host:port 形式（仅支持 http/https）。`,
+    )
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new TypeError(
+      `baseUrl 只支持 http/https，收到 ${url.protocol}//：${raw}。请检查配置项 baseUrl。`,
+    )
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new TypeError(
+      `baseUrl 不能包含账号或密码：${raw}。请把凭据移到部署环境，不要写进平台地址。`,
+    )
+  }
+  if (url.search !== '' || url.hash !== '') {
+    throw new TypeError(
+      `baseUrl 不能带查询串或片段：${raw}。请只保留协议、主机与端口（可带路径前缀）。`,
+    )
+  }
+
+  return raw.replace(/\/+$/, '')
+}
+
+/**
  * `worker.metadata` 序列化后的字节数（UTF-8）。
  *
- * 只用于在 `apply` 阶段给出超限告警，不截断数据——上报内容由平台契约决定，
- * 插件不替调用方做有损处理。
+ * 用于 `apply` 阶段的超限告警与客户端的发送前置校验（D-01），不触发截断——
+ * 上报内容由平台契约决定，插件不替调用方做有损处理。
+ *
+ * S-04：含循环引用 / BigInt 等不可序列化值时**抛错**，不能返回 0 让预算告警失效。
  */
 export function metadataByteLength(metadata: Record<string, unknown>): number {
+  let json: string | undefined
   try {
-    return Buffer.byteLength(JSON.stringify(metadata) ?? '', 'utf8')
-  } catch {
-    // 含循环引用 / BigInt 等不可序列化值：按 0 处理，由上报时的错误暴露问题。
-    return 0
+    json = JSON.stringify(metadata)
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    throw new TypeError(
+      `worker.metadata 无法序列化为 JSON（${reason}）。`
+        + '请移除循环引用 / BigInt 等不可序列化值后再试。',
+    )
   }
+  if (json === undefined) {
+    throw new TypeError(
+      'worker.metadata 无法序列化为 JSON。请传入普通对象，而不是函数或 Symbol。',
+    )
+  }
+  return Buffer.byteLength(json, 'utf8')
 }
