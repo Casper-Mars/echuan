@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/platform.Version=$(VERSION) \
 	-X $(PKG)/internal/platform.Commit=$(COMMIT)
 
-.PHONY: all build test lint fmt web contract clean \
+.PHONY: all build test lint fmt web contract e2e clean \
 	docker-build docker-up docker-down docker-logs docker-size docker-clean
 
 all: build
@@ -36,6 +36,10 @@ lint:
 ## contract: 接口契约校验（30 个 operation + 校验器自测）
 contract:
 	go test ./internal/contract -count=1
+
+## e2e: Worker 全链路端到端验收（临时目录 + 随机端口，不污染既有数据）
+e2e:
+	bash scripts/e2e-worker.sh
 
 ## fmt: 格式化代码
 fmt:

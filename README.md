@@ -9,6 +9,7 @@ make build      # 编译 ./echuan
 make test       # go test ./... -race
 make web        # 构建前端并同步到 internal/web/dist
 make lint
+make e2e        # Worker 全链路端到端验收（临时目录 + 随机端口，约 90s）
 ```
 
 ## Docker 部署
