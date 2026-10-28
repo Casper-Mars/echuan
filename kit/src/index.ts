@@ -6,6 +6,8 @@
  * - 在 `apply(ctx, config)` 里解析 5 项配置、落加载日志；
  * - 注册 7 个工具：3 个写（领卡 / 续租 / 交报告）+ 4 个只读（待办 / 项目 / 任务 / 资料），
  *   只调平台契约、不提供门禁动作；
+ * - 静态注册 1 个技能 `echuan-task-execution`（派单开工 / 读上下文 / 汇报 / 续租 / 门禁禁区），
+ *   随插件 fiber 一并注销；
  * - `worker.poll.enable=false`（默认）时**零请求、零定时器**，心跳循环完全不创建；
  * - `worker.metadata` 序列化后超过 8KiB 时只 warn 一条并**不启动心跳循环**（R-02），
  *   避免每轮都被平台拒（413）而永久刷屏；
@@ -31,6 +33,7 @@ import {
 } from './config.js'
 import type { WorkerClient } from './client.js'
 import type { Logger } from './runtime.js'
+import { ECHUAN_SKILL_NAME, registerEchuanSkill } from './skill.js'
 import type { WorkerLoop } from './worker.js'
 
 export {
@@ -47,6 +50,14 @@ export type { ConfigInput, ResolvedConfig } from './config.js'
 export { DEFAULT_POLL_INTERVAL_MS, createEchuanRuntime } from './runtime.js'
 export type { EchuanRuntime, EchuanRuntimeOptions, Logger, TimerApi } from './runtime.js'
 export type { WorkerLoop, WorkerLoopOptions } from './worker.js'
+export {
+  ECHUAN_SKILL_DESCRIPTION,
+  ECHUAN_SKILL_NAME,
+  ECHUAN_SKILL_WHEN_TO_USE,
+  createEchuanSkillRegistration,
+  loadEchuanSkillGuide,
+  registerEchuanSkill,
+} from './skill.js'
 
 /** Cordis 函数式插件标识（同时是 patch 行里的 `id`）。 */
 export const name = 'echuan'
@@ -159,6 +170,28 @@ export function apply(ctx: Context, config?: ConfigInput): void {
       active?.()
     }
   }, 'echuan.tools()')
+
+  // 技能注册：正文是随构建产物发布的同步小文件（`lib/assets/*.md`），
+  // 不需要惰性 import，也不会拖慢 `--help` 快路径。注册与注销都在同一个 effect 内，
+  // fiber 卸载（含 HMR 重载、profile 停用）时随插件一并注销。
+  ctx.effect(() => {
+    let disposeSkill: (() => void) | undefined
+    try {
+      disposeSkill = registerEchuanSkill(ctx)
+      log(`${TAG} 已注册技能 ${ECHUAN_SKILL_NAME}（source=runtime）`)
+    } catch (err) {
+      warn(`${TAG} 技能注册失败：${messageOf(err)}`)
+      return () => {}
+    }
+
+    return () => {
+      const off = disposeSkill
+      disposeSkill = undefined
+      if (!off) return
+      off()
+      log(`${TAG} 已注销技能 ${ECHUAN_SKILL_NAME}`)
+    }
+  }, 'echuan.skill()')
 
   // 所有运行期资源（worker 心跳定时器）都挂在同一个 effect 上：
   // fiber dispose（含 HMR 重载、profile 停用）时按逆序清理。

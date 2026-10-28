@@ -1,11 +1,12 @@
 /**
- * 插件入口单测：加载日志、effect 生命周期、工具注册，以及「不碰 skills 服务」。
+ * 插件入口单测：加载日志、effect 生命周期、工具与技能注册。
  *
- * 验收项 7/8 的结构性证明：
- * - `apply` 只访问 `ctx.effect` / `ctx.logger` / `ctx.tools`，**不访问** `ctx.skills` /
- *   `ctx.agents`（用 Proxy 在访问时直接抛错来锁定这一点）；工具注册走惰性 import；
- * - 默认配置（poll=false）下 `apply` 不创建任何定时器；
- * - effect 的 disposer 执行后：定时器清除、只多一条卸载日志，再调用无副作用。
+ * 结构性证明：
+ * - `apply` 只访问 `ctx.effect` / `ctx.logger` / `ctx.tools` / `ctx.skills` /
+ *   `ctx.agents`，不触碰其余服务（用 Proxy 拦截其他服务名并抛错）；
+ * - 工具注册走惰性 import，技能注册同步完成（正文为构建产物内的小文件）；
+ * - 默认配置（poll=false）下 `apply` 不创建任何定时器，也不读根 agent 列表；
+ * - effect 的 disposer 执行后：定时器清除、工具与技能一并注销、只多卸载日志，再调用无副作用。
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -29,13 +30,15 @@ interface FakeContext {
   agentAccess: string[]
   /** 已注册的工具名（注销时移除）。 */
   registrations: string[]
+  /** 已注册的技能名（注销时移除）。 */
+  skillRegistrations: string[]
 }
 
 /**
- * 构造只提供 effect / logger / agents / tools 的假上下文。
+ * 构造只提供 effect / logger / agents / tools / skills 的假上下文。
  *
- * `tools` 允许访问并记录注册结果（本插件注册 7 个工具：3 写 + 4 读）；`skills` 仍禁止访问；
- * `agents` 允许访问并记录，用于断言 poll=false 时连 agent 列表都不读。
+ * `tools` 记录工具注册（7 个：3 写 + 4 读）；`skills` 记录技能注册（1 个）；
+ * `agents` 记录访问次数，用于断言 poll=false 时连 agent 列表都不读。
  */
 function createFakeContext(): FakeContext {
   const labels: string[] = []
@@ -43,6 +46,7 @@ function createFakeContext(): FakeContext {
   const forbiddenAccess: string[] = []
   const agentAccess: string[] = []
   const registrations: string[] = []
+  const skillRegistrations: string[] = []
 
   const base = {
     effect(execute: () => (() => void) | void, label?: string) {
@@ -60,6 +64,15 @@ function createFakeContext(): FakeContext {
         }
       },
     },
+    skills: {
+      register(skill: { name: string }) {
+        skillRegistrations.push(skill.name)
+        return () => {
+          const index = skillRegistrations.indexOf(skill.name)
+          if (index >= 0) skillRegistrations.splice(index, 1)
+        }
+      },
+    },
     agents: {
       roots: () => {
         agentAccess.push('agents')
@@ -74,11 +87,14 @@ function createFakeContext(): FakeContext {
     },
   }
 
+  // 本插件不该触碰的服务：访问即抛错，锁定「只依赖 tools/skills/agents」。
+  const FORBIDDEN_SERVICES = new Set(['llm', 'models', 'sessions', 'http', 'server'])
+
   const ctx = new Proxy(base, {
     get(target, key, receiver) {
-      if (key === 'skills') {
-        forbiddenAccess.push(String(key))
-        throw new Error(`本阶段不应访问 ctx.${String(key)}`)
+      if (typeof key === 'string' && FORBIDDEN_SERVICES.has(key)) {
+        forbiddenAccess.push(key)
+        throw new Error(`本插件不应访问 ctx.${key}`)
       }
       if (key === 'agents') agentAccess.push('agents')
       return Reflect.get(target, key, receiver)
@@ -91,6 +107,7 @@ function createFakeContext(): FakeContext {
     forbiddenAccess,
     agentAccess,
     registrations,
+    skillRegistrations,
     disposeAll() {
       for (const disposer of [...disposers].reverse()) disposer()
     },
@@ -156,18 +173,36 @@ describe('apply：加载与生命周期', () => {
     await settleTools(fake)
   })
 
-  it('注册 tools + runtime 两个 effect，不访问 skills/agents', async () => {
+  it('注册 tools + skill + runtime 三个 effect，不访问额外服务', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const fake = createFakeContext()
 
     apply(fake.ctx, undefined)
 
-    expect(fake.labels).toEqual(['echuan.tools()', 'echuan.runtime()'])
+    expect(fake.labels).toEqual(['echuan.tools()', 'echuan.skill()', 'echuan.runtime()'])
     expect(fake.forbiddenAccess).toEqual([])
     // poll=false：连根 agent 列表都不读。
     expect(fake.agentAccess).toEqual([])
 
     await settleTools(fake)
+  })
+
+  it('同步注册技能 echuan-task-execution，dispose 后注销', async () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fake = createFakeContext()
+
+    apply(fake.ctx, undefined)
+    await settleTools(fake)
+
+    // 技能注册是同步的：apply 返回时即已就绪。
+    expect(fake.skillRegistrations).toEqual(['echuan-task-execution'])
+    const lines = spy.mock.calls.map(call => String(call[0]))
+    expect(lines.some(line => line.includes('已注册技能 echuan-task-execution'))).toBe(true)
+
+    fake.disposeAll()
+    expect(fake.skillRegistrations).toEqual([])
+    expect(spy.mock.calls.map(call => String(call[0]))
+      .some(line => line.includes('已注销技能 echuan-task-execution'))).toBe(true)
   })
 
   it('惰性注册 7 个工具（3 写 + 4 读）并打印注册日志', async () => {
