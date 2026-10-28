@@ -23,8 +23,7 @@
     "lib/**/*.js",
     "lib/types/**/*.d.ts",
     "lib/**/*.md",
-    "cordis.patch.yml",
-    "src"
+    "cordis.patch.yml"
   ],
   "dsh": {
     "bundle": {
@@ -33,6 +32,7 @@
   },
   "scripts": {
     "build": "rm -rf lib && tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "clean": "rm -rf lib coverage"
