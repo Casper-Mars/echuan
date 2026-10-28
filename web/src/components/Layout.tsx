@@ -3,6 +3,7 @@ import { Link, Outlet, useLocation } from 'react-router-dom'
 import { Breadcrumbs } from './Breadcrumbs'
 import { Drawer } from './Drawer'
 import { DrawerContext, type DrawerContent } from './DrawerContext'
+import { Sidebar } from './Sidebar'
 
 export function Layout() {
   const location = useLocation()
@@ -26,11 +27,14 @@ export function Layout() {
               驿传 <em>echuan</em>
             </span>
           </Link>
-          <Breadcrumbs />
         </header>
-        <main className="content">
-          <Outlet />
-        </main>
+        <div className="shell">
+          <Sidebar />
+          <main className="content">
+            <Breadcrumbs />
+            <Outlet />
+          </main>
+        </div>
         <Drawer open={drawer !== null} title={drawer?.title ?? ''} onClose={closeDrawer}>
           {drawer?.body}
         </Drawer>

@@ -16,13 +16,14 @@ function decode(value: string): string {
 }
 
 /**
- * 顶部面包屑：产品 → 项目 → 任务。
+ * 内容区顶部面包屑：产品 → 项目 → 任务；Worker 页单独一层。
  * 标识从 hash 路由解析（HashRouter 下 location.pathname 即 hash 路径），
  * 产品层优先显示名称，缺失时回落产品编号。
  */
 export function Breadcrumbs() {
   const { pathname } = useLocation()
 
+  const workersMatch = /^\/workers\/?$/.test(pathname)
   const taskMatch = pathname.match(/^\/products\/([^/]+)\/projects\/([^/]+)\/tasks\/?$/)
   const projectsMatch = pathname.match(/^\/products\/([^/]+)\/projects\/?$/)
 
@@ -31,7 +32,9 @@ export function Breadcrumbs() {
 
   let crumbs: Crumb[] = [{ label: '产品' }]
 
-  if (taskMatch) {
+  if (workersMatch) {
+    crumbs = [{ label: 'Worker' }]
+  } else if (taskMatch) {
     const decodedProduct = decode(taskMatch[1])
     const decodedProject = decode(taskMatch[2])
     crumbs = [
