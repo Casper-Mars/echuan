@@ -35,6 +35,8 @@
     "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
+    "test:ci": "vitest run --reporter=verbose",
+    "verify": "pnpm typecheck && pnpm test",
     "clean": "rm -rf lib coverage"
   },
   "keywords": [

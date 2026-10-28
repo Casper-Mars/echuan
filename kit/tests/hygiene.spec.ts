@@ -1,0 +1,499 @@
+/**
+ * 测试卫生闸门（任务-08 C）。
+ *
+ * 这个文件回答一个问题：**凭什么相信「测试全程不需要真实平台与网络」**。
+ *
+ * 1. 源码级：`src` 下只有 `client.ts` 调 `fetch(`；没有任何写盘 API；
+ *    `node:fs` 的导入只允许只读函数；`config.ts` 不读 `process.env`。
+ * 2. 运行时级：把 `globalThis.fetch` 换成一被调用就抛错的哨兵，再跑
+ *    ① 7 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
+ * 3. 运行时级：用 `vi.mock('node:fs', { spy: true })` 把 `node:fs` 的导出换成
+ *    会记账的 spy（具名导入的 `import { writeFileSync }` 也能拦到），跑两轮
+ *    worker 心跳 → 0 次写文件（worker_id 只在内存）。监视器先做一次自证
+ *    （真的能抓到写入），避免「spy 没挂上」导致的假绿。
+ */
+import * as fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import { createClient, createWorkerClient, type FetchLike } from '../src/client.js'
+import { resolveConfig } from '../src/config.js'
+import { createAllEchuanTools } from '../src/tools/index.js'
+import type { EchuanToolOptions } from '../src/tools/index.js'
+import { createWorkerLoop, type WorkerTimerApi } from '../src/worker.js'
+
+// 整个文件都跑在「fs 导出被 spy 包裹」的环境里：具名导入与属性调用都能记账，
+// 但实现仍是真实 fs（readFileSync / readdirSync 照常工作）。
+vi.mock('node:fs', { spy: true })
+
+const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const srcDir = path.join(kitRoot, 'src')
+
+// ---------------------------------------------------------------------------
+// 源码扫描工具
+// ---------------------------------------------------------------------------
+
+function listTsFiles(dir: string): string[] {
+  const out: string[] = []
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...listTsFiles(full))
+    else if (entry.isFile() && entry.name.endsWith('.ts')) out.push(full)
+  }
+  return out.sort()
+}
+
+/** 去掉块注释与整行 `//` 注释，避免注释里的示例代码造成误报。 */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+}
+
+interface SourceFile {
+  /** 相对 kit 根目录的路径，例如 `src/tools/read.ts`。 */
+  relative: string
+  code: string
+}
+
+const sourceFiles: SourceFile[] = listTsFiles(srcDir).map((file) => ({
+  relative: path.relative(kitRoot, file),
+  code: stripComments(fs.readFileSync(file, 'utf8')),
+}))
+
+function sourceOf(relative: string): string {
+  const hit = sourceFiles.find(file => file.relative === relative)
+  if (hit === undefined) throw new Error(`源码清单缺少 ${relative}`)
+  return hit.code
+}
+
+// ---------------------------------------------------------------------------
+// 1. 源码级：网络出口唯一
+// ---------------------------------------------------------------------------
+
+describe('源码级：fetch 出口唯一', () => {
+  it('src 下只有 client.ts 调用 fetch（其余文件 0 次）', () => {
+    const offenders = sourceFiles
+      .filter(file => file.relative !== 'src/client.ts')
+      .filter(file => /\bfetch\s*\(/.test(file.code))
+      .map(file => file.relative)
+
+    expect(offenders).toEqual([])
+    // 反向自证：client.ts 确实有（否则上面的过滤是空转）。
+    expect(/\bfetch\s*\(/.test(sourceOf('src/client.ts'))).toBe(true)
+  })
+
+  it('工具层 / worker / runtime 都不直接 import http 客户端模块', () => {
+    const offenders = sourceFiles
+      .filter(file => file.relative !== 'src/client.ts')
+      .filter(file => /\bfrom\s+'node:(http|https|net|tls)'/.test(file.code))
+      .map(file => file.relative)
+
+    expect(offenders).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2. 源码级：不写盘
+// ---------------------------------------------------------------------------
+
+/** 任何「写文件 / 建目录 / 删文件」的名字都不该出现在 src 里。 */
+const WRITE_APIS = [
+  'writeFileSync',
+  'writeFile',
+  'appendFileSync',
+  'appendFile',
+  'createWriteStream',
+  'mkdirSync',
+  'mkdtempSync',
+  'rmSync',
+  'rmdirSync',
+  'unlinkSync',
+  'truncateSync',
+  'copyFileSync',
+  'renameSync',
+]
+
+describe('源码级：不写盘', () => {
+  it('src 下不出现任何写盘 API', () => {
+    const hits: string[] = []
+    for (const file of sourceFiles) {
+      for (const api of WRITE_APIS) {
+        if (new RegExp(`\\b${api}\\s*\\(`).test(file.code)) hits.push(`${file.relative}: ${api}`)
+      }
+    }
+    expect(hits).toEqual([])
+  })
+
+  it('node:fs 的具名导入只允许只读函数（skill.ts 的 readFileSync 是唯一允许项）', () => {
+    const allowed = new Set([
+      'readFileSync',
+      'readFile',
+      'existsSync',
+      'statSync',
+      'readdirSync',
+      'createReadStream',
+    ])
+
+    const violations: string[] = []
+    for (const file of sourceFiles) {
+      const pattern = /import\s*\{([^}]*)\}\s*from\s*'node:fs'/g
+      let match: RegExpExecArray | null
+      while ((match = pattern.exec(file.code)) !== null) {
+        const names = (match[1] ?? '')
+          .split(',')
+          .map(part => part.trim().split(/\s+as\s+/)[0]?.trim() ?? '')
+          .filter(name => name !== '')
+        for (const name of names) {
+          if (!allowed.has(name)) violations.push(`${file.relative}: ${name}`)
+        }
+      }
+    }
+
+    expect(violations).toEqual([])
+    // skill.ts 确实用只读方式读技能正文（证明上面的白名单不是空转）。
+    expect(sourceOf('src/skill.ts')).toContain('readFileSync')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3. 源码级：不读环境变量
+// ---------------------------------------------------------------------------
+
+describe('源码级：不读 process.env', () => {
+  it('config.ts 不读 process.env（配置只来自宿主注入）', () => {
+    expect(sourceOf('src/config.ts')).not.toContain('process.env')
+  })
+
+  it('src 全量也不读 process.env（没有隐藏的环境开关）', () => {
+    const offenders = sourceFiles
+      .filter(file => file.code.includes('process.env'))
+      .map(file => file.relative)
+    expect(offenders).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 假平台 / 假时钟
+// ---------------------------------------------------------------------------
+
+interface RecordedCall {
+  url: URL
+  method: string
+  body: string | undefined
+}
+
+function createPlatform(respond: (call: RecordedCall) => Response): {
+  calls: RecordedCall[]
+  fetchImpl: FetchLike
+} {
+  const calls: RecordedCall[] = []
+  const fetchImpl: FetchLike = async (input, init = {}) => {
+    const call: RecordedCall = {
+      url: new URL(input),
+      method: init.method ?? 'GET',
+      body: init.body === undefined ? undefined : String(init.body),
+    }
+    calls.push(call)
+    return respond(call)
+  }
+  return { calls, fetchImpl }
+}
+
+function json(payload: unknown): Response {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+const CLAIM_PAYLOAD = {
+  task: {
+    id: 'APP-1-T0001',
+    project_id: 'APP-1',
+    title: '实现登录接口',
+    body_md: '# 任务正文',
+    attempt: 1,
+    priority: 10,
+  },
+  lease: { lease_id: 'l_9f8b', until: '2026-10-27T16:49:25.157Z', ttl_seconds: 90 },
+  context: {
+    spec_version: 1,
+    spec_digest: 'sha256:bb23',
+    product: { id: 'APP', name: '驿传示例产品', git_url: 'git@example.com:APP.git' },
+    workdir: '/var/lib/echuan/workspaces/APP-1',
+  },
+}
+
+const respondByPath = (call: RecordedCall): Response => {
+  switch (call.url.pathname) {
+    case '/v1/tasks/claim':
+      return json(CLAIM_PAYLOAD)
+    case '/v1/tasks/heartbeat':
+      return json({ lease_id: 'l_next', until: '2026-10-27T16:51:00.000Z', ttl_seconds: 90 })
+    case '/v1/tasks/report':
+      return json({ task_id: 'APP-1-T0001', status_name: '待验收' })
+    case '/v1/inbox':
+      return json({
+        items: [],
+        count: 0,
+        review_stale_hours: 24,
+        generated_at: '2026-10-28T00:00:00.000Z',
+      })
+    case '/v1/projects':
+      return json({ project_id: 'APP-2', title: '示例项目' })
+    case '/v1/tasks':
+      return json({ task_id: 'APP-1-T0007', title: '示例任务' })
+    case '/v1/materials':
+      return new Response('# 资料正文\n', {
+        status: 200,
+        headers: { 'content-type': 'text/markdown' },
+      })
+    default:
+      return json({})
+  }
+}
+
+/** worker 心跳回包：第一轮给一条 run_task，验证派单路径也不碰网络/磁盘。 */
+function workerPayload(call: RecordedCall): Response {
+  const body = call.body === undefined ? {} : (JSON.parse(call.body) as Record<string, unknown>)
+  if (body['worker_id'] === undefined) {
+    return json({
+      worker: { worker_id: 'w_TEST01ABCDEFGHIJKLMN', heartbeat_interval_ms: 15_000 },
+      commands: [],
+    })
+  }
+  return json({
+    worker: { worker_id: 'w_TEST01ABCDEFGHIJKLMN', heartbeat_interval_ms: 15_000 },
+    commands: [{ kind: 'run_task', ...CLAIM_PAYLOAD }],
+  })
+}
+
+const config = resolveConfig({ baseUrl: 'http://platform.test' })
+const pollConfig = resolveConfig({
+  baseUrl: 'http://platform.test',
+  worker: { poll: { enable: true }, metadata: { host: 'ci' } },
+})
+
+const silentLogger = { info: () => {}, warn: () => {}, debug: () => {} }
+
+const exec = { signal: new AbortController().signal } as unknown as Parameters<
+  ToolDefinition['execute']
+>[1]
+
+async function flush(times = 4): Promise<void> {
+  for (let index = 0; index < times; index += 1) {
+    await new Promise<void>(resolve => setImmediate(resolve))
+  }
+}
+
+interface FakeTimer {
+  api: WorkerTimerApi
+  /** 让所有挂起的定时器各触发一次（模拟时钟前进）。 */
+  fireAll(): void
+  pending(): number
+}
+
+function createFakeTimer(): FakeTimer {
+  let seq = 0
+  const timers = new Map<number, () => void>()
+  return {
+    api: {
+      setTimeout(handler: () => void): unknown {
+        seq += 1
+        timers.set(seq, handler)
+        return seq
+      },
+      clearTimeout(handle: unknown): void {
+        timers.delete(handle as number)
+      },
+    },
+    fireAll(): void {
+      const handlers = [...timers.values()]
+      timers.clear()
+      for (const handler of handlers) handler()
+    },
+    pending(): number {
+      return timers.size
+    },
+  }
+}
+
+/** 跑完 7 个工具的完整调用链（每类工具都真的发一次请求）。 */
+async function runWholeToolChain(fetchImpl: FetchLike): Promise<void> {
+  const options: EchuanToolOptions = {
+    client: createClient(config, { fetchImpl }),
+    identity: { workerId: 'w_TEST01ABCDEFGHIJKLMN' },
+  }
+  const tools = new Map(createAllEchuanTools(options).map(tool => [tool.name, tool]))
+
+  const calls: Array<[string, Record<string, unknown>]> = [
+    ['echuan_task_claim', { product: 'APP' }],
+    ['echuan_task_renew', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b' }],
+    ['echuan_task_report', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b', summary_md: '三段式报告' }],
+    ['echuan_inbox', { limit: 5 }],
+    ['echuan_project_get', { id: 'APP-2' }],
+    ['echuan_task_get', { id: 'APP-1-T0007' }],
+    ['echuan_material_get', { id: 'M-1' }],
+  ]
+
+  for (const [name, args] of calls) {
+    const tool = tools.get(name)
+    if (tool === undefined) throw new Error(`工具 ${name} 未注册`)
+    await tool.execute(args, exec)
+  }
+}
+
+interface WorkerRun {
+  loop: ReturnType<typeof createWorkerLoop>
+  calls: RecordedCall[]
+  timer: FakeTimer
+  delivered: string[]
+}
+
+/** 唯一的根 agent 桩：派单投递要求「恰好 1 个且 running」。 */
+const ROOT_AGENT = { id: 'root-1', status: 'running' } as unknown as Agent
+
+/** 跑 `rounds` 轮 worker 心跳（第一轮立即发，其余由假定时器推进）。 */
+async function runWorkerRounds(rounds = 2): Promise<WorkerRun> {
+  const platform = createPlatform(workerPayload)
+  const timer = createFakeTimer()
+  const delivered: string[] = []
+
+  const loop = createWorkerLoop({
+    config: pollConfig,
+    client: createWorkerClient(config, { fetchImpl: platform.fetchImpl }),
+    agents: () => [ROOT_AGENT],
+    logger: silentLogger,
+    timer: timer.api,
+    deliver: (_agent, text) => delivered.push(text),
+  })
+
+  loop.start()
+  await flush()
+
+  for (let round = 1; round < rounds; round += 1) {
+    timer.fireAll()
+    await flush()
+  }
+
+  return { loop, calls: platform.calls, timer, delivered }
+}
+
+afterEach(() => {
+  vi.clearAllMocks()
+})
+
+// ---------------------------------------------------------------------------
+// 4. 运行时级：哨兵 fetch
+// ---------------------------------------------------------------------------
+
+interface Sentinel {
+  calls: number
+  restore(): void
+}
+
+/**
+ * 把 `globalThis.fetch` 换成「一被调用就记数并抛错」的哨兵。
+ *
+ * 任何没走注入 `fetchImpl` 的代码都会立刻炸掉并留下计数，测试不可能「静默打网」。
+ */
+function installFetchSentinel(): Sentinel {
+  const original = globalThis.fetch
+  const sentinel = { calls: 0 }
+  globalThis.fetch = (() => {
+    sentinel.calls += 1
+    throw new Error('测试打到了真实网络：globalThis.fetch 被调用')
+  }) as unknown as typeof fetch
+  return {
+    get calls() {
+      return sentinel.calls
+    },
+    restore(): void {
+      globalThis.fetch = original
+    },
+  } as Sentinel
+}
+
+describe('运行时级：不触达真实 fetch', () => {
+  it('7 个工具完整链路：哨兵 0 次调用，假平台收到 7 个请求', async () => {
+    const platform = createPlatform(respondByPath)
+    const sentinel = installFetchSentinel()
+    try {
+      await runWholeToolChain(platform.fetchImpl)
+      expect(sentinel.calls).toBe(0)
+    } finally {
+      sentinel.restore()
+    }
+
+    expect(platform.calls).toHaveLength(7)
+  })
+
+  it('worker 心跳两轮（含派单投递）：哨兵 0 次调用', async () => {
+    const sentinel = installFetchSentinel()
+    let run: WorkerRun | undefined
+    try {
+      run = await runWorkerRounds(2)
+      expect(sentinel.calls).toBe(0)
+    } finally {
+      sentinel.restore()
+    }
+
+    if (run === undefined) throw new Error('worker 心跳未跑完')
+    expect(run.calls).toHaveLength(2)
+    expect(run.delivered).toHaveLength(1)
+    run.loop.dispose()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 5. 运行时级：不写盘
+// ---------------------------------------------------------------------------
+
+type Spied = { mock: { calls: unknown[][] } }
+
+/** 五个写盘函数（含具名导入的调用，因为整个 fs 模块已被 spy 包裹）。 */
+function writeSpies(): Spied[] {
+  return [
+    fs.writeFileSync,
+    fs.writeFile,
+    fs.appendFileSync,
+    fs.appendFile,
+    fs.createWriteStream,
+  ] as unknown as Spied[]
+}
+
+describe('运行时级：不写盘', () => {
+  it('worker 心跳两轮：0 次写文件（worker_id 只在内存）', async () => {
+    const spies = writeSpies()
+    // 自证：spy 真的挂上了（否则「0 次」毫无意义）。
+    expect(vi.isMockFunction(fs.writeFileSync)).toBe(true)
+
+    const probe = path.join(os.tmpdir(), `echuan-hygiene-${process.pid}-${Date.now()}.txt`)
+    fs.writeFileSync(probe, 'probe')
+    expect(spies[0]!.mock.calls.length).toBe(1)
+    fs.unlinkSync(probe)
+    for (const spy of spies) spy.mock.calls.length = 0
+
+    const run = await runWorkerRounds(2)
+    run.loop.dispose()
+
+    for (const spy of spies) expect(spy.mock.calls).toEqual([])
+    // worker_id 只在内存：第二轮请求体带的是第一轮回包里的 id。
+    const secondBody = run.calls[1]!.body as string
+    expect(JSON.parse(secondBody)['worker_id']).toBe('w_TEST01ABCDEFGHIJKLMN')
+  })
+
+  it('7 个工具完整链路：0 次写文件', async () => {
+    const spies = writeSpies()
+    const platform = createPlatform(respondByPath)
+
+    await runWholeToolChain(platform.fetchImpl)
+
+    for (const spy of spies) expect(spy.mock.calls).toEqual([])
+    expect(platform.calls).toHaveLength(7)
+  })
+})
