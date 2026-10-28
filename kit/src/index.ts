@@ -4,17 +4,21 @@
  * 职责边界（技术方案 v0.6 §1）：
  * - 声明插件标识 `name` 与依赖服务 `inject`；
  * - 在 `apply(ctx, config)` 里解析 5 项配置、落加载日志；
- * - `worker.poll.enable=false`（默认）时**零请求、零定时器**，连 HTTP 客户端都不加载；
+ * - 注册 3 个写工具（领卡 / 续租 / 交报告），只调平台契约、不提供门禁动作；
+ * - `worker.poll.enable=false`（默认）时**零请求、零定时器**，心跳循环完全不创建；
  * - `worker.metadata` 序列化后超过 8KiB 时只 warn 一条并**不启动心跳循环**（R-02），
  *   避免每轮都被平台拒（413）而永久刷屏；
  * - 启用时把 worker 心跳循环挂到 `ctx.effect`，由它定时心跳、上报状态并投递派单。
  *
+ * worker_id 只有一个内存来源：心跳循环的 `workerId`。工具层通过 getter 读同一个值，
+ * 不缓存副本、不读磁盘；循环不存在（poll=false）时工具发请求不带该字段。
+ *
  * 依赖方向：kit 只依赖平台 HTTP 契约，不 import 任何 Go 代码。
  *
  * 加载策略：入口模块只静态引入 `./config.js`（schemastery，Schema 必须同步可见）与
- * `./runtime.js`（零依赖的日志/定时器类型）。`./client.js` 与 `./worker.js`
- * （后者带 `@deepseek-ai/dsh-llm`）在 `apply` 内**惰性 import**，避免拖慢
- * `--help` 这类快速退出场景下的插件激活。
+ * `./runtime.js`（零依赖的日志/定时器类型）。`./client.js`、`./worker.js`
+ * （后者带 `@deepseek-ai/dsh-llm`）与 `./tools/index.js`（带 `@deepseek-ai/dsh-tools`）
+ * 都在 `apply` 内**惰性 import**，避免拖慢 `--help` 这类快速退出场景下的插件激活。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import {
@@ -113,11 +117,51 @@ export function apply(ctx: Context, config?: ConfigInput): void {
     warn(`${TAG} 警告：${messageOf(err)}`)
   }
 
+  // worker_id 的**唯一内存来源**：心跳循环。工具层通过这个 getter 读同一个值，
+  // 不自留副本、不读磁盘；循环尚未创建时（poll=false）自然是 undefined。
+  let loop: WorkerLoop | undefined
+
+  // 工具注册：与心跳开关无关（poll=false 也能手动领卡/续租/交报告）。
+  // 惰性 import 保证 `--help` 快路径不加载 `@deepseek-ai/dsh-tools`。
+  ctx.effect(() => {
+    let disposed = false
+    let disposeTools: (() => void) | undefined
+
+    void (async () => {
+      try {
+        const [toolsModule, clientModule] = await Promise.all([
+          import('./tools/index.js'),
+          import('./client.js'),
+        ])
+        if (disposed) return
+
+        disposeTools = toolsModule.registerEchuanTools(ctx, {
+          client: clientModule.createClient(resolved),
+          identity: {
+            get workerId() {
+              return loop?.workerId
+            },
+          },
+        })
+        log(`${TAG} 已注册 ${toolsModule.WRITE_TOOL_NAMES.length} 个写工具：`
+          + toolsModule.WRITE_TOOL_NAMES.join(', '))
+      } catch (err) {
+        warn(`${TAG} 工具注册失败：${messageOf(err)}`)
+      }
+    })()
+
+    return () => {
+      disposed = true
+      const active = disposeTools
+      disposeTools = undefined
+      active?.()
+    }
+  }, 'echuan.tools()')
+
   // 所有运行期资源（worker 心跳定时器）都挂在同一个 effect 上：
   // fiber dispose（含 HMR 重载、profile 停用）时按逆序清理。
   ctx.effect(() => {
     let disposed = false
-    let loop: WorkerLoop | undefined
 
     if (!resolved.worker.poll.enable) {
       // 默认关闭：不加载客户端、不建定时器、不发请求。

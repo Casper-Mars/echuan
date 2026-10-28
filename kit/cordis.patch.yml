@@ -7,7 +7,7 @@
 #   id     ：运行时标识（fiber 名 / 卸载时的 `echuan` 前缀日志来源）
 #   name   ：解析到包名（package.json 的 `name`），不带子路径
 #   inject ：依赖服务；三者在 `@deepseek-ai/dsh-base` 中均存在
-#            - tools  ：工具注册表（本阶段不注册工具，仅声明依赖）
+#            - tools  ：工具注册表（领卡 / 续租 / 交报告 3 个写工具）
 #            - skills ：技能注册表
 #            - agents ：只用于投递消息与读 agent 状态（idle/running），
 #                       不创建会话、不选模型

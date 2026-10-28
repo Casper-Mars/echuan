@@ -1,9 +1,9 @@
 /**
- * 插件入口单测：加载日志、effect 生命周期、以及「不碰 tools/skills/agents 服务」。
+ * 插件入口单测：加载日志、effect 生命周期、工具注册，以及「不碰 skills 服务」。
  *
  * 验收项 7/8 的结构性证明：
- * - `apply` 只访问 `ctx.effect` 与 `ctx.logger`，**不访问** `ctx.tools` / `ctx.skills` /
- *   `ctx.agents`（用 Proxy 在访问时直接抛错来锁定这一点）——本阶段没有工具注册；
+ * - `apply` 只访问 `ctx.effect` / `ctx.logger` / `ctx.tools`，**不访问** `ctx.skills` /
+ *   `ctx.agents`（用 Proxy 在访问时直接抛错来锁定这一点）；工具注册走惰性 import；
  * - 默认配置（poll=false）下 `apply` 不创建任何定时器；
  * - effect 的 disposer 执行后：定时器清除、只多一条卸载日志，再调用无副作用。
  */
@@ -27,19 +27,22 @@ interface FakeContext {
   forbiddenAccess: string[]
   /** `ctx.agents` 被访问的次数（poll=true 时投递需要读根 agent）。 */
   agentAccess: string[]
+  /** 已注册的工具名（注销时移除）。 */
+  registrations: string[]
 }
 
 /**
- * 构造只提供 effect / logger / agents 的假上下文。
+ * 构造只提供 effect / logger / agents / tools 的假上下文。
  *
- * `tools` / `skills` 仍禁止访问（本插件不注册工具）；`agents` 允许访问并记录，
- * 用于断言 poll=false 时连 agent 列表都不读。
+ * `tools` 允许访问并记录注册结果（本插件注册 3 个写工具）；`skills` 仍禁止访问；
+ * `agents` 允许访问并记录，用于断言 poll=false 时连 agent 列表都不读。
  */
 function createFakeContext(): FakeContext {
   const labels: string[] = []
   const disposers: Array<() => void> = []
   const forbiddenAccess: string[] = []
   const agentAccess: string[] = []
+  const registrations: string[] = []
 
   const base = {
     effect(execute: () => (() => void) | void, label?: string) {
@@ -47,6 +50,15 @@ function createFakeContext(): FakeContext {
       const cleanup = execute()
       if (typeof cleanup === 'function') disposers.push(cleanup)
       return { dispose: async () => {} }
+    },
+    tools: {
+      register(tool: { name: string }) {
+        registrations.push(tool.name)
+        return () => {
+          const index = registrations.indexOf(tool.name)
+          if (index >= 0) registrations.splice(index, 1)
+        }
+      },
     },
     agents: {
       roots: () => {
@@ -64,7 +76,7 @@ function createFakeContext(): FakeContext {
 
   const ctx = new Proxy(base, {
     get(target, key, receiver) {
-      if (key === 'tools' || key === 'skills') {
+      if (key === 'skills') {
         forbiddenAccess.push(String(key))
         throw new Error(`本阶段不应访问 ctx.${String(key)}`)
       }
@@ -78,10 +90,18 @@ function createFakeContext(): FakeContext {
     labels,
     forbiddenAccess,
     agentAccess,
+    registrations,
     disposeAll() {
       for (const disposer of [...disposers].reverse()) disposer()
     },
   }
+}
+
+/** 等惰性 import 完成、3 个写工具注册就绪（避免异步日志干扰后续断言）。 */
+async function settleTools(fake: FakeContext): Promise<void> {
+  await vi.waitFor(() => {
+    expect(fake.registrations).toHaveLength(3)
+  })
 }
 
 afterEach(() => {
@@ -117,7 +137,7 @@ describe('插件标识', () => {
 })
 
 describe('apply：加载与生命周期', () => {
-  it('打印 [dsh-echuan] 加载日志并含关键字段', () => {
+  it('打印 [dsh-echuan] 加载日志并含关键字段', async () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const fake = createFakeContext()
 
@@ -132,21 +152,44 @@ describe('apply：加载与生命周期', () => {
     expect(loaded).toContain('baseUrl=http://127.0.0.1:8720')
     expect(loaded).toContain('actor=agent:echuan')
     expect(loaded).toContain('poll=false')
+
+    await settleTools(fake)
   })
 
-  it('只注册一个 effect（echuan.runtime()），且不访问 tools/skills/agents', () => {
+  it('注册 tools + runtime 两个 effect，不访问 skills/agents', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const fake = createFakeContext()
 
     apply(fake.ctx, undefined)
 
-    expect(fake.labels).toEqual(['echuan.runtime()'])
+    expect(fake.labels).toEqual(['echuan.tools()', 'echuan.runtime()'])
     expect(fake.forbiddenAccess).toEqual([])
     // poll=false：连根 agent 列表都不读。
     expect(fake.agentAccess).toEqual([])
+
+    await settleTools(fake)
   })
 
-  it('默认配置（poll=false）下零定时器', () => {
+  it('惰性注册 3 个写工具并打印注册日志', async () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fake = createFakeContext()
+
+    apply(fake.ctx, undefined)
+    await settleTools(fake)
+
+    expect(fake.registrations).toEqual([
+      'echuan_task_claim',
+      'echuan_task_renew',
+      'echuan_task_report',
+    ])
+    const lines = spy.mock.calls.map(call => String(call[0]))
+    expect(lines.some(line => line.includes('已注册 3 个写工具'))).toBe(true)
+
+    fake.disposeAll()
+    expect(fake.registrations).toEqual([])
+  })
+
+  it('默认配置（poll=false）下零定时器', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
     const fake = createFakeContext()
@@ -154,6 +197,7 @@ describe('apply：加载与生命周期', () => {
     apply(fake.ctx, undefined)
 
     expect(setIntervalSpy).not.toHaveBeenCalled()
+    await settleTools(fake)
   })
 
   it('poll=true 时启动心跳循环，disposer 清除定时器且重复清理无副作用', async () => {
@@ -172,6 +216,7 @@ describe('apply：加载与生命周期', () => {
       .find(entry => entry.ms === 15_000)?.value
 
     apply(fake.ctx, { worker: { poll: { enable: true } } })
+    await settleTools(fake)
 
     // 惰性 import → 首轮心跳（假 fetch 失败）→ 才会按兜底间隔排下一轮。
     await vi.waitFor(() => {
@@ -207,6 +252,7 @@ describe('apply：R-02 metadata 超限不启动心跳循环', () => {
     expect(bytes).toBeGreaterThan(8192)
 
     apply(fake.ctx, { worker: { poll: { enable: true }, metadata } })
+    await settleTools(fake)
     // 留出一轮惰性 import 的时间：正常路径这里会走 createWorkerLoop + start()。
     await new Promise<void>(resolve => { setTimeout(resolve, 20) })
 

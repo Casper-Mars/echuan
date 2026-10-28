@@ -134,9 +134,11 @@ const CODE_HINTS: Record<string, string> = {
   conflict:
     '下一步：重新拉取最新数据后再决定，不要原样重试。',
   lease_lost:
-    '下一步：立即停止执行这张卡，旧结果不可再提交；重新领卡（或重新注册 worker）后再继续。',
+    '下一步：租约已失效（过期 / 被回收 / lease_id 不匹配），立即停止执行这张卡，旧结果不可再提交；'
+    + '重新调用 `echuan_task_claim` 领卡后再继续。',
   material_required:
-    '下一步：补齐平台要求的报告内容或物料（report 的 `summary_md` 不能为空），再重新提交。',
+    '下一步：补全报告内容后再提交（`echuan_task_report` 的 `summary_md` 必填且不能为空白），'
+    + '不要原样重试。',
   too_large:
     '下一步：缩小请求体（精简 metadata、缩短报告或分段提交）后重试；不要原样重发。',
   rate_limited:
@@ -150,9 +152,10 @@ const CODE_HINTS: Record<string, string> = {
   range_not_satisfiable:
     '下一步：去掉 Range 头，或按资源总长度重新请求。',
   worker_unknown:
-    '下一步：丢弃旧 worker_id，重新注册（POST /v1/workers/heartbeat 不带 id）拿到新 id 后再领卡。',
+    '下一步：本地 worker 未注册（或平台已丢弃该 id），等下一次心跳自动重新注册后再试；'
+    + '不要手工伪造 worker_id，也不要重新领卡硬试。',
   worker_busy:
-    '下一步：该 worker 已持有任务卡，先完成当前卡（提交报告）再领新卡，不要并发抢卡。',
+    '下一步：你已持卡，先完成当前卡并用 `echuan_task_report` 汇报，再领新卡；不要并发抢卡。',
 }
 
 /** 错误体缺失 code 时，按 HTTP 状态兜底（`docs/worker-ops.md` 第 3 节）。 */
