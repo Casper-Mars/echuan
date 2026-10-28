@@ -2,6 +2,8 @@
 
 驿传（echuan）：单二进制 Web 服务，前端通过 `go:embed` 打包，SQLite 持久化。
 
+Agent 接入：`kit/` 是同仓的 dsh 插件工具包，安装、配置与排障见 **[kit/README.md](kit/README.md)**。
+
 ## 本地开发
 
 ```bash
