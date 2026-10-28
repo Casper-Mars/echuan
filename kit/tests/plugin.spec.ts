@@ -12,7 +12,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
-import { apply, inject, name } from '../src/index.js'
+import { apply, inject, metadataByteLength, name } from '../src/index.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const kitRoot = path.resolve(here, '..')
@@ -25,13 +25,21 @@ interface FakeContext {
   disposeAll(): void
   /** 被禁止访问的服务名。 */
   forbiddenAccess: string[]
+  /** `ctx.agents` 被访问的次数（poll=true 时投递需要读根 agent）。 */
+  agentAccess: string[]
 }
 
-/** 构造只提供 effect / logger 的假上下文；访问 tools/skills/agents 立即抛错。 */
+/**
+ * 构造只提供 effect / logger / agents 的假上下文。
+ *
+ * `tools` / `skills` 仍禁止访问（本插件不注册工具）；`agents` 允许访问并记录，
+ * 用于断言 poll=false 时连 agent 列表都不读。
+ */
 function createFakeContext(): FakeContext {
   const labels: string[] = []
   const disposers: Array<() => void> = []
   const forbiddenAccess: string[] = []
+  const agentAccess: string[] = []
 
   const base = {
     effect(execute: () => (() => void) | void, label?: string) {
@@ -39,6 +47,12 @@ function createFakeContext(): FakeContext {
       const cleanup = execute()
       if (typeof cleanup === 'function') disposers.push(cleanup)
       return { dispose: async () => {} }
+    },
+    agents: {
+      roots: () => {
+        agentAccess.push('agents')
+        return []
+      },
     },
     logger: {
       info: () => {},
@@ -50,10 +64,11 @@ function createFakeContext(): FakeContext {
 
   const ctx = new Proxy(base, {
     get(target, key, receiver) {
-      if (key === 'tools' || key === 'skills' || key === 'agents') {
+      if (key === 'tools' || key === 'skills') {
         forbiddenAccess.push(String(key))
         throw new Error(`本阶段不应访问 ctx.${String(key)}`)
       }
+      if (key === 'agents') agentAccess.push('agents')
       return Reflect.get(target, key, receiver)
     },
   }) as unknown as Context
@@ -62,6 +77,7 @@ function createFakeContext(): FakeContext {
     ctx,
     labels,
     forbiddenAccess,
+    agentAccess,
     disposeAll() {
       for (const disposer of [...disposers].reverse()) disposer()
     },
@@ -70,6 +86,7 @@ function createFakeContext(): FakeContext {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('插件标识', () => {
@@ -125,6 +142,8 @@ describe('apply：加载与生命周期', () => {
 
     expect(fake.labels).toEqual(['echuan.runtime()'])
     expect(fake.forbiddenAccess).toEqual([])
+    // poll=false：连根 agent 列表都不读。
+    expect(fake.agentAccess).toEqual([])
   })
 
   it('默认配置（poll=false）下零定时器', () => {
@@ -137,30 +156,72 @@ describe('apply：加载与生命周期', () => {
     expect(setIntervalSpy).not.toHaveBeenCalled()
   })
 
-  it('disposer 执行后不再有日志与定时器，重复清理无副作用', () => {
-    // 用假定时器：poll=true 会创建真实 interval，避免测试进程被未清除的句柄拖住。
-    vi.useFakeTimers()
-    try {
-      const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
-      const setSpy = vi.spyOn(globalThis, 'setInterval')
-      const clearSpy = vi.spyOn(globalThis, 'clearInterval')
-      const fake = createFakeContext()
+  it('poll=true 时启动心跳循环，disposer 清除定时器且重复清理无副作用', async () => {
+    // 假 fetch：首轮心跳失败（网络错误），循环会按兜底 15s 排下一轮。
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('offline')
+    }))
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const setSpy = vi.spyOn(globalThis, 'setTimeout')
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout')
+    const fake = createFakeContext()
 
-      apply(fake.ctx, { worker: { poll: { enable: true } } })
-      expect(setSpy).toHaveBeenCalledTimes(1)
+    const heartbeatHandle = (): unknown => setSpy.mock.calls
+      .map((call, index) => ({ ms: call[1], value: setSpy.mock.results[index]?.value }))
+      .find(entry => entry.ms === 15_000)?.value
 
-      fake.disposeAll()
-      expect(clearSpy).toHaveBeenCalledTimes(1)
+    apply(fake.ctx, { worker: { poll: { enable: true } } })
 
-      const afterDispose = spy.mock.calls.length
-      const lines = spy.mock.calls.map(call => String(call[0]))
-      expect(lines.some(line => line.includes('已卸载'))).toBe(true)
+    // 惰性 import → 首轮心跳（假 fetch 失败）→ 才会按兜底间隔排下一轮。
+    await vi.waitFor(() => {
+      expect(fake.agentAccess.length).toBeGreaterThan(0)
+      expect(heartbeatHandle()).toBeDefined()
+    })
 
-      fake.disposeAll()
-      expect(spy.mock.calls.length).toBe(afterDispose)
-      expect(clearSpy).toHaveBeenCalledTimes(1)
-    } finally {
-      vi.useRealTimers()
-    }
+    const handle = heartbeatHandle()
+    fake.disposeAll()
+    expect(clearSpy.mock.calls.some(([cleared]) => cleared === handle)).toBe(true)
+
+    const afterDispose = spy.mock.calls.length
+    const lines = spy.mock.calls.map(call => String(call[0]))
+    expect(lines.some(line => line.includes('心跳已停止'))).toBe(true)
+
+    fake.disposeAll()
+    expect(spy.mock.calls.length).toBe(afterDispose)
+  })
+})
+
+describe('apply：R-02 metadata 超限不启动心跳循环', () => {
+  it('poll=true 但 metadata 超 8KiB：零请求、零定时器，warn 含实际字节数与上限', async () => {
+    const fetchSpy = vi.fn(async () => {
+      throw new Error('超限时不应发心跳')
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const setSpy = vi.spyOn(globalThis, 'setTimeout')
+    const fake = createFakeContext()
+    const metadata = { blob: 'x'.repeat(9_000) }
+    const bytes = metadataByteLength(metadata)
+    expect(bytes).toBeGreaterThan(8192)
+
+    apply(fake.ctx, { worker: { poll: { enable: true }, metadata } })
+    // 留出一轮惰性 import 的时间：正常路径这里会走 createWorkerLoop + start()。
+    await new Promise<void>(resolve => { setTimeout(resolve, 20) })
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(setSpy.mock.calls.some(([, ms]) => ms === 15_000)).toBe(false)
+    // 循环根本没创建 → 连根 agent 都不读。
+    expect(fake.agentAccess).toEqual([])
+
+    const warns = warnSpy.mock.calls.map(call => String(call[0]))
+    const limitWarn = warns.find(line => line.includes('不启动心跳循环'))
+    expect(limitWarn).toBeDefined()
+    expect(limitWarn).toContain(`${bytes}B`)
+    expect(limitWarn).toContain('8192B')
+
+    // disposer 仍可安全执行。
+    fake.disposeAll()
   })
 })

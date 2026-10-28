@@ -3,14 +3,18 @@
  *
  * 职责边界（技术方案 v0.6 §1）：
  * - 声明插件标识 `name` 与依赖服务 `inject`；
- * - 在 `apply(ctx, config)` 里解析 5 项配置、落加载日志、把运行期骨架挂到 `ctx.effect`；
- * - **本阶段不注册任何工具、不发任何 HTTP 请求**，只保证「装得上、加载得起来、停得干净」。
+ * - 在 `apply(ctx, config)` 里解析 5 项配置、落加载日志；
+ * - `worker.poll.enable=false`（默认）时**零请求、零定时器**，连 HTTP 客户端都不加载；
+ * - `worker.metadata` 序列化后超过 8KiB 时只 warn 一条并**不启动心跳循环**（R-02），
+ *   避免每轮都被平台拒（413）而永久刷屏；
+ * - 启用时把 worker 心跳循环挂到 `ctx.effect`，由它定时心跳、上报状态并投递派单。
  *
  * 依赖方向：kit 只依赖平台 HTTP 契约，不 import 任何 Go 代码。
  *
  * 加载策略：入口模块只静态引入 `./config.js`（schemastery，Schema 必须同步可见）与
- * `./runtime.js`（零依赖）。后续任务-02 起的工具 / HTTP 实现模块按 dsh-tasks 的经验
- * 在 `apply` 内**惰性 import**，避免静态重依赖拖慢 `--help` 这类快速退出场景下的插件激活。
+ * `./runtime.js`（零依赖的日志/定时器类型）。`./client.js` 与 `./worker.js`
+ * （后者带 `@deepseek-ai/dsh-llm`）在 `apply` 内**惰性 import**，避免拖慢
+ * `--help` 这类快速退出场景下的插件激活。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import {
@@ -19,9 +23,10 @@ import {
   metadataByteLength,
   resolveConfig,
   type ConfigInput,
-  type ResolvedConfig,
 } from './config.js'
-import { createEchuanRuntime, type EchuanRuntime, type Logger } from './runtime.js'
+import type { WorkerClient } from './client.js'
+import type { Logger } from './runtime.js'
+import type { WorkerLoop } from './worker.js'
 
 export {
   Config,
@@ -36,6 +41,7 @@ export {
 export type { ConfigInput, ResolvedConfig } from './config.js'
 export { DEFAULT_POLL_INTERVAL_MS, createEchuanRuntime } from './runtime.js'
 export type { EchuanRuntime, EchuanRuntimeOptions, Logger, TimerApi } from './runtime.js'
+export type { WorkerLoop, WorkerLoopOptions } from './worker.js'
 
 /** Cordis 函数式插件标识（同时是 patch 行里的 `id`）。 */
 export const name = 'echuan'
@@ -44,7 +50,7 @@ export const name = 'echuan'
  * 依赖服务。
  *
  * - `tools` / `skills`：后续阶段注册工具与技能指南；
- * - `agents`：**只**用于投递消息与读取 agent 状态（`idle` / `running`），
+ * - `agents`：**只**用于读取根 agent 状态（`idle` / `running`）与投递任务消息，
  *   不创建会话、不选模型。
  *
  * 三者由 `@deepseek-ai/dsh-base` 提供；缺任一则本插件保持未激活，而不是抛错。
@@ -74,47 +80,103 @@ export function apply(ctx: Context, config?: ConfigInput): void {
     }
   }
 
+  // 告警单独出口：保留 warn 级别给宿主，同时保证测试/终端可见。
+  const warn = (message: string): void => {
+    console.warn(message)
+    try {
+      ctx.logger?.warn?.(message)
+    } catch {
+      // 同上。
+    }
+  }
+
   log(
     `${TAG} 插件加载 name=${name} inject=[${inject.join(', ')}] `
       + `baseUrl=${resolved.baseUrl} actor=${resolved.actor} `
       + `timeout=${resolved.requestTimeoutMs}ms poll=${resolved.worker.poll.enable}`,
   )
 
+  // R-02：超限在这里判一次，超限就完全不启动循环（零请求、零定时器）。
+  let metadataOverLimit = false
   try {
-    reportMetadataBudget(resolved, log)
+    const metadataBytes = metadataByteLength(resolved.worker.metadata)
+    metadataOverLimit = metadataBytes > WORKER_METADATA_MAX_BYTES
+    if (metadataOverLimit) {
+      warn(
+        `${TAG} 警告：worker.metadata 序列化后 ${metadataBytes}B，`
+          + `超过平台约定的 ${WORKER_METADATA_MAX_BYTES}B 上限，不启动心跳循环`
+          + '（否则每轮注册都会被拒）；请缩小 metadata 或保持 worker.poll.enable=false',
+      )
+    }
   } catch (err) {
     // S-04：metadata 不可序列化（循环引用 / BigInt）时只告警，不让插件装载失败。
-    const reason = err instanceof Error ? err.message : String(err)
-    log(`${TAG} 警告：${reason}`)
+    warn(`${TAG} 警告：${messageOf(err)}`)
   }
 
-  // 所有运行期资源（当前只有定时器骨架，后续为工具注册 + HTTP 客户端）都挂在
-  // 同一个 effect 上：fiber dispose（含 HMR 重载、profile 停用）时按逆序清理。
+  // 所有运行期资源（worker 心跳定时器）都挂在同一个 effect 上：
+  // fiber dispose（含 HMR 重载、profile 停用）时按逆序清理。
   ctx.effect(() => {
-    const runtime: EchuanRuntime = createEchuanRuntime(resolved, {
-      logger: toRuntimeLogger(log),
-    })
-    runtime.start()
+    let disposed = false
+    let loop: WorkerLoop | undefined
+
+    if (!resolved.worker.poll.enable) {
+      // 默认关闭：不加载客户端、不建定时器、不发请求。
+      log(`${TAG} worker.poll.enable=false，未创建心跳定时器`)
+      return () => {}
+    }
+
+    if (metadataOverLimit) {
+      // R-02：metadata 超限时不加载客户端、不建定时器、不发请求（warn 已在 apply 打过）。
+      log(`${TAG} worker.metadata 超过 ${WORKER_METADATA_MAX_BYTES}B，未创建心跳定时器`)
+      return () => {}
+    }
+
+    // 惰性加载：只有真正启用轮询时才引入 fetch 客户端与 worker 循环，
+    // 保证 `--help` 快路径不加载 HTTP / dsh-llm 依赖。
+    void (async () => {
+      try {
+        const [clientModule, workerModule] = await Promise.all([
+          import('./client.js'),
+          import('./worker.js'),
+        ])
+        if (disposed) return
+
+        const client: WorkerClient = clientModule.createWorkerClient(resolved)
+        const nextLoop = workerModule.createWorkerLoop({
+          config: resolved,
+          client,
+          agents: () => ctx.agents.roots(),
+          logger: toRuntimeLogger(log, warn),
+        })
+        loop = nextLoop
+
+        if (disposed) {
+          nextLoop.dispose('plugin dispose')
+          return
+        }
+        nextLoop.start()
+      } catch (err) {
+        warn(`${TAG} 心跳启动失败：${messageOf(err)}`)
+      }
+    })()
+
     return () => {
-      runtime.dispose('plugin dispose')
+      disposed = true
+      const active = loop
+      loop = undefined
+      active?.dispose('plugin dispose')
     }
   }, 'echuan.runtime()')
 }
 
-/**
- * `worker.metadata` 超限只告警不截断：上报内容由调用方决定，
- * 插件不替调用方做有损处理（平台契约按 ≤8KiB 约定）。
- */
-function reportMetadataBudget(config: ResolvedConfig, log: (message: string) => void): void {
-  const bytes = metadataByteLength(config.worker.metadata)
-  if (bytes > WORKER_METADATA_MAX_BYTES) {
-    log(
-      `${TAG} 警告：worker.metadata 序列化后 ${bytes}B，超过平台约定的 ${WORKER_METADATA_MAX_BYTES}B 上限`,
-    )
-  }
+/** 把插件的两个日志出口适配成 worker 循环要求的 `Logger`。 */
+function toRuntimeLogger(
+  info: (message: string) => void,
+  warn: (message: string) => void,
+): Logger {
+  return { info, warn }
 }
 
-/** 把插件的日志出口适配成运行期骨架要求的 `Logger`（骨架当前不使用 debug）。 */
-function toRuntimeLogger(log: (message: string) => void): Logger {
-  return { info: log, warn: log }
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }

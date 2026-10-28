@@ -17,9 +17,9 @@
  * - 与 `api/openapi.yaml` 一一对应：{@link TOOL_OPERATIONS} 记录每个方法对应的
  *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 7 条确实存在。
  *
- * 任务-03 的 worker 注册/心跳方法**不在本文件**：核心 `requestRaw` /
- * `requestJson` 与 7 个工具方法已经分离，worker 方法走独立命名空间，
- * 不会破坏「恰好 7 个」的断言。
+ * 任务-03 的 worker 注册/心跳方法由 {@link createWorkerClient} 提供，走
+ * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 7 个」的断言；
+ * 两者共用 `requestRaw` / `requestJson`，仍然是全插件唯一的 fetch 出口。
  */
 import {
   WORKER_METADATA_MAX_BYTES,
@@ -299,6 +299,62 @@ export interface EchuanClient {
 }
 
 // ---------------------------------------------------------------------------
+// Worker 心跳（独立命名空间，不计入 TOOL_METHODS）
+// ---------------------------------------------------------------------------
+
+export type WorkerState = 'idle' | 'busy'
+
+/** `POST /v1/workers/heartbeat` 的请求体；首次注册时 `worker_id` 字段**完全不出现**。 */
+export interface WorkerHeartbeatInput {
+  worker_id?: string
+  state: WorkerState
+  metadata: Record<string, unknown>
+}
+
+/** 心跳回包里的 worker 快照（只声明本工具包读取的字段）。 */
+export interface WorkerSnapshot {
+  worker_id: string
+  presence?: string
+  state?: WorkerState
+  current_task_id?: string | null
+  metadata?: Record<string, unknown>
+  first_seen?: string
+  last_seen?: string
+  heartbeat_interval_ms?: number
+  lease_ttl_seconds?: number
+  [key: string]: unknown
+}
+
+/** 指令公共形状；当前枚举只有 `run_task`。 */
+export interface WorkerCommandBase {
+  kind: string
+}
+
+export interface WorkerRunTaskCommand extends WorkerCommandBase {
+  kind: 'run_task'
+  task: ClaimedTask
+  lease: ClaimLease
+  context: ClaimContext
+}
+
+/** 心跳返回的一条指令；未识别的 kind 由调用方忽略。 */
+export type WorkerCommand = WorkerRunTaskCommand | WorkerCommandBase
+
+/** `POST /v1/workers/heartbeat` 的 200 回包。 */
+export interface WorkerHeartbeatPayload {
+  worker: WorkerSnapshot
+  /** 无任务时恒为 `[]`（不会是 null 或省略）。 */
+  commands: WorkerCommand[]
+  [key: string]: unknown
+}
+
+/** worker 心跳客户端；与 7 个工具方法分开，避免污染 `TOOL_METHODS`。 */
+export interface WorkerClient {
+  /** `POST /v1/workers/heartbeat`（operationId `heartbeatWorker`）。 */
+  heartbeat(input: WorkerHeartbeatInput): Promise<ApiResult<WorkerHeartbeatPayload>>
+}
+
+// ---------------------------------------------------------------------------
 // 核心请求层
 // ---------------------------------------------------------------------------
 
@@ -512,6 +568,40 @@ export function createClient(
         materialVersion: version !== undefined && Number.isFinite(version) ? version : undefined,
       }
       return okResult(raw.status, material, raw.requestId)
+    },
+  }
+}
+
+/**
+ * 创建 worker 心跳客户端。
+ *
+ * 与 {@link createClient} 分开：7 个工具方法的对象键必须**恰好**是
+ * {@link TOOL_METHODS}（任务-02 有断言），worker 心跳走独立命名空间。
+ *
+ * 首次注册时请求体里**没有** `worker_id` 键（不是空串、不是 null）；
+ * `metadata` 原样上报，仍会经过 {@link assertWorkerMetadataSize} 的 8KiB 前置校验。
+ */
+export function createWorkerClient(
+  config: ResolvedConfig,
+  options: ClientOptions = {},
+): WorkerClient {
+  const ctx = createRequestContext(config, options)
+
+  return {
+    async heartbeat(input) {
+      const state: WorkerState = input?.state === 'busy' ? 'busy' : 'idle'
+      const body: Record<string, unknown> = {}
+      if (input?.worker_id !== undefined && input.worker_id !== '') {
+        body.worker_id = input.worker_id
+      }
+      body.state = state
+      body.metadata = input?.metadata ?? {}
+
+      return requestJson<WorkerHeartbeatPayload>(ctx, {
+        method: 'POST',
+        path: '/v1/workers/heartbeat',
+        body,
+      })
     },
   }
 }
