@@ -1,0 +1,17 @@
+# dsh-echuan bundle patch — 把驿传接入插件插进 profile
+#
+# 通过 `dsh plugin --profile echuan add <kit 目录>` 安装后，dsh 会读到本包的
+# package.json `dsh.bundle.patch`，把下面这一行自动并入 profile 的
+# `dsh.profile.bundles`，无需手改 profile。
+#
+#   id     ：运行时标识（fiber 名 / 卸载时的 `echuan` 前缀日志来源）
+#   name   ：解析到包名（package.json 的 `name`），不带子路径
+#   inject ：依赖服务；三者在 `@deepseek-ai/dsh-base` 中均存在
+#            - tools  ：工具注册表（本阶段不注册工具，仅声明依赖）
+#            - skills ：技能注册表
+#            - agents ：只用于投递消息与读 agent 状态（idle/running），
+#                       不创建会话、不选模型
+- insert:
+    - id: echuan
+      name: dsh-echuan
+      inject: ['tools', 'skills', 'agents']

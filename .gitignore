@@ -38,3 +38,7 @@ go.work.sum
 # Frontend workspace (Task-14)
 web/node_modules/
 web/dist/
+
+# dsh 接入工具包（kit/，Task-01）
+kit/node_modules/
+kit/lib/

@@ -34,6 +34,7 @@
 | `migrations/` | SQL 迁移，`//go:embed` 打包（README 不打包） |
 | `api/openapi.yaml` | 接口契约，与路由表强校验 |
 | `configs/echuan.toml` | 配置样例；服务默认读 `./echuan.toml`（`-config` 可指定），文件不存在则全部走默认值 |
+| `kit/` | dsh 接入工具包：`dsh-echuan` 插件（TypeScript / Cordis 4，独立 pnpm 包，含自己的 `pnpm-lock.yaml`）。声明 `dsh.bundle.patch` 把自己插进 dsh profile；只依赖平台 HTTP 契约，**不 import 任何 Go 代码**，不参与 Go 构建 |
 
 ## 3. 常用命令
 
