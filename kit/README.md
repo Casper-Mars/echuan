@@ -54,8 +54,10 @@ dsh plugin --profile <name> add ./kit
 
 ### 方式二：tgz 包
 
+在仓库根目录执行：
+
 ```bash
-cd /Users/reachlucifer/project/opc/echuan/kit
+cd kit
 pnpm build && pnpm pack            # 产出 dsh-echuan-0.1.0.tgz（已被 gitignore）
 dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
 ```
