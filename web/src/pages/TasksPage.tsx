@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { getProject, listTasks } from '../api/client'
 import type { Task, TaskDecision } from '../api/types'
@@ -13,6 +13,7 @@ import {
   RefreshBar,
 } from '../components/States'
 import { usePolling } from '../hooks/usePolling'
+import { useWorkerPresence } from '../hooks/useWorkerPresence'
 import {
   TASK_COLUMNS,
   formatSince,
@@ -43,6 +44,15 @@ export function TasksPage() {
 
   const tasks = itemsOf(data?.tasks)
   const project = data?.project
+
+  // 执行者在线状态单独轮询：worker 拉取失败不影响看板本身。
+  // 只查本页任务涉及的 worker；首页 200 条未命中的再逐个补查（见 useWorkerPresence）。
+  const executorIds = useMemo(
+    () => tasks.map((task) => task.worker_id).filter((id): id is string => id !== null),
+    [tasks],
+  )
+  const { presenceOf, known: workersKnown } = useWorkerPresence(executorIds)
+
   const done = tasks.filter((task) => task.status === 4).length
   const columns = showEmpty
     ? TASK_COLUMNS
@@ -106,40 +116,74 @@ export function TasksPage() {
                   <span className="count">{columnTasks.length}</span>
                 </header>
                 <div className="board-cards">
-                  {columnTasks.map((task) => (
-                    <article
-                      key={task.task_id}
-                      className="board-card"
-                      onClick={() =>
-                        openDrawer({
-                          title: `任务 ${task.task_id} · ${task.title}`,
-                          body: (
-                            <TaskDetailDrawer taskId={task.task_id} onChanged={refresh} />
-                          ),
-                        })
-                      }
-                    >
-                      <div className="card-head">
-                        <span className="code">{task.task_id}</span>
-                        <span className="muted">#{task.seq_no}</span>
-                      </div>
-                      <h3 className="board-card-title">{task.title}</h3>
-                      <p className={task.reason ? 'board-card-reason' : 'board-card-reason muted'} title={task.reason ?? undefined}>
-                        reason：{task.reason || '—'}
-                      </p>
-                      <footer className="board-card-foot">
-                        <span>
-                          尝试 {task.attempt_count}/{task.max_attempts}
-                        </span>
-                        <span>停留 {formatSince(task.update_time)}</span>
-                      </footer>
-                      <TaskActionButtons
-                        task={task}
-                        onAction={(decision) => setAction({ task, decision })}
-                        className="board-card-actions"
-                      />
-                    </article>
-                  ))}
+                  {columnTasks.map((task) => {
+                    // 只有「拿到过 worker 数据」且「明确查到 offline」才告警；
+                    // 未命中首页且补查失败时状态未知，不能误判为离线。
+                    const executorPresence = task.worker_id
+                      ? presenceOf(task.worker_id)
+                      : null
+                    const executorOffline =
+                      workersKnown && executorPresence === 'offline'
+                    return (
+                      <article
+                        key={task.task_id}
+                        className={
+                          executorOffline
+                            ? 'board-card board-card-executor-offline'
+                            : 'board-card'
+                        }
+                        onClick={() =>
+                          openDrawer({
+                            title: `任务 ${task.task_id} · ${task.title}`,
+                            body: (
+                              <TaskDetailDrawer taskId={task.task_id} onChanged={refresh} />
+                            ),
+                          })
+                        }
+                      >
+                        <div className="card-head">
+                          <span className="code">{task.task_id}</span>
+                          <span className="muted">#{task.seq_no}</span>
+                        </div>
+                        <h3 className="board-card-title">{task.title}</h3>
+                        {task.worker_id && (
+                          <p
+                            className={
+                              executorOffline
+                                ? 'board-card-worker offline'
+                                : 'board-card-worker'
+                            }
+                          >
+                            <span className="mono" title={task.worker_id}>
+                              ⚙ {task.worker_id}
+                            </span>
+                            {executorOffline && (
+                              <span className="worker-offline-flag">⚠ 执行者已离线</span>
+                            )}
+                          </p>
+                        )}
+                        <p
+                          className={
+                            task.reason ? 'board-card-reason' : 'board-card-reason muted'
+                          }
+                          title={task.reason ?? undefined}
+                        >
+                          reason：{task.reason || '—'}
+                        </p>
+                        <footer className="board-card-foot">
+                          <span>
+                            尝试 {task.attempt_count}/{task.max_attempts}
+                          </span>
+                          <span>停留 {formatSince(task.update_time)}</span>
+                        </footer>
+                        <TaskActionButtons
+                          task={task}
+                          onAction={(decision) => setAction({ task, decision })}
+                          className="board-card-actions"
+                        />
+                      </article>
+                    )
+                  })}
                   {columnTasks.length === 0 && <p className="board-empty">暂无</p>}
                 </div>
               </section>

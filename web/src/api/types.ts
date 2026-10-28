@@ -87,6 +87,8 @@ export interface Task {
   priority: number
   status: number
   status_name: string
+  /** 当前持有该卡的 worker；仅 status=2 且领取时绑定了 worker 才有值。 */
+  worker_id: string | null
   attempt_count: number
   max_attempts: number
   reason: string | null
@@ -112,6 +114,31 @@ export interface TaskLease {
 export interface TaskDetail extends Task {
   report: Material | null
   lease: TaskLease | null
+}
+
+/** 在线状态由服务端按 last_seen 与 worker_ttl 推导，不落库。 */
+export type WorkerPresence = 'active' | 'offline'
+
+/** worker 最近一次心跳声明的状态（声明值，不等于占用事实）。 */
+export type WorkerState = 'idle' | 'busy'
+
+/** GET /v1/workers 的单个 worker；九个字段恒定出现。 */
+export interface Worker {
+  worker_id: string
+  presence: WorkerPresence
+  state: WorkerState
+  current_task_id: string | null
+  metadata: Record<string, unknown>
+  first_seen: string
+  last_seen: string
+  heartbeat_interval_ms: number
+  lease_ttl_seconds: number
+}
+
+/** GET /v1/workers（不带 id）的响应，按 last_seen 倒序。 */
+export interface WorkerListResponse {
+  items: Worker[]
+  next_cursor?: string
 }
 
 /** POST /v1/products 的请求体。 */

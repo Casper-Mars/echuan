@@ -10,7 +10,7 @@ import { WorkersPage } from './pages/WorkersPage'
  *   #/products
  *   #/products/:productId/projects
  *   #/products/:productId/projects/:projectId/tasks
- *   #/workers（占位，真实页面由任务-10 实现）
+ *   #/workers
  * 根路径与未知 hash 一律重定向到产品列表。
  */
 export function App() {

@@ -13,6 +13,8 @@ import type {
   TaskDecision,
   TaskDetail,
   TaskList,
+  Worker,
+  WorkerListResponse,
 } from './types'
 
 /**
@@ -226,6 +228,28 @@ export function decideTask(
     body: { decision, reason },
     version,
   })
+}
+
+export interface WorkerListQuery {
+  /** 分页大小，缺省 200（接口上限）。 */
+  limit?: number
+  cursor?: string
+  signal?: AbortSignal
+}
+
+/**
+ * Worker 列表（按 last_seen 倒序）。
+ *
+ * 缺省取满单页上限 200 条；调用方需要全量时按 next_cursor 继续翻页。
+ */
+export function listWorkers(options: WorkerListQuery = {}): Promise<WorkerListResponse> {
+  const { limit = 200, cursor, signal } = options
+  return request<WorkerListResponse>('/v1/workers', { query: { limit, cursor }, signal })
+}
+
+/** Worker 详情（?id= 返回裸 Worker；未知 id 由后端 404 表达）。 */
+export function getWorker(id: string, signal?: AbortSignal): Promise<Worker> {
+  return request<Worker>('/v1/workers', { query: { id }, signal })
 }
 
 /** 物料下载地址（同源字节流，支持 HEAD/Range）。 */

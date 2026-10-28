@@ -61,6 +61,20 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(hours / 24)} 天`
 }
 
+/** 相对时间（中文口径）：刚刚 / N 分钟前 / N 小时前 / N 天前。 */
+export function formatRelative(iso: string | null | undefined, now = Date.now()): string {
+  if (!iso) return '—'
+  const time = Date.parse(iso)
+  if (Number.isNaN(time)) return '—'
+  const diff = Math.max(0, now - time)
+  if (diff < 60_000) return '刚刚'
+  const minutes = Math.floor(diff / 60_000)
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  return `${Math.floor(hours / 24)} 天前`
+}
+
 export function formatClock(date: Date | null): string {
   if (!date) return '—'
   return date.toLocaleTimeString('zh-CN', { hour12: false })
