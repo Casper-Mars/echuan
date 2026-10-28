@@ -4,8 +4,9 @@
  * 全部使用假平台（注入 fetch）+ 假时钟（注入 setTimeout 链）：
  * 不连真实平台、不做真实 sleep。
  *
- * 覆盖验收标准的 1–10 条：首次注册字段、间隔重排、派单投递文案、根 agent
- * 数量异常、busy/idle、409 worker_unknown、网络失败、poll=false、dispose、
+ * 覆盖验收标准的 1–10 条：首轮心跳延迟 5s（而非启动即发）、首次注册字段、
+ * 间隔重排、派单投递文案、根 agent 数量异常、busy/idle、409 worker_unknown、
+ * 网络失败、poll=false、dispose（含「延迟内 dispose 连首轮也不发」）、
  * 以及「源码不写盘」。
  */
 import { readFileSync, readdirSync } from 'node:fs'
@@ -23,6 +24,7 @@ import { WORKER_METADATA_MAX_BYTES, metadataByteLength, resolveConfig } from '..
 import type { Logger } from '../src/runtime.js'
 import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
+  FIRST_HEARTBEAT_DELAY_MS,
   MAX_HEARTBEAT_INTERVAL_MS,
   MAX_REMEMBERED_DELIVERIES,
   MIN_HEARTBEAT_INTERVAL_MS,
@@ -150,6 +152,21 @@ async function drain(times = 3): Promise<void> {
   }
 }
 
+/**
+ * 启动循环并推进过首轮心跳延迟。
+ *
+ * `start()` 不再立即发请求：首轮由 `FIRST_HEARTBEAT_DELAY_MS` 的定时器驱动，
+ * 因此断言「发出了首轮」前必须先推进假时钟。
+ */
+async function startAndBeat(
+  loop: WorkerLoop,
+  scheduler: ReturnType<typeof createScheduler>,
+): Promise<void> {
+  loop.start()
+  await drain()
+  await scheduler.advance(FIRST_HEARTBEAT_DELAY_MS)
+}
+
 function buildAgent(status: 'idle' | 'running' = 'idle'): {
   agent: Agent
   followup: ReturnType<typeof vi.fn>
@@ -236,12 +253,40 @@ const RUN_TASK = {
 // ---------------------------------------------------------------------------
 
 describe('首次注册与后续心跳', () => {
-  it('首次请求体完全没有 worker_id；回包 id 只存内存；第二次带同一 id', async () => {
+  it('常量 FIRST_HEARTBEAT_DELAY_MS 钉死为 5000ms', () => {
+    // 5s 是与用户约定的产品契约（几秒内就退出的进程不该打请求），
+    // 改这个值必须同步改 README 与验收标准。
+    expect(FIRST_HEARTBEAT_DELAY_MS).toBe(5_000)
+  })
+
+  it('字面时序契约：4999ms 零请求、第 5000ms 恰好发出 1 次', async () => {
     const { loop, platform, scheduler } = setup(() => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)))
 
     loop.start()
     await drain()
 
+    // 刻意只写字面值、不引用 FIRST_HEARTBEAT_DELAY_MS：
+    // 若常量被改成 0 之类，「5 秒」这个契约仍能被这条用例独立钉住。
+    await scheduler.advance(4_999)
+    expect(platform.calls).toHaveLength(0)
+
+    await scheduler.advance(1) // 累计 5_000ms
+    expect(platform.calls).toHaveLength(1)
+  })
+
+  it('首轮延迟 5000ms：4999ms 无请求、5000ms 才发出；首次请求体完全没有 worker_id；回包 id 只存内存；第二次带同一 id', async () => {
+    const { loop, platform, scheduler } = setup(() => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)))
+
+    loop.start()
+    await drain()
+
+    // start() 不再立即发请求：延迟满 4999ms 仍然零请求。
+    expect(scheduler.pending.map(task => task.at)).toEqual([FIRST_HEARTBEAT_DELAY_MS])
+    await scheduler.advance(FIRST_HEARTBEAT_DELAY_MS - 1)
+    expect(platform.calls).toHaveLength(0)
+
+    // 第 5000ms 首轮心跳发出并完成注册。
+    await scheduler.advance(1)
     expect(platform.calls).toHaveLength(1)
     expect(platform.calls[0]?.url).toBe('http://127.0.0.1:8720/v1/workers/heartbeat')
     const firstBody = platform.calls[0]?.body ?? {}
@@ -258,13 +303,12 @@ describe('首次注册与后续心跳', () => {
 
   it('metadata 原样上报（深等于配置）', async () => {
     const metadata = { host: 'build-01', nested: { zone: 'cn', tags: ['a', 'b'] } }
-    const { loop, platform } = setup(
+    const { loop, platform, scheduler } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [], 15_000)),
       { metadata },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(platform.calls[0]?.body.metadata).toEqual(metadata)
   })
@@ -276,8 +320,7 @@ describe('首次注册与后续心跳', () => {
       { agents: () => [agent] },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     expect(platform.calls[0]?.body.state).toBe('busy')
 
     setStatus('idle')
@@ -286,10 +329,11 @@ describe('首次注册与后续心跳', () => {
   })
 
   it('日志里的 worker id 打码，不出现明文', async () => {
-    const { loop, lines } = setup(() => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)))
+    const { loop, scheduler, lines } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)),
+    )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     const joined = lines.join('\n')
     expect(joined).not.toContain(WORKER_ID)
@@ -305,20 +349,22 @@ describe('心跳间隔', () => {
   it('回包 heartbeat_interval_ms=5000 → 下一轮在 5000ms 后', async () => {
     const { loop, scheduler } = setup(() => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)))
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
-    expect(scheduler.pending.map(task => task.at)).toEqual([5_000])
+    expect(scheduler.pending.map(task => task.at)).toEqual([
+      FIRST_HEARTBEAT_DELAY_MS + 5_000,
+    ])
     expect(loop.intervalMs).toBe(5_000)
   })
 
   it('回包缺失 heartbeat_interval_ms → 用 15000ms', async () => {
     const { loop, scheduler } = setup(() => okResponse(heartbeatPayload(WORKER_ID)))
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
-    expect(scheduler.pending.map(task => task.at)).toEqual([DEFAULT_HEARTBEAT_INTERVAL_MS])
+    expect(scheduler.pending.map(task => task.at)).toEqual([
+      FIRST_HEARTBEAT_DELAY_MS + DEFAULT_HEARTBEAT_INTERVAL_MS,
+    ])
     expect(loop.intervalMs).toBe(DEFAULT_HEARTBEAT_INTERVAL_MS)
   })
 
@@ -332,10 +378,11 @@ describe('心跳间隔', () => {
       payload.worker.heartbeat_interval_ms = value
       const { loop, scheduler } = setup(() => okResponse(payload))
 
-      loop.start()
-      await drain()
+      await startAndBeat(loop, scheduler)
 
-      expect(scheduler.pending.map(task => task.at)).toEqual([DEFAULT_HEARTBEAT_INTERVAL_MS])
+      expect(scheduler.pending.map(task => task.at)).toEqual([
+        FIRST_HEARTBEAT_DELAY_MS + DEFAULT_HEARTBEAT_INTERVAL_MS,
+      ])
     }
   })
 })
@@ -347,13 +394,12 @@ describe('心跳间隔', () => {
 describe('run_task 投递', () => {
   it('唯一根 agent 收到一条消息，文案含任务编号/标题/租约/项目/产品/工作目录与行动指令', async () => {
     const { agent, followup } = buildAgent('idle')
-    const { loop } = setup(
+    const { loop, scheduler } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
       { agents: () => [agent] },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(followup).toHaveBeenCalledTimes(1)
     const message = followup.mock.calls[0]?.[0] as {
@@ -391,8 +437,7 @@ describe('run_task 投递', () => {
       { agents: () => [], deliver },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(deliver).not.toHaveBeenCalled()
     expect(lines.join('\n')).toContain('根 agent 数量为 0')
@@ -411,8 +456,7 @@ describe('run_task 投递', () => {
       { agents: () => [first.agent, second.agent], deliver },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(first.followup).not.toHaveBeenCalled()
     expect(second.followup).not.toHaveBeenCalled()
@@ -448,8 +492,7 @@ describe('busy 状态不领新卡', () => {
       { agents: () => [agent] },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(platform.calls[0]?.body.state).toBe('busy')
     expect(followup).not.toHaveBeenCalled()
@@ -483,8 +526,7 @@ describe('409 worker_unknown', () => {
       return okResponse(heartbeatPayload(newId, [], 5_000))
     })
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     expect(platform.calls[0] && 'worker_id' in platform.calls[0].body).toBe(false)
     expect(loop.workerId).toBe(oldId)
 
@@ -541,8 +583,7 @@ describe('单轮失败不崩溃', () => {
         return okResponse(heartbeatPayload(WORKER_ID, [], 5_000))
       })
 
-      loop.start()
-      await drain()
+      await startAndBeat(loop, scheduler)
       expect(loop.workerId).toBe(WORKER_ID)
 
       await scheduler.advance(5_000)
@@ -570,8 +611,7 @@ describe('开关与卸载', () => {
     )
 
     expect(scheduler.count).toBe(0)
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(platform.calls).toHaveLength(0)
     expect(scheduler.count).toBe(0)
@@ -587,8 +627,7 @@ describe('开关与卸载', () => {
       () => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)),
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     expect(platform.calls).toHaveLength(1)
     expect(scheduler.count).toBe(1)
 
@@ -603,13 +642,33 @@ describe('开关与卸载', () => {
     expect(lines).toHaveLength(logCountAfterDispose)
   })
 
-  it('dispose 幂等，重复调用不再记日志', async () => {
-    const { loop, scheduler, lines } = setup(
+  it('首轮延迟内 dispose：定时器立即清除，连首轮心跳也不发（零请求）', async () => {
+    const { loop, platform, scheduler, lines } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)),
     )
 
     loop.start()
     await drain()
+    // 首轮心跳还排在 5000ms 之后，此时卸载：不准补发首轮。
+    expect(scheduler.count).toBe(1)
+    loop.dispose('plugin dispose')
+    expect(scheduler.count).toBe(0)
+
+    const logCountAfterDispose = lines.length
+    await scheduler.advance(FIRST_HEARTBEAT_DELAY_MS)
+    await scheduler.advance(60_000)
+
+    expect(platform.calls).toHaveLength(0)
+    expect(loop.workerId).toBeUndefined()
+    expect(lines).toHaveLength(logCountAfterDispose)
+  })
+
+  it('dispose 幂等，重复调用不再记日志', async () => {
+    const { loop, scheduler, lines } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)),
+    )
+
+    await startAndBeat(loop, scheduler)
     loop.dispose()
     const count = lines.length
     loop.dispose()
@@ -625,8 +684,7 @@ describe('开关与卸载', () => {
     )
 
     loop.dispose()
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(scheduler.count).toBe(0)
     expect(platform.calls).toHaveLength(0)
@@ -665,7 +723,7 @@ describe('R-01 持续 409 worker_unknown 退避', () => {
   /** 平台永远 409 worker_unknown（例如平台库被清空后仍能连通）。 */
   const alwaysUnknown: Handler = () => errorResponse(409, 'worker_unknown')
 
-  it('首次 409 立即重试一次，之后 1s→2s→5s→15s：20s 内请求 ≤ 6、warn ≤ 3', async () => {
+  it('首轮延迟 5s 后 409 立即重试一次，之后 1s→2s→5s→15s：20s 内请求 ≤ 6、warn ≤ 3', async () => {
     const times: number[] = []
     let clock: ReturnType<typeof createScheduler> | undefined
     const { loop, platform, scheduler, lines } = setup((body, call) => {
@@ -674,39 +732,47 @@ describe('R-01 持续 409 worker_unknown 退避', () => {
     })
     clock = scheduler
 
-    loop.start()
-    await drain()
-    // 第 1 次 409 → 唯一允许的「立即重注册」（0ms）。
+    await startAndBeat(loop, scheduler)
+    // 首轮在 5000ms 发出（延迟一个 FIRST_HEARTBEAT_DELAY_MS，不是立即）。
+    expect(times).toEqual([FIRST_HEARTBEAT_DELAY_MS])
+    // 第 1 次 409 → 唯一允许的「立即重注册」（0ms；轮内重排，不受启动延迟影响）。
     expect(platform.calls).toHaveLength(1)
-    expect(scheduler.pending.map(task => task.at)).toEqual([0])
+    expect(scheduler.pending.map(task => task.at)).toEqual([scheduler.now])
 
     // 先走一次 0ms（立即重试），再按 1s 粒度推进到 20s。
     await scheduler.advance(0)
     expect(platform.calls).toHaveLength(2)
     for (let index = 0; index < 20; index += 1) await scheduler.advance(1_000)
 
-    expect(scheduler.now).toBe(20_000)
-    // 请求时刻 = 0 / 0（立即）/ +1s / +2s / +5s 的退避阶梯（修前是 0ms 无限重排）。
-    expect(times).toEqual([0, 0, 1_000, 3_000, 8_000])
+    expect(scheduler.now).toBe(FIRST_HEARTBEAT_DELAY_MS + 20_000)
+    // 请求时刻 = +5s（首轮）/ +5s（立即）/ +6s / +8s / +13s 的退避阶梯（修前是 0ms 无限重排）。
+    expect(times).toEqual([
+      FIRST_HEARTBEAT_DELAY_MS,
+      FIRST_HEARTBEAT_DELAY_MS,
+      FIRST_HEARTBEAT_DELAY_MS + 1_000,
+      FIRST_HEARTBEAT_DELAY_MS + 3_000,
+      FIRST_HEARTBEAT_DELAY_MS + 8_000,
+    ])
     expect(platform.calls.length).toBeLessThanOrEqual(6)
 
     const unknownLogs = lines.filter(line => line.includes('worker_unknown'))
     expect(unknownLogs.length).toBeLessThanOrEqual(3)
     expect(unknownLogs).toHaveLength(1)
 
-    // 下一轮要等到 15s 封顶之后（8000 + 15000）。
-    expect(scheduler.pending.map(task => task.at)).toEqual([23_000])
+    // 下一轮要等到 15s 封顶之后（+13s + 15000）。
+    expect(scheduler.pending.map(task => task.at)).toEqual([
+      FIRST_HEARTBEAT_DELAY_MS + 23_000,
+    ])
   })
 
   it('长时间持续 409：稳态速率 ≤ 0.2 请求/秒（120s 内 13 次）', async () => {
     const { loop, platform, scheduler } = setup(alwaysUnknown)
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     await scheduler.advance(0)
     for (let index = 0; index < 120; index += 1) await scheduler.advance(1_000)
 
-    expect(scheduler.now).toBe(120_000)
+    expect(scheduler.now).toBe(FIRST_HEARTBEAT_DELAY_MS + 120_000)
     // 稳态每 15s 一次：120s 内共 12 次 → 0.1 请求/秒（修前 593/s）。
     expect(platform.calls).toHaveLength(12)
     expect(platform.calls.length / (scheduler.now / 1_000)).toBeLessThanOrEqual(0.2)
@@ -715,8 +781,7 @@ describe('R-01 持续 409 worker_unknown 退避', () => {
   it('warn 节流：首次与每 10 次各一条，并带累计次数（20 次 409 → 3 条）', async () => {
     const { loop, platform, scheduler, lines } = setup(alwaysUnknown)
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     for (let guard = 0; guard < 60 && platform.calls.length < 20; guard += 1) {
       await scheduler.advance(15_000)
     }
@@ -739,8 +804,7 @@ describe('R-01 持续 409 worker_unknown 退避', () => {
       return errorResponse(409, 'worker_unknown')
     })
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     expect(loop.workerId).toBe(idA)
 
     await scheduler.advance(5_000) // 409 → 计数 1 → 立即重排
@@ -765,12 +829,13 @@ describe('R-01 持续 409 worker_unknown 退避', () => {
       return Promise.reject(new Error('connect ECONNREFUSED'))
     })
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     await scheduler.advance(5_000)
-    expect(times).toEqual([0, 5_000])
+    expect(times).toEqual([FIRST_HEARTBEAT_DELAY_MS, FIRST_HEARTBEAT_DELAY_MS + 5_000])
     // 失败后仍按当前 5000ms 间隔（不是 409 的 1s/2s/5s 退避）。
-    expect(scheduler.pending.map(task => task.at)).toEqual([10_000])
+    expect(scheduler.pending.map(task => task.at)).toEqual([
+      FIRST_HEARTBEAT_DELAY_MS + 10_000,
+    ])
   })
 })
 
@@ -790,8 +855,7 @@ describe('R-02 metadata 超限不启动循环', () => {
     )
     expect(loop.metadataOverLimit).toBe(true)
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(loop.started).toBe(false)
     expect(loop.workerId).toBeUndefined()
@@ -814,12 +878,11 @@ describe('R-02 metadata 超限不启动循环', () => {
     const metadata = { k: 'a'.repeat(WORKER_METADATA_MAX_BYTES - 8) }
     expect(metadataByteLength(metadata)).toBe(WORKER_METADATA_MAX_BYTES)
 
-    const { loop, platform } = setup(
+    const { loop, platform, scheduler } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)),
       { metadata },
     )
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(loop.metadataOverLimit).toBe(false)
     expect(loop.started).toBe(true)
@@ -832,8 +895,7 @@ describe('R-02 metadata 超限不启动循环', () => {
       { metadata: { blob: 'x'.repeat(WORKER_METADATA_MAX_BYTES) }, enable: false },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(platform.calls).toHaveLength(0)
     expect(scheduler.count).toBe(0)
@@ -851,12 +913,13 @@ describe('R-03 心跳间隔上下限夹紧', () => {
       () => okResponse(heartbeatPayload(WORKER_ID, [], 1)),
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(loop.intervalMs).toBe(MIN_HEARTBEAT_INTERVAL_MS)
     expect(MIN_HEARTBEAT_INTERVAL_MS).toBe(500)
-    expect(scheduler.pending.map(task => task.at)).toEqual([500])
+    expect(scheduler.pending.map(task => task.at)).toEqual([
+      FIRST_HEARTBEAT_DELAY_MS + MIN_HEARTBEAT_INTERVAL_MS,
+    ])
     expect(lines.join('\n')).toContain('heartbeat_interval_ms=1')
   })
 
@@ -865,12 +928,13 @@ describe('R-03 心跳间隔上下限夹紧', () => {
       () => okResponse(heartbeatPayload(WORKER_ID, [], 999_999_999)),
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(MAX_HEARTBEAT_INTERVAL_MS).toBe(86_400_000)
     expect(loop.intervalMs).toBe(MAX_HEARTBEAT_INTERVAL_MS)
-    expect(scheduler.pending.map(task => task.at)).toEqual([86_400_000])
+    expect(scheduler.pending.map(task => task.at)).toEqual([
+      FIRST_HEARTBEAT_DELAY_MS + MAX_HEARTBEAT_INTERVAL_MS,
+    ])
   })
 
   it('缺失 / "abc" / 0 / -1 → 回落 15000ms（不属于越界夹紧）', async () => {
@@ -886,11 +950,12 @@ describe('R-03 心跳间隔上下限夹紧', () => {
       variant.mutate(payload)
       const { loop, scheduler, lines } = setup(() => okResponse(payload))
 
-      loop.start()
-      await drain()
+      await startAndBeat(loop, scheduler)
 
       expect(loop.intervalMs, variant.name).toBe(DEFAULT_HEARTBEAT_INTERVAL_MS)
-      expect(scheduler.pending.map(task => task.at), variant.name).toEqual([15_000])
+      expect(scheduler.pending.map(task => task.at), variant.name).toEqual([
+        FIRST_HEARTBEAT_DELAY_MS + DEFAULT_HEARTBEAT_INTERVAL_MS,
+      ])
       expect(lines.join('\n'), variant.name).not.toContain('已夹紧为 500ms')
     }
   })
@@ -900,8 +965,7 @@ describe('R-03 心跳间隔上下限夹紧', () => {
       () => okResponse(heartbeatPayload(WORKER_ID, [], 1)),
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     await scheduler.advance(500)
     await scheduler.advance(500)
     await scheduler.advance(500)
@@ -924,8 +988,7 @@ describe('S-01 重复派单去重', () => {
       { agents: () => [agent] },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     expect(followup).toHaveBeenCalledTimes(1)
 
     await scheduler.advance(5_000)
@@ -938,13 +1001,12 @@ describe('S-01 重复派单去重', () => {
   it('同一轮里重复下发同一条 → 只投 1 次', async () => {
     const { agent, followup } = buildAgent('idle')
     const deliver = vi.fn((target: Agent, text: string) => { target.followup(text as never) })
-    const { loop } = setup(
+    const { loop, scheduler } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK, RUN_TASK], 5_000)),
       { agents: () => [agent], deliver },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
 
     expect(deliver).toHaveBeenCalledTimes(1)
     expect(followup).toHaveBeenCalledTimes(1)
@@ -959,8 +1021,7 @@ describe('S-01 重复派单去重', () => {
       { agents: () => [agent] },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     await scheduler.advance(5_000)
 
     expect(followup).toHaveBeenCalledTimes(2)
@@ -984,8 +1045,7 @@ describe('S-01 重复派单去重', () => {
       { agents: () => [agent] },
     )
 
-    loop.start()
-    await drain()
+    await startAndBeat(loop, scheduler)
     expect(followup).toHaveBeenCalledTimes(MAX_REMEMBERED_DELIVERIES + 1)
 
     // 最早的键（第 1 条）已被淘汰 → 再次下发会重新投递。

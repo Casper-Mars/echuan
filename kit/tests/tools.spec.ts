@@ -213,14 +213,23 @@ describe('echuan_task_claim：worker_id 的唯一来源是心跳循环', () => {
       commands: [],
     }))
     const config = resolveConfig({ worker: { poll: { enable: true } } })
+    // 首轮心跳延迟 5s：抓住挂起的定时器回调，手动触发它完成注册。
+    const pendingTimers: Array<() => void> = []
     const loop = createWorkerLoop({
       config,
       client: createWorkerClient(config, { fetchImpl: loopPlatform.fetchImpl }),
       agents: () => [],
       logger: { info: () => {}, warn: () => {} },
-      timer: { setTimeout: () => 1, clearTimeout: () => {} },
+      timer: {
+        setTimeout: (handler: () => void) => {
+          pendingTimers.push(handler)
+          return pendingTimers.length
+        },
+        clearTimeout: () => {},
+      },
     })
     loop.start()
+    pendingTimers.shift()?.()
     await vi.waitFor(() => expect(loop.workerId).toBe(WORKER_ID))
     loop.dispose('test')
 

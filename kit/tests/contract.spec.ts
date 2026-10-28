@@ -14,9 +14,30 @@
  * 6. worker 心跳端点 `POST /v1/workers/heartbeat`（heartbeatWorker）也在契约里；
  * 7. 物料读取返回**原始正文**：`content-type` 非 JSON 时不做 JSON 解析。
  *
- * 解析器说明：仓库没有 `yaml` 依赖，且本任务禁止新增依赖，因此这里用
- * 「按缩进切段」的保守解析器（只认 `paths:` 段下的 2/4/6 空格层级）。
- * 解析失败（找不到段、命中数不是 7）会直接抛错，不会静默通过。
+ * 解析器说明（保持手写，不新增 `yaml` 依赖）
+ * ------------------------------------------------
+ * 本文件用「按缩进切段」的极简解析器读取 `api/openapi.yaml`，只服务于上面的
+ * 7 条 operation 校验。它**假设**契约始终是下面这套固定结构：
+ *
+ * 1. 顶层键 `paths:` 独立成行（行首无缩进，冒号后为空）；
+ * 2. 二级是 path 键：2 空格缩进 + `/v1/...:`（冒号后为空，不跟其他键值）；
+ * 3. 三级是 method 键：4 空格缩进 + `get|post|put|patch|delete|head|options:`；
+ * 4. 四级是 `operationId:`：6 空格缩进 + 单个非空白值（在同一 operation 块内）。
+ *
+ * 明确**不支持**的写法（真出现时断言会变红，而不是静默通过）：
+ * - flow style（`paths: {}`、`{/v1/x: {...}}`）：找不到独立的 `paths:` 行 →
+ *   解析器直接抛错；
+ * - 多行折叠 / 块标量（如 `operationId: >`）：取不到值，该 operation 从结果里
+ *   消失 →「恰好出现一次」断言失败；
+ * - `$ref` 间接（path / operation 定义在别的文件或 `components` 里）：对应的
+ *   `METHOD /path` 查不到 → 断言失败；
+ * - 锚点 / 别名（`<<: *base`）：被引用的键不在字面文本里 → 断言失败。
+ *
+ * 改契约时的同步点：
+ * - 改 `paths` 段结构（缩进层级、path 键写法、method 改成 `$ref` 等）→ 必须
+ *   同步改下面的 `parsePathOperations`，否则解析结果为空或不完整；
+ * - 改 `operationId` / path / method → 对应断言变红，按失败信息更新
+ *   `src/client.ts` 的 `TOOL_OPERATIONS`（以及本文件的 `EXPECTED_OPERATIONS`）。
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'

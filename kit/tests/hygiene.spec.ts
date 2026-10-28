@@ -357,7 +357,7 @@ interface WorkerRun {
 /** 唯一的根 agent 桩：派单投递要求「恰好 1 个且 running」。 */
 const ROOT_AGENT = { id: 'root-1', status: 'running' } as unknown as Agent
 
-/** 跑 `rounds` 轮 worker 心跳（第一轮立即发，其余由假定时器推进）。 */
+/** 跑 `rounds` 轮 worker 心跳（每轮都由假定时器触发：首轮也要推进过 5s 延迟）。 */
 async function runWorkerRounds(rounds = 2): Promise<WorkerRun> {
   const platform = createPlatform(workerPayload)
   const timer = createFakeTimer()
@@ -373,6 +373,9 @@ async function runWorkerRounds(rounds = 2): Promise<WorkerRun> {
   })
 
   loop.start()
+  await flush()
+  // 首轮心跳延迟 FIRST_HEARTBEAT_DELAY_MS 才发出，因此第 1 轮同样由定时器触发。
+  timer.fireAll()
   await flush()
 
   for (let round = 1; round < rounds; round += 1) {

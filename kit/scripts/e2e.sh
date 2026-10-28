@@ -105,6 +105,15 @@ cleanup() {
 }
 trap 'cleanup $?' EXIT
 
+# --- 端口探测（bash 内建 /dev/tcp，不依赖 lsof） ----------------------------
+# 依赖列表里没有 lsof，也不应该再加：用 bash 3.2 起就有的 /dev/tcp 建一次连接
+# 即可判断「是否已有进程在监听」。返回 0 = 已占用，1 = 空闲。
+# 连接在子 shell 里完成，fd 随子 shell 退出自动关闭，不会污染主脚本的 fd。
+port_in_use() {
+  local port="$1"
+  (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null
+}
+
 # --- HTTP 辅助（结构与 scripts/e2e-worker.sh 一致） -------------------------
 http_post() {
   local path="$1" body="$2"
@@ -169,8 +178,9 @@ stop_dsh() {
 }
 
 # start_dsh：后台拉起 dsh（ACP profile，长驻），stdin 用 FIFO 保持打开。
-# 顺序很关键：插件在进程启动时就发首次心跳，而 ACP 会话要等客户端请求才创建；
-# 因此这里只负责「启动 + 注册」，会话创建放在 S5（此时平台还没有 ready 卡）。
+# 顺序很关键：插件在进程启动约 5s 后（首轮延迟）才发首次心跳，而 ACP 会话要等
+# 客户端请求才创建；因此这里只负责「启动 + 注册」，会话创建放在 S5
+# （此时平台还没有 ready 卡）。
 start_dsh() {
   local tag="$1"
   DSH_LOG="$TMP/dsh-$tag.log"
@@ -242,9 +252,13 @@ fi
 if [ -n "$MISSING" ]; then
   fail_env "依赖不齐全（缺失：${MISSING# }）" "$DEP_DETAIL"
 fi
-if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  fail_env "端口 ${PORT} 已被占用；端到端脚本固定用该端口复现，请先释放" \
-    "$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>&1 || true)"
+if port_in_use "$PORT"; then
+  # 占用者信息是加分项，不是依赖：只在系统自带 lsof 时附加（失败就留空）。
+  PORT_DETAIL=""
+  if command -v lsof >/dev/null 2>&1; then
+    PORT_DETAIL="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  fi
+  fail_env "端口 ${PORT} 已被占用；端到端脚本固定用该端口复现，请先释放" "$PORT_DETAIL"
 fi
 
 # 历史残留兜底：旧版脚本把 pnpm pack 产物留在仓库 kit/ 下（已被 .gitignore 忽略）。
@@ -314,7 +328,7 @@ pass "1/11 独立栈就绪（container=$CONTAINER base=$BASE data=$TMP/data，/r
 
 # --- 2. 播种产品 / 项目 / 两张卡 -------------------------------------------
 # 注意：两张卡先停在 plan_review（backlog），**批准拆解放到 S5**。
-# 原因：插件在 dsh 启动瞬间就发首次心跳，那时 ACP 还没有根 agent，
+# 原因：首轮心跳（启动后约 5s）到达时 ACP 还没有根 agent，
 # 平台会先把卡派给一个「0 个根 agent」的 worker，投递被跳过且不会重投。
 # 因此在 agent 就绪后再让卡变 ready，才能观察到真实的「派单 → 投递」。
 STEP="2/11 播种数据"

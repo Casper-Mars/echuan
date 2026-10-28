@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { apply, inject, metadataByteLength, name } from '../src/index.js'
+import { FIRST_HEARTBEAT_DELAY_MS } from '../src/worker.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const kitRoot = path.resolve(here, '..')
@@ -240,31 +241,33 @@ describe('apply：加载与生命周期', () => {
     await settleTools(fake)
   })
 
-  it('poll=true 时启动心跳循环，disposer 清除定时器且重复清理无副作用', async () => {
-    // 假 fetch：首轮心跳失败（网络错误），循环会按兜底 15s 排下一轮。
-    vi.stubGlobal('fetch', vi.fn(async () => {
+  it('poll=true 时启动心跳循环（首轮延迟 5s），disposer 清除定时器且重复清理无副作用', async () => {
+    // 假 fetch：真实请求不应发生在延迟期内（如发生也会被这里记下）。
+    const fetchSpy = vi.fn(async () => {
       throw new Error('offline')
-    }))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const setSpy = vi.spyOn(globalThis, 'setTimeout')
     const clearSpy = vi.spyOn(globalThis, 'clearTimeout')
     const fake = createFakeContext()
 
-    const heartbeatHandle = (): unknown => setSpy.mock.calls
+    const firstBeatHandle = (): unknown => setSpy.mock.calls
       .map((call, index) => ({ ms: call[1], value: setSpy.mock.results[index]?.value }))
-      .find(entry => entry.ms === 15_000)?.value
+      .find(entry => entry.ms === FIRST_HEARTBEAT_DELAY_MS)?.value
 
     apply(fake.ctx, { worker: { poll: { enable: true } } })
     await settleTools(fake)
 
-    // 惰性 import → 首轮心跳（假 fetch 失败）→ 才会按兜底间隔排下一轮。
+    // 惰性 import → start() 只排一个 5s 后的首轮定时器，延迟期内零请求。
     await vi.waitFor(() => {
-      expect(fake.agentAccess.length).toBeGreaterThan(0)
-      expect(heartbeatHandle()).toBeDefined()
+      expect(firstBeatHandle()).toBeDefined()
     })
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(fake.agentAccess).toEqual([])
 
-    const handle = heartbeatHandle()
+    const handle = firstBeatHandle()
     fake.disposeAll()
     expect(clearSpy.mock.calls.some(([cleared]) => cleared === handle)).toBe(true)
 

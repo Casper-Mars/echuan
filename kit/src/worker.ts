@@ -4,7 +4,8 @@
  * 行为契约（任务-03）：
  * 1. `POST /v1/workers/heartbeat`，body `{ worker_id?, state, metadata }`；
  * 2. 首次注册**不带** `worker_id` 字段，回包里的 `w_` id 只存内存；
- * 3. 之后每轮都带同一个 id；平台说 id 不存在（409 `worker_unknown`）就清空并
+ * 3. 首轮心跳在 `start()` 后延迟 {@link FIRST_HEARTBEAT_DELAY_MS} 发出（见该常量
+ *    注释），之后每轮都带同一个 id；平台说 id 不存在（409 `worker_unknown`）就清空并
  *    重排一轮重新注册——「立即」只给第 1 次（R-01）；连续第 2 次起按
  *    {@link WORKER_UNKNOWN_BACKOFF_MS} 退避（1s → 2s → 5s → 15s 封顶），成功注册后
  *    计数归零；同一原因的 warn 节流，首次与每 {@link WORKER_UNKNOWN_LOG_EVERY} 次
@@ -18,7 +19,7 @@
  *    重复下发只投一次，不落盘；
  * 6. 网络失败 / 500 / 超时只 warn，保留 id，按当前间隔继续；不做退避状态机；
  * 7. `poll.enable=false` 时零请求、零定时器；`dispose()` 后定时器立刻清空，
- *    之后不再产生任何请求与日志；
+ *    之后不再产生任何请求与日志（包括还没发出的首轮心跳）；
  * 8. worker_id 只在内存，日志里一律打码；
  * 9. R-02：`worker.metadata` 序列化后超过 {@link WORKER_METADATA_MAX_BYTES} 时
  *    **不启动循环**（一条明确 warn 后返回），避免每轮 413 永久刷屏。
@@ -43,6 +44,19 @@ import type { Logger } from './runtime.js'
 
 /** 回包没给合法 `heartbeat_interval_ms` 时的兜底间隔（毫秒）。 */
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
+
+/**
+ * 首轮心跳相对 `start()` 的延迟（毫秒）。
+ *
+ * 插件拿不到 dsh 的启动参数，无法区分「长驻进程」与 `dsh --help` 这类几秒内就退出
+ * 的短命令；若启动即注册，`--help`（`worker.poll.enable=true` 时）也会打一次真实
+ * POST。用 5s 的短延迟规避这个副作用：正常长驻进程 5s 后照常注册（平台侧只多等
+ * 5s），几秒内退出的命令则不会产生任何请求。
+ *
+ * 注意：它只作用于「启动」，与 409 `worker_unknown` 的「首轮立即重试」无关——
+ * 后者是同一轮内的重排，延迟 0 的语义保持不变。
+ */
+export const FIRST_HEARTBEAT_DELAY_MS = 5_000
 
 /** R-03：平台下发间隔的下限（毫秒），低于它按下限。 */
 export const MIN_HEARTBEAT_INTERVAL_MS = 500
@@ -119,7 +133,10 @@ export interface WorkerLoop {
   readonly intervalMs: number
   /** R-02：`worker.metadata` 是否超过平台上限（超限时永不启动循环）。 */
   readonly metadataOverLimit: boolean
-  /** 启动：首次心跳立即发出，之后按回包间隔用 setTimeout 链重排。 */
+  /**
+   * 启动：{@link FIRST_HEARTBEAT_DELAY_MS} 后发出首轮心跳，之后按回包间隔用
+   * setTimeout 链重排。
+   */
   start(): void
   /** 幂等卸载：清定时器，之后不再产生请求与日志。 */
   dispose(reason?: string): void
@@ -208,10 +225,12 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
 
       started = true
       logger.info(
-        `[dsh-echuan] worker 心跳已启动（首次立即注册，兜底间隔 ${intervalMs}ms）`,
+        `[dsh-echuan] worker 心跳已启动（首轮心跳将在 ${FIRST_HEARTBEAT_DELAY_MS}ms 后发出，`
+          + `兜底间隔 ${intervalMs}ms）`,
       )
-      // 第一轮不排队、直接发：注册应尽快完成；后续轮次才由 setTimeout 链驱动。
-      void runRound()
+      // 首轮也走定时器：延迟 FIRST_HEARTBEAT_DELAY_MS 再发，避免 --help 这类
+      // 短命令产生真实请求；dispose() 在这之前调用会连首轮一起清掉。
+      schedule(FIRST_HEARTBEAT_DELAY_MS)
     },
 
     dispose(reason = 'plugin dispose') {

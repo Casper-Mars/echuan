@@ -124,7 +124,7 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 
 ## 已知行为（实测）
 
-- `dsh --profile <name> --help` 在 `worker.poll.enable=true` 时会**先发一次真实心跳**（插件在 apply 阶段启动循环），不是纯只读命令。
+- 首轮心跳**延迟 5 秒**发出：几秒内就退出的命令（如 `dsh --profile <name> --help`）在 `worker.poll.enable=true` 时不会产生任何请求；若进程存活超过 5s 仍会注册（`--help` 不再是「必然打一次真实 POST」的命令）。
 - 心跳间隔只认平台回包 `heartbeat_interval_ms`（默认 15s），客户端夹紧在 [500ms, 24h]。
 - 连续 `worker_unknown` 会退避 1s→2s→5s→15s，不会打爆平台。
 
@@ -139,7 +139,7 @@ dsh plugin --profile <name> remove dsh-echuan
 ## 给维护者：测试与验收
 
 ```bash
-# 单测：typecheck + 197 条用例（在 kit/ 下）
+# 单测：typecheck + 198 条用例（在 kit/ 下）
 cd kit && pnpm verify
 
 # 真机端到端：独立 compose 栈 18720，约 90s，进/出不动 ~/echuan-data（在仓库根目录）
