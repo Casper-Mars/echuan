@@ -242,12 +242,20 @@ func TestProjectCRUDAndTransitions(t *testing.T) {
 	if len(review) != 1 || review[0].ProjectID != "APP-2" {
 		t.Errorf("filtered = %+v, want APP-2", review)
 	}
+	// Newest first: the first page is the most recently created project.
 	page, err := ListProjects(ctx, st.Read(), ProjectFilter{Limit: 1})
 	if err != nil {
 		t.Fatalf("ListProjects(page): %v", err)
 	}
-	if len(page) != 1 || page[0].ID != projectID {
-		t.Errorf("first page = %+v", page)
+	if len(page) != 1 || page[0].ID != otherID || page[0].ProjectID != "APP-2" {
+		t.Errorf("first page = %+v, want newest APP-2", page)
+	}
+	second, err := ListProjects(ctx, st.Read(), ProjectFilter{AfterID: otherID, Limit: 1})
+	if err != nil {
+		t.Fatalf("ListProjects(page 2): %v", err)
+	}
+	if len(second) != 1 || second[0].ID != projectID || second[0].ID >= otherID {
+		t.Errorf("second page = %+v, want older APP-1", second)
 	}
 
 	// Title update bumps the version.

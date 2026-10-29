@@ -90,11 +90,20 @@ func GetProjectByProjectID(ctx context.Context, q Querier, projectID string) (Pr
 		  WHERE p.project_id = ?`, projectID)
 }
 
-// ListProjects returns up to filter.Limit projects ordered by physical id.
+// ListProjects returns up to filter.Limit projects ordered newest first
+// (descending physical id).
+//
+// AfterID is the physical id of the last item of the previous page, so the
+// cursor predicate is p.id < AfterID. AfterID == 0 means "first page" and is
+// therefore left out entirely instead of producing p.id < 0.
 func ListProjects(ctx context.Context, q Querier, filter ProjectFilter) ([]Project, error) {
-	where := []string{"p.id > ?"}
-	args := []any{filter.AfterID}
+	var where []string
+	var args []any
 
+	if filter.AfterID > 0 {
+		where = append(where, "p.id < ?")
+		args = append(args, filter.AfterID)
+	}
 	if filter.ProductCode != "" {
 		where = append(where, "pr.product_id = ?")
 		args = append(args, filter.ProductCode)
@@ -106,9 +115,13 @@ func ListProjects(ctx context.Context, q Querier, filter ProjectFilter) ([]Proje
 	args = append(args, filter.Limit)
 
 	query := `SELECT ` + projectColumns + `
-	            FROM projects p JOIN products pr ON pr.id = p.product_id
-	           WHERE ` + strings.Join(where, " AND ") + `
-	           ORDER BY p.id ASC
+	            FROM projects p JOIN products pr ON pr.id = p.product_id`
+	if len(where) > 0 {
+		query += `
+	           WHERE ` + strings.Join(where, " AND ")
+	}
+	query += `
+	           ORDER BY p.id DESC
 	           LIMIT ?`
 	return All[Project](ctx, q, query, args...)
 }
