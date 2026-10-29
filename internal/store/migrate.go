@@ -38,6 +38,40 @@ func (e *SchemaVersionError) Error() string {
 	return fmt.Sprintf("database schema version %d is newer than the binary's latest migration %d", e.Database, e.Binary)
 }
 
+// ForeignKeyViolation is one row reported by PRAGMA foreign_key_check: the
+// child table/row whose reference has no parent row in Parent.
+type ForeignKeyViolation struct {
+	Table  string
+	RowID  int64
+	Parent string
+	FKID   int
+}
+
+// ForeignKeyIntegrityError reports rows that survived the migrations with a
+// dangling foreign key. Migrations suspend the foreign_keys guard (see
+// applyMigration), so this check is the post-flight verification that the
+// rebuilt schema still satisfies every reference.
+type ForeignKeyIntegrityError struct {
+	Violations []ForeignKeyViolation
+}
+
+func (e *ForeignKeyIntegrityError) Error() string {
+	parts := make([]string, 0, len(e.Violations))
+	for i, v := range e.Violations {
+		if i == maxForeignKeyViolationsInError {
+			parts = append(parts, fmt.Sprintf("... and %d more", len(e.Violations)-i))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s(rowid=%d) → %s", v.Table, v.RowID, v.Parent))
+	}
+	return fmt.Sprintf("foreign key check failed: %d dangling reference(s): %s",
+		len(e.Violations), strings.Join(parts, "; "))
+}
+
+// maxForeignKeyViolationsInError bounds the rendered violation list so that a
+// badly broken database cannot produce an unbounded startup error message.
+const maxForeignKeyViolationsInError = 10
+
 // Migrate applies every embedded migration newer than PRAGMA user_version.
 //
 // It returns the number of migrations applied; a second call on an
@@ -76,7 +110,46 @@ func (s *Store) MigrateFS(ctx context.Context, fsys fs.FS) (int, error) {
 		}
 		applied++
 	}
+	if applied > 0 {
+		if err := s.checkForeignKeys(ctx); err != nil {
+			return applied, err
+		}
+	}
 	return applied, nil
+}
+
+// checkForeignKeys runs PRAGMA foreign_key_check and turns every violation
+// into one error. It is called after the migration loop only when at least one
+// migration was applied: an up-to-date database keeps its previous behaviour
+// (the check is a verification of the rebuild, not a startup integrity scan).
+func (s *Store) checkForeignKeys(ctx context.Context) error {
+	rows, err := s.write.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("foreign key check: %w", err)
+	}
+	defer rows.Close()
+
+	var violations []ForeignKeyViolation
+	for rows.Next() {
+		var (
+			v      ForeignKeyViolation
+			rowID  sql.NullInt64
+			parent string
+		)
+		if err := rows.Scan(&v.Table, &rowID, &parent, &v.FKID); err != nil {
+			return fmt.Errorf("foreign key check: scan: %w", err)
+		}
+		v.RowID = rowID.Int64
+		v.Parent = parent
+		violations = append(violations, v)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("foreign key check: %w", err)
+	}
+	if len(violations) > 0 {
+		return &ForeignKeyIntegrityError{Violations: violations}
+	}
+	return nil
 }
 
 // applyMigration executes one file and writes back its version atomically.
@@ -90,8 +163,8 @@ func (s *Store) MigrateFS(ctx context.Context, fsys fs.FS) (int, error) {
 // resolved by rows inserted into the replacement. Migrations run at startup,
 // before the read pool is opened and before the HTTP server accepts writes,
 // so the guard can be lifted here; it is restored before applyMigration
-// returns, and callers can still verify the result with PRAGMA
-// foreign_key_check.
+// returns, and MigrateFS verifies the result with PRAGMA foreign_key_check
+// once every pending migration has been applied.
 func (s *Store) applyMigration(ctx context.Context, m migrations.Migration) error {
 	statements := splitStatements(string(m.SQL))
 	if len(statements) == 0 {

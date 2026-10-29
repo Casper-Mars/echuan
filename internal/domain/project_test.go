@@ -17,6 +17,7 @@ var projectEdges = map[string]int{
 	"3/decide/reject":        2,
 	"4/add_first_task/":      5,
 	"5/review_tasks/approve": 6,
+	"6/review_tasks/approve": 6,
 	"6/settle_tasks/":        7,
 
 	"0/cancel/": 8,

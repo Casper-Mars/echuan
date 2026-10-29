@@ -116,6 +116,27 @@ require_code() {
   fi
 }
 
+# heartbeat_busy 发送 state=busy 心跳。租约恰好过期时服务端会返回 409
+# lease_lost，这属于时序竞态而非功能错误：最多重试 3 次（间隔 2s），仍失败
+# 才判定失败。
+heartbeat_busy() {
+  local label="$1" attempt
+  for attempt in 1 2 3; do
+    http_post "/v1/workers/heartbeat" \
+      "$(jqr -n --arg wid "$WORKER_ID" '{worker_id:$wid,state:"busy"}')"
+    if [[ "$HTTP_CODE" == "200" ]]; then
+      return 0
+    fi
+    if [[ "$HTTP_CODE" == "409" && "$HTTP_BODY" == *lease_lost* ]]; then
+      say "$label：第 $attempt 次返回 409 lease_lost，2s 后重试"
+      sleep 2
+      continue
+    fi
+    fail "$label：期望 HTTP 200，实际 $HTTP_CODE"
+  done
+  fail "$label：连续 3 次 409 lease_lost，租约已丢失"
+}
+
 jqr() { printf '%s' "$HTTP_BODY" | jq -r "$@"; }
 
 # --- 端口与启动 -------------------------------------------------------------
@@ -328,14 +349,12 @@ lease_until() {
 L1="$(lease_until)"
 [[ -n "$L1" && "$L1" != "null" ]] || fail "in_progress 任务应带 lease.until"
 sleep 1.1
-http_post "/v1/workers/heartbeat" "$(jqr -n --arg wid "$WORKER_ID" '{worker_id:$wid,state:"busy"}')"
-require_code 200 "busy 心跳 1"
+heartbeat_busy "busy 心跳 1"
 L2="$(lease_until)"
 [[ "$L2" > "$L1" ]] || fail "busy 心跳后 lease_until 应递增：$L1 -> $L2"
 
 sleep 1.1
-http_post "/v1/workers/heartbeat" "$(jqr -n --arg wid "$WORKER_ID" '{worker_id:$wid,state:"busy"}')"
-require_code 200 "busy 心跳 2"
+heartbeat_busy "busy 心跳 2"
 L3="$(lease_until)"
 [[ "$L3" > "$L2" ]] || fail "第二次 busy 心跳后 lease_until 应继续递增：$L2 -> $L3"
 

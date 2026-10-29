@@ -346,6 +346,11 @@ type ReviewTasksResult struct {
 // every backlog card of a tasks_review project becomes ready and the project
 // moves to pending_done in the same transaction.
 //
+// The same action is legal on a pending_done project (6 → 6): cards added
+// while the project waits for its umbrella task land in backlog again, and
+// approving them makes them ready without moving the project — it leaves 6
+// only when the last card is settled (§5).
+//
 // Rejection is intentionally not implemented here yet: it belongs to the
 // follow-up task and the HTTP layer answers it with 400 invalid_argument
 // instead of pretending the batch was rejected.

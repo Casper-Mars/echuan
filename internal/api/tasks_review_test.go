@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
@@ -91,5 +92,58 @@ func TestReviewTasksHTTPWrongState(t *testing.T) {
 	}
 	if state := mustProjectState(t, st, projectID); state.Status != domain.StatusTasksDraft {
 		t.Errorf("project status = %d, want tasks_draft", state.Status)
+	}
+}
+
+// TestReviewTasksHTTPPendingDoneAddCard pins the 6 → 6 self-loop over HTTP: a
+// card added after approval lands in backlog, the repeated batch approval
+// answers 200 and leaves the project in pending_done.
+func TestReviewTasksHTTPPendingDoneAddCard(t *testing.T) {
+	h, st := newProjectTestServer(t)
+	seedProduct(t, st, "APP")
+	projectID := createTasksDraftHTTPProject(t, h)
+	postTask(t, h, projectID, "第一张", "# 正文\n", 0)
+
+	approve := func() *httptest.ResponseRecorder {
+		return doJSONHeaders(t, h, http.MethodPost, "/v1/tasks/review?project_id="+projectID,
+			map[string]any{"decision": "approve"}, map[string]string{HeaderActor: "cto"})
+	}
+	if rec := approve(); rec.Code != http.StatusOK {
+		t.Fatalf("first approve: status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	before := mustProjectState(t, st, projectID)
+	if before.Status != domain.StatusPendingDone {
+		t.Fatalf("project status = %d, want pending_done", before.Status)
+	}
+
+	postTask(t, h, projectID, "追加卡", "# 追加卡\n", 0)
+	if state := mustProjectState(t, st, projectID); state.Status != domain.StatusPendingDone {
+		t.Fatalf("project status after add = %d, want pending_done", state.Status)
+	}
+
+	rec := approve()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second approve: status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	body := decodeReviewTasks(t, rec.Body)
+	if body.FromStatus != domain.StatusPendingDone || body.Status != domain.StatusPendingDone {
+		t.Errorf("edge = %d→%d, want 6→6", body.FromStatus, body.Status)
+	}
+	if body.ReadyTasks != 1 {
+		t.Errorf("ready_tasks = %d, want 1", body.ReadyTasks)
+	}
+	after := mustProjectState(t, st, projectID)
+	if after.Status != domain.StatusPendingDone || after.Version != before.Version+1 {
+		t.Errorf("state = %d/version %d, want pending_done/version %d", after.Status, after.Version, before.Version+1)
+	}
+	for _, row := range taskRowsByProject(t, st, projectID) {
+		if row.Status != domain.TaskReady {
+			t.Errorf("%s status = %d, want ready", row.TaskID, row.Status)
+		}
+	}
+
+	// No backlog left: the same call is a 409 again.
+	if rec := approve(); rec.Code != http.StatusConflict {
+		t.Fatalf("empty re-approval: status = %d, want 409 (body %s)", rec.Code, rec.Body.String())
 	}
 }

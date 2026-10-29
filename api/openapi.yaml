@@ -904,8 +904,11 @@ paths:
       operationId: reviewTasks
       summary: 审批任务批次
       description: |
-        `approve`：把 `tasks_review`(5) 项目的全部 `backlog` 卡置为 `ready`，
-        并在同一事务里把项目推进到 `pending_done`(6)。
+        `approve`：把项目的全部 `backlog` 卡置为 `ready`，并在同一事务里推进项目：
+        - `tasks_review`(5) → `pending_done`(6)：首次批次审批。
+        - `pending_done`(6) → `pending_done`(6)：待完成阶段加卡后再次审批，
+          新卡变 `ready` 而项目停在 6；等全部卡片结清后项目才到 7。
+        没有 `backlog` 卡时返回 409 `invalid_state`。
         `reject` 尚未实现（由后续任务补齐），当前返回 400 `invalid_argument`。
       tags: [tasks]
       parameters:

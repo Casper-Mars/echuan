@@ -116,6 +116,11 @@ var projectTransitions = []ProjectTransition{
 	{From: StatusTasksDraft, Action: ProjectActionAddFirstTask, Decision: "", To: StatusTasksReview},
 
 	{From: StatusTasksReview, Action: ProjectActionReviewTasks, Decision: DecisionApprove, To: StatusPendingDone},
+	// A card added while the project waits for its umbrella task (6) lands in
+	// backlog again, so the batch approval repeats: the same action turns those
+	// cards ready without moving the project, which stays in 6 until every card
+	// is settled (tech design §5).
+	{From: StatusPendingDone, Action: ProjectActionReviewTasks, Decision: DecisionApprove, To: StatusPendingDone},
 
 	{From: StatusPendingDone, Action: ProjectActionSettleTasks, Decision: "", To: StatusCompleted},
 

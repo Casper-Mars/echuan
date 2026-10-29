@@ -14,6 +14,9 @@ make lint
 make e2e        # Worker 全链路端到端验收（临时目录 + 随机端口，约 90s）
 ```
 
+> 发布二进制前先 `make web`：`make build` 刻意不依赖前端构建（避免纯后端构建强制安装 pnpm），
+> 前端由 `go:embed` 打进二进制，不重新构建就会带上一次提交的旧产物。
+
 ## Docker 部署
 
 ```bash

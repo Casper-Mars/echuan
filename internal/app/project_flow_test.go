@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
@@ -175,5 +176,97 @@ func TestCancelPendingDoneProject(t *testing.T) {
 	}
 	if state := env.projectState(t, projectID); state.Status != domain.StatusCancelled {
 		t.Errorf("status = %d, want cancelled", state.Status)
+	}
+}
+
+// TestApproveTasksOnPendingDone pins the 6 → 6 self-loop: a card added while
+// the project waits for its umbrella task lands in backlog, the repeated batch
+// approval makes it ready without moving the project, and the project still
+// completes once every card is settled.
+func TestApproveTasksOnPendingDone(t *testing.T) {
+	env := newProjectTestEnv(t)
+	ctx := context.Background()
+	projectID, ids := walkToTasksReview(t, env, "待完成加卡", 1)
+
+	tasks := NewTaskService(env.store)
+	if _, err := tasks.ApproveTasks(ctx, projectID, "cto"); err != nil {
+		t.Fatalf("ApproveTasks(5→6): %v", err)
+	}
+	before := env.projectState(t, projectID)
+	if before.Status != domain.StatusPendingDone {
+		t.Fatalf("status = %d, want pending_done", before.Status)
+	}
+
+	added, err := tasks.CreateTask(ctx, CreateTaskInput{
+		ProjectID: projectID,
+		Title:     "追加卡",
+		BodyMD:    "# 追加卡\n",
+	}, "agent:cto")
+	if err != nil {
+		t.Fatalf("CreateTask(pending_done): %v", err)
+	}
+	if added.Task.Status != domain.TaskBacklog {
+		t.Fatalf("new card status = %d, want backlog", added.Task.Status)
+	}
+	if state := env.projectState(t, projectID); state.Status != domain.StatusPendingDone {
+		t.Fatalf("status after add = %d, want the project to stay in pending_done", state.Status)
+	}
+
+	result, err := tasks.ApproveTasks(ctx, projectID, "cto")
+	if err != nil {
+		t.Fatalf("ApproveTasks(6→6): %v", err)
+	}
+	if result.FromStatus != domain.StatusPendingDone || result.ToStatus != domain.StatusPendingDone {
+		t.Errorf("edge = %d→%d, want 6→6", result.FromStatus, result.ToStatus)
+	}
+	if result.ReadyTasks != 1 {
+		t.Errorf("ready = %d, want 1", result.ReadyTasks)
+	}
+	after := env.projectState(t, projectID)
+	if after.Status != domain.StatusPendingDone {
+		t.Errorf("status = %d, want pending_done", after.Status)
+	}
+	if after.Version != before.Version+1 {
+		t.Errorf("version = %d, want %d", after.Version, before.Version+1)
+	}
+	if after.LastActor == nil || *after.LastActor != "cto" {
+		t.Errorf("last_actor = %v, want cto", after.LastActor)
+	}
+
+	// The repeated approval with no backlog card is still a conflict.
+	if _, err := tasks.ApproveTasks(ctx, projectID, "cto"); !errors.Is(err, domain.ErrInvalidState) {
+		t.Errorf("empty re-approval error = %v, want invalid_state", err)
+	}
+
+	// Settling the leftover cards closes the project: the first verdict keeps
+	// it in pending_done, the second completes it.
+	forceTaskState(t, env, added.Task.ID, domain.TaskPendingAcceptance, 1, nil, nil, nil)
+	if _, err := tasks.DecideTask(ctx, TaskDecisionInput{
+		TaskID:        added.Task.ID,
+		Decision:      domain.TaskDecisionAccept,
+		ExpectVersion: intPtr(2),
+		Actor:         "qa",
+	}); err != nil {
+		t.Fatalf("DecideTask(accept added card): %v", err)
+	}
+	if state := env.projectState(t, projectID); state.Status != domain.StatusPendingDone {
+		t.Fatalf("status after one card = %d, want pending_done", state.Status)
+	}
+
+	forceTaskState(t, env, ids[0], domain.TaskPendingAcceptance, 1, nil, nil, nil)
+	settled, err := tasks.DecideTask(ctx, TaskDecisionInput{
+		TaskID:        ids[0],
+		Decision:      domain.TaskDecisionAccept,
+		ExpectVersion: intPtr(2),
+		Actor:         "qa",
+	})
+	if err != nil {
+		t.Fatalf("DecideTask(accept original card): %v", err)
+	}
+	if settled.Project == nil || settled.Project.ToStatus != domain.StatusCompleted {
+		t.Fatalf("project advance = %+v, want completed", settled.Project)
+	}
+	if state := env.projectState(t, projectID); state.Status != domain.StatusCompleted {
+		t.Errorf("final status = %d, want completed", state.Status)
 	}
 }
