@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"testing"
@@ -13,8 +14,8 @@ import (
 // asks for: real middleware stack + real services + temporary SQLite, walked
 // through every stage of the product lifecycle over HTTP:
 //
-//	产品 → 项目(需求) → 提交方案 → 方案通过 → 提交清单 → 清单通过
-//	→ 领取 → 交报告 → 验收 → 领取第二张 → 验收 → 项目交付验收 → accepted
+//	产品 → 项目(需求) → 需求提交/通过 → 方案提交/通过 → 批量加卡
+//	→ 批次审批 → 领取 → 报告 → 验收 → 第二张 → 验收 → 项目自动完成
 //
 // Every repeated write along the way is asserted to be a 409 that leaves the
 // persisted state and the material chain untouched.
@@ -51,8 +52,8 @@ func TestFullDeliveryFlowHTTP(t *testing.T) {
 	}, map[string]string{HeaderActor: "pm"})
 	requireStatus("create project", rec, http.StatusCreated)
 	detail := decodeProjectDetail(t, rec)
-	if detail.ProjectID != "APP-1" || detail.Status != domain.StatusDraft || detail.Version != 1 {
-		t.Fatalf("project = %s/%d/v%d, want APP-1/draft/v1", detail.ProjectID, detail.Status, detail.Version)
+	if detail.ProjectID != "APP-1" || detail.Status != domain.StatusRequirementDraft || detail.Version != 1 {
+		t.Fatalf("project = %s/%d/v%d, want APP-1/requirement_draft/v1", detail.ProjectID, detail.Status, detail.Version)
 	}
 	if detail.Requirement == nil || detail.Requirement.MaterialID == "" {
 		t.Errorf("requirement = %+v, want metadata with a material_id", detail.Requirement)
@@ -70,13 +71,23 @@ func TestFullDeliveryFlowHTTP(t *testing.T) {
 
 	var state projectResponse
 
-	// 3. 进入方案评审 ----------------------------------------------------
-	rec = doJSONHeaders(t, h, http.MethodPost, "/v1/projects/accept?id=APP-1", nil,
+	// 3. 需求提交 → 需求评审 --------------------------------------------
+	rec = doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id=APP-1", nil,
 		map[string]string{HeaderActor: "pm"})
-	requireStatus("accept project", rec, http.StatusOK)
+	requireStatus("submit requirement", rec, http.StatusOK)
 	state = decodeProjectFromResponse(t, rec)
-	if state.Status != domain.StatusSpecReview {
-		t.Fatalf("status = %d, want spec_review", state.Status)
+	if state.Status != domain.StatusRequirementReview {
+		t.Fatalf("status = %d, want requirement_review", state.Status)
+	}
+
+	// 3b. 需求通过 → 方案草稿 -------------------------------------------
+	rec = doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id=APP-1",
+		map[string]any{"decision": "approve"},
+		map[string]string{"If-Match": strconv.Itoa(state.Version)})
+	requireStatus("approve requirement", rec, http.StatusOK)
+	state = decodeProjectFromResponse(t, rec)
+	if state.Status != domain.StatusSpecDraft {
+		t.Fatalf("status = %d, want spec_draft", state.Status)
 	}
 
 	// 4. 提交技术方案 ----------------------------------------------------
@@ -85,21 +96,30 @@ func TestFullDeliveryFlowHTTP(t *testing.T) {
 		map[string]any{"body_md": specMD}, map[string]string{HeaderActor: "agent:cto"})
 	requireStatus("submit spec", rec, http.StatusOK)
 	spec := decodeSpecSubmit(t, rec.Body)
-	if spec.Spec.Version != 1 || spec.Status != domain.StatusSpecReview {
-		t.Errorf("spec = v%d status %d, want v1/spec_review", spec.Spec.Version, spec.Status)
+	if spec.Spec.Version != 1 || spec.Status != domain.StatusSpecDraft {
+		t.Errorf("spec = v%d status %d, want v1/spec_draft", spec.Spec.Version, spec.Status)
 	}
 
-	// 5. 方案通过 --------------------------------------------------------
+	// 4b. 方案提交 → 方案评审 --------------------------------------------
+	rec = doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id=APP-1", nil,
+		map[string]string{HeaderActor: "pm"})
+	requireStatus("submit spec review", rec, http.StatusOK)
+	state = decodeProjectFromResponse(t, rec)
+	if state.Status != domain.StatusSpecReview {
+		t.Fatalf("status = %d, want spec_review", state.Status)
+	}
+
+	// 5. 方案通过 → 任务草稿 --------------------------------------------
 	rec = doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id=APP-1",
 		map[string]any{"decision": "approve"},
-		map[string]string{"If-Match": strconv.Itoa(spec.ProjectVersion)})
+		map[string]string{"If-Match": strconv.Itoa(state.Version)})
 	requireStatus("approve spec", rec, http.StatusOK)
 	state = decodeProjectFromResponse(t, rec)
-	if state.Status != domain.StatusPlanning {
-		t.Fatalf("status = %d, want planning", state.Status)
+	if state.Status != domain.StatusTasksDraft {
+		t.Fatalf("status = %d, want tasks_draft", state.Status)
 	}
 
-	// 6. 提交任务清单 ----------------------------------------------------
+	// 6. 批量添加任务卡（第一张卡开门 4 → 5） ---------------------------
 	rec = doJSONHeaders(t, h, http.MethodPost, "/v1/projects/plans?id=APP-1",
 		planBody(
 			planTask("实现登录页", "# 实现\n", map[string]any{"priority": 10}),
@@ -110,36 +130,38 @@ func TestFullDeliveryFlowHTTP(t *testing.T) {
 	if len(plan.Tasks) != 2 || plan.Tasks[0].ID != "APP-1-T0001" || plan.Tasks[1].ID != "APP-1-T0002" {
 		t.Fatalf("plan tasks = %+v", plan.Tasks)
 	}
+	if plan.Status != domain.StatusTasksReview || plan.StatusName != "tasks_review" {
+		t.Errorf("plan status = %d (%s), want tasks_review", plan.Status, plan.StatusName)
+	}
 	if len(plan.Tasks[1].DependsOn) != 1 || plan.Tasks[1].DependsOn[0] != "APP-1-T0001" {
 		t.Errorf("T0002 depends_on = %v", plan.Tasks[1].DependsOn)
 	}
 
-	// 6b. 重复提交清单：409 且不产生第二批任务 -------------------------
-	dup := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/plans?id=APP-1",
-		planBody(planTask("重复清单", "# 重复\n")), map[string]string{HeaderActor: "agent:cto"})
-	if dup.Code != http.StatusConflict {
-		t.Fatalf("duplicate plan status = %d, want 409 (body %s)", dup.Code, dup.Body.String())
+	// 7. 批次审批 → 待完成，卡转 ready ----------------------------------
+	rec = doJSONHeaders(t, h, http.MethodPost, "/v1/tasks/review?project_id=APP-1",
+		map[string]any{"decision": "approve"}, map[string]string{HeaderActor: "cto"})
+	requireStatus("approve task batch", rec, http.StatusOK)
+	review := decodeReviewTasks(t, rec.Body)
+	if review.Status != domain.StatusPendingDone || review.StatusName != "pending_done" {
+		t.Errorf("review status = %d (%s), want pending_done", review.Status, review.StatusName)
 	}
-	if code := decodeError(t, dup).Code; code != "invalid_state" {
-		t.Errorf("duplicate plan code = %q, want invalid_state", code)
-	}
-	if rows := taskRowsByProject(t, st, "APP-1"); len(rows) != 2 {
-		t.Errorf("tasks after duplicate plan = %d, want 2", len(rows))
-	}
-
-	// 7. 清单通过 --------------------------------------------------------
-	rec = doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id=APP-1",
-		map[string]any{"decision": "approve"},
-		map[string]string{"If-Match": strconv.Itoa(plan.ProjectVersion)})
-	requireStatus("approve plan", rec, http.StatusOK)
-	state = decodeProjectFromResponse(t, rec)
-	if state.Status != domain.StatusDeveloping {
-		t.Fatalf("status = %d, want developing", state.Status)
+	if review.ReadyTasks != 2 {
+		t.Errorf("ready tasks = %d, want 2", review.ReadyTasks)
 	}
 	for _, row := range taskRowsByProject(t, st, "APP-1") {
 		if row.Status != domain.TaskReady {
-			t.Errorf("%s status = %d, want ready after plan approval", row.TaskID, row.Status)
+			t.Errorf("%s status = %d, want ready after batch approval", row.TaskID, row.Status)
 		}
+	}
+
+	// 7b. 重复审批：409 且任务/项目不再变化 ------------------------------
+	dupReview := doJSONHeaders(t, h, http.MethodPost, "/v1/tasks/review?project_id=APP-1",
+		map[string]any{"decision": "approve"}, nil)
+	if dupReview.Code != http.StatusConflict {
+		t.Fatalf("duplicate review status = %d, want 409 (body %s)", dupReview.Code, dupReview.Body.String())
+	}
+	if code := decodeError(t, dupReview).Code; code != "invalid_state" {
+		t.Errorf("duplicate review code = %q, want invalid_state", code)
 	}
 
 	// 8. 领取第一张卡 ----------------------------------------------------
@@ -188,9 +210,9 @@ func TestFullDeliveryFlowHTTP(t *testing.T) {
 		t.Errorf("task after duplicate accept = status %d v%d, want done v%d", again.Status, again.Version, done.Version)
 	}
 
-	// The project must still be developing: one card is left.
-	if got := getProjectHTTP(t, h, "APP-1"); got.Status != domain.StatusDeveloping {
-		t.Errorf("project status = %d, want developing with one card left", got.Status)
+	// The project must still be pending_done: one card is left.
+	if got := getProjectHTTP(t, h, "APP-1"); got.Status != domain.StatusPendingDone {
+		t.Errorf("project status = %d, want pending_done with one card left", got.Status)
 	}
 
 	// 11. 领取第二张卡（依赖已完成） ------------------------------------
@@ -208,40 +230,33 @@ func TestFullDeliveryFlowHTTP(t *testing.T) {
 		t.Errorf("second task status = %d, want done", detail.Status)
 	}
 
-	// 12. 最后一张卡验收后，项目自动进入交付验收 ------------------------
+	// 12. 最后一张卡验收后，项目自动完成 --------------------------------
 	state = getProjectHTTP(t, h, "APP-1")
-	if state.Status != domain.StatusDeliveryReview {
-		t.Fatalf("project status = %d, want delivery_review after the last acceptance", state.Status)
+	if state.Status != domain.StatusCompleted || state.StatusName != "completed" {
+		t.Fatalf("project status = %d (%s), want completed", state.Status, state.StatusName)
 	}
 	if state.TaskStats.Total != 2 || state.TaskStats.Done != 2 {
 		t.Errorf("task_stats = %+v, want total/done 2/2", state.TaskStats)
 	}
 
-	// 13. 项目验收 -------------------------------------------------------
-	rec = doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id=APP-1",
+	// 12b. 已完成项目不再接受 decide：409 invalid_state -----------------
+	dupDecide := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id=APP-1",
 		map[string]any{"decision": "approve"},
 		map[string]string{"If-Match": strconv.Itoa(state.Version)})
-	requireStatus("accept delivery", rec, http.StatusOK)
-	accepted := decodeProjectFromResponse(t, rec)
-	if accepted.Status != domain.StatusAccepted || accepted.StatusName != "accepted" {
-		t.Fatalf("project = %d (%s), want accepted", accepted.Status, accepted.StatusName)
+	if dupDecide.Code != http.StatusConflict {
+		t.Fatalf("decide on completed status = %d, want 409 (body %s)",
+			dupDecide.Code, dupDecide.Body.String())
 	}
-
-	// 13b. 重复项目验收：409 且终态不被二次推进 -------------------------
-	dupDelivery := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id=APP-1",
-		map[string]any{"decision": "approve"},
-		map[string]string{"If-Match": strconv.Itoa(state.Version)})
-	if dupDelivery.Code != http.StatusConflict {
-		t.Fatalf("duplicate delivery accept status = %d, want 409 (body %s)",
-			dupDelivery.Code, dupDelivery.Body.String())
+	if code := decodeError(t, dupDecide).Code; code != "invalid_state" {
+		t.Errorf("decide on completed code = %q, want invalid_state", code)
 	}
 	final := getProjectHTTP(t, h, "APP-1")
-	if final.Status != domain.StatusAccepted || final.Version != accepted.Version {
-		t.Errorf("project after duplicate = %d v%d, want accepted v%d",
-			final.Status, final.Version, accepted.Version)
+	if final.Status != domain.StatusCompleted || final.Version != state.Version {
+		t.Errorf("project after duplicate = %d v%d, want completed v%d",
+			final.Status, final.Version, state.Version)
 	}
 
-	// 14. 材料链与字节如实落库 ------------------------------------------
+	// 13. 材料链与字节如实落库 ------------------------------------------
 	specChain := decodeChain(t, doJSON(t, h, http.MethodGet, "/v1/projects/materials?id=APP-1&kind=2", nil))
 	if specChain.Count != 1 || specChain.Items[0].Version != 1 {
 		t.Errorf("spec chain = %+v, want a single v1", specChain)
@@ -265,4 +280,14 @@ func TestFullDeliveryFlowHTTP(t *testing.T) {
 	if unsettled != 0 {
 		t.Errorf("unsettled tasks = %d, want 0", unsettled)
 	}
+}
+
+// decodeReviewTasks decodes the 200 body of POST /v1/tasks/review.
+func decodeReviewTasks(t *testing.T, rec interface{ Bytes() []byte }) reviewTasksResponse {
+	t.Helper()
+	var response reviewTasksResponse
+	if err := json.Unmarshal(rec.Bytes(), &response); err != nil {
+		t.Fatalf("decode review response %q: %v", rec.Bytes(), err)
+	}
+	return response
 }

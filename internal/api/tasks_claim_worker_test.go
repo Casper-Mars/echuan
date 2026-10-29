@@ -20,7 +20,7 @@ func TestClaimHTTPWithWorker(t *testing.T) {
 	// nothing and the claims below are the only bindings.
 	workerID := heartbeatWorker(t, h, map[string]any{}).Worker.WorkerID
 
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
 	first := postTask(t, h, projectID, "第一张", "# 正文\n", 10)
 	forceTaskColumns(t, st, first.ID, domain.TaskReady, 0, nil, nil, nil)
 	second := postTask(t, h, projectID, "第二张", "# 正文\n", 5)

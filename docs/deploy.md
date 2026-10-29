@@ -507,8 +507,17 @@ curl -fsS "$BASE/v1/materials?id=$REQ_MATERIAL"
 ### 9.3 提交需求评审
 
 ```bash
-curl -fsS -X POST "$BASE/v1/projects/accept?id=APP-1" \
-  -H 'X-Actor: pm' | jq '.status_name'    # spec_review
+curl -fsS -X POST "$BASE/v1/projects/submit?id=APP-1" \
+  -H 'X-Actor: pm' | jq '.status_name'    # requirement_review
+```
+
+需求评审通过后项目进入 `spec_draft`：
+
+```bash
+REQ_VER=$(curl -fsS "$BASE/v1/projects?id=APP-1" | jq -r '.version')
+curl -fsS -X POST "$BASE/v1/projects/decide?id=APP-1" \
+  -H "$JSON" -H 'X-Actor: pm' -H "If-Match: $REQ_VER" \
+  -d '{"decision":"approve"}' | jq '.status_name'    # spec_draft
 ```
 
 ### 9.4 提交技术方案
@@ -521,15 +530,22 @@ printf '%s\n' "$SPEC" | jq
 SPEC_VER=$(printf '%s\n' "$SPEC" | jq -r '.project_version')
 ```
 
-### 9.5 方案通过 → 进入规划
+方案写好后提交评审：
+
+```bash
+curl -fsS -X POST "$BASE/v1/projects/submit?id=APP-1" \
+  -H 'X-Actor: pm' | jq '.status_name'    # spec_review
+```
+
+### 9.5 方案通过 → 进入任务拆分
 
 ```bash
 curl -fsS -X POST "$BASE/v1/projects/decide?id=APP-1" \
   -H "$JSON" -H 'X-Actor: pm' -H "If-Match: $SPEC_VER" \
-  -d '{"decision":"approve"}' | jq '.status_name'    # planning
+  -d '{"decision":"approve"}' | jq '.status_name'    # tasks_draft
 ```
 
-### 9.6 提交任务清单
+### 9.6 批量添加任务卡
 
 ```bash
 PLAN=$(curl -fsS -X POST "$BASE/v1/projects/plans?id=APP-1" \
@@ -544,12 +560,12 @@ PLAN_VER=$(printf '%s\n' "$PLAN" | jq -r '.project_version')
 
 `depends_on` 使用清单内的序号（从 1 开始）。
 
-### 9.7 清单通过 → 进入开发
+### 9.7 任务批次通过 → 进入待完成
 
 ```bash
-curl -fsS -X POST "$BASE/v1/projects/decide?id=APP-1" \
-  -H "$JSON" -H 'X-Actor: pm' -H "If-Match: $PLAN_VER" \
-  -d '{"decision":"approve"}' | jq '.status_name'    # developing
+curl -fsS -X POST "$BASE/v1/tasks/review?project_id=APP-1" \
+  -H "$JSON" -H 'X-Actor: pm' \
+  -d '{"decision":"approve"}' | jq '.status_name, .ready_tasks'    # pending_done, N
 ```
 
 任务自动变为 `ready`，等待 Worker 领取。
@@ -585,18 +601,10 @@ curl -fsS -X POST "$BASE/v1/tasks/decide?id=$TASK_ID" \
   -d '{"decision":"accept"}' | jq '.status_name'    # done
 ```
 
-重复 9.8–9.10 处理剩余任务。最后一张卡验收后，项目自动进入 `delivery_review`。
-
-### 9.11 项目交付验收
+重复 9.8–9.10 处理剩余任务。最后一张卡结清（验收或放弃）后，项目自动进入 `completed`，无需再做项目级验收。
 
 ```bash
-PROJECT=$(curl -fsS "$BASE/v1/projects?id=APP-1")
-printf '%s\n' "$PROJECT" | jq '.status_name, .version'       # delivery_review
-PROJECT_VER=$(printf '%s\n' "$PROJECT" | jq -r '.version')
-
-curl -fsS -X POST "$BASE/v1/projects/decide?id=APP-1" \
-  -H "$JSON" -H 'X-Actor: pm' -H "If-Match: $PROJECT_VER" \
-  -d '{"decision":"approve"}' | jq '.status_name'    # accepted
+curl -fsS "$BASE/v1/projects?id=APP-1" | jq '.status_name'   # completed
 ```
 
 ### 9.12 查看整体状态

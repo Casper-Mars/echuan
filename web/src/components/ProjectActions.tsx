@@ -1,12 +1,12 @@
 import { useState } from 'react'
-import { acceptProject, cancelProject } from '../api/client'
+import { cancelProject, submitProject } from '../api/client'
 import type { Project, ProjectDecision } from '../api/types'
 import { isPendingProjectStatus, projectStatusLabel } from '../lib/format'
 import { ConfirmDialog } from './ConfirmDialog'
 import { DecisionDialog } from './DecisionDialog'
 
 export type ProjectActionRequest =
-  | { type: 'accept' }
+  | { type: 'submit' }
   | { type: 'cancel' }
   | { type: 'decide'; decision: ProjectDecision }
 
@@ -21,11 +21,11 @@ interface ProjectActionButtonsProps {
  * 列表把弹窗提升到页面层，行因筛选/轮询消失时弹窗不会被卸载。
  */
 export function ProjectActionButtons({ project, onAction, className }: ProjectActionButtonsProps) {
-  const canAccept = project.status === 0
+  const canSubmit = project.status === 0 || project.status === 2
   const canDecide = isPendingProjectStatus(project.status)
-  const canCancel = project.status >= 0 && project.status <= 5
+  const canCancel = project.status >= 0 && project.status <= 6
 
-  if (!canAccept && !canDecide && !canCancel) return null
+  if (!canSubmit && !canDecide && !canCancel) return null
 
   const trigger = (request: ProjectActionRequest) => (event: { stopPropagation: () => void }) => {
     event.stopPropagation()
@@ -34,9 +34,9 @@ export function ProjectActionButtons({ project, onAction, className }: ProjectAc
 
   return (
     <div className={`action-bar ${className ?? ''}`.trim()}>
-      {canAccept && (
-        <button type="button" className="action action-primary" onClick={trigger({ type: 'accept' })}>
-          立项
+      {canSubmit && (
+        <button type="button" className="action action-primary" onClick={trigger({ type: 'submit' })}>
+          提交评审
         </button>
       )}
       {canDecide && (
@@ -93,20 +93,20 @@ export function ProjectActionDialogs({
     version: project.version,
   }
 
-  if (request.type === 'accept') {
+  if (request.type === 'submit') {
     return (
       <ConfirmDialog
-        title="立项确认"
+        title="提交评审"
         message={
           <>
             确认将项目 <span className="code">{project.project_id}</span>
-            「{project.title}」立项？立项后进入规格评审。
+            「{project.title}」提交评审？需求草稿将进入需求评审，方案草稿将进入方案评审。
           </>
         }
-        confirmLabel="确认立项"
+        confirmLabel="确认提交"
         onClose={onClose}
         onConfirm={async () => {
-          const updated = await acceptProject(project.project_id)
+          const updated = await submitProject(project.project_id)
           onDecided?.(updated)
           onChanged()
         }}

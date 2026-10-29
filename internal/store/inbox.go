@@ -11,10 +11,11 @@ import (
 // It is deliberately one UNION ALL subquery instead of two queries: the LIMIT
 // must apply to the merged candidate set, otherwise the "50 oldest pending
 // items" would silently become "the oldest 50 projects plus the oldest 50
-// tasks". The status literals mirror domain.ProjectStatusSpecReview /
-// PlanReview / DeliveryReview (1/3/5) and domain.TaskStatusPendingAcceptance /
-// TaskStatusFailed (3/5); they are spelled out here because the dependency
-// runs domain ← store and store must not import domain.
+// tasks". The status literals mirror the three project review gates
+// (requirement_review / spec_review / tasks_review = 1/3/5) and
+// domain.TaskStatusPendingAcceptance / TaskStatusFailed (3/5); they are spelled
+// out here because the dependency runs domain ← store and store must not
+// import domain.
 //
 // Ordering uses julianday() rather than the raw text column: update_time is
 // stored as RFC3339Nano, whose fractional part is variable length, so a plain

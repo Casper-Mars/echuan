@@ -9,23 +9,26 @@ import (
 // stored in projects.status; the names are code aliases and are never
 // persisted.
 const (
-	// StatusDraft is a freshly created project: the requirement is its only
-	// material and nothing has been planned yet.
-	StatusDraft = 0
-	// StatusSpecReview waits for a human decision on the submitted spec.
-	StatusSpecReview = 1
-	// StatusPlanning is being broken down into tasks by the CTO.
-	StatusPlanning = 2
-	// StatusPlanReview waits for a human decision on the task breakdown.
-	StatusPlanReview = 3
-	// StatusDeveloping has work in flight.
-	StatusDeveloping = 4
-	// StatusDeliveryReview waits for acceptance of the delivered work.
-	StatusDeliveryReview = 5
-	// StatusAccepted is finished and accepted; terminal.
-	StatusAccepted = 6
+	// StatusRequirementDraft is a freshly created project: the requirement is
+	// still editable and has not been submitted for review.
+	StatusRequirementDraft = 0
+	// StatusRequirementReview waits for a human decision on the requirement.
+	StatusRequirementReview = 1
+	// StatusSpecDraft is writing the implementation spec.
+	StatusSpecDraft = 2
+	// StatusSpecReview waits for a human decision on the spec.
+	StatusSpecReview = 3
+	// StatusTasksDraft is breaking the project down into task cards.
+	StatusTasksDraft = 4
+	// StatusTasksReview waits for a human decision on the task batch.
+	StatusTasksReview = 5
+	// StatusPendingDone has every card settled but is not closed yet (the
+	// umbrella task is still open).
+	StatusPendingDone = 6
+	// StatusCompleted is finished; terminal.
+	StatusCompleted = 7
 	// StatusCancelled ended without acceptance; terminal.
-	StatusCancelled = 7
+	StatusCancelled = 8
 )
 
 // Material kinds (tech design §3.2).
@@ -61,22 +64,34 @@ func ParseDecision(value string) (Decision, bool) {
 	return d, d.Valid()
 }
 
-// Project actions. "accept" starts the review, "decide" records a verdict and
-// "cancel" aborts a project that has not been accepted.
+// Project actions. "submit" sends the current draft for review, "decide"
+// records a verdict and "cancel" aborts a project that is not terminal.
+//
+// The remaining three actions are internal state moves driven by the task
+// endpoints, never by a human request: the first card of a tasks draft opens
+// its review, an approved batch moves to pending_done, and a fully settled
+// pending_done project closes itself.
 const (
-	// ProjectActionAccept moves draft to spec_review.
-	ProjectActionAccept = "accept"
+	// ProjectActionSubmit moves a draft to its review gate.
+	ProjectActionSubmit = "submit"
 	// ProjectActionDecide records an approve/reject verdict.
 	ProjectActionDecide = "decide"
 	// ProjectActionCancel moves any non-terminal project to cancelled.
 	ProjectActionCancel = "cancel"
+	// ProjectActionAddFirstTask moves a tasks draft to tasks review.
+	ProjectActionAddFirstTask = "add_first_task"
+	// ProjectActionReviewTasks moves a reviewed batch to pending_done.
+	ProjectActionReviewTasks = "review_tasks"
+	// ProjectActionSettleTasks closes a pending_done project.
+	ProjectActionSettleTasks = "settle_tasks"
 )
 
 // ProjectTransition is one legal edge of the project state machine. It is the
 // single authoritative allow-list: every (from, action, decision) combination
 // absent from projectTransitions is rejected with 409 invalid_state.
 //
-// Decision is empty for accept and cancel, which carry no verdict.
+// Decision is empty for submit, cancel and the internal moves, which carry no
+// verdict.
 type ProjectTransition struct {
 	From     int
 	Action   string
@@ -84,31 +99,44 @@ type ProjectTransition struct {
 	To       int
 }
 
-// projectTransitions mirrors tech design §3.3 exactly. Terminal statuses
-// (accepted, cancelled) have no outgoing edge, which is what makes every
+// projectTransitions mirrors the nine-state machine exactly. Terminal statuses
+// (completed, cancelled) have no outgoing edge, which is what makes every
 // action on them an invalid state.
 var projectTransitions = []ProjectTransition{
-	{From: StatusDraft, Action: ProjectActionAccept, Decision: "", To: StatusSpecReview},
+	{From: StatusRequirementDraft, Action: ProjectActionSubmit, Decision: "", To: StatusRequirementReview},
 
-	{From: StatusSpecReview, Action: ProjectActionDecide, Decision: DecisionApprove, To: StatusPlanning},
-	{From: StatusSpecReview, Action: ProjectActionDecide, Decision: DecisionReject, To: StatusSpecReview},
-	{From: StatusPlanReview, Action: ProjectActionDecide, Decision: DecisionApprove, To: StatusDeveloping},
-	{From: StatusPlanReview, Action: ProjectActionDecide, Decision: DecisionReject, To: StatusPlanning},
-	{From: StatusDeliveryReview, Action: ProjectActionDecide, Decision: DecisionApprove, To: StatusAccepted},
-	{From: StatusDeliveryReview, Action: ProjectActionDecide, Decision: DecisionReject, To: StatusDeveloping},
+	{From: StatusRequirementReview, Action: ProjectActionDecide, Decision: DecisionApprove, To: StatusSpecDraft},
+	{From: StatusRequirementReview, Action: ProjectActionDecide, Decision: DecisionReject, To: StatusRequirementDraft},
 
-	{From: StatusDraft, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusSpecDraft, Action: ProjectActionSubmit, Decision: "", To: StatusSpecReview},
+
+	{From: StatusSpecReview, Action: ProjectActionDecide, Decision: DecisionApprove, To: StatusTasksDraft},
+	{From: StatusSpecReview, Action: ProjectActionDecide, Decision: DecisionReject, To: StatusSpecDraft},
+
+	{From: StatusTasksDraft, Action: ProjectActionAddFirstTask, Decision: "", To: StatusTasksReview},
+
+	{From: StatusTasksReview, Action: ProjectActionReviewTasks, Decision: DecisionApprove, To: StatusPendingDone},
+	// A card added while the project waits for its umbrella task (6) lands in
+	// backlog again, so the batch approval repeats: the same action turns those
+	// cards ready without moving the project, which stays in 6 until every card
+	// is settled (tech design §5).
+	{From: StatusPendingDone, Action: ProjectActionReviewTasks, Decision: DecisionApprove, To: StatusPendingDone},
+
+	{From: StatusPendingDone, Action: ProjectActionSettleTasks, Decision: "", To: StatusCompleted},
+
+	{From: StatusRequirementDraft, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusRequirementReview, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusSpecDraft, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
 	{From: StatusSpecReview, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
-	{From: StatusPlanning, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
-	{From: StatusPlanReview, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
-	{From: StatusDeveloping, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
-	{From: StatusDeliveryReview, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusTasksDraft, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusTasksReview, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
+	{From: StatusPendingDone, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
 }
 
 // IsTerminalProjectStatus reports whether a project status accepts no further
 // action.
 func IsTerminalProjectStatus(status int) bool {
-	return status == StatusAccepted || status == StatusCancelled
+	return status == StatusCompleted || status == StatusCancelled
 }
 
 // ProjectNextStatus returns the target status for one step. An unknown or
@@ -141,13 +169,14 @@ func describeAction(action string, decision Decision) string {
 // statusNames is the single place that turns projects.status into a name. The
 // column only ever stores the integer.
 var statusNames = [...]string{
-	"draft",
+	"requirement_draft",
+	"requirement_review",
+	"spec_draft",
 	"spec_review",
-	"planning",
-	"plan_review",
-	"developing",
-	"delivery_review",
-	"accepted",
+	"tasks_draft",
+	"tasks_review",
+	"pending_done",
+	"completed",
 	"cancelled",
 }
 
@@ -188,7 +217,7 @@ type TaskStats struct {
 	ByStatus map[int]int64
 }
 
-// Project is one requirement being tracked to acceptance.
+// Project is one requirement being tracked to completion.
 //
 // ID is the physical row id and stays internal (it only surfaces inside the
 // opaque list cursor); ProjectID ("APP-1") is the business id used by the API.

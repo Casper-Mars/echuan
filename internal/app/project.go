@@ -122,7 +122,7 @@ func (s *ProjectService) CreateProject(ctx context.Context, in CreateProjectInpu
 			SeqNo:                 seq,
 			Title:                 normalized.Title,
 			RequirementMaterialID: nil,
-			Status:                domain.StatusDraft,
+			Status:                domain.StatusRequirementDraft,
 			Version:               1,
 			CreateTime:            ts,
 			UpdateTime:            ts,
@@ -195,9 +195,9 @@ func (s *ProjectService) ListProjects(ctx context.Context, productID string, sta
 			{Field: "cursor", Reason: "is invalid"},
 		}}
 	}
-	if status != nil && (*status < domain.StatusDraft || *status > domain.StatusCancelled) {
+	if status != nil && (*status < domain.StatusRequirementDraft || *status > domain.StatusCancelled) {
 		return ProjectPage{}, &domain.ValidationError{Fields: []domain.FieldError{
-			{Field: "status", Reason: "must be between 0 and 7"},
+			{Field: "status", Reason: "must be between 0 and 8"},
 		}}
 	}
 
@@ -287,9 +287,9 @@ func (s *ProjectService) DeleteProject(ctx context.Context, projectID string) er
 			return err
 		}
 
-		if row.Status != domain.StatusDraft && row.Status != domain.StatusCancelled {
+		if row.Status != domain.StatusRequirementDraft && row.Status != domain.StatusCancelled {
 			return &domain.ConflictError{Reason: fmt.Sprintf(
-				"project %q is in status %s; only draft and cancelled projects can be deleted",
+				"project %q is in status %s; only requirement_draft and cancelled projects can be deleted",
 				projectID, domain.StatusName(row.Status))}
 		}
 		if row.SpecMaterialID != nil {
@@ -338,9 +338,9 @@ func (s *ProjectService) WriteRequirement(ctx context.Context, projectID string,
 			}
 			return err
 		}
-		if row.Status != domain.StatusDraft && row.Status != domain.StatusSpecReview {
+		if row.Status != domain.StatusRequirementDraft && row.Status != domain.StatusRequirementReview {
 			return &domain.InvalidStateError{Reason: fmt.Sprintf(
-				"project %q is in status %s; the requirement can only be rewritten in draft or spec_review",
+				"project %q is in status %s; the requirement can only be rewritten in requirement_draft or requirement_review",
 				projectID, domain.StatusName(row.Status))}
 		}
 

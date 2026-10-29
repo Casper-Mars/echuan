@@ -9,26 +9,34 @@ import (
 // projectEdges is the expected legal matrix, written out independently of
 // projectTransitions so the test fails if the table drifts.
 var projectEdges = map[string]int{
-	"0/accept/":        1,
-	"0/cancel/":        7,
-	"1/decide/approve": 2,
-	"1/decide/reject":  1,
-	"1/cancel/":        7,
-	"2/cancel/":        7,
-	"3/decide/approve": 4,
-	"3/decide/reject":  2,
-	"3/cancel/":        7,
-	"4/cancel/":        7,
-	"5/decide/approve": 6,
-	"5/decide/reject":  4,
-	"5/cancel/":        7,
+	"0/submit/":              1,
+	"1/decide/approve":       2,
+	"1/decide/reject":        0,
+	"2/submit/":              3,
+	"3/decide/approve":       4,
+	"3/decide/reject":        2,
+	"4/add_first_task/":      5,
+	"5/review_tasks/approve": 6,
+	"6/review_tasks/approve": 6,
+	"6/settle_tasks/":        7,
+
+	"0/cancel/": 8,
+	"1/cancel/": 8,
+	"2/cancel/": 8,
+	"3/cancel/": 8,
+	"4/cancel/": 8,
+	"5/cancel/": 8,
+	"6/cancel/": 8,
 }
 
 func TestProjectTransitionMatrix(t *testing.T) {
-	actions := []string{ProjectActionAccept, ProjectActionDecide, ProjectActionCancel}
+	actions := []string{
+		ProjectActionSubmit, ProjectActionDecide, ProjectActionCancel,
+		ProjectActionAddFirstTask, ProjectActionReviewTasks, ProjectActionSettleTasks,
+	}
 	decisions := []Decision{"", DecisionApprove, DecisionReject, "bogus"}
 
-	for status := StatusDraft; status <= StatusCancelled; status++ {
+	for status := StatusRequirementDraft; status <= StatusCancelled; status++ {
 		for _, action := range actions {
 			for _, decision := range decisions {
 				key := fmt.Sprintf("%d/%s/%s", status, action, decision)
@@ -69,17 +77,20 @@ func TestProjectTransitionMatrix(t *testing.T) {
 }
 
 func TestProjectTerminalStatusesAcceptNothing(t *testing.T) {
-	for _, status := range []int{StatusAccepted, StatusCancelled} {
+	for _, status := range []int{StatusCompleted, StatusCancelled} {
 		if !IsTerminalProjectStatus(status) {
 			t.Errorf("IsTerminalProjectStatus(%d) = false", status)
 		}
-		for _, action := range []string{ProjectActionAccept, ProjectActionDecide, ProjectActionCancel} {
+		for _, action := range []string{
+			ProjectActionSubmit, ProjectActionDecide, ProjectActionCancel,
+			ProjectActionAddFirstTask, ProjectActionReviewTasks, ProjectActionSettleTasks,
+		} {
 			if err := ValidateProjectTransition(status, action, DecisionApprove); !errors.Is(err, ErrInvalidState) {
 				t.Errorf("status %d action %s: error = %v, want invalid_state", status, action, err)
 			}
 		}
 	}
-	for _, status := range []int{StatusDraft, StatusSpecReview, StatusPlanning, StatusPlanReview, StatusDeveloping, StatusDeliveryReview} {
+	for status := StatusRequirementDraft; status <= StatusPendingDone; status++ {
 		if IsTerminalProjectStatus(status) {
 			t.Errorf("IsTerminalProjectStatus(%d) = true", status)
 		}
@@ -101,7 +112,10 @@ func TestDecisionParsing(t *testing.T) {
 }
 
 func TestStatusName(t *testing.T) {
-	want := []string{"draft", "spec_review", "planning", "plan_review", "developing", "delivery_review", "accepted", "cancelled"}
+	want := []string{
+		"requirement_draft", "requirement_review", "spec_draft", "spec_review",
+		"tasks_draft", "tasks_review", "pending_done", "completed", "cancelled",
+	}
 	for status, name := range want {
 		if got := StatusName(status); got != name {
 			t.Errorf("StatusName(%d) = %q, want %q", status, got, name)
@@ -110,7 +124,7 @@ func TestStatusName(t *testing.T) {
 	if got := StatusName(-1); got != "unknown" {
 		t.Errorf("StatusName(-1) = %q", got)
 	}
-	if got := StatusName(8); got != "unknown" {
-		t.Errorf("StatusName(8) = %q", got)
+	if got := StatusName(9); got != "unknown" {
+		t.Errorf("StatusName(9) = %q", got)
 	}
 }

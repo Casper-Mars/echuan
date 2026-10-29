@@ -133,8 +133,8 @@ func (s *ProjectService) SaveSpec(ctx context.Context, projectID, specID, actor 
 		if err != nil {
 			return specLookupError(err, "project", projectID)
 		}
-		if p.Status != domain.StatusSpecReview && p.Status != domain.StatusPlanning {
-			return &domain.InvalidStateError{Reason: "specs can only be changed in spec_review or planning"}
+		if p.Status != domain.StatusSpecDraft && p.Status != domain.StatusSpecReview {
+			return &domain.InvalidStateError{Reason: "specs can only be changed in spec_draft or spec_review"}
 		}
 		docs, err := store.ListSpecDocuments(ctx, tx, p.ID)
 		if err != nil {

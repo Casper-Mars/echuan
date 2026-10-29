@@ -179,7 +179,7 @@ func TestWorkerHeartbeatRegisters(t *testing.T) {
 
 func TestWorkerHeartbeatDispatchesAndKeepsMetadata(t *testing.T) {
 	h, st := workerHTTPEnv(t)
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
 	detail := postTask(t, h, projectID, "派单卡", "# 正文\n", 7)
 	forceTaskColumns(t, st, detail.ID, domain.TaskReady, 0, nil, nil, nil)
 

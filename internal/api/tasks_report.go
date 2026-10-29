@@ -123,15 +123,86 @@ func (h *tasksHandler) decideTask(w http.ResponseWriter, r *http.Request) {
 		"version", result.Detail.Task.Version,
 	)
 	if result.Project != nil {
-		h.logger.Info("project advanced to delivery review",
+		h.logger.Info("project settled after last task",
 			"request_id", RequestIDFromContext(r.Context()),
 			"actor", actorOrUnknown(r),
 			"project_id", result.Project.ProjectID,
 			"from_status", domain.StatusName(result.Project.FromStatus),
 			"to_status", domain.StatusName(result.Project.ToStatus),
-			"trigger", "last_task_done",
+			"trigger", "last_task_settled",
 		)
 	}
 
 	writeJSON(w, http.StatusOK, toTaskDetailResponse(result.Detail))
+}
+
+// reviewTasksRequest is the POST /v1/tasks/review body. Only the approval
+// branch is implemented; rejection is reserved for a follow-up task.
+type reviewTasksRequest struct {
+	Decision string `json:"decision"`
+}
+
+// reviewTasksResponse is the 200 body of POST /v1/tasks/review.
+type reviewTasksResponse struct {
+	ProjectID  string `json:"project_id"`
+	FromStatus int    `json:"from_status"`
+	Status     int    `json:"status"`
+	StatusName string `json:"status_name"`
+	ReadyTasks int64  `json:"ready_tasks"`
+}
+
+// reviewTasks handles POST /v1/tasks/review?project_id=APP-1: approve the
+// backlog batch of a tasks_review project, moving the cards to ready and the
+// project to pending_done.
+//
+// Rejection is deliberately a 400: it is not implemented yet (a later task
+// owns the re-plan flow), and answering with 409 invalid_state would suggest
+// the batch could be rejected in its current state.
+func (h *tasksHandler) reviewTasks(w http.ResponseWriter, r *http.Request) {
+	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
+	if projectID == "" {
+		writeDomainError(w, r, h.logger, invalidField("project_id", "is required"))
+		return
+	}
+	WithSubject(r.Context(), projectID)
+
+	var req reviewTasksRequest
+	if verr := decodeJSONBody(w, r, &req); verr != nil {
+		writeDomainError(w, r, h.logger, verr)
+		return
+	}
+
+	switch decision := strings.TrimSpace(req.Decision); decision {
+	case "approve":
+	case "reject":
+		writeDomainError(w, r, h.logger,
+			invalidField("decision", "reject is not supported yet; it will be added in a follow-up task"))
+		return
+	default:
+		writeDomainError(w, r, h.logger, invalidField("decision", "must be approve"))
+		return
+	}
+
+	result, err := h.service.ApproveTasks(r.Context(), projectID, ActorFromContext(r.Context()))
+	if err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+
+	h.logger.Info("task batch approved",
+		"request_id", RequestIDFromContext(r.Context()),
+		"actor", actorOrUnknown(r),
+		"project_id", result.ProjectID,
+		"from_status", domain.StatusName(result.FromStatus),
+		"to_status", domain.StatusName(result.ToStatus),
+		"ready_tasks", result.ReadyTasks,
+	)
+
+	writeJSON(w, http.StatusOK, reviewTasksResponse{
+		ProjectID:  result.ProjectID,
+		FromStatus: result.FromStatus,
+		Status:     result.ToStatus,
+		StatusName: domain.StatusName(result.ToStatus),
+		ReadyTasks: result.ReadyTasks,
+	})
 }

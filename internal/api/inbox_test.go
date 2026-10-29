@@ -220,7 +220,7 @@ func TestInboxHTTPContract(t *testing.T) {
 	// The JSON must carry the documented member names, including null reason.
 	raw := rec.Body.String()
 	for _, member := range []string{
-		`"kind":"project"`, `"id":"APP-1"`, `"state":1`, `"state_name":"spec_review"`,
+		`"kind":"project"`, `"id":"APP-1"`, `"state":3`, `"state_name":"spec_review"`,
 		`"title":"订单导出"`, `"update_time":"2026-10-24T09:50:00Z"`,
 		`"age_seconds":259200`, `"stale":true`, `"reason":null`,
 		`"count":2`, `"review_stale_hours":72`, `"generated_at":"2026-10-27T09:50:00Z"`,
@@ -266,7 +266,7 @@ func TestInboxHTTPLimitSelectsOldest(t *testing.T) {
 	base := time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC)
 	for i := 0; i < 55; i++ {
 		ts := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339)
-		seedInboxRow(t, st, "project", "APP-"+twoDigits(i), domain.StatusPlanReview, "项目", ts, nil)
+		seedInboxRow(t, st, "project", "APP-"+twoDigits(i), domain.StatusTasksReview, "项目", ts, nil)
 	}
 
 	rec := doRequest(t, h, http.MethodGet, "/v1/inbox?limit=1", nil)
@@ -300,7 +300,7 @@ func TestInboxHTTPNoCache(t *testing.T) {
 	}
 
 	if _, err := st.Write().ExecContext(context.Background(),
-		`UPDATE projects SET status = ? WHERE project_id = 'APP-1'`, domain.StatusAccepted); err != nil {
+		`UPDATE projects SET status = ? WHERE project_id = 'APP-1'`, domain.StatusCompleted); err != nil {
 		t.Fatalf("approve project: %v", err)
 	}
 
@@ -326,7 +326,7 @@ func TestInboxHTTPStaleThresholdFromConfig(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, st, _ := newInboxHTTPEnv(t, tc.staleHours, now)
-			seedInboxRow(t, st, "project", "APP-1", domain.StatusDeliveryReview,
+			seedInboxRow(t, st, "project", "APP-1", domain.StatusTasksReview,
 				"订单导出", "2026-10-27T07:50:00Z", nil) // 2h old
 
 			body := decodeInbox(t, doRequest(t, h, http.MethodGet, "/v1/inbox", nil))

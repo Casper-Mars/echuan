@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Casper-Mars/echuan/internal/domain"
 )
 
 // decodeSpecSubmit decodes one POST /v1/projects/specs response.
@@ -19,15 +21,28 @@ func decodeSpecSubmit(t *testing.T, rec interface{ Bytes() []byte }) specSubmitR
 	return response
 }
 
-// acceptHTTPProject moves a freshly created project to spec_review.
+// acceptHTTPProject moves a freshly created project to spec_draft: submit the
+// requirement, then approve it.
 func acceptHTTPProject(t *testing.T, env *materialServerEnv, projectID string) projectResponse {
 	t.Helper()
-	rec := doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/accept?id="+projectID, nil,
+	rec := doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/submit?id="+projectID, nil,
 		map[string]string{HeaderActor: "pm"})
 	if rec.Code != http.StatusOK {
-		t.Fatalf("accept status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+		t.Fatalf("submit status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
-	return decodeProjectFromResponse(t, rec)
+	project := decodeProjectFromResponse(t, rec)
+
+	rec = doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/decide?id="+projectID,
+		map[string]any{"decision": "approve"},
+		map[string]string{"If-Match": strconv.Itoa(project.Version)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	project = decodeProjectFromResponse(t, rec)
+	if project.Status != domain.StatusSpecDraft {
+		t.Fatalf("status = %d, want spec_draft", project.Status)
+	}
+	return project
 }
 
 // specPointerHTTP returns the business id the project's spec pointer names, or
@@ -67,8 +82,8 @@ func TestSubmitSpecHTTP(t *testing.T) {
 	if response.ProjectID != "APP-1" {
 		t.Errorf("project_id = %q, want APP-1", response.ProjectID)
 	}
-	if response.Status != 1 || response.StatusName != "spec_review" {
-		t.Errorf("status = %d (%s), want 1 (spec_review)", response.Status, response.StatusName)
+	if response.Status != 2 || response.StatusName != "spec_draft" {
+		t.Errorf("status = %d (%s), want 2 (spec_draft)", response.Status, response.StatusName)
 	}
 	if response.ProjectVersion != accepted.Version+1 {
 		t.Errorf("project_version = %d, want %d", response.ProjectVersion, accepted.Version+1)
@@ -109,8 +124,8 @@ func TestSubmitSpecHTTP(t *testing.T) {
 	if second.Spec.Title != "登录页改版" {
 		t.Errorf("title = %q, want the project title fallback", second.Spec.Title)
 	}
-	if second.Status != 1 {
-		t.Errorf("status = %d, want 1 (submitting must not move the gate)", second.Status)
+	if second.Status != 2 {
+		t.Errorf("status = %d, want 2 (submitting must not move the gate)", second.Status)
 	}
 
 	// The detail endpoint exposes the new head metadata (no body).
@@ -125,8 +140,8 @@ func TestSubmitSpecHTTP(t *testing.T) {
 	if detail.Spec.MaterialID != second.Spec.MaterialID || detail.Spec.Version != 2 {
 		t.Errorf("detail.spec = %+v, want v2", detail.Spec)
 	}
-	if detail.Status != 1 {
-		t.Errorf("detail status = %d, want 1", detail.Status)
+	if detail.Status != 2 {
+		t.Errorf("detail status = %d, want 2", detail.Status)
 	}
 }
 
@@ -236,7 +251,7 @@ func TestSubmitSpecHTTPInvalidState(t *testing.T) {
 	env := newMaterialTestServer(t, 1<<20)
 	createProjectWithRequirement(t, env, "# 需求\n")
 
-	for _, status := range []int{0, 3, 4, 5, 6, 7} {
+	for _, status := range []int{0, 1, 4, 5, 6, 7, 8} {
 		t.Run(statusName(status), func(t *testing.T) {
 			if _, err := env.store.Write().ExecContext(t.Context(),
 				"UPDATE projects SET status = ?, version = version + 1 WHERE project_id = 'APP-1'", status); err != nil {
@@ -261,7 +276,7 @@ func TestSubmitSpecHTTPInvalidState(t *testing.T) {
 // statusName is a local mirror so the HTTP test can name subtests without
 // importing the domain package for one call.
 func statusName(status int) string {
-	names := []string{"draft", "spec_review", "planning", "plan_review", "developing", "delivery_review", "accepted", "cancelled"}
+	names := []string{"requirement_draft", "requirement_review", "spec_draft", "spec_review", "tasks_draft", "tasks_review", "pending_done", "completed", "cancelled"}
 	if status < 0 || status >= len(names) {
 		return "unknown"
 	}
@@ -321,16 +336,22 @@ func TestSubmitSpecHTTPChain(t *testing.T) {
 	v1 := submit("# v1\n")
 	v2 := submit("# v2\n")
 
-	// Reject with the current version; the gate stays at spec_review.
+	// Submit the spec for review, then reject with the current version; the
+	// gate falls back to spec_draft.
+	submitRec := doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/submit?id=APP-1", nil, nil)
+	if submitRec.Code != http.StatusOK {
+		t.Fatalf("submit spec review status = %d (body %s)", submitRec.Code, submitRec.Body.String())
+	}
+	submitted := decodeProjectFromResponse(t, submitRec)
 	rejectRec := doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/decide?id=APP-1",
 		map[string]any{"decision": "reject", "reason": "缺少回滚方案"},
-		map[string]string{"If-Match": strconv.Itoa(v2.ProjectVersion)})
+		map[string]string{"If-Match": strconv.Itoa(submitted.Version)})
 	if rejectRec.Code != http.StatusOK {
 		t.Fatalf("reject status = %d, want 200 (body %s)", rejectRec.Code, rejectRec.Body.String())
 	}
 	rejected := decodeProjectFromResponse(t, rejectRec)
-	if rejected.Status != 1 {
-		t.Fatalf("status = %d, want 1 after reject", rejected.Status)
+	if rejected.Status != 2 {
+		t.Fatalf("status = %d, want 2 (spec_draft) after reject", rejected.Status)
 	}
 	if rejected.Reason == nil || *rejected.Reason != "缺少回滚方案" {
 		t.Fatalf("reason = %v, want the rejection reason", rejected.Reason)
@@ -375,16 +396,21 @@ func TestSubmitSpecHTTPChain(t *testing.T) {
 		t.Errorf("current = %v, want %q", chain.CurrentMaterialID, v3.Spec.MaterialID)
 	}
 
-	// Approve clears the reason and leaves the pointer on v3.
+	// Resubmit, then approve: the reason clears and the pointer stays on v3.
+	resubmitRec := doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/submit?id=APP-1", nil, nil)
+	if resubmitRec.Code != http.StatusOK {
+		t.Fatalf("resubmit status = %d (body %s)", resubmitRec.Code, resubmitRec.Body.String())
+	}
+	resubmitted := decodeProjectFromResponse(t, resubmitRec)
 	approveRec := doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/decide?id=APP-1",
 		map[string]any{"decision": "approve"},
-		map[string]string{"If-Match": strconv.Itoa(v3.ProjectVersion)})
+		map[string]string{"If-Match": strconv.Itoa(resubmitted.Version)})
 	if approveRec.Code != http.StatusOK {
 		t.Fatalf("approve status = %d, want 200 (body %s)", approveRec.Code, approveRec.Body.String())
 	}
 	approved := decodeProjectFromResponse(t, approveRec)
-	if approved.Status != 2 {
-		t.Errorf("status = %d, want 2 (planning)", approved.Status)
+	if approved.Status != 4 {
+		t.Errorf("status = %d, want 4 (tasks_draft)", approved.Status)
 	}
 	if approved.Reason != nil {
 		t.Errorf("reason = %v, want null after approval", *approved.Reason)

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,33 +8,42 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
 	"github.com/Casper-Mars/echuan/internal/store"
 )
 
-// createPlanningHTTPProject drives create → accept → approve so the project
-// sits in planning (status 2) with version 3.
-func createPlanningHTTPProject(t *testing.T, h http.Handler) string {
+// createTasksDraftHTTPProject drives
+// create → submit → approve → spec → submit → approve so the project sits in
+// tasks_draft (status 4) with version 6.
+func createTasksDraftHTTPProject(t *testing.T, h http.Handler) string {
 	t.Helper()
 	projectID := createHTTPProject(t, h, "登录页改版")
 
-	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/accept?id="+projectID, nil, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("accept: status = %d (body %s)", rec.Code, rec.Body.String())
+	post := func(target string, body any, version int) projectResponse {
+		headers := map[string]string{}
+		if version > 0 {
+			headers["If-Match"] = strconv.Itoa(version)
+		}
+		rec := doJSONHeaders(t, h, http.MethodPost, target, body, headers)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d (body %s)", target, rec.Code, rec.Body.String())
+		}
+		return decodeProjectFromResponse(t, rec)
 	}
-	project := decodeProjectFromResponse(t, rec)
 
-	rec = doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id="+projectID,
-		map[string]any{"decision": "approve"},
-		map[string]string{"If-Match": strconv.Itoa(project.Version)})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("approve spec: status = %d (body %s)", rec.Code, rec.Body.String())
+	project := post("/v1/projects/submit?id="+projectID, nil, 0)
+	project = post("/v1/projects/decide?id="+projectID, map[string]any{"decision": "approve"}, project.Version)
+	specRec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/specs?id="+projectID,
+		map[string]any{"body_md": "# 方案\n\n正文\n"}, nil)
+	if specRec.Code != http.StatusOK {
+		t.Fatalf("spec: status = %d (body %s)", specRec.Code, specRec.Body.String())
 	}
-	if project := decodeProjectFromResponse(t, rec); project.Status != domain.StatusPlanning {
-		t.Fatalf("status = %d, want planning", project.Status)
+	project = post("/v1/projects/submit?id="+projectID, nil, 0)
+	project = post("/v1/projects/decide?id="+projectID, map[string]any{"decision": "approve"}, project.Version)
+	if project.Status != domain.StatusTasksDraft {
+		t.Fatalf("status = %d, want tasks_draft", project.Status)
 	}
 	return projectID
 }
@@ -131,7 +139,7 @@ func fiveHTTPPlanTasks() []map[string]any {
 func TestSubmitPlanHTTP(t *testing.T) {
 	h, st := newProjectTestServer(t)
 	seedProduct(t, st, "APP")
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
 
 	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/plans?id="+projectID,
 		planBody(fiveHTTPPlanTasks()...), map[string]string{HeaderActor: "agent:cto"})
@@ -146,11 +154,11 @@ func TestSubmitPlanHTTP(t *testing.T) {
 	if response.ProjectID != "APP-1" {
 		t.Errorf("project_id = %q, want APP-1", response.ProjectID)
 	}
-	if response.Status != domain.StatusPlanReview || response.StatusName != "plan_review" {
-		t.Errorf("status = %d (%s), want 3 (plan_review)", response.Status, response.StatusName)
+	if response.Status != domain.StatusTasksReview || response.StatusName != "tasks_review" {
+		t.Errorf("status = %d (%s), want 5 (tasks_review)", response.Status, response.StatusName)
 	}
-	if response.ProjectVersion != 4 {
-		t.Errorf("project_version = %d, want 4", response.ProjectVersion)
+	if response.ProjectVersion != 7 {
+		t.Errorf("project_version = %d, want 7", response.ProjectVersion)
 	}
 	if len(response.Tasks) != 5 {
 		t.Fatalf("tasks = %d, want 5", len(response.Tasks))
@@ -189,8 +197,8 @@ func TestSubmitPlanHTTP(t *testing.T) {
 		t.Fatalf("get project: status = %d", projectRec.Code)
 	}
 	project := decodeProjectDetail(t, projectRec)
-	if project.Status != domain.StatusPlanReview || project.Version != 4 {
-		t.Errorf("project = %d/v%d, want plan_review/v4", project.Status, project.Version)
+	if project.Status != domain.StatusTasksReview || project.Version != 7 {
+		t.Errorf("project = %d/v%d, want tasks_review/v7", project.Status, project.Version)
 	}
 	if project.TaskStats.Total != 5 {
 		t.Errorf("task_stats.total = %d, want 5", project.TaskStats.Total)
@@ -206,7 +214,7 @@ func TestSubmitPlanHTTP(t *testing.T) {
 func TestSubmitPlanHTTPValidation(t *testing.T) {
 	h, st := newProjectTestServer(t)
 	seedProduct(t, st, "APP")
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
 
 	tooMany := make([]map[string]any, 201)
 	for i := range tooMany {
@@ -271,15 +279,15 @@ func TestSubmitPlanHTTPValidation(t *testing.T) {
 		t.Errorf("persisted tasks = %d, want 0", len(rows))
 	}
 	state := mustProjectState(t, st, projectID)
-	if state.Status != domain.StatusPlanning || state.Version != 3 {
-		t.Errorf("project = %d/v%d, want planning/v3", state.Status, state.Version)
+	if state.Status != domain.StatusTasksDraft || state.Version != 6 {
+		t.Errorf("project = %d/v%d, want tasks_draft/v6", state.Status, state.Version)
 	}
 }
 
 func TestSubmitPlanHTTPCycle(t *testing.T) {
 	h, st := newProjectTestServer(t)
 	seedProduct(t, st, "APP")
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
 
 	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/plans?id="+projectID, planBody(
 		planTask("a", "b", map[string]any{"depends_on": []int{2}}),
@@ -305,15 +313,14 @@ func TestSubmitPlanHTTPCycle(t *testing.T) {
 func TestSubmitPlanHTTPInvalidStateZeroSideEffects(t *testing.T) {
 	h, st := newProjectTestServer(t)
 	seedProduct(t, st, "APP")
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
 
 	statuses := []int{
-		domain.StatusDraft,
+		domain.StatusRequirementDraft,
+		domain.StatusRequirementReview,
+		domain.StatusSpecDraft,
 		domain.StatusSpecReview,
-		domain.StatusPlanReview,
-		domain.StatusDeveloping,
-		domain.StatusDeliveryReview,
-		domain.StatusAccepted,
+		domain.StatusCompleted,
 		domain.StatusCancelled,
 	}
 	reason := "历史理由"
@@ -360,10 +367,10 @@ func TestSubmitPlanHTTPNotFound(t *testing.T) {
 	}
 }
 
-func TestSubmitPlanHTTPIdempotentSecondSubmitConflicts(t *testing.T) {
+func TestSubmitPlanHTTPSecondBatchAppends(t *testing.T) {
 	h, st := newProjectTestServer(t)
 	seedProduct(t, st, "APP")
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
 
 	first := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/plans?id="+projectID,
 		planBody(fiveHTTPPlanTasks()...), nil)
@@ -372,81 +379,38 @@ func TestSubmitPlanHTTPIdempotentSecondSubmitConflicts(t *testing.T) {
 	}
 
 	second := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/plans?id="+projectID,
-		planBody(planTask("重复", "b")), nil)
-	if second.Code != http.StatusConflict {
-		t.Fatalf("second status = %d, want 409 (body %s)", second.Code, second.Body.String())
+		planBody(planTask("追加", "b")), nil)
+	if second.Code != http.StatusCreated {
+		t.Fatalf("second status = %d, want 201 (body %s)", second.Code, second.Body.String())
 	}
-	if body := decodeError(t, second); body.Code != "invalid_state" {
-		t.Errorf("second code = %q, want invalid_state", body.Code)
+	appended := decodeSubmitPlan(t, second)
+	if len(appended.Tasks) != 1 || appended.Tasks[0].ID != "APP-1-T0006" {
+		t.Errorf("appended tasks = %+v, want APP-1-T0006", appended.Tasks)
+	}
+	if appended.Status != domain.StatusTasksReview || appended.ProjectVersion != 7 {
+		t.Errorf("project = %d/v%d, want tasks_review/v7 (no second bump)",
+			appended.Status, appended.ProjectVersion)
 	}
 
 	rows := taskRowsByProject(t, st, projectID)
-	if len(rows) != 5 {
-		t.Errorf("persisted tasks = %d, want 5", len(rows))
-	}
-	state := mustProjectState(t, st, projectID)
-	if state.Status != domain.StatusPlanReview || state.Version != 4 {
-		t.Errorf("project = %d/v%d, want plan_review/v4", state.Status, state.Version)
+	if len(rows) != 6 {
+		t.Errorf("persisted tasks = %d, want 6", len(rows))
 	}
 }
 
-func TestSubmitPlanHTTPConcurrent(t *testing.T) {
+func TestSubmitPlanHTTPCompletedConflicts(t *testing.T) {
 	h, st := newProjectTestServer(t)
 	seedProduct(t, st, "APP")
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
+	forceProjectState(t, st, projectID, domain.StatusCompleted, 9, nil)
 
-	payload, err := json.Marshal(planBody(fiveHTTPPlanTasks()...))
-	if err != nil {
-		t.Fatalf("marshal plan: %v", err)
+	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/plans?id="+projectID,
+		planBody(planTask("迟到", "b")), nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body %s)", rec.Code, rec.Body.String())
 	}
-
-	const attempts = 10
-	var wg sync.WaitGroup
-	statuses := make(chan int, attempts)
-	for i := 0; i < attempts; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			req := httptest.NewRequest(http.MethodPost, "/v1/projects/plans?id="+projectID, bytes.NewReader(payload))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set(HeaderActor, "test-suite")
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, req)
-			statuses <- rec.Code
-		}()
-	}
-	wg.Wait()
-	close(statuses)
-
-	created, conflicts := 0, 0
-	for status := range statuses {
-		switch status {
-		case http.StatusCreated:
-			created++
-		case http.StatusConflict:
-			conflicts++
-		default:
-			t.Errorf("unexpected status %d", status)
-		}
-	}
-	if created != 1 {
-		t.Errorf("201 count = %d, want exactly 1", created)
-	}
-	if conflicts != attempts-1 {
-		t.Errorf("409 count = %d, want %d", conflicts, attempts-1)
-	}
-
-	rows := taskRowsByProject(t, st, projectID)
-	if len(rows) != 5 {
-		t.Fatalf("persisted tasks = %d, want 5", len(rows))
-	}
-	for i, row := range rows {
-		if row.SeqNo != i+1 || row.TaskID != fmt.Sprintf("APP-1-T%04d", i+1) {
-			t.Errorf("row %d = %s/seq %d, want contiguous", i, row.TaskID, row.SeqNo)
-		}
-	}
-	if got := countDeps(t, st, projectID); got != 6 {
-		t.Errorf("task_deps = %d, want 6", got)
+	if body := decodeError(t, rec); body.Code != "invalid_state" {
+		t.Errorf("code = %q, want invalid_state", body.Code)
 	}
 }
 
@@ -455,7 +419,7 @@ func TestSubmitPlanHTTPMaxAttemptsFromConfig(t *testing.T) {
 	// app test proves the value comes from ECHUAN_MAX_ATTEMPTS via platform.Load.
 	h, st := newProjectTestServerWithMaxAttempts(t, 5)
 	seedProduct(t, st, "APP")
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
 
 	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/plans?id="+projectID,
 		planBody(planTask("t", "b")), nil)

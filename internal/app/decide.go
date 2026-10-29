@@ -14,18 +14,16 @@ import (
 type DecideKind string
 
 const (
-	// DecideKindProject drives projects.status (0–7).
+	// DecideKindProject drives projects.status (0–8).
 	DecideKindProject DecideKind = "project"
-	// DecideKindTask drives tasks.status (0–7). Task-11 exposes it over HTTP;
-	// Task-06 already implements and tests it here so the state machine has a
-	// single entry point from day one.
+	// DecideKindTask drives tasks.status (0–7).
 	DecideKindTask DecideKind = "task"
 )
 
 // DecideInput is the unified decision request.
 //
 // ID is the business id ("APP-1" or "APP-1-T0001"). ExpectVersion is the
-// If-Match version; the decision endpoints require it, while accept/cancel
+// If-Match version; the decision endpoints require it, while submit/cancel
 // call the project transition helper directly and pass nil.
 type DecideInput struct {
 	Kind          DecideKind
@@ -45,12 +43,17 @@ type DecideResult struct {
 	ToStatus   int
 }
 
-// AcceptProject moves a draft project to spec_review (tech design §5.5).
+// SubmitProject sends the current draft for review.
 //
-// The requirement guard is enforced inside the same transaction: a project
-// whose requirement_material_id is NULL cannot enter review.
-func (s *ProjectService) AcceptProject(ctx context.Context, projectID, actor string) (DecideResult, error) {
-	return s.transitionProject(ctx, projectID, domain.ProjectActionAccept, "", "", nil, actor)
+//   - requirement_draft → requirement_review requires the requirement document
+//     to exist (a project created without one cannot be submitted);
+//   - spec_draft → spec_review requires at least one spec document.
+//
+// Both preconditions are checked inside the write transaction, and a submit
+// always clears reason: the objection that sent the draft back is answered by
+// the submission itself.
+func (s *ProjectService) SubmitProject(ctx context.Context, projectID, actor string) (DecideResult, error) {
+	return s.transitionProject(ctx, projectID, domain.ProjectActionSubmit, "", "", nil, actor)
 }
 
 // CancelProject moves any non-terminal project to cancelled and cancels every
@@ -133,12 +136,8 @@ func (s *ProjectService) transitionProject(ctx context.Context, projectID, actio
 			return err
 		}
 
-		// Accept has one extra precondition: the requirement document pointer
-		// must exist. It is checked in the transaction so no concurrent delete
-		// can slip in.
-		if action == domain.ProjectActionAccept && row.RequirementMaterialID == nil {
-			return &domain.InvalidStateError{Reason: fmt.Sprintf(
-				"project %q has no requirement document; accept requires requirement_material_id", projectID)}
+		if err := s.validateSubmitPrecondition(ctx, tx, row, action); err != nil {
+			return err
 		}
 
 		nextReason := decideReason(action, decision, reason)
@@ -180,66 +179,49 @@ func (s *ProjectService) transitionProject(ctx context.Context, projectID, actio
 	return result, nil
 }
 
-// applyProjectSideEffects performs the writes that accompany one transition.
-func (s *ProjectService) applyProjectSideEffects(ctx context.Context, tx *sql.Tx, row store.Project, action string, decision domain.Decision, reason, actor, updateTime string) error {
-	switch {
-	case action == domain.ProjectActionCancel:
-		_, err := store.CancelUnfinishedTasks(ctx, tx, row.ID, actor, updateTime)
-		return err
-
-	case row.Status == domain.StatusPlanReview && decision == domain.DecisionApprove:
-		// The approved breakdown becomes claimable.
-		_, err := store.SetTasksReadyByProject(ctx, tx, row.ID, actor, updateTime)
-		return err
-
-	case row.Status == domain.StatusPlanReview && decision == domain.DecisionReject:
-		// The plan is rebuilt from scratch: drop the rejected tasks and their
-		// dependency edges. The CTO re-plans on the next round.
-		_, err := store.DeleteTasksByProject(ctx, tx, row.ID)
-		return err
-
-	case row.Status == domain.StatusDeliveryReview && decision == domain.DecisionReject:
-		return s.createReworkTask(ctx, tx, row, reason, actor, updateTime)
+// validateSubmitPrecondition enforces what a submit needs beyond the state
+// edge: a requirement for requirement_draft and at least one spec document for
+// spec_draft. Both run in the transaction so no concurrent delete can slip in.
+func (s *ProjectService) validateSubmitPrecondition(ctx context.Context, tx *sql.Tx, row store.Project, action string) error {
+	if action != domain.ProjectActionSubmit {
+		return nil
+	}
+	switch row.Status {
+	case domain.StatusRequirementDraft:
+		if row.RequirementMaterialID == nil {
+			return &domain.InvalidStateError{Reason: fmt.Sprintf(
+				"project %q has no requirement document; submit requires requirement_material_id", row.ProjectID)}
+		}
+	case domain.StatusSpecDraft:
+		docs, err := store.ListSpecDocuments(ctx, tx, row.ID)
+		if err != nil {
+			return err
+		}
+		if len(docs) == 0 {
+			return &domain.InvalidStateError{Reason: fmt.Sprintf(
+				"project %q has no spec document; submit requires at least one spec", row.ProjectID)}
+		}
 	}
 	return nil
 }
 
-// createReworkTask adds one ready task describing what must be reworked. It is
-// inserted in backlog and then moved through the state machine to ready, so
-// the task machine stays the only authority over tasks.status.
-func (s *ProjectService) createReworkTask(ctx context.Context, tx *sql.Tx, project store.Project, reason, actor, updateTime string) error {
-	seq, err := store.NextSeqNo(ctx, tx, "tasks", "project_id", project.ID)
-	if err != nil {
+// applyProjectSideEffects performs the writes that accompany one transition.
+//
+// The review gates (requirement/spec) need no side effect: the artifacts are
+// already stored and the task-batch review lives in the task service. Cancel
+// is the only transition that touches other rows.
+func (s *ProjectService) applyProjectSideEffects(ctx context.Context, tx *sql.Tx, row store.Project, action string, decision domain.Decision, reason, actor, updateTime string) error {
+	if action == domain.ProjectActionCancel {
+		_, err := store.CancelUnfinishedTasks(ctx, tx, row.ID, actor, updateTime)
 		return err
 	}
-	taskID := fmt.Sprintf("%s-T%04d", project.ProjectID, seq)
-
-	body := "返工说明：\n\n" + reason
-	id, err := store.CreateTask(ctx, tx, store.NewTask{
-		TaskID:      taskID,
-		ProjectID:   project.ID,
-		SeqNo:       seq,
-		Title:       "返工：" + project.Title,
-		BodyMD:      body,
-		Status:      domain.TaskBacklog,
-		MaxAttempts: s.maxAttempts,
-		LastActor:   actor,
-		CreateTime:  updateTime,
-		UpdateTime:  updateTime,
-	})
-	if err != nil {
-		return err
-	}
-
-	_, err = store.TransitionTask(ctx, tx, id, domain.TaskBacklog, 1, domain.TaskReady, nil, actor, updateTime)
-	return err
+	return nil
 }
 
 // decideTask is the legacy task branch of the unified decision entry point.
 //
-// Task-11 gives tasks their own four-value verdicts; approve/reject stay here
-// as aliases (accept/rework) so Task-06 callers and their tests keep working.
-// The transaction is the TaskService one, which also advances a developing
+// approve/reject are aliases for accept/rework so older callers keep working.
+// The transaction is the TaskService one, which also settles a pending_done
 // project whose last card was just accepted.
 func (s *ProjectService) decideTask(ctx context.Context, in DecideInput) (DecideResult, error) {
 	var decision domain.TaskDecision
@@ -278,11 +260,13 @@ func (s *ProjectService) decideTask(ctx context.Context, in DecideInput) (Decide
 }
 
 // decideReason computes the reason column for one project transition:
-// approvals and accept clear it (SQL NULL), rejections and a non-empty cancel
+// approvals and submits clear it (SQL NULL), rejections and a non-empty cancel
 // reason persist it.
 func decideReason(action string, decision domain.Decision, reason string) *string {
 	switch {
-	case action == domain.ProjectActionAccept:
+	case action == domain.ProjectActionSubmit:
+		return nil
+	case action == domain.ProjectActionAddFirstTask, action == domain.ProjectActionReviewTasks, action == domain.ProjectActionSettleTasks:
 		return nil
 	case action == domain.ProjectActionDecide && decision == domain.DecisionApprove:
 		return nil

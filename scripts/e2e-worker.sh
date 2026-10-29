@@ -116,6 +116,27 @@ require_code() {
   fi
 }
 
+# heartbeat_busy 发送 state=busy 心跳。租约恰好过期时服务端会返回 409
+# lease_lost，这属于时序竞态而非功能错误：最多重试 3 次（间隔 2s），仍失败
+# 才判定失败。
+heartbeat_busy() {
+  local label="$1" attempt
+  for attempt in 1 2 3; do
+    http_post "/v1/workers/heartbeat" \
+      "$(jqr -n --arg wid "$WORKER_ID" '{worker_id:$wid,state:"busy"}')"
+    if [[ "$HTTP_CODE" == "200" ]]; then
+      return 0
+    fi
+    if [[ "$HTTP_CODE" == "409" && "$HTTP_BODY" == *lease_lost* ]]; then
+      say "$label：第 $attempt 次返回 409 lease_lost，2s 后重试"
+      sleep 2
+      continue
+    fi
+    fail "$label：期望 HTTP 200，实际 $HTTP_CODE"
+  done
+  fail "$label：连续 3 次 409 lease_lost，租约已丢失"
+}
+
 jqr() { printf '%s' "$HTTP_BODY" | jq -r "$@"; }
 
 # --- 端口与启动 -------------------------------------------------------------
@@ -211,8 +232,9 @@ say "监听: $BASE"
 pass "1/9 临时目录、TOML、随机端口与进程就绪（$BASE）"
 
 # --- 2. 造一张 ready 卡 -----------------------------------------------------
-# 项目状态机：draft → spec_review → planning → plan_review → developing；
-# 只有 plan 通过后任务才会从 backlog 变为 ready（可领取）。
+# 项目状态机：requirement_draft → requirement_review → spec_draft → spec_review
+# → tasks_draft → tasks_review → pending_done；只有批次审批通过后任务才会从
+# backlog 变为 ready（可领取）。
 
 STEP="2/9 建产品/项目/ready 卡"
 say ""
@@ -233,8 +255,15 @@ PROJECT_VERSION="$(jqr '.version')"
 [[ "$PROJECT_ID" == "$PRODUCT_ID-1" ]] || fail "项目 id 应形如 <product_id>-1，实际 $PROJECT_ID"
 say "项目: $PROJECT_ID (version=$PROJECT_VERSION)"
 
-http_post "/v1/projects/accept?id=$PROJECT_ID" '{}'
-require_code 200 "accept 项目"
+http_post "/v1/projects/submit?id=$PROJECT_ID" '{}'
+require_code 200 "提交需求评审"
+[[ "$(jqr '.status_name')" == "requirement_review" ]] || fail "提交后应为 requirement_review，实际 $(jqr '.status_name')"
+PROJECT_VERSION="$(jqr '.version')"
+
+http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' \
+  -H "If-Match: $PROJECT_VERSION"
+require_code 200 "需求评审通过"
+[[ "$(jqr '.status_name')" == "spec_draft" ]] || fail "需求通过后应为 spec_draft，实际 $(jqr '.status_name')"
 PROJECT_VERSION="$(jqr '.version')"
 
 http_post "/v1/projects/specs?id=$PROJECT_ID" \
@@ -242,23 +271,28 @@ http_post "/v1/projects/specs?id=$PROJECT_ID" \
 require_code 200 "提交规格"
 PROJECT_VERSION="$(jqr '.project_version')"
 
+http_post "/v1/projects/submit?id=$PROJECT_ID" '{}'
+require_code 200 "提交方案评审"
+[[ "$(jqr '.status_name')" == "spec_review" ]] || fail "方案提交后应为 spec_review，实际 $(jqr '.status_name')"
+PROJECT_VERSION="$(jqr '.version')"
+
 http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' \
   -H "If-Match: $PROJECT_VERSION"
-require_code 200 "规格评审通过"
-[[ "$(jqr '.status_name')" == "planning" ]] || fail "规格通过后项目状态应为 planning，实际 $(jqr '.status_name')"
+require_code 200 "方案评审通过"
+[[ "$(jqr '.status_name')" == "tasks_draft" ]] || fail "方案通过后应为 tasks_draft，实际 $(jqr '.status_name')"
 PROJECT_VERSION="$(jqr '.version')"
 
 http_post "/v1/projects/plans?id=$PROJECT_ID" \
   '{"tasks":[{"title":"E2E 执行卡","body_md":"# 执行\n\n由 e2e-worker.sh 创建。\n","priority":10}]}'
-require_code 201 "提交任务拆解"
+require_code 201 "批量添加任务卡"
 TASK_ID="$(jqr '.tasks[0].id')"
-[[ -n "$TASK_ID" && "$TASK_ID" != "null" ]] || fail "拆解响应缺少任务 id"
+[[ -n "$TASK_ID" && "$TASK_ID" != "null" ]] || fail "批量响应缺少任务 id"
 PROJECT_VERSION="$(jqr '.project_version')"
+[[ "$(jqr '.status_name')" == "tasks_review" ]] || fail "添加第一张卡后应为 tasks_review，实际 $(jqr '.status_name')"
 
-http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' \
-  -H "If-Match: $PROJECT_VERSION"
-require_code 200 "拆解评审通过"
-[[ "$(jqr '.status_name')" == "developing" ]] || fail "拆解通过后项目状态应为 developing，实际 $(jqr '.status_name')"
+http_post "/v1/tasks/review?project_id=$PROJECT_ID" '{"decision":"approve"}'
+require_code 200 "任务批次审批通过"
+[[ "$(jqr '.status_name')" == "pending_done" ]] || fail "批次通过后应为 pending_done，实际 $(jqr '.status_name')"
 
 http_get "/v1/tasks?id=$TASK_ID"
 require_code 200 "读取任务详情"
@@ -315,14 +349,12 @@ lease_until() {
 L1="$(lease_until)"
 [[ -n "$L1" && "$L1" != "null" ]] || fail "in_progress 任务应带 lease.until"
 sleep 1.1
-http_post "/v1/workers/heartbeat" "$(jqr -n --arg wid "$WORKER_ID" '{worker_id:$wid,state:"busy"}')"
-require_code 200 "busy 心跳 1"
+heartbeat_busy "busy 心跳 1"
 L2="$(lease_until)"
 [[ "$L2" > "$L1" ]] || fail "busy 心跳后 lease_until 应递增：$L1 -> $L2"
 
 sleep 1.1
-http_post "/v1/workers/heartbeat" "$(jqr -n --arg wid "$WORKER_ID" '{worker_id:$wid,state:"busy"}')"
-require_code 200 "busy 心跳 2"
+heartbeat_busy "busy 心跳 2"
 L3="$(lease_until)"
 [[ "$L3" > "$L2" ]] || fail "第二次 busy 心跳后 lease_until 应继续递增：$L2 -> $L3"
 

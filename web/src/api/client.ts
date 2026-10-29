@@ -209,9 +209,9 @@ export function listProjectMaterials(
   })
 }
 
-/** 立项：draft → spec_review，无 If-Match。 */
-export function acceptProject(id: string): Promise<Project> {
-  return request<Project>('/v1/projects/accept', { method: 'POST', query: { id } })
+/** 提交评审：requirement_draft → requirement_review 或 spec_draft → spec_review，无 If-Match。 */
+export function submitProject(id: string): Promise<Project> {
+  return request<Project>('/v1/projects/submit', { method: 'POST', query: { id } })
 }
 
 /** 评审门裁决；必须带 If-Match（version）。 */

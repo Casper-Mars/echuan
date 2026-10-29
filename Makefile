@@ -1,6 +1,10 @@
 # echuan — 单二进制 Web 服务
 #
 # 常用目标：build / test / lint / web
+#
+# 注意：build 刻意不依赖 web，纯后端构建因此不需要 pnpm。发布二进制或镜像前
+# 必须先执行 `make web`，把前端产物同步到 internal/web/dist（go:embed 的源），
+# 否则二进制里仍是上一次提交的旧前端。
 BINARY  := echuan
 PKG     := github.com/Casper-Mars/echuan
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -15,7 +19,7 @@ LDFLAGS := -s -w \
 
 all: build
 
-## build: 编译单文件二进制（CGO 关闭、去除路径与符号）
+## build: 编译单文件二进制（CGO 关闭、去除路径与符号）；发布前先 make web
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/echuan
 	@echo "built ./$(BINARY) ($(VERSION) @ $(COMMIT))"
@@ -45,12 +49,12 @@ e2e:
 fmt:
 	gofmt -w .
 
-## web: 构建前端并同步到 internal/web/dist（前端源码由 Task-14 创建）
+## web: 构建前端并同步到 internal/web/dist（前端源码位于 web/）
 web:
 	@if [ -f web/package.json ]; then \
 		pnpm --dir web build && rm -rf internal/web/dist && cp -r web/dist internal/web/dist && echo "前端产物已同步到 internal/web/dist"; \
 	else \
-		echo "web/ 尚未创建（由 Task-14 提供），保留 internal/web/dist 占位页"; \
+		echo "web/ 缺少 package.json，保留 internal/web/dist 现有产物"; \
 	fi
 
 ## clean: 清理构建产物

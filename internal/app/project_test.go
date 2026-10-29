@@ -150,8 +150,8 @@ func TestCreateProjectStoresRequirement(t *testing.T) {
 	if detail.Project.ProjectID != "APP-1" || detail.Project.SeqNo != 1 {
 		t.Errorf("project = %s (seq %d), want APP-1 (seq 1)", detail.Project.ProjectID, detail.Project.SeqNo)
 	}
-	if detail.Project.Status != domain.StatusDraft {
-		t.Errorf("status = %d, want %d (draft)", detail.Project.Status, domain.StatusDraft)
+	if detail.Project.Status != domain.StatusRequirementDraft {
+		t.Errorf("status = %d, want %d (requirement_draft)", detail.Project.Status, domain.StatusRequirementDraft)
 	}
 	if detail.Project.Version != 1 {
 		t.Errorf("version = %d, want 1", detail.Project.Version)
@@ -419,7 +419,7 @@ func TestDeleteProjectBranches(t *testing.T) {
 	t.Run("cancelled without children", func(t *testing.T) {
 		detail := mustCreate("已取消")
 		if _, err := env.store.Write().ExecContext(ctx,
-			"UPDATE projects SET status = 7 WHERE id = ?", env.physicalProjectID(t, detail.Project.ProjectID)); err != nil {
+			"UPDATE projects SET status = 8 WHERE id = ?", env.physicalProjectID(t, detail.Project.ProjectID)); err != nil {
 			t.Fatalf("set status: %v", err)
 		}
 		if err := env.service.DeleteProject(ctx, detail.Project.ProjectID); err != nil {
@@ -550,7 +550,7 @@ func TestListProjectsFiltersAndPagination(t *testing.T) {
 		t.Errorf("APP projects = %d, want 3", len(app.Items))
 	}
 
-	draft := domain.StatusDraft
+	draft := domain.StatusRequirementDraft
 	drafts, err := env.service.ListProjects(ctx, "APP", &draft, 0, 50)
 	if err != nil {
 		t.Fatalf("ListProjects(status=0): %v", err)
@@ -559,13 +559,13 @@ func TestListProjectsFiltersAndPagination(t *testing.T) {
 		t.Errorf("draft projects = %d, want 3", len(drafts.Items))
 	}
 
-	developing := domain.StatusDeveloping
+	developing := domain.StatusTasksDraft
 	none, err := env.service.ListProjects(ctx, "APP", &developing, 0, 50)
 	if err != nil {
 		t.Fatalf("ListProjects(status=4): %v", err)
 	}
 	if len(none.Items) != 0 {
-		t.Errorf("developing projects = %d, want 0", len(none.Items))
+		t.Errorf("tasks_draft projects = %d, want 0", len(none.Items))
 	}
 }
 
@@ -621,7 +621,7 @@ func TestUpdateProjectOnlyChangesTitle(t *testing.T) {
 		t.Error("create_time changed")
 	}
 
-	status := domain.StatusPlanning
+	status := domain.StatusSpecDraft
 	var validation *domain.ValidationError
 	if _, err := env.service.UpdateProject(ctx, detail.Project.ProjectID, UpdateProjectInput{Status: &status}); !errors.As(err, &validation) {
 		t.Errorf("status patch: err = %v, want ValidationError", err)

@@ -29,8 +29,8 @@ type TaskDecisionInput struct {
 	Actor         string
 }
 
-// ProjectAdvance reports the developing → delivery_review transition that the
-// last accepted card triggered.
+// ProjectAdvance reports one automatic project move triggered by task work:
+// the batch approval (5 → 6) or the final settlement (6 → 7).
 type ProjectAdvance struct {
 	ProjectID  string
 	FromStatus int
@@ -38,7 +38,7 @@ type ProjectAdvance struct {
 }
 
 // TaskDecisionResult is one applied verdict: the task as it looks afterwards,
-// the edge taken and, when the acceptance closed the project, the project move.
+// the edge taken and, when the verdict settled the last card, the project move.
 type TaskDecisionResult struct {
 	Detail     TaskDetail
 	FromStatus int
@@ -255,8 +255,11 @@ func (s *TaskService) DecideTask(ctx context.Context, in TaskDecisionInput) (Tas
 			return &domain.InvalidVersionError{Current: fresh.Version, Expected: row.Version}
 		}
 
-		if in.Decision == domain.TaskDecisionAccept {
-			result.Project, err = s.advanceProjectAfterAccept(ctx, tx, row.ProjectCode, actor)
+		// Both terminal verdicts can settle the project's last card: accept
+		// (done) and abandon (cancelled). A rework or retry leaves work behind,
+		// so only these two paths check for completion.
+		if in.Decision == domain.TaskDecisionAccept || in.Decision == domain.TaskDecisionAbandon {
+			result.Project, err = s.settleProjectIfDone(ctx, tx, row.ProjectCode, actor)
 			if err != nil {
 				return err
 			}
@@ -276,22 +279,21 @@ func (s *TaskService) DecideTask(ctx context.Context, in TaskDecisionInput) (Tas
 	return result, nil
 }
 
-// advanceProjectAfterAccept moves a developing project to delivery_review when
-// the acceptance left no task in a non-terminal status (4 done and 7 cancelled
-// are terminal).
+// settleProjectIfDone closes a pending_done project once no task of it is left
+// in a non-terminal status (4 done and 7 cancelled are terminal).
 //
 // The check and the project write run in the same transaction as the task
-// acceptance, so the board can never observe "task done, project stuck" or a
-// project that advanced before its last card committed.
-func (s *TaskService) advanceProjectAfterAccept(ctx context.Context, tx *sql.Tx, projectCode, actor string) (*ProjectAdvance, error) {
+// verdict, so the board can never observe "last card settled, project stuck" or
+// a project that completed before its last card committed.
+func (s *TaskService) settleProjectIfDone(ctx context.Context, tx *sql.Tx, projectCode, actor string) (*ProjectAdvance, error) {
 	project, err := store.GetProjectByProjectID(ctx, tx, projectCode)
 	if err != nil {
 		return nil, err
 	}
-	// Only a developing project advances; any other status is left untouched
-	// (draft/planning do not have a delivery gate, delivery_review already
-	// moved, terminal projects take no action).
-	if project.Status != domain.StatusDeveloping {
+	// Only a pending_done project closes itself; every other status is left
+	// untouched (draft/review states still have a human gate, terminal
+	// projects take no action, cancelled projects never complete).
+	if project.Status != domain.StatusPendingDone {
 		return nil, nil
 	}
 
@@ -303,10 +305,14 @@ func (s *TaskService) advanceProjectAfterAccept(ctx context.Context, tx *sql.Tx,
 		return nil, nil
 	}
 
+	next, err := domain.ProjectNextStatus(project.Status, domain.ProjectActionSettleTasks, "")
+	if err != nil {
+		return nil, err
+	}
 	updateTime := formatTimestamp(s.nextTimestamp(project.UpdateTime))
 	affected, err := store.TransitionProject(ctx, tx, project.ID,
-		project.Status, project.Version, domain.StatusDeliveryReview,
-		project.Reason, actor, updateTime)
+		project.Status, project.Version, next,
+		nil, actor, updateTime)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +321,7 @@ func (s *TaskService) advanceProjectAfterAccept(ctx context.Context, tx *sql.Tx,
 		if readErr != nil {
 			return nil, readErr
 		}
-		if fresh.Status == domain.StatusDeliveryReview {
+		if fresh.Status == next {
 			return &ProjectAdvance{ProjectID: fresh.ProjectID, FromStatus: project.Status, ToStatus: fresh.Status}, nil
 		}
 		return nil, &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
@@ -324,8 +330,87 @@ func (s *TaskService) advanceProjectAfterAccept(ctx context.Context, tx *sql.Tx,
 	return &ProjectAdvance{
 		ProjectID:  project.ProjectID,
 		FromStatus: project.Status,
-		ToStatus:   domain.StatusDeliveryReview,
+		ToStatus:   next,
 	}, nil
+}
+
+// ReviewTasksResult reports the outcome of one task-batch review.
+type ReviewTasksResult struct {
+	ProjectID  string
+	FromStatus int
+	ToStatus   int
+	ReadyTasks int64
+}
+
+// ApproveTasks applies the human approval of a task batch (tech design §4.5):
+// every backlog card of a tasks_review project becomes ready and the project
+// moves to pending_done in the same transaction.
+//
+// The same action is legal on a pending_done project (6 → 6): cards added
+// while the project waits for its umbrella task land in backlog again, and
+// approving them makes them ready without moving the project — it leaves 6
+// only when the last card is settled (§5).
+//
+// Rejection is intentionally not implemented here yet: it belongs to the
+// follow-up task and the HTTP layer answers it with 400 invalid_argument
+// instead of pretending the batch was rejected.
+func (s *TaskService) ApproveTasks(ctx context.Context, projectID, actor string) (ReviewTasksResult, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return ReviewTasksResult{}, invalidField("project_id", "is required")
+	}
+	actor = actorOrDefault(actor)
+
+	var result ReviewTasksResult
+	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
+		project, err := store.GetProjectByProjectID(ctx, tx, projectID)
+		if err != nil {
+			if store.IsNotFound(err) {
+				return &domain.NotFoundError{Resource: "project", Key: projectID}
+			}
+			return err
+		}
+		next, err := domain.ProjectNextStatus(project.Status, domain.ProjectActionReviewTasks, domain.DecisionApprove)
+		if err != nil {
+			return err
+		}
+
+		updateTime := formatTimestamp(s.nextTimestamp(project.UpdateTime))
+		ready, err := store.SetTasksReadyByProject(ctx, tx, project.ID, actor, updateTime)
+		if err != nil {
+			return err
+		}
+		if ready == 0 {
+			return &domain.InvalidStateError{Reason: fmt.Sprintf(
+				"project %q has no backlog task to approve", project.ProjectID)}
+		}
+
+		// An approval clears the rejection objection that produced this round.
+		affected, err := store.TransitionProject(ctx, tx, project.ID,
+			project.Status, project.Version, next, nil, actor, updateTime)
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			fresh, readErr := store.GetProjectByProjectID(ctx, tx, project.ProjectID)
+			if readErr != nil {
+				return readErr
+			}
+			return &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
+		}
+
+		result = ReviewTasksResult{
+			ProjectID:  project.ProjectID,
+			FromStatus: project.Status,
+			ToStatus:   next,
+			ReadyTasks: ready,
+		}
+		return nil
+	})
+	if err != nil {
+		return ReviewTasksResult{}, err
+	}
+	return result, nil
 }
 
 // taskDomainFromView converts the task read view back into the domain entity.

@@ -22,7 +22,7 @@ func newTaskHTTPEnv(t *testing.T) (http.Handler, *store.Store, string) {
 	t.Helper()
 	h, st := newProjectTestServer(t)
 	seedProduct(t, st, "APP")
-	return h, st, createPlanningHTTPProject(t, h)
+	return h, st, createTasksDraftHTTPProject(t, h)
 }
 
 // postTask creates one card through the API and returns its detail.
@@ -145,7 +145,7 @@ func TestCreateTaskHTTP(t *testing.T) {
 func TestCreateTaskHTTPMaxAttemptsFromConfig(t *testing.T) {
 	h, st := newProjectTestServerWithMaxAttempts(t, 5)
 	seedProduct(t, st, "APP")
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
 
 	created := postTask(t, h, projectID, "上限", "b", 0)
 	if created.MaxAttempts != 5 {

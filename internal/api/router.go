@@ -60,7 +60,7 @@ var routeSpecs = []routeSpec{
 	{http.MethodPost, "/v1/specs", "projects"},
 	{http.MethodPatch, "/v1/specs", "projects"},
 	{http.MethodPost, "/v1/projects/plans", "projects"},
-	{http.MethodPost, "/v1/projects/accept", "projects"},
+	{http.MethodPost, "/v1/projects/submit", "projects"},
 	{http.MethodPost, "/v1/projects/decide", "projects"},
 	{http.MethodPost, "/v1/projects/cancel", "projects"},
 	{http.MethodGet, "/v1/projects/materials", "materials"},
@@ -71,6 +71,7 @@ var routeSpecs = []routeSpec{
 	{http.MethodDelete, "/v1/tasks", "tasks"},
 	{http.MethodPost, "/v1/tasks/report", "tasks"},
 	{http.MethodPost, "/v1/tasks/decide", "tasks"},
+	{http.MethodPost, "/v1/tasks/review", "tasks"},
 	{http.MethodPost, "/v1/tasks/claim", "claims"},
 	{http.MethodPost, "/v1/tasks/heartbeat", "claims"},
 
@@ -107,11 +108,11 @@ func Routes() []Route {
 //	DELETE /v1/projects              delete a draft/cancelled project (?id=)
 //	POST /v1/projects/requirement    append a requirement version (?id=)
 //	POST /v1/projects/specs          append a spec version (?id=)
-//	POST /v1/projects/plans          submit a task breakdown (?id=)
-//	POST /v1/projects/accept         draft → spec_review (?id=)
+//	POST /v1/projects/plans          add a batch of task cards (?id=)
+//	POST /v1/projects/submit         draft → its review gate (?id=)
 //	POST /v1/projects/decide         approve/reject a review gate (?id=, If-Match)
 //	POST /v1/projects/cancel         cancel a non-terminal project (?id=)
-//	POST /v1/tasks                    add one task to a planning project (?project_id=)
+//	POST /v1/tasks                    add one task card to a tasks project (?project_id=)
 //	GET /v1/tasks                    list tasks (or fetch one with ?id=)
 //	PATCH /v1/tasks                  patch title/body_md/priority (?id=)
 //	DELETE /v1/tasks                 delete an unclaimed backlog task (?id=)
@@ -119,6 +120,7 @@ func Routes() []Route {
 //	POST /v1/tasks/heartbeat         renew the lease of one task (?id=)
 //	POST /v1/tasks/report            submit a report and complete the task (?id=)
 //	POST /v1/tasks/decide            accept/rework/retry/abandon a task (?id=, If-Match)
+//	POST /v1/tasks/review            approve a task batch, backlog → ready (?project_id=)
 //	POST /v1/workers/heartbeat       register a worker, refresh it and dispatch work
 //	GET /v1/workers                  list workers (or fetch one with ?id=)
 //	GET /v1/materials                download a material object (?id=)
@@ -165,7 +167,7 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		handlers["POST /v1/specs"] = projectsHandler.saveSpecDocument
 		handlers["PATCH /v1/specs"] = projectsHandler.saveSpecDocument
 		handlers["POST /v1/projects/plans"] = projectsHandler.submitPlan
-		handlers["POST /v1/projects/accept"] = projectsHandler.acceptProject
+		handlers["POST /v1/projects/submit"] = projectsHandler.submitProject
 		handlers["POST /v1/projects/decide"] = projectsHandler.decideProject
 		handlers["POST /v1/projects/cancel"] = projectsHandler.cancelProject
 	}
@@ -178,6 +180,7 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		handlers["DELETE /v1/tasks"] = tasksHandler.deleteTask
 		handlers["POST /v1/tasks/report"] = tasksHandler.reportTask
 		handlers["POST /v1/tasks/decide"] = tasksHandler.decideTask
+		handlers["POST /v1/tasks/review"] = tasksHandler.reviewTasks
 	}
 	if claims != nil {
 		enabled["claims"] = true

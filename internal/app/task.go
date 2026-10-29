@@ -123,12 +123,15 @@ func (s *TaskService) SetMaxAttempts(n int) {
 	}
 }
 
-// CreateTask inserts one task into a planning project.
+// CreateTask inserts one task card into a project that is still being built
+// (tasks_draft, tasks_review) or has already been approved (pending_done).
 //
 // The project status, the next sequence number and the dependency edges are all
 // read and written in one write transaction, so a concurrent submit or create
-// cannot hand out the same seq_no. Validation of the payload runs first: a bad
-// request leaves no row behind.
+// cannot hand out the same seq_no. When the project is still in tasks_draft the
+// insert opens the batch review gate in the same transaction (4 → 5), so the
+// first card always makes the batch reviewable. Validation of the payload runs
+// first: a bad request leaves no row behind.
 func (s *TaskService) CreateTask(ctx context.Context, in CreateTaskInput, actor string) (TaskDetail, error) {
 	in.ProjectID = strings.TrimSpace(in.ProjectID)
 	if in.ProjectID == "" {
@@ -150,11 +153,14 @@ func (s *TaskService) CreateTask(ctx context.Context, in CreateTaskInput, actor 
 			}
 			return err
 		}
-		// Cards may only be added while the breakdown is still being written:
-		// once the plan is submitted the batch is what the reviewer approved.
-		if project.Status != domain.StatusPlanning {
+		// Cards may be added while the batch is being written, while it is
+		// under review, and after it was approved (pending_done). Terminal
+		// projects reject the insert.
+		if project.Status != domain.StatusTasksDraft &&
+			project.Status != domain.StatusTasksReview &&
+			project.Status != domain.StatusPendingDone {
 			return &domain.InvalidStateError{Reason: fmt.Sprintf(
-				"project %q is in status %s; tasks can only be created while planning",
+				"project %q is in status %s; tasks can only be created in tasks_draft, tasks_review or pending_done",
 				normalized.ProjectID, domain.StatusName(project.Status))}
 		}
 
@@ -201,6 +207,25 @@ func (s *TaskService) CreateTask(ctx context.Context, in CreateTaskInput, actor 
 		for _, dependsOn := range normalized.DependsOn {
 			if err := store.CreateTaskDependencyByTaskIDs(ctx, tx, taskID, dependsOn, ts); err != nil {
 				return err
+			}
+		}
+
+		if project.Status == domain.StatusTasksDraft {
+			next, err := domain.ProjectNextStatus(project.Status, domain.ProjectActionAddFirstTask, "")
+			if err != nil {
+				return err
+			}
+			affected, err := store.TransitionProject(ctx, tx, project.ID,
+				project.Status, project.Version, next, project.Reason, actor, ts)
+			if err != nil {
+				return err
+			}
+			if affected == 0 {
+				fresh, readErr := store.GetProjectByProjectID(ctx, tx, project.ProjectID)
+				if readErr != nil {
+					return readErr
+				}
+				return &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
 			}
 		}
 

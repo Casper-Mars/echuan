@@ -241,8 +241,10 @@ paths:
         - name: status
           in: query
           required: false
+          description: 按项目状态过滤（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
           schema:
             type: integer
+            enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         - name: limit
           in: query
           required: false
@@ -385,7 +387,11 @@ paths:
   /v1/projects/plans:
     post:
       operationId: submitProjectPlan
-      summary: 提交任务拆解
+      summary: 批量添加任务卡
+      description: |
+        向 `tasks_draft`(4) / `tasks_review`(5) / `pending_done`(6) 的项目批量添加任务卡，
+        新卡一律以 `backlog`(0) 落库。项目处于 `tasks_draft` 时，本批第一张卡会在同一事务里
+        把项目推进到 `tasks_review`(5)。
       tags: [projects]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -414,17 +420,22 @@ paths:
           $ref: "#/components/responses/Conflict"
         "413":
           $ref: "#/components/responses/TooLarge"
-  /v1/projects/accept:
+  /v1/projects/submit:
     post:
-      operationId: acceptProject
-      summary: 需求转规格评审
+      operationId: submitProject
+      summary: 草稿提交评审
+      description: |
+        按当前状态进入对应的评审门：
+        - `requirement_draft`(0) → `requirement_review`(1)：要求需求文档已存在；
+        - `spec_draft`(2) → `spec_review`(3)：要求至少存在一份方案文档。
+        提交会清空 `reason`。
       tags: [projects]
       parameters:
         - $ref: "#/components/parameters/Actor"
         - $ref: "#/components/parameters/ResourceID"
       responses:
         "200":
-          description: 已进入 spec_review
+          description: 已进入评审
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -888,6 +899,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/tasks/review:
+    post:
+      operationId: reviewTasks
+      summary: 审批任务批次
+      description: |
+        `approve`：把项目的全部 `backlog` 卡置为 `ready`，并在同一事务里推进项目：
+        - `tasks_review`(5) → `pending_done`(6)：首次批次审批。
+        - `pending_done`(6) → `pending_done`(6)：待完成阶段加卡后再次审批，
+          新卡变 `ready` 而项目停在 6；等全部卡片结清后项目才到 7。
+        没有 `backlog` 卡时返回 409 `invalid_state`。
+        `reject` 尚未实现（由后续任务补齐），当前返回 400 `invalid_argument`。
+      tags: [tasks]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - name: project_id
+          in: query
+          required: true
+          description: 项目业务编号（APP-1）
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewTasksRequest"
+      responses:
+        "200":
+          description: 批次已通过
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewTasksResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/tasks/decide:
     post:
       operationId: decideTask
@@ -1528,6 +1581,8 @@ components:
           type: string
         status:
           type: integer
+          description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status_name:
           type: string
         reason:
@@ -1564,6 +1619,8 @@ components:
           type: string
         status:
           type: integer
+          description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status_name:
           type: string
         reason:
@@ -1625,6 +1682,8 @@ components:
           type: string
         status:
           type: integer
+          description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         product_id:
           type: string
     RequirementRequest:
@@ -1653,6 +1712,8 @@ components:
           type: string
         status:
           type: integer
+          description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status_name:
           type: string
         project_version:
@@ -1727,6 +1788,8 @@ components:
           type: string
         status:
           type: integer
+          description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status_name:
           type: string
         project_version:
@@ -1735,6 +1798,33 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PlanTaskResponse"
+    ReviewTasksRequest:
+      type: object
+      additionalProperties: false
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, reject]
+    ReviewTasksResponse:
+      type: object
+      additionalProperties: false
+      required: [project_id, from_status, status, status_name, ready_tasks]
+      properties:
+        project_id:
+          type: string
+        from_status:
+          type: integer
+          description: 审批前的项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
+        status:
+          type: integer
+          description: 审批后的项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
+        status_name:
+          type: string
+        ready_tasks:
+          type: integer
     ProjectDecideRequest:
       type: object
       additionalProperties: false
