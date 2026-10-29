@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { NavLink } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
+import { recallMenuPath } from '../lib/menuMemory'
 
 interface NavItem {
   to: string
@@ -42,25 +43,38 @@ const items: NavItem[] = [
 
 /**
  * 左侧主导航：仅两个入口，不带徽标/计数/状态灯。
- * 高亮完全交给 NavLink 的 isActive（/products 为前缀匹配，覆盖三级下钻）。
- * 窄屏（<1024px）由 CSS 收成 56px 图标栏，label 隐藏，title/aria-label 保留可读性。
+ *
+ * - 点击回跳：已在本入口内时指向当前路径（不会把用户拉回列表），
+ *   否则指向该入口最后停留的路径；记忆失效（产品/项目被删）时
+ *   由页面自身的 404 回退负责，最终收敛到入口列表。
+ * - 高亮：只看当前 pathname 的前缀，与“记忆停在哪”无关。
+ *   因此用 Link + 字符串 className + 手动 aria-current：
+ *   NavLink 会用自身 isActive 覆盖 aria-current 并自动追加 active 类，
+ *   而 isActive 又是根据 `to`（可能来自记忆）算的，正好是要避免的耦合。
+ * - 窄屏（<1024px）由 CSS 收成 56px 图标栏，label 隐藏，title/aria-label 保留可读性。
  */
 export function Sidebar() {
+  const { pathname } = useLocation()
+
   return (
     <aside className="sidebar" aria-label="主导航">
       <nav className="sidebar-nav">
-        {items.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            title={item.label}
-            aria-label={item.label}
-            className={({ isActive }) => (isActive ? 'sidebar-link active' : 'sidebar-link')}
-          >
-            <span className="sidebar-icon">{item.icon}</span>
-            <span className="sidebar-label">{item.label}</span>
-          </NavLink>
-        ))}
+        {items.map((item) => {
+          const active = pathname === item.to || pathname.startsWith(`${item.to}/`)
+          return (
+            <Link
+              key={item.to}
+              to={active ? pathname : recallMenuPath(item.to, item.to)}
+              title={item.label}
+              aria-label={item.label}
+              aria-current={active ? 'page' : undefined}
+              className={active ? 'sidebar-link active' : 'sidebar-link'}
+            >
+              <span className="sidebar-icon">{item.icon}</span>
+              <span className="sidebar-label">{item.label}</span>
+            </Link>
+          )
+        })}
       </nav>
     </aside>
   )

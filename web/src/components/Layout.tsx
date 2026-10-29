@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
+import { rememberMenuPath } from '../lib/menuMemory'
 import { Breadcrumbs } from './Breadcrumbs'
 import { Drawer } from './Drawer'
 import { DrawerContext, DrawerTitleContext, type DrawerContent } from './DrawerContext'
@@ -16,8 +17,10 @@ export function Layout() {
   }, [])
 
   // 路由切换时收起抽屉，避免详情内容与页面层级不一致。
+  // 同时记录侧边栏入口的最后停留路径，方便从别处一键回到原层级。
   useEffect(() => {
     setDrawer(null)
+    rememberMenuPath(location.pathname)
   }, [location.pathname])
 
   return (

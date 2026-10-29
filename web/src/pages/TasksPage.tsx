@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { getProject, listTasks } from '../api/client'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { ApiError, getProject, listTasks } from '../api/client'
 import type { Task, TaskDecision } from '../api/types'
 import { itemsOf } from '../api/types'
 import { useDrawer } from '../components/DrawerContext'
@@ -25,6 +25,7 @@ import {
  * 按状态提供验收/返工（待验收）与重排/放弃（已失败）按钮。
  */
 export function TasksPage() {
+  const navigate = useNavigate()
   const openDrawer = useDrawer()
   const { productId = '', projectId = '' } = useParams()
   const [showEmpty, setShowEmpty] = useState(false)
@@ -44,6 +45,14 @@ export function TasksPage() {
 
   const tasks = itemsOf(data?.tasks)
   const project = data?.project
+
+  // 记忆里的项目（或它所属的产品）已被删除时后端返回 404：回项目列表。
+  // 若产品也没了，ProjectsPage 会再因 404 回产品列表，整条回退链单向向上、不会来回震荡。
+  useEffect(() => {
+    if (error instanceof ApiError && error.status === 404) {
+      navigate(`/products/${encodeURIComponent(productId)}/projects`, { replace: true })
+    }
+  }, [error, navigate, productId])
 
   // 执行者在线状态单独轮询：worker 拉取失败不影响看板本身。
   // 只查本页任务涉及的 worker；首页 200 条未命中的再逐个补查（见 useWorkerPresence）。
