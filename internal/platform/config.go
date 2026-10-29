@@ -48,7 +48,8 @@ type Config struct {
 	// metadata document attached to a worker registration.
 	WorkerMetadataMaxBytes int64
 	// WorkerRetention is how long state of workers that stopped reporting is
-	// kept before it may be pruned.
+	// kept before it may be pruned. It must be greater than WorkerTTL so a
+	// worker row is never deleted before the worker is considered offline.
 	WorkerRetention time.Duration
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string
@@ -70,7 +71,7 @@ func DefaultConfig() Config {
 		WorkerTTL:              45 * time.Second,
 		HeartbeatInterval:      15 * time.Second,
 		WorkerMetadataMaxBytes: 8192,
-		WorkerRetention:        168 * time.Hour,
+		WorkerRetention:        1 * time.Hour,
 		LogLevel:               "info",
 	}
 }
@@ -257,8 +258,8 @@ func (c *Config) normalize() error {
 	if c.WorkerMetadataMaxBytes <= 0 {
 		return fmt.Errorf("worker_metadata_max_bytes: must be positive, got %d", c.WorkerMetadataMaxBytes)
 	}
-	if c.WorkerRetention <= 0 {
-		return fmt.Errorf("worker_retention: must be positive, got %s", c.WorkerRetention)
+	if c.WorkerRetention <= c.WorkerTTL {
+		return fmt.Errorf("worker_retention: must be greater than worker_ttl (%s), got %s", c.WorkerTTL, c.WorkerRetention)
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":

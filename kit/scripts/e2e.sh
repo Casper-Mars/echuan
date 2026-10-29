@@ -755,7 +755,7 @@ while :; do
       break
     fi
   elif [ "$HTTP_CODE" = "404" ]; then
-    fail "worker 在判定 offline 之前就被保留期清理了（worker_retention 默认 168h，不应发生）"
+    fail "worker 在判定 offline 之前就被保留期清理了（应满足 worker_retention > worker_ttl）"
   else
     fail "轮询 worker 详情失败"
   fi

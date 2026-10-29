@@ -25,8 +25,8 @@ const DefaultReclaimInterval = 30 * time.Second
 const defaultLeaseTTL = 90 * time.Second
 
 // defaultWorkerRetention mirrors platform.DefaultConfig().WorkerRetention so a
-// reclaimer built without configuration still keeps the documented 7 days.
-const defaultWorkerRetention = 168 * time.Hour
+// reclaimer built without configuration still keeps the documented 1 hour.
+const defaultWorkerRetention = 1 * time.Hour
 
 // leaseTimeLayout is the fixed-width UTC layout of tasks.lease_until.
 //
@@ -526,7 +526,7 @@ func (r *Reclaimer) Interval() time.Duration { return r.interval }
 
 // SetWorkerRetention sets how long an offline worker that holds no card is
 // kept before the maintenance sweep deletes its row. A non-positive value
-// falls back to the 168h default, mirroring the configuration validation.
+// falls back to the 1h default, mirroring the configuration validation.
 // It is meant to be called during wiring, before Run starts.
 func (r *Reclaimer) SetWorkerRetention(d time.Duration) {
 	if d <= 0 {
@@ -663,10 +663,15 @@ func (r *Reclaimer) sweep(ctx context.Context) {
 	stats, err := r.maintain(ctx, r.clock.Now().UTC())
 	switch {
 	case err == nil:
-		if stats.Dangling > 0 || stats.Pruned > 0 {
-			r.logger.Debug("worker maintenance sweep finished",
-				"dangling_cleared", stats.Dangling,
-				"pruned", stats.Pruned,
+		if stats.Pruned > 0 {
+			r.logger.Info("worker registry pruned",
+				"count", stats.Pruned,
+				"retention", r.workerRetention.String(),
+			)
+		}
+		if stats.Dangling > 0 {
+			r.logger.Debug("worker maintenance cleared dangling pointers",
+				"count", stats.Dangling,
 			)
 		}
 	case errors.Is(err, context.Canceled), errors.Is(err, store.ErrClosed):
