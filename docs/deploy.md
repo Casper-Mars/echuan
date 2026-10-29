@@ -56,7 +56,7 @@
 - Docker 24+（含 Compose v2）。验证：`docker compose version`
 - 可用端口 `8720`（可用 `.env` 的 `ECHUAN_PORT` 覆盖）
 - 备份/恢复脚本依赖：`bash`、`rsync`、`curl`、`sqlite3`（macOS 自带；宿主机没有时备份脚本会回退到容器内 `sqlite3`）
-- 首次构建需要访问 Docker Hub、npm registry、Go module proxy
+- 首次构建需要访问 Docker Hub、npm registry、Go module proxy（国内网络建议先看第 3.5 节）
 
 ---
 
@@ -103,7 +103,7 @@ mkdir -p "${ECHUAN_DATA_DIR:-$HOME/echuan-data}"
 ### 3.2 构建并启动
 
 ```bash
-make docker-build     # 构建镜像，收尾自动清理 build cache / 悬空镜像
+make docker-build     # 构建镜像，收尾自动清理 build cache / 悬空镜像（全局操作，见 3.4）
 make docker-up        # docker compose up -d
 ```
 
@@ -128,6 +128,26 @@ docker exec echuan id                      # uid=10001 gid=10001
 
 `docker compose ps` 的 `STATUS` 应显示 `Up (healthy)`。
 
+> **代理环境说明**：Docker Desktop 会把 `~/.docker/config.json` 里的 `proxies` 注入**每个容器**
+> （`HTTP_PROXY/HTTPS_PROXY/ALL_PROXY` 及小写变体，本机还会自动附带一份含 `127.0.0.1` 的 `NO_PROXY`）。
+> busybox 的 `wget` 会读 `http_proxy` 并把 `127.0.0.1` 的请求也发给代理，且**完全不认 `NO_PROXY`**，
+> 结果代理返回 `502 Bad Gateway`，探针连败直到 `FailingStreak` 超限，容器长期显示 `unhealthy`——
+> 而应用本身是好的。镜像 `HEALTHCHECK` 与 compose `healthcheck.test` 都已改为在执行前用
+> `env -u` 剥离六个代理变量，正常情况下不会再复现。
+>
+> 若**仍然**看到 `unhealthy`，按下面顺序自查（不要先怀疑应用）：
+>
+> ```bash
+> docker inspect echuan --format '{{json .State.Health.Log}}' | jq '.[-1]'   # 探针的真实报错
+> docker exec echuan sh -c 'wget -q -O /dev/null http://127.0.0.1:8720/readyz; echo $?'  # 带代理（应为 1/502）
+> docker exec echuan sh -c 'env -u http_proxy -u https_proxy -u all_proxy \
+>   -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY wget -q -O /dev/null http://127.0.0.1:8720/readyz; echo $?'  # 剥离后（应为 0）
+> ```
+>
+> 剥离后仍失败，才是应用/数据目录/迁移的问题（看 `/readyz` 的 `checks` 与容器日志）。
+> 另外若宿主用第三方工具以非标准变量名注入代理、或有别的 compose override 覆盖了 `healthcheck`，
+> 也可能绕过上面的处理；以 `docker inspect` 里的 `Config.Healthcheck` 为准。
+
 ### 3.4 构建清理
 
 `make docker-build` 在构建成功后自动执行：
@@ -137,9 +157,136 @@ docker builder prune -f    # 清空 BuildKit 构建缓存
 docker image prune -f      # 清空悬空镜像（Docker 会保留仍被容器引用的镜像）
 ```
 
-构建缓存是全局的；清理后下一次构建会变慢（Go 依赖会重新下载）。日常开发可只用 `docker compose build`，发版/交付前再跑 `make docker-build`。
+> ⚠️ 这两条都是**全局**操作，影响同一台机器上的**所有**项目，不只 echuan：
+> - `docker builder prune -f` 清空的是整个 Docker daemon 的 BuildKit 缓存，其他项目的构建缓存一并消失；
+> - `docker image prune -f` 删除所有项目的悬空镜像（仍被容器引用的镜像会被保留，所以正在跑的服务不受影响）。
+>
+> 因此**日常开发不要跑 `make docker-build`**，用 `docker compose build`（保留缓存）即可；
+> 只有发版/交付需要“干净体积/干净缓存”时再执行。构建缓存被清后下一次构建会明显变慢（Go module、npm 包需重新下载）。
 
 构建期 Go module 默认走 `goproxy.cn`（`go.sum` 仍校验完整性），可用 `.env` 的 `DOCKER_BUILD_GOPROXY` 覆盖。
+
+### 3.5 国内网络构建（依赖源加速）
+
+镜像构建会从四个地方下载：基础镜像（Docker Hub）、npm 包、apk 包、Go module。
+默认值已经指向国内镜像，无需任何配置即可加速；全部源都可以用 build-arg 覆盖。
+
+| 依赖 | Dockerfile ARG | `.env` 变量 | 默认值 |
+|------|----------------|-------------|--------|
+| npm / pnpm registry | `NPM_REGISTRY` | `DOCKER_BUILD_NPM_REGISTRY` | `https://registry.npmmirror.com` |
+| apk 包 | `APK_MIRROR` | `DOCKER_BUILD_APK_MIRROR` | `mirrors.aliyun.com` |
+| Go module | `GOPROXY` | `DOCKER_BUILD_GOPROXY` | `https://goproxy.cn,https://proxy.golang.org,direct` |
+| 基础镜像 | `IMAGE_MIRROR` | `DOCKER_BUILD_IMAGE_MIRROR` | 空（Docker Hub 官方） |
+
+实现要点：
+
+- `NPM_REGISTRY` 作用于 `npm install -g pnpm`（`--registry`）、写入 `/root/.npmrc`
+  （`npm config set registry` 写入），并作为 `pnpm install --registry` 的显式参数。
+  实测 pnpm 11 不再读 `npm_config_registry` 环境变量，所以不能只靠 `ENV`。
+- `APK_MIRROR` 在 `apk add` 之前用 `sed` 改写 `/etc/apk/repositories`；改写后仍残留
+  `dl-cdn.alpinelinux.org` 会直接报错中止构建，不会静默回落到慢源。
+- `IMAGE_MIRROR` 是仓库前缀，镜像名变为 `<前缀><镜像名>`。默认留空是有意为之：
+  镜像名不带域名时才能命中 Docker daemon 的 `registry-mirrors` 加速器；显式带域名后加速器不再参与。
+- pnpm store、go module、go build 三处使用 BuildKit cache mount，重复构建不会重新下载/编译。
+
+常用组合：
+
+```bash
+# 日常：直接用 compose 构建（保留构建缓存，默认已经是国内镜像）
+docker compose build
+
+# 发版/交付：make 目标会在构建后清空 build cache（下一次回到冷启动）
+make docker-build
+
+# 显式指定
+DOCKER_BUILD_NPM_REGISTRY=https://registry.npmmirror.com \
+DOCKER_BUILD_APK_MIRROR=mirrors.tuna.tsinghua.edu.cn \
+docker compose build
+
+# 基础镜像也换镜像站（注意 library/ 前缀）
+docker build --build-arg IMAGE_MIRROR=dockerproxy.net/library/ -t echuan:local .
+```
+
+**切回官方源**（排查“是不是镜像站导致的问题”时用）：
+
+> ⚠️ **前提：该组合需要国际网络，或已给构建配好代理。**
+> 国内直连 `registry.npmjs.org` 实测约 30–45s 后连接被重置（busybox wget 报 `connection closed prematurely`，退出码 1）——这只能说明“官方源在这里不通”，
+> 不能证明镜像站有问题，反而会让排查变量变多。没有国际网络时不要整组切。
+>
+> 整组切换前先确认代理链路真的通（返回 0 再继续）：
+>
+> ```bash
+> docker run --rm alpine:3.20 sh -c \
+>   'wget -T 20 -q -O /dev/null https://registry.npmjs.org/pnpm; echo "exit=$?"'
+> ```
+>
+> **只想验证“故障与某个镜像站无关”时，更可行的是单变量替换**：一次只动一项，其余保持默认。
+>
+> ```bash
+> # 例 1：只把 apk 源切回官方源（apk 包小、官方源在国内通常还能通）
+> docker build --build-arg APK_MIRROR= -t echuan:local .
+>
+> # 例 2：只换 apk 镜像站（阿里云 → 清华），验证是不是某一家镜像站的问题
+> docker build --build-arg APK_MIRROR=mirrors.tuna.tsinghua.edu.cn -t echuan:local .
+>
+> # 例 3：只换 Go 代理，验证 goproxy.cn 是否异常
+> docker build --build-arg GOPROXY=https://goproxy.io,direct -t echuan:local .
+> ```
+>
+> 有国际网络/代理时，才用下面的整组切换：
+
+```bash
+docker build \
+  --build-arg NPM_REGISTRY=https://registry.npmjs.org \
+  --build-arg APK_MIRROR= \
+  --build-arg GOPROXY=https://proxy.golang.org,direct \
+  --build-arg IMAGE_MIRROR= \
+  -t echuan:local .
+```
+
+或写进 `.env`（compose 会自动透传）：
+
+```ini
+DOCKER_BUILD_NPM_REGISTRY=https://registry.npmjs.org
+DOCKER_BUILD_APK_MIRROR=
+DOCKER_BUILD_GOPROXY=https://proxy.golang.org,direct
+DOCKER_BUILD_IMAGE_MIRROR=
+```
+
+> `APK_MIRROR` 传空即保持基础镜像自带的 `dl-cdn.alpinelinux.org`。
+> 国内的 tuna（`mirrors.tuna.tsinghua.edu.cn`）可替换 `mirrors.aliyun.com`。
+> 注意：`make docker-build` 构建成功后会 `docker builder prune -f`，这是**全局**操作，
+> 会清掉同机所有项目的构建缓存，下一次构建回到冷启动速度。只是本机重跑、想保留缓存时请直接 `docker compose build`。
+
+### 3.6 构建耗时与「冷/热」缓存
+
+`--no-cache` 与 `docker builder prune` 不是一回事，别混用：
+
+| 操作 | 效果 |
+|------|------|
+| `--no-cache` / 改 `--build-arg` | **只让层失效重跑**；pnpm store / `go mod` / `go build` 三处 **cache mount 仍然命中** |
+| `docker builder prune -f` | 连 cache mount 一起清空，但**全局生效**（同机其他项目遭殃） |
+
+实测参考（macOS arm64 / Docker 27.4，本仓库）：
+
+| 场景 | 耗时 | 说明 |
+|------|------|------|
+| 全缓存命中（仅改 `VERSION`/`COMMIT`） | 数秒 | 只重跑 COPY / build 层 |
+| `--no-cache`（cache mount 仍在） | **约 26s** | 属**半冷**：`go mod download` 仅 1.8s，因为 modcache 是热的 |
+| 真冷启动（空 pnpm store + 空 modcache + 空 go-build） | 明显更久 | 需重新下载全部 npm 包与 Go module，通常是分钟级 |
+
+> 所以「`--no-cache` 只花了 26s」并不代表冷启动很快，**它压根没清 cache mount**。
+
+需要测**真冷启动**又不想影响同机其他项目时，用一个独立的 buildx builder（它有自己的缓存存储，
+删掉它不影响默认 daemon 的缓存）：
+
+```bash
+docker buildx create --name echuan-cold --driver docker-container --use
+docker buildx build -t echuan:cold --load .     # 这个 builder 首次构建 ≈ 真冷启动
+docker buildx rm echuan-cold                    # 只清掉这个 builder 的缓存
+```
+
+> 不要为了「测冷启动」去跑 `docker builder prune -f`——它清的是全局缓存，会影响同机其他项目。
 
 ---
 
@@ -252,6 +399,7 @@ scripts/restore.sh "$HOME/echuan-backups/echuan-20261027-140000"
 
 ```bash
 # 1. 拉取/切换代码后重新构建（版本号来自 git describe）
+#    注意：make docker-build 收尾的 builder/image prune 是全局操作，见 3.4
 make docker-build
 
 # 2. 先备份

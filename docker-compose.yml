@@ -17,7 +17,15 @@ services:
       args:
         VERSION: ${ECHUAN_VERSION:-dev}
         COMMIT: ${ECHUAN_COMMIT:-none}
+        # 构建期依赖源（默认值即国内镜像；切回官方见 docs/deploy.md 第 3.5 节）。
         GOPROXY: ${DOCKER_BUILD_GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}
+        NPM_REGISTRY: ${DOCKER_BUILD_NPM_REGISTRY:-https://registry.npmmirror.com}
+        APK_MIRROR: ${DOCKER_BUILD_APK_MIRROR:-mirrors.aliyun.com}
+        # 基础镜像仓库前缀，默认空 = Docker Hub 官方镜像（可命中 daemon 加速器）。
+        IMAGE_MIRROR: ${DOCKER_BUILD_IMAGE_MIRROR:-}
+        NODE_IMAGE: ${DOCKER_BUILD_NODE_IMAGE:-node:22-alpine}
+        GO_IMAGE: ${DOCKER_BUILD_GO_IMAGE:-golang:1.26-alpine}
+        RUNTIME_IMAGE: ${DOCKER_BUILD_RUNTIME_IMAGE:-alpine:3.20}
         # Docker Desktop 会把全局代理注入构建容器。默认清空（直连），
         # 需要代理的环境在 .env 里设置 DOCKER_BUILD_*_PROXY。
         HTTP_PROXY: ${DOCKER_BUILD_HTTP_PROXY:-}
@@ -53,8 +61,30 @@ services:
         max-size: "10m"
         max-file: "3"
 
+    # 探针前用 env -u 剥离代理变量：Docker Desktop 会把宿主代理注入容器，
+    # busybox wget 走代理且不认 NO_PROXY，会把 127.0.0.1 的健康检查打成 502。
+    # exec 形式直接调 env（不经 shell），与 Dockerfile 的 HEALTHCHECK 保持一致。
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8720/readyz"]
+      test:
+        - CMD
+        - env
+        - -u
+        - HTTP_PROXY
+        - -u
+        - HTTPS_PROXY
+        - -u
+        - ALL_PROXY
+        - -u
+        - http_proxy
+        - -u
+        - https_proxy
+        - -u
+        - all_proxy
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1:8720/readyz
       interval: 10s
       timeout: 3s
       retries: 5
