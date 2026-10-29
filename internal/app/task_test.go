@@ -440,7 +440,7 @@ func TestDeleteTaskBranches(t *testing.T) {
 
 	// backlog + attempt 0: removable, and the dependency rows that touch it go
 	// with it in the same transaction.
-	if err := svc.DeleteTask(context.Background(), "APP-1-T0002"); err != nil {
+	if err := svc.DeleteTask(context.Background(), "APP-1-T0002", "qa"); err != nil {
 		t.Fatalf("DeleteTask(T0002): %v", err)
 	}
 	if _, err := svc.GetTask(context.Background(), "APP-1-T0002"); err == nil {
@@ -457,7 +457,7 @@ func TestDeleteTaskBranches(t *testing.T) {
 	leaseID := "lease-1"
 	future := "2999-01-01T00:00:00Z"
 	forceTaskState(t, e, first.Task.ID, domain.TaskInProgress, 1, &leaseID, &future, nil)
-	err := svc.DeleteTask(context.Background(), first.Task.ID)
+	err := svc.DeleteTask(context.Background(), first.Task.ID, "qa")
 	var conflict *domain.ConflictError
 	if !errors.As(err, &conflict) || !strings.Contains(conflict.Error(), "in_progress") {
 		t.Errorf("in_progress delete error = %v", err)
@@ -465,7 +465,7 @@ func TestDeleteTaskBranches(t *testing.T) {
 
 	// ready but claimed at least once: also 409, with the attempt history named.
 	forceTaskState(t, e, third.Task.ID, domain.TaskReady, 2, nil, nil, nil)
-	err = svc.DeleteTask(context.Background(), third.Task.ID)
+	err = svc.DeleteTask(context.Background(), third.Task.ID, "qa")
 	if !errors.As(err, &conflict) || !strings.Contains(conflict.Error(), "claimed") {
 		t.Errorf("claimed delete error = %v", err)
 	}
@@ -473,12 +473,12 @@ func TestDeleteTaskBranches(t *testing.T) {
 	// ready with attempt_count 0 is still not backlog: 409.
 	forced := mustCreateTask(t, svc, projectID, "四", "b", 0)
 	forceTaskState(t, e, forced.Task.ID, domain.TaskReady, 0, nil, nil, nil)
-	err = svc.DeleteTask(context.Background(), forced.Task.ID)
+	err = svc.DeleteTask(context.Background(), forced.Task.ID, "qa")
 	if !errors.As(err, &conflict) {
 		t.Errorf("ready delete error = %v, want conflict", err)
 	}
 
-	if err := svc.DeleteTask(context.Background(), "APP-1-T0404"); err == nil {
+	if err := svc.DeleteTask(context.Background(), "APP-1-T0404", "qa"); err == nil {
 		t.Error("missing task delete error = nil")
 	} else {
 		var notFound *domain.NotFoundError

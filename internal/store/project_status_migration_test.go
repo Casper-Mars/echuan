@@ -121,8 +121,8 @@ func TestProjectStatusRangeMigrationPreservesData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrateFS(0005): %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("applied = %d, want 1 (0005 only)", applied)
+	if applied != 2 {
+		t.Fatalf("applied = %d, want 2 (0005 + 0006)", applied)
 	}
 	if err := st.OpenReadPool(ctx); err != nil {
 		t.Fatalf("OpenReadPool: %v", err)
@@ -218,7 +218,7 @@ func TestProjectStatusRangeMigrationPreservesData(t *testing.T) {
 
 	if version, err := st.MigrationVersion(ctx); err != nil {
 		t.Fatalf("MigrationVersion after 0005: %v", err)
-	} else if version != 5 {
-		t.Errorf("user_version = %d, want 5", version)
+	} else if version != 6 {
+		t.Errorf("user_version = %d, want 6", version)
 	}
 }
