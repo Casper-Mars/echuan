@@ -67,19 +67,23 @@ type taskStatsResponse struct {
 
 // projectResponse is the wire representation of a project.
 type projectResponse struct {
-	ID         string            `json:"id"`
-	ProjectID  string            `json:"project_id"`
-	ProductID  string            `json:"product_id"`
-	SeqNo      int               `json:"seq_no"`
-	Title      string            `json:"title"`
-	Status     int               `json:"status"`
-	StatusName string            `json:"status_name"`
-	Reason     *string           `json:"reason"`
-	LastActor  *string           `json:"last_actor"`
-	Version    int               `json:"version"`
-	TaskStats  taskStatsResponse `json:"task_stats"`
-	CreateTime string            `json:"create_time"`
-	UpdateTime string            `json:"update_time"`
+	ID         string  `json:"id"`
+	ProjectID  string  `json:"project_id"`
+	ProductID  string  `json:"product_id"`
+	SeqNo      int     `json:"seq_no"`
+	Title      string  `json:"title"`
+	Status     int     `json:"status"`
+	StatusName string  `json:"status_name"`
+	Reason     *string `json:"reason"`
+	LastActor  *string `json:"last_actor"`
+	Version    int     `json:"version"`
+	// TasksReviewReason and TasksReviewRejectedAt are the task-batch
+	// objection: both are null unless the last review was a reject.
+	TasksReviewReason     *string           `json:"tasks_review_reason"`
+	TasksReviewRejectedAt *string           `json:"tasks_review_rejected_at"`
+	TaskStats             taskStatsResponse `json:"task_stats"`
+	CreateTime            string            `json:"create_time"`
+	UpdateTime            string            `json:"update_time"`
 }
 
 // materialResponse is the metadata view of one material version; the bytes are
@@ -418,16 +422,18 @@ func toProjectResponse(p domain.Project) projectResponse {
 		reason = &value
 	}
 	return projectResponse{
-		ID:         p.ProjectID,
-		ProjectID:  p.ProjectID,
-		ProductID:  p.ProductID,
-		SeqNo:      p.SeqNo,
-		Title:      p.Title,
-		Status:     p.Status,
-		StatusName: domain.StatusName(p.Status),
-		Reason:     reason,
-		LastActor:  nullableString(p.LastActor),
-		Version:    p.Version,
+		ID:                    p.ProjectID,
+		ProjectID:             p.ProjectID,
+		ProductID:             p.ProductID,
+		SeqNo:                 p.SeqNo,
+		Title:                 p.Title,
+		Status:                p.Status,
+		StatusName:            domain.StatusName(p.Status),
+		Reason:                reason,
+		LastActor:             nullableString(p.LastActor),
+		Version:               p.Version,
+		TasksReviewReason:     nullableString(p.TasksReviewReason),
+		TasksReviewRejectedAt: nullableString(p.TasksReviewRejectedAt),
 		TaskStats: taskStatsResponse{
 			Total:    p.TaskStats.Total,
 			Done:     p.TaskStats.Done,

@@ -233,6 +233,8 @@ type Project struct {
 	Reason                string
 	LastActor             string
 	Version               int
+	TasksReviewReason     string
+	TasksReviewRejectedAt string
 	RequirementMaterialID int64
 	SpecMaterialID        int64
 	TaskStats             TaskStats

@@ -34,3 +34,4 @@ NNNN_<description>.sql
 | 3 | `0003_workers.sql` | workers 表（worker 心跳与任务占用）、`ix_workers_last_seen` 与部分唯一索引 `ux_workers_current_task` |
 | 4 | `0004_project_specs.sql` | 独立方案表 `project_specs`，旧 `projects.spec_material_id` 迁移为第 1 份方案 |
 | 5 | `0005_project_status_range.sql` | 重建 projects（九态状态机），`status` CHECK 放宽到 0–8 |
+| 6 | `0006_tasks_review_rejection.sql` | projects 新增 `tasks_review_reason` / `tasks_review_rejected_at`（任务批次驳回意见） |

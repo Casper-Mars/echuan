@@ -334,32 +334,53 @@ func (s *TaskService) settleProjectIfDone(ctx context.Context, tx *sql.Tx, proje
 	}, nil
 }
 
+// ReviewTasksInput is the use-case input of POST /v1/tasks/review.
+type ReviewTasksInput struct {
+	ProjectID string
+	Decision  domain.Decision
+	Reason    string
+	Actor     string
+}
+
 // ReviewTasksResult reports the outcome of one task-batch review.
+//
+// A rejection does not move the cards or the project, so ReadyTasks is 0 and
+// FromStatus == ToStatus; Reason/RejectedAt carry the objection that was just
+// recorded. An approval clears both and reports how many cards became ready.
 type ReviewTasksResult struct {
 	ProjectID  string
 	FromStatus int
 	ToStatus   int
+	Version    int
 	ReadyTasks int64
+	Reason     string
+	RejectedAt string
 }
 
-// ApproveTasks applies the human approval of a task batch (tech design §4.5):
-// every backlog card of a tasks_review project becomes ready and the project
-// moves to pending_done in the same transaction.
+// ReviewTasks applies one human verdict to a task batch (tech design §4.5/§5).
 //
-// The same action is legal on a pending_done project (6 → 6): cards added
-// while the project waits for its umbrella task land in backlog again, and
-// approving them makes them ready without moving the project — it leaves 6
-// only when the last card is settled (§5).
+// approve: every backlog card becomes ready through the task state machine and
+// the project moves 5 → 6 (or repeats 6 → 6 when cards were added after an
+// earlier approval) in the same transaction, which also clears any recorded
+// objection. A batch with no backlog card is a conflict and writes nothing.
 //
-// Rejection is intentionally not implemented here yet: it belongs to the
-// follow-up task and the HTTP layer answers it with 400 invalid_argument
-// instead of pretending the batch was rejected.
-func (s *TaskService) ApproveTasks(ctx context.Context, projectID, actor string) (ReviewTasksResult, error) {
-	projectID = strings.TrimSpace(projectID)
+// reject: the cards and the project status stay exactly where they are; only
+// tasks_review_reason / tasks_review_rejected_at (plus actor, version and
+// update_time) are written. The reason is mandatory. Repeating the reject
+// overwrites the previous objection rather than appending to it.
+func (s *TaskService) ReviewTasks(ctx context.Context, in ReviewTasksInput) (ReviewTasksResult, error) {
+	projectID := strings.TrimSpace(in.ProjectID)
 	if projectID == "" {
 		return ReviewTasksResult{}, invalidField("project_id", "is required")
 	}
-	actor = actorOrDefault(actor)
+	if !in.Decision.Valid() {
+		return ReviewTasksResult{}, invalidField("decision", "must be approve or reject")
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if in.Decision == domain.DecisionReject && reason == "" {
+		return ReviewTasksResult{}, invalidField("reason", "is required when decision is reject")
+	}
+	actor := actorOrDefault(in.Actor)
 
 	var result ReviewTasksResult
 	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
@@ -370,12 +391,48 @@ func (s *TaskService) ApproveTasks(ctx context.Context, projectID, actor string)
 			}
 			return err
 		}
+
+		updateTime := formatTimestamp(s.nextTimestamp(project.UpdateTime))
+		if in.Decision == domain.DecisionReject {
+			// Rejection is only meaningful while the batch is reviewable. The
+			// status guard runs before any write so a wrong-state call leaves
+			// the project completely untouched.
+			if project.Status != domain.StatusTasksReview && project.Status != domain.StatusPendingDone {
+				return &domain.InvalidStateError{Reason: fmt.Sprintf(
+					"project %q is in status %s; only tasks_review or pending_done batches can be rejected",
+					project.ProjectID, domain.StatusName(project.Status))}
+			}
+
+			affected, err := store.SetTasksReviewRejection(ctx, tx, project.ID, project.Version,
+				reason, updateTime, actor, updateTime)
+			if err != nil {
+				return err
+			}
+			if affected == 0 {
+				fresh, readErr := store.GetProjectByProjectID(ctx, tx, project.ProjectID)
+				if readErr != nil {
+					return readErr
+				}
+				return &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
+			}
+
+			result = ReviewTasksResult{
+				ProjectID:  project.ProjectID,
+				FromStatus: project.Status,
+				ToStatus:   project.Status,
+				Version:    project.Version + 1,
+				ReadyTasks: 0,
+				Reason:     reason,
+				RejectedAt: updateTime,
+			}
+			return nil
+		}
+
 		next, err := domain.ProjectNextStatus(project.Status, domain.ProjectActionReviewTasks, domain.DecisionApprove)
 		if err != nil {
 			return err
 		}
 
-		updateTime := formatTimestamp(s.nextTimestamp(project.UpdateTime))
 		ready, err := store.SetTasksReadyByProject(ctx, tx, project.ID, actor, updateTime)
 		if err != nil {
 			return err
@@ -385,8 +442,9 @@ func (s *TaskService) ApproveTasks(ctx context.Context, projectID, actor string)
 				"project %q has no backlog task to approve", project.ProjectID)}
 		}
 
-		// An approval clears the rejection objection that produced this round.
-		affected, err := store.TransitionProject(ctx, tx, project.ID,
+		// One statement both moves the gate and drops the objection, so an
+		// approval advances the project version exactly once.
+		affected, err := store.TransitionProjectClearTasksReview(ctx, tx, project.ID,
 			project.Status, project.Version, next, nil, actor, updateTime)
 		if err != nil {
 			return err
@@ -403,6 +461,7 @@ func (s *TaskService) ApproveTasks(ctx context.Context, projectID, actor string)
 			ProjectID:  project.ProjectID,
 			FromStatus: project.Status,
 			ToStatus:   next,
+			Version:    project.Version + 1,
 			ReadyTasks: ready,
 		}
 		return nil
@@ -411,6 +470,16 @@ func (s *TaskService) ApproveTasks(ctx context.Context, projectID, actor string)
 		return ReviewTasksResult{}, err
 	}
 	return result, nil
+}
+
+// ApproveTasks is the approve-only shorthand kept for the internal callers
+// (plan flow and existing tests). The HTTP layer uses ReviewTasks.
+func (s *TaskService) ApproveTasks(ctx context.Context, projectID, actor string) (ReviewTasksResult, error) {
+	return s.ReviewTasks(ctx, ReviewTasksInput{
+		ProjectID: projectID,
+		Decision:  domain.DecisionApprove,
+		Actor:     actor,
+	})
 }
 
 // taskDomainFromView converts the task read view back into the domain entity.

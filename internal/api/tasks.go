@@ -285,7 +285,7 @@ func (h *tasksHandler) deleteTask(w http.ResponseWriter, r *http.Request) {
 	}
 	WithSubject(r.Context(), taskID)
 
-	if err := h.service.DeleteTask(r.Context(), taskID); err != nil {
+	if err := h.service.DeleteTask(r.Context(), taskID, ActorFromContext(r.Context())); err != nil {
 		writeDomainError(w, r, h.logger, err)
 		return
 	}

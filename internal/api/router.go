@@ -120,7 +120,7 @@ func Routes() []Route {
 //	POST /v1/tasks/heartbeat         renew the lease of one task (?id=)
 //	POST /v1/tasks/report            submit a report and complete the task (?id=)
 //	POST /v1/tasks/decide            accept/rework/retry/abandon a task (?id=, If-Match)
-//	POST /v1/tasks/review            approve a task batch, backlog → ready (?project_id=)
+//	POST /v1/tasks/review            approve/reject a task batch (?project_id=&decision=)
 //	POST /v1/workers/heartbeat       register a worker, refresh it and dispatch work
 //	GET /v1/workers                  list workers (or fetch one with ?id=)
 //	GET /v1/materials                download a material object (?id=)

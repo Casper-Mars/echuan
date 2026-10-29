@@ -523,6 +523,8 @@ func projectFromRow(row store.Project) (domain.Project, error) {
 		Reason:                stringValue(row.Reason),
 		LastActor:             stringValue(row.LastActor),
 		Version:               row.Version,
+		TasksReviewReason:     stringValue(row.TasksReviewReason),
+		TasksReviewRejectedAt: stringValue(row.TasksReviewRejectedAt),
 		RequirementMaterialID: int64Value(row.RequirementMaterialID),
 		SpecMaterialID:        int64Value(row.SpecMaterialID),
 		TaskStats: domain.TaskStats{

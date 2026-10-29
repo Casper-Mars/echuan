@@ -13,8 +13,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(FS): %v", err)
 	}
-	if len(list) != 5 {
-		t.Fatalf("migrations = %d, want 5", len(list))
+	if len(list) != 6 {
+		t.Fatalf("migrations = %d, want 6", len(list))
 	}
 	if list[0].Version != 1 || list[0].Name != "0001_init.sql" {
 		t.Errorf("migration = %d/%s, want 1/0001_init.sql", list[0].Version, list[0].Name)
@@ -27,6 +27,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if list[3].Version != 4 || list[3].Name != "0004_project_specs.sql" {
 		t.Errorf("migration = %d/%s, want 4/0004_project_specs.sql", list[3].Version, list[3].Name)
+	}
+	if list[5].Version != 6 || list[5].Name != "0006_tasks_review_rejection.sql" {
+		t.Errorf("migration = %d/%s, want 6/0006_tasks_review_rejection.sql", list[5].Version, list[5].Name)
 	}
 	if list[4].Version != 5 || list[4].Name != "0005_project_status_range.sql" {
 		t.Errorf("migration = %d/%s, want 5/0005_project_status_range.sql", list[4].Version, list[4].Name)
@@ -41,8 +44,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
 	}
-	if latest != 5 {
-		t.Errorf("latest = %d, want 5", latest)
+	if latest != 6 {
+		t.Errorf("latest = %d, want 6", latest)
 	}
 }
 
