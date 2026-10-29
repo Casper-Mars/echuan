@@ -733,8 +733,12 @@ func TestContractEndpoints(t *testing.T) {
 	e.call(http.MethodPost, "/v1/projects/specs?id="+multiID,
 		map[string]any{"body_md": "旧客户端修订第一份"}, nil, http.StatusOK)
 	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+multiID, nil, nil, http.StatusOK)
-	if excerpt := stringField(t, object(t, raw), "spec_excerpt"); !strings.Contains(excerpt, "旧客户端修订第一份") || !strings.Contains(excerpt, "后端独立正文") {
-		t.Errorf("legacy execution snapshot omitted a document: %s", excerpt)
+	// The detail carries only the spec metadata; the aggregate body is read
+	// back through the content-addressed materials channel.
+	specMaterialID := stringField(t, objectField(t, object(t, raw), "spec"), "material_id")
+	raw, _ = e.call(http.MethodGet, "/v1/materials?id="+specMaterialID, nil, nil, http.StatusOK)
+	if snapshot := string(raw); !strings.Contains(snapshot, "旧客户端修订第一份") || !strings.Contains(snapshot, "后端独立正文") {
+		t.Errorf("legacy execution snapshot omitted a document: %s", snapshot)
 	}
 	large := e.createDraftProject("APP", "方案包限额", "需求")
 	largeID := stringField(t, large, "project_id")

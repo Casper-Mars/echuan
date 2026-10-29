@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Casper-Mars/echuan/migrations"
 )
 
 // workersColumn is one row of PRAGMA table_info(workers).
@@ -159,9 +161,12 @@ func TestWorkersCurrentTaskUnique(t *testing.T) {
 	}
 }
 
-// TestWorkersMigrationIdempotent checks the runner applies 0003 exactly once:
-// the first Migrate on an empty database applies 3 migrations, the second
-// returns 0 and leaves user_version at 3.
+// TestWorkersMigrationIdempotent checks the runner applies every embedded
+// migration exactly once: the first Migrate on an empty database applies all of
+// them, the second returns 0 and leaves user_version at the newest version.
+//
+// Both numbers are derived from the embedded list so a new migration does not
+// leave a stale hardcoded expectation behind.
 func TestWorkersMigrationIdempotent(t *testing.T) {
 	st, err := Open(Config{Path: filepath.Join(t.TempDir(), "state.db")})
 	if err != nil {
@@ -170,12 +175,19 @@ func TestWorkersMigrationIdempotent(t *testing.T) {
 	defer st.Close()
 	ctx := context.Background()
 
+	embedded, err := migrations.Load(migrations.FS)
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	wantApplied := len(embedded)
+	wantVersion := embedded[len(embedded)-1].Version
+
 	applied, err := st.Migrate(ctx)
 	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if applied != 3 {
-		t.Errorf("first applied = %d, want 3", applied)
+	if applied != wantApplied {
+		t.Errorf("first applied = %d, want %d", applied, wantApplied)
 	}
 
 	applied, err = st.Migrate(ctx)
@@ -190,7 +202,7 @@ func TestWorkersMigrationIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 3 {
-		t.Errorf("user_version = %d, want 3", version)
+	if version != wantVersion {
+		t.Errorf("user_version = %d, want %d", version, wantVersion)
 	}
 }

@@ -178,9 +178,11 @@ func TestMigrateIsIdempotent(t *testing.T) {
 }
 
 // TestMigrate0002PreservesExistingProjects starts from a version-1 database
-// with real rows, applies the remaining embedded migrations (0002, 0003) and
-// checks that the new column is present and the existing project survived
-// untouched.
+// with real rows, applies every remaining embedded migration and checks that
+// the new column is present and the existing project survived untouched.
+//
+// The expected count and version are derived from the embedded migration list
+// so that adding a migration does not leave a stale hardcoded number behind.
 func TestMigrate0002PreservesExistingProjects(t *testing.T) {
 	st, err := Open(Config{Path: filepath.Join(t.TempDir(), "state.db")})
 	if err != nil {
@@ -220,15 +222,29 @@ func TestMigrate0002PreservesExistingProjects(t *testing.T) {
 		t.Fatalf("insert project: %v", err)
 	}
 
+	pending, err := migrations.Load(migrations.FS)
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	wantApplied, wantVersion := 0, 1
+	for _, m := range pending {
+		if m.Version > 1 {
+			wantApplied++
+		}
+		if m.Version > wantVersion {
+			wantVersion = m.Version
+		}
+	}
+
 	applied, err = st.Migrate(ctx)
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if applied != 2 {
-		t.Fatalf("applied = %d, want 2 (0002 and 0003)", applied)
+	if applied != wantApplied {
+		t.Fatalf("applied = %d, want %d (every migration after 0001)", applied, wantApplied)
 	}
-	if version, err := st.MigrationVersion(ctx); err != nil || version != 4 {
-		t.Fatalf("version = %d (%v), want 4", version, err)
+	if version, err := st.MigrationVersion(ctx); err != nil || version != wantVersion {
+		t.Fatalf("version = %d (%v), want %d", version, err, wantVersion)
 	}
 	if !schemaColumns(t, st, "projects")["last_actor"] {
 		t.Fatal("projects.last_actor missing after 0002")

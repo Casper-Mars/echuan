@@ -14,10 +14,6 @@ const (
 	// maxSpecTitleLen bounds a spec title in characters. It matches the project
 	// title bound so a spec written under a project name always fits.
 	maxSpecTitleLen = 200
-	// specExcerptRunes is how much of the current spec body the detail endpoint
-	// previews. It counts runes, not bytes, so a Chinese or emoji-heavy body is
-	// never cut in the middle of a UTF-8 sequence.
-	specExcerptRunes = 200
 )
 
 // SpecSubmission is the outcome of one POST /v1/projects/specs.
@@ -73,23 +69,4 @@ func validateSpecTitle(title *string) (string, []domain.FieldError) {
 		}}
 	}
 	return trimmed, nil
-}
-
-// excerptRunes returns the first limit runes of s.
-//
-// It walks the rune boundaries instead of converting the whole body to
-// []rune, so a material_max_bytes-sized body costs no extra allocation and the
-// cut can never land inside a multi-byte character.
-func excerptRunes(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	count := 0
-	for i := range s {
-		if count == limit {
-			return s[:i]
-		}
-		count++
-	}
-	return s
 }

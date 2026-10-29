@@ -54,8 +54,8 @@ func TestFullDeliveryFlowHTTP(t *testing.T) {
 	if detail.ProjectID != "APP-1" || detail.Status != domain.StatusDraft || detail.Version != 1 {
 		t.Fatalf("project = %s/%d/v%d, want APP-1/draft/v1", detail.ProjectID, detail.Status, detail.Version)
 	}
-	if detail.RequirementMD != requirementMD {
-		t.Errorf("requirement_md = %q, want byte-for-byte %q", detail.RequirementMD, requirementMD)
+	if detail.Requirement == nil || detail.Requirement.MaterialID == "" {
+		t.Errorf("requirement = %+v, want metadata with a material_id", detail.Requirement)
 	}
 	if detail.Requirement == nil || detail.Requirement.Kind != domain.MaterialKindRequirement ||
 		detail.Requirement.Version != 1 {

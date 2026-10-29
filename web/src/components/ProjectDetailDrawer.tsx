@@ -10,7 +10,6 @@ import {
   projectStatusLabel,
 } from '../lib/format'
 import { ErrorNotice, LoadingState } from './States'
-import { Markdown } from './Markdown'
 import { ProjectActions } from './ProjectActions'
 import { ProjectFormDialog } from './ProjectFormDialog'
 import { DrawerTitleContext } from './DrawerContext'
@@ -75,8 +74,9 @@ function ChainList({
 }
 
 /**
- * 项目详情抽屉：需求正文、方案当前版摘要与版本链、任务进度、
+ * 项目详情抽屉：需求/方案版本链、方案当前版元信息、任务进度、
  * reason / last_actor / update_time，以及立项/批准/驳回/取消动作。
+ * 正文不在详情里返回，需要时按 material_id 单独下载。
  * 自身 5s 轮询；编辑中的输入不会被覆盖（usePolling 的 isUserEditing 守卫）。
  */
 export function ProjectDetailDrawer({
@@ -181,11 +181,6 @@ export function ProjectDetailDrawer({
         </div>
       </section>
 
-      <section className="detail-section">
-        <h3>需求正文</h3>
-        <Markdown source={detail.requirement_md} empty="暂无需求正文" />
-      </section>
-
       <ChainList
         title="需求版本链"
         chain={requirementChain}
@@ -197,7 +192,7 @@ export function ProjectDetailDrawer({
           项目方案包摘要
           {detail.spec && <span className="muted">（第 {detail.spec.version} 版）</span>}
         </h3>
-        <Markdown source={detail.spec_excerpt} empty="暂无方案" />
+        {!detail.spec && <p className="muted">暂无方案</p>}
         {detail.spec && (
           <p className="download-line">
             <a className="link" href={materialDownloadUrl(detail.spec.material_id)} download>

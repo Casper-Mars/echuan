@@ -373,8 +373,9 @@ func (s *ProjectService) WriteRequirement(ctx context.Context, projectID string,
 }
 
 // detail loads everything the detail response needs: the project row, the
-// requirement body from the object store, the spec summary and the task
-// histogram. It works inside a write transaction (q = tx) and outside it.
+// requirement/spec metadata rows and the task histogram. It never reads the
+// object store, so the response stays constant-size regardless of document
+// length. It works inside a write transaction (q = tx) and outside it.
 func (s *ProjectService) detail(ctx context.Context, q store.Querier, projectPhysicalID int64) (domain.ProjectDetail, error) {
 	row, err := store.GetProjectByID(ctx, q, projectPhysicalID)
 	if err != nil {
@@ -403,12 +404,6 @@ func (s *ProjectService) detail(ctx context.Context, q store.Querier, projectPhy
 			return domain.ProjectDetail{}, err
 		}
 		detail.Requirement = &mapped
-
-		body, err := s.materials.Read(requirement)
-		if err != nil {
-			return domain.ProjectDetail{}, err
-		}
-		detail.RequirementMD = string(body)
 	}
 
 	if row.SpecMaterialID != nil {
@@ -421,16 +416,6 @@ func (s *ProjectService) detail(ctx context.Context, q store.Querier, projectPhy
 			return domain.ProjectDetail{}, err
 		}
 		detail.Spec = &mapped
-
-		// The excerpt is read from the object store rather than the row: the
-		// row carries metadata only. It is bounded (200 runes), so previewing a
-		// multi-megabyte spec stays a constant-size response field.
-		body, err := s.materials.Read(spec)
-		if err != nil {
-			return domain.ProjectDetail{}, err
-		}
-		excerpt := excerptRunes(string(body), specExcerptRunes)
-		detail.SpecExcerpt = &excerpt
 	}
 
 	return detail, nil
