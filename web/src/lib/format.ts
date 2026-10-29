@@ -35,6 +35,28 @@ export const TASK_COLUMNS: { status: number; label: string }[] = [
   { status: 7, label: '已取消' },
 ]
 
+/**
+ * 任务看板主列（状态 0-4）：0 为「待评审」且仅在非空时出现，
+ * 1-4 常驻，数量为 0 也展示列头与计数。
+ */
+export const TASK_BOARD_COLUMNS: { status: number; label: string }[] = [
+  { status: 0, label: '待评审' },
+  { status: 1, label: '待开发' },
+  { status: 2, label: '开发中' },
+  { status: 3, label: '待验收' },
+  { status: 4, label: '已完成' },
+]
+
+/**
+ * 附加列（已失败/阻塞/已取消）：仅非空时显示。
+ * 方案未提这三列，但重排/放弃入口挂在卡片上，保留可避免入口消失。
+ */
+export const TASK_BOARD_TRAILING_COLUMNS: { status: number; label: string }[] = [
+  { status: 5, label: '已失败' },
+  { status: 6, label: '阻塞' },
+  { status: 7, label: '已取消' },
+]
+
 export function projectStatusLabel(status: number): string {
   return PROJECT_STATUS[status] ?? `未知(${status})`
 }

@@ -12,9 +12,13 @@ import type {
   ProjectList,
   SpecDocument,
   Task,
+  TaskCreateRequest,
   TaskDecision,
   TaskDetail,
   TaskList,
+  TaskPatchRequest,
+  TaskReviewRequest,
+  TaskReviewResult,
   Worker,
   WorkerListResponse,
 } from './types'
@@ -243,6 +247,42 @@ export function listTasks(projectId: string, signal?: AbortSignal): Promise<Task
 
 export function getTask(id: string, signal?: AbortSignal): Promise<TaskDetail> {
   return request<TaskDetail>('/v1/tasks', { query: { id }, signal })
+}
+
+/** 在任务草稿/任务评审/待完成阶段新增一张卡。 */
+export function createTask(projectId: string, body: TaskCreateRequest): Promise<TaskDetail> {
+  return request<TaskDetail>('/v1/tasks', {
+    method: 'POST',
+    query: { project_id: projectId },
+    body,
+  })
+}
+
+/** 修改卡片的标题/正文/优先级；后端不校验 If-Match。 */
+export function updateTask(taskId: string, body: TaskPatchRequest): Promise<TaskDetail> {
+  return request<TaskDetail>('/v1/tasks', { method: 'PATCH', query: { id: taskId }, body })
+}
+
+/** 删除未领取的待办卡（204 无响应体）。 */
+export function deleteTask(taskId: string): Promise<void> {
+  return request<void>('/v1/tasks', { method: 'DELETE', query: { id: taskId } })
+}
+
+/**
+ * 任务批次评审：approve 把 backlog 卡置为 ready 并推进项目；
+ * reject 只记录驳回原因（必填），卡片与项目状态不变。
+ */
+export function reviewTasks(
+  projectId: string,
+  decision: 'approve' | 'reject',
+  reason?: string,
+): Promise<TaskReviewResult> {
+  const body: TaskReviewRequest = reason === undefined ? {} : { reason }
+  return request<TaskReviewResult>('/v1/tasks/review', {
+    method: 'POST',
+    query: { project_id: projectId, decision },
+    body,
+  })
 }
 
 /** 任务裁决；必须带 If-Match（version）。 */

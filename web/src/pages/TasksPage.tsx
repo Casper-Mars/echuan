@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ApiError, getProject, listTasks } from '../api/client'
+import { ApiError, deleteTask, getProject, listTasks } from '../api/client'
 import type { Task, TaskDecision } from '../api/types'
 import { itemsOf } from '../api/types'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useDrawer } from '../components/DrawerContext'
 import { TaskActionButtons, TaskActionDialogs } from '../components/TaskActions'
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer'
+import { TaskFormDialog } from '../components/TaskFormDialog'
+import { TaskReviewDialog } from '../components/TaskReviewDialog'
 import {
   EmptyState,
   ErrorNotice,
@@ -15,22 +18,31 @@ import {
 import { usePolling } from '../hooks/usePolling'
 import { useWorkerPresence } from '../hooks/useWorkerPresence'
 import {
-  TASK_COLUMNS,
+  TASK_BOARD_COLUMNS,
+  TASK_BOARD_TRAILING_COLUMNS,
+  formatDateTime,
   formatSince,
   projectStatusLabel,
 } from '../lib/format'
 
+/** 只有任务草稿(4)/任务评审(5)/待完成(6) 允许加卡。 */
+const ADD_TASK_STATUSES = new Set([4, 5, 6])
+
 /**
- * 任务看板：按 status 分列，卡片展示编号/标题/尝试次数/reason；
- * 按状态提供验收/返工（待验收）与重排/放弃（已失败）按钮。
+ * 任务看板：待评审(0) 非空时单独成列并带整批评审；
+ * 待开发/开发中/待验收/已完成四列常驻；已失败/阻塞/已取消仅非空显示。
+ * 卡片按状态提供验收/返工与重排/放弃入口。
  */
 export function TasksPage() {
   const navigate = useNavigate()
   const openDrawer = useDrawer()
   const { productId = '', projectId = '' } = useParams()
-  const [showEmpty, setShowEmpty] = useState(false)
   // 卡片会在列间移动；弹窗提升到页面层，避免决策过程中被卸载而丢失 reason。
   const [action, setAction] = useState<{ task: Task; decision: TaskDecision } | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState<Task | null>(null)
+  const [deleting, setDeleting] = useState<Task | null>(null)
+  const [review, setReview] = useState<'approve' | 'reject' | null>(null)
 
   const { data, error, loading, refreshing, lastUpdated, refresh } = usePolling(
     async (signal) => {
@@ -63,9 +75,20 @@ export function TasksPage() {
   const { presenceOf, known: workersKnown } = useWorkerPresence(executorIds)
 
   const done = tasks.filter((task) => task.status === 4).length
-  const columns = showEmpty
-    ? TASK_COLUMNS
-    : TASK_COLUMNS.filter((column) => tasks.some((task) => task.status === column.status))
+  const backlog = tasks.filter((task) => task.status === 0)
+  const reviewReason = project?.tasks_review_reason ?? null
+  const rejectedAt = project?.tasks_review_rejected_at ?? null
+  const canAddTask = project ? ADD_TASK_STATUSES.has(project.status) : false
+
+  // 待评审列：有卡才出现；四列常驻；附加三列非空才出现。
+  const columns = [
+    ...TASK_BOARD_COLUMNS.filter(
+      (column) => column.status !== 0 || backlog.length > 0,
+    ),
+    ...TASK_BOARD_TRAILING_COLUMNS.filter((column) =>
+      tasks.some((task) => task.status === column.status),
+    ),
+  ]
 
   return (
     <section className="page">
@@ -93,14 +116,19 @@ export function TasksPage() {
             error={error}
             onRefresh={refresh}
           />
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={showEmpty}
-              onChange={(event) => setShowEmpty(event.target.checked)}
-            />
-            显示空列
-          </label>
+          <button
+            type="button"
+            className="action action-primary"
+            onClick={() => setCreating(true)}
+            disabled={!canAddTask}
+            title={
+              canAddTask
+                ? undefined
+                : '仅任务草稿、任务评审、待完成阶段可以添加任务'
+            }
+          >
+            添加任务
+          </button>
         </div>
       </header>
 
@@ -110,20 +138,60 @@ export function TasksPage() {
       {!data && !loading && error && (
         <EmptyState title="任务加载失败" hint="页面会自动重试；也可以点击上方“重试”。" />
       )}
-      {data && tasks.length === 0 && (
-        <EmptyState title="暂无任务" hint="该项目的任务计划尚未生成。" />
-      )}
 
-      {tasks.length > 0 && (
+      {data && (
         <div className="board">
           {columns.map((column) => {
             const columnTasks = tasks.filter((task) => task.status === column.status)
+            const isReview = column.status === 0
             return (
-              <section className="board-column" key={column.status}>
+              <section
+                className={isReview ? 'board-column board-column-review' : 'board-column'}
+                key={column.status}
+              >
                 <header className="board-column-head">
                   <span>{column.label}</span>
                   <span className="count">{columnTasks.length}</span>
                 </header>
+
+                {isReview && (
+                  <>
+                    <div className="board-review-actions">
+                      <button
+                        type="button"
+                        className="action action-primary action-compact"
+                        onClick={() => setReview('approve')}
+                        disabled={columnTasks.length === 0}
+                      >
+                        全部通过
+                      </button>
+                      <button
+                        type="button"
+                        className="action action-danger action-compact"
+                        onClick={() => setReview('reject')}
+                        disabled={Boolean(reviewReason)}
+                        title={
+                          reviewReason
+                            ? '已驳回，修改任意一张卡后可再次驳回'
+                            : undefined
+                        }
+                      >
+                        全部驳回
+                      </button>
+                    </div>
+
+                    {reviewReason && (
+                      <div className="review-banner" role="status">
+                        <strong>任务清单已驳回：</strong>
+                        <span className="review-banner-reason">{reviewReason}</span>
+                        <span className="review-banner-meta">
+                          操作人 {project?.last_actor || '—'} · {formatDateTime(rejectedAt)}
+                        </span>
+                      </div>
+                    )}
+                  </>
+                )}
+
                 <div className="board-cards">
                   {columnTasks.map((task) => {
                     // 只有「拿到过 worker 数据」且「明确查到 offline」才告警；
@@ -185,6 +253,30 @@ export function TasksPage() {
                           </span>
                           <span>停留 {formatSince(task.update_time)}</span>
                         </footer>
+
+                        {isReview && (
+                          // 动卡即解锁：编辑/删除后后端清空驳回字段，提示条消失、驳回按钮恢复。
+                          <div
+                            className="board-card-admin"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              className="ghost ghost-mini"
+                              onClick={() => setEditing(task)}
+                            >
+                              编辑
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost ghost-mini"
+                              onClick={() => setDeleting(task)}
+                            >
+                              删除
+                            </button>
+                          </div>
+                        )}
+
                         <TaskActionButtons
                           task={task}
                           onAction={(decision) => setAction({ task, decision })}
@@ -206,6 +298,55 @@ export function TasksPage() {
           task={action.task}
           decision={action.decision}
           onClose={() => setAction(null)}
+          onChanged={refresh}
+        />
+      )}
+
+      {creating && (
+        <TaskFormDialog
+          mode="create"
+          projectId={projectId}
+          onClose={() => setCreating(false)}
+          onSaved={refresh}
+        />
+      )}
+
+      {editing && (
+        <TaskFormDialog
+          mode="edit"
+          projectId={projectId}
+          task={editing}
+          onClose={() => setEditing(null)}
+          onSaved={refresh}
+        />
+      )}
+
+      {deleting && (
+        <ConfirmDialog
+          title="删除任务"
+          message={
+            <>
+              确认删除任务 <span className="code">{deleting.task_id}</span>「{deleting.title}」？
+              删除后不可恢复。
+            </>
+          }
+          confirmLabel="确认删除"
+          danger
+          onClose={() => setDeleting(null)}
+          onConfirm={async () => {
+            await deleteTask(deleting.task_id)
+            refresh()
+          }}
+          onStale={refresh}
+        />
+      )}
+
+      {review && project && (
+        <TaskReviewDialog
+          project={project}
+          decision={review}
+          count={backlog.length}
+          onClose={() => setReview(null)}
           onChanged={refresh}
         />
       )}

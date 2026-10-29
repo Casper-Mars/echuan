@@ -57,6 +57,10 @@ export interface Project {
   status: number
   status_name: string
   reason: string | null
+  /** 任务批次最近一次驳回的原因；通过或改卡后后端清空。 */
+  tasks_review_reason: string | null
+  /** 上述驳回的落库时间。 */
+  tasks_review_rejected_at: string | null
   last_actor: string | null
   version: number
   task_stats: TaskStats
@@ -128,6 +132,37 @@ export interface TaskLease {
 export interface TaskDetail extends Task {
   report: Material | null
   lease: TaskLease | null
+}
+
+/** POST /v1/tasks 的请求体。 */
+export interface TaskCreateRequest {
+  title: string
+  body_md: string
+  priority?: number
+}
+
+/** PATCH /v1/tasks?id= 的请求体；只提交要修改的字段。 */
+export interface TaskPatchRequest {
+  title?: string
+  body_md?: string
+  priority?: number
+}
+
+/** POST /v1/tasks/review 的请求体；reject 时 reason 必填。 */
+export interface TaskReviewRequest {
+  reason?: string
+}
+
+/** POST /v1/tasks/review 的 200 响应。 */
+export interface TaskReviewResult {
+  project_id: string
+  from_status: number
+  status: number
+  status_name: string
+  version: number
+  ready_tasks: number
+  reason: string | null
+  rejected_at: string | null
 }
 
 /** 在线状态由服务端按 last_seen 与 worker_ttl 推导，不落库。 */
