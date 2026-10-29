@@ -495,6 +495,15 @@ curl -fsS -X POST "$BASE/v1/projects/requirement?id=APP-1" \
   -d '{"body_md":"# 需求 v2\n\n- 验证码 60 秒倒计时\n"}' | jq
 ```
 
+项目详情（`GET /v1/projects?id=`）只返回资料元信息，不返回正文；读需求正文用 `material_id` 走资料接口：
+
+```bash
+REQ_MATERIAL=$(curl -fsS "$BASE/v1/projects?id=APP-1" | jq -r '.requirement.material_id')
+curl -fsS "$BASE/v1/materials?id=$REQ_MATERIAL"
+```
+
+方案包同理：取 `.spec.material_id` 再请求 `/v1/materials`。详情响应与需求长度无关，可以直接轮询。
+
 ### 9.3 提交需求评审
 
 ```bash
