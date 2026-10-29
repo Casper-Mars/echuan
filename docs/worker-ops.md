@@ -23,11 +23,11 @@
 | `worker_ttl` | `ECHUAN_WORKER_TTL` | `45s` | 最后一次心跳后多久判定离线（presence 推导窗口） | **必须远大于 `heartbeat_interval`**；建议 ≥ 3×，否则 Worker 会被频繁误判 offline |
 | `heartbeat_interval` | `ECHUAN_HEARTBEAT_INTERVAL` | `15s` | 服务端建议 Worker 使用的心跳间隔 | 只通过响应下发，服务端不强制；Worker 不应硬编码 |
 | `worker_metadata_max_bytes` | `ECHUAN_WORKER_METADATA_MAX_BYTES` | `8192` | 注册/心跳 metadata 序列化后的最大字节数 | 超限返回 413；metadata 是整体替换，不是合并 |
-| `worker_retention` | `ECHUAN_WORKER_RETENTION` | `168h` | 离线且不持卡的 Worker 行保留多久后被删除 | **必须大于 `worker_ttl`**，否则行会在变为 offline 之前就被删掉；默认 7 天用于审计与排障 |
+| `worker_retention` | `ECHUAN_WORKER_RETENTION` | `1h` | 离线且不持卡的 Worker 行保留多久后被删除 | **必须大于 `worker_ttl`**，否则行会在变为 offline 之前就被删掉；默认 1 小时，需要更长审计窗口时按需调大 |
 | `material_max_bytes` | `ECHUAN_MATERIAL_MAX_BYTES` | `20971520` | 单个物料最大字节数（20 MiB） | 影响报告/规格上传 |
 | `log_level` | `ECHUAN_LOG_LEVEL` | `info` | `debug/info/warn/error` | 排查注册/派卡问题时用 `debug` |
 
-配置校验：所有时长必须为正；`worker_ttl`、`heartbeat_interval`、`worker_retention` 任一 ≤ 0 都会导致进程启动失败。`worker_ttl` 与 `heartbeat_interval` 的倍数关系当前不做强校验，需要部署方自行保证。
+配置校验：所有时长必须为正；`worker_ttl`、`heartbeat_interval`、`worker_retention` 任一 ≤ 0 都会导致进程启动失败。此外 `worker_retention` 必须严格大于 `worker_ttl`，否则同样拒绝启动。`worker_ttl` 与 `heartbeat_interval` 的倍数关系当前不做强校验，需要部署方自行保证。
 
 > `worker_retention` 的判定基于 `last_seen`（而不是“进入 offline 之后又过了多久”），所以把它设得比 `worker_ttl` 还小，会让 Worker 在还显示 active 时就被删除。压测/验收需要缩短保留期时，至少要满足 `worker_retention > worker_ttl`（例如 `worker_ttl=45s`、`worker_retention=46s`）。
 

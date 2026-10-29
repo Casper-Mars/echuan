@@ -51,7 +51,7 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.WorkerMetadataMaxBytes != 8192 {
 		t.Errorf("WorkerMetadataMaxBytes = %d", cfg.WorkerMetadataMaxBytes)
 	}
-	if cfg.WorkerRetention != 168*time.Hour {
+	if cfg.WorkerRetention != time.Hour {
 		t.Errorf("WorkerRetention = %s", cfg.WorkerRetention)
 	}
 	if cfg.LogLevel != "info" {
@@ -324,7 +324,12 @@ func TestLoadInvalidValues(t *testing.T) {
 		{
 			name:    "zero worker retention",
 			toml:    "worker_retention = \"0h\"\n",
-			wantSub: "worker_retention: must be positive",
+			wantSub: "worker_retention: must be greater than worker_ttl",
+		},
+		{
+			name:    "worker retention not greater than ttl",
+			toml:    "worker_ttl = \"45s\"\nworker_retention = \"10s\"\n",
+			wantSub: "must be greater than worker_ttl (45s), got 10s",
 		},
 	}
 

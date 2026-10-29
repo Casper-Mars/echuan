@@ -357,16 +357,16 @@ func TestReclaimerMaintenanceClearsDanglingPointer(t *testing.T) {
 }
 
 // TestReclaimerWorkerRetentionDefault pins the fallback: a non-positive value
-// keeps the documented 168h window instead of deleting every idle worker.
+// keeps the documented 1h window instead of deleting every idle worker.
 func TestReclaimerWorkerRetentionDefault(t *testing.T) {
 	e := newWorkerEnv(t)
 	reclaimer := NewReclaimer(e.store, slog.New(slog.DiscardHandler), time.Minute)
-	if got := reclaimer.WorkerRetention(); got != 168*time.Hour {
-		t.Errorf("default retention = %s, want 168h", got)
+	if got := reclaimer.WorkerRetention(); got != time.Hour {
+		t.Errorf("default retention = %s, want 1h", got)
 	}
 	reclaimer.SetWorkerRetention(0)
-	if got := reclaimer.WorkerRetention(); got != 168*time.Hour {
-		t.Errorf("retention after 0 = %s, want 168h", got)
+	if got := reclaimer.WorkerRetention(); got != time.Hour {
+		t.Errorf("retention after 0 = %s, want 1h", got)
 	}
 	reclaimer.SetWorkerRetention(time.Second)
 	if got := reclaimer.WorkerRetention(); got != time.Second {
