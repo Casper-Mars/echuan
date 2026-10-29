@@ -46,7 +46,7 @@ export function TaskDetailDrawer({
 
       <div className="detail-summary">
         <span className={`badge status-${data.status}`}>{taskStatusLabel(data.status)}</span>
-        <span className="mono">版本 v{data.version}</span>
+        <span className="mono">第 {data.version} 版</span>
         <span>
           尝试 {data.attempt_count}/{data.max_attempts}
         </span>
@@ -56,19 +56,19 @@ export function TaskDetailDrawer({
 
       <dl className="meta-grid">
         <div>
-          <dt>last_actor</dt>
+          <dt>最近操作人</dt>
           <dd>{data.last_actor || '—'}</dd>
         </div>
         <div>
-          <dt>update_time</dt>
+          <dt>更新时间</dt>
           <dd>{formatDateTime(data.update_time)}</dd>
         </div>
         <div>
-          <dt>create_time</dt>
+          <dt>创建时间</dt>
           <dd>{formatDateTime(data.create_time)}</dd>
         </div>
         <div>
-          <dt>priority</dt>
+          <dt>优先级</dt>
           <dd>{data.priority}</dd>
         </div>
         {data.lease && (
@@ -80,7 +80,7 @@ export function TaskDetailDrawer({
       </dl>
 
       <section className="detail-section">
-        <h3>reason</h3>
+        <h3>原因</h3>
         <p className={data.reason ? 'reason-text' : 'muted'}>{data.reason || '—'}</p>
       </section>
 
@@ -96,13 +96,13 @@ export function TaskDetailDrawer({
         {data.report ? (
           <div className="report-box">
             <div className="report-meta">
-              <span className="code">v{data.report.version}</span>
+              <span className="code">第 {data.report.version} 版</span>
               <span>{data.report.uploaded_by || '—'}</span>
               <span className="muted">{formatDateTime(data.report.create_time)}</span>
               <span className="muted">{formatBytes(data.report.size)}</span>
             </div>
             <p className="mono muted ellipsis" title={data.report.sha256}>
-              sha256: {data.report.sha256}
+              内容校验值：{data.report.sha256}
             </p>
             <a className="action action-primary" href={materialDownloadUrl(data.report.material_id)} download>
               下载报告

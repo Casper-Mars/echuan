@@ -69,6 +69,22 @@ export interface ProjectList {
   next_cursor?: string
 }
 
+export interface ProjectCreateRequest {
+  product_id: string
+  title: string
+  requirement_md: string
+}
+
+export interface SpecDocument {
+  spec_id: string
+  project_id: string
+  title: string
+  version: number
+  material: MaterialVersion
+  body_md?: string
+  versions?: MaterialVersion[]
+}
+
 /** GET /v1/projects?id= 的详情：在列表字段上追加正文与当前版元信息。 */
 export interface ProjectDetail extends Project {
   requirement: Material | null

@@ -2,14 +2,12 @@ package app
 
 import (
 	"context"
-	"database/sql"
+
 	"fmt"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
-	"github.com/Casper-Mars/echuan/internal/material"
-	"github.com/Casper-Mars/echuan/internal/store"
 )
 
 const (
@@ -51,110 +49,8 @@ type SpecSubmission struct {
 // title is a pointer to tell "not sent" apart from "sent but blank": an absent
 // title falls back to the project title, a blank or oversized one is rejected.
 func (s *ProjectService) SubmitSpec(ctx context.Context, projectID, actor string, title *string, body string) (SpecSubmission, error) {
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		return SpecSubmission{}, &domain.ValidationError{Fields: []domain.FieldError{
-			{Field: "id", Reason: "is required"},
-		}}
-	}
-
-	bodyBytes, fields := s.validateRequirementBody("body_md", body)
-	if len(fields) > 0 {
-		return SpecSubmission{}, &domain.ValidationError{Fields: fields}
-	}
-	normalizedTitle, titleFields := validateSpecTitle(title)
-	if len(titleFields) > 0 {
-		return SpecSubmission{}, &domain.ValidationError{Fields: titleFields}
-	}
-
-	uploadedBy := actorOrDefault(actor)
-
-	var (
-		out     SpecSubmission
-		written material.Stored
-	)
-
-	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
-		row, err := store.GetProjectByProjectID(ctx, tx, projectID)
-		if err != nil {
-			if store.IsNotFound(err) {
-				return &domain.NotFoundError{Resource: "project", Key: projectID}
-			}
-			return err
-		}
-		// A spec is only meaningful while it is being reviewed or while the CTO
-		// is still planning: past plan_review the breakdown was built on the
-		// approved spec.
-		if row.Status != domain.StatusSpecReview && row.Status != domain.StatusPlanning {
-			return &domain.InvalidStateError{Reason: fmt.Sprintf(
-				"project %q is in status %s; a spec can only be submitted in spec_review or planning",
-				projectID, domain.StatusName(row.Status))}
-		}
-
-		titleValue := row.Title
-		if normalizedTitle != "" {
-			titleValue = normalizedTitle
-		}
-
-		// The head's business id is what the response reports as
-		// previous_material_id; the physical id only travels into the writer.
-		previousMaterialID := ""
-		if row.SpecMaterialID != nil {
-			head, err := store.GetMaterialByID(ctx, tx, *row.SpecMaterialID)
-			if err != nil {
-				return err
-			}
-			previousMaterialID = head.MaterialID
-		}
-
-		// material.Write owns the object file, the dedup check and the row; it
-		// derives version = head+1 from the pointer read above, so a caller
-		// cannot write a version that skips or repeats.
-		written, err = s.materials.Write(ctx, tx, material.WriteInput{
-			Kind:               domain.MaterialKindSpec,
-			Title:              titleValue,
-			Body:               bodyBytes,
-			UploadedBy:         uploadedBy,
-			PreviousMaterialID: row.SpecMaterialID,
-		})
-		if err != nil {
-			return materialWriteError("body_md", err)
-		}
-
-		if err := store.MoveSpecPointer(ctx, tx, row.ID, written.Material.ID,
-			uploadedBy, formatTimestamp(s.nextTimestamp(row.UpdateTime))); err != nil {
-			return err
-		}
-
-		fresh, err := store.GetProjectByID(ctx, tx, row.ID)
-		if err != nil {
-			return err
-		}
-		project, err := projectFromRow(fresh)
-		if err != nil {
-			return err
-		}
-		spec, err := materialFromRow(written.Material)
-		if err != nil {
-			return err
-		}
-		out = SpecSubmission{
-			Project:            project,
-			Spec:               spec,
-			PreviousMaterialID: previousMaterialID,
-		}
-		return nil
-	})
-	if err != nil {
-		// The row died with the rolled-back transaction; the object file did
-		// not. Drop it only when this request created it (same policy as
-		// CreateProject/WriteRequirement).
-		if written.NewObject {
-			_ = s.materials.RemoveNewObject(written)
-		}
-		return SpecSubmission{}, err
-	}
-	return out, nil
+	result, _, err := s.SaveSpec(ctx, projectID, "", actor, title, body, 0, true)
+	return result, err
 }
 
 // validateSpecTitle normalises the optional spec title.

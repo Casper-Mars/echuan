@@ -42,3 +42,11 @@ web/dist/
 # dsh 接入工具包（kit/，Task-01）
 kit/node_modules/
 kit/lib/
+
+# Video recordings
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[wW][eE][bB][mM]
+*.[aA][vV][iI]
+*.[mM][kK][vV]
+*.[mM]4[vV]

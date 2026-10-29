@@ -1,3 +1,4 @@
+import { useContext, useEffect, useState } from 'react'
 import { getProject, listProjectMaterials, materialDownloadUrl } from '../api/client'
 import type { MaterialChain, MaterialVersion, ProjectDetail } from '../api/types'
 import { usePolling } from '../hooks/usePolling'
@@ -11,6 +12,9 @@ import {
 import { ErrorNotice, LoadingState } from './States'
 import { Markdown } from './Markdown'
 import { ProjectActions } from './ProjectActions'
+import { ProjectFormDialog } from './ProjectFormDialog'
+import { DrawerTitleContext } from './DrawerContext'
+import { SpecDocuments } from './SpecDocuments'
 
 interface ProjectBundle {
   detail: ProjectDetail
@@ -45,7 +49,7 @@ function ChainList({
             const isCurrent = item.material_id === currentMaterialId
             return (
               <li key={item.material_id} className={isCurrent ? 'chain-item is-current' : 'chain-item'}>
-                <span className="code">v{item.version}</span>
+                <span className="code">第 {item.version} 版</span>
                 {isCurrent && <span className="chip chip-current">当前</span>}
                 <span className="chain-title ellipsis" title={item.title}>
                   {item.title || '（无标题）'}
@@ -82,6 +86,8 @@ export function ProjectDetailDrawer({
   projectId: string
   onChanged: () => void
 }) {
+  const [editing, setEditing] = useState<'title' | 'requirement' | null>(null)
+  const updateDrawerTitle = useContext(DrawerTitleContext)
   const { data, error, loading, refreshing, refresh } = usePolling<ProjectBundle>(
     async (signal) => {
       const [detail, requirementChain, specChain] = await Promise.all([
@@ -93,6 +99,10 @@ export function ProjectDetailDrawer({
     },
     [projectId],
   )
+
+  useEffect(() => {
+    if (data) updateDrawerTitle(`项目 ${data.detail.project_id} · ${data.detail.title || '未命名'}`)
+  }, [data?.detail.project_id, data?.detail.title, updateDrawerTitle])
 
   if (!data) {
     return (
@@ -116,22 +126,22 @@ export function ProjectDetailDrawer({
 
       <div className="detail-summary">
         <span className={`badge status-${detail.status}`}>{projectStatusLabel(detail.status)}</span>
-        <span className="mono">版本 v{detail.version}</span>
+        <span className="mono">第 {detail.version} 版</span>
         <span>停留 {formatSince(detail.update_time)}</span>
         {refreshing && <span className="muted">刷新中…</span>}
       </div>
 
       <dl className="meta-grid">
         <div>
-          <dt>last_actor</dt>
+          <dt>最近操作人</dt>
           <dd>{detail.last_actor || '—'}</dd>
         </div>
         <div>
-          <dt>update_time</dt>
+          <dt>更新时间</dt>
           <dd>{formatDateTime(detail.update_time)}</dd>
         </div>
         <div>
-          <dt>create_time</dt>
+          <dt>创建时间</dt>
           <dd>{formatDateTime(detail.create_time)}</dd>
         </div>
         <div>
@@ -141,11 +151,17 @@ export function ProjectDetailDrawer({
       </dl>
 
       <section className="detail-section">
-        <h3>reason</h3>
+        <h3>原因</h3>
         <p className={detail.reason ? 'reason-text' : 'muted'}>{detail.reason || '—'}</p>
       </section>
 
       <ProjectActions project={detail} onChanged={changed} className="detail-actions" />
+      <div className="detail-actions">
+        <button type="button" className="action" onClick={() => setEditing('title')}>编辑标题</button>
+        {(detail.status === 0 || detail.status === 1) && (
+          <button type="button" className="action" onClick={() => setEditing('requirement')}>编辑需求</button>
+        )}
+      </div>
 
       <section className="detail-section">
         <h3>任务进度</h3>
@@ -178,24 +194,28 @@ export function ProjectDetailDrawer({
 
       <section className="detail-section">
         <h3>
-          方案当前版摘要
-          {detail.spec && <span className="muted">（v{detail.spec.version}）</span>}
+          项目方案包摘要
+          {detail.spec && <span className="muted">（第 {detail.spec.version} 版）</span>}
         </h3>
         <Markdown source={detail.spec_excerpt} empty="暂无方案" />
         {detail.spec && (
           <p className="download-line">
             <a className="link" href={materialDownloadUrl(detail.spec.material_id)} download>
-              下载方案原件
+              下载全部当前方案
             </a>
             <span className="muted">
-              v{detail.spec.version} · {formatBytes(detail.spec.size)} ·{' '}
+              第 {detail.spec.version} 版 · {formatBytes(detail.spec.size)} ·{' '}
               {detail.spec.uploaded_by || '—'}
             </span>
           </p>
         )}
       </section>
 
-      <ChainList title="方案版本链" chain={specChain} currentMaterialId={detail.spec?.material_id} />
+      <SpecDocuments projectId={projectId} status={detail.status} onChanged={changed} />
+      <ChainList title="项目方案包历史" chain={specChain} currentMaterialId={detail.spec?.material_id} />
+      {editing && (
+        <ProjectFormDialog mode={editing} project={detail} onClose={() => setEditing(null)} onSaved={changed} />
+      )}
     </div>
   )
 }

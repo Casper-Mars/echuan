@@ -327,8 +327,8 @@ func TestContractEndpoints(t *testing.T) {
 
 	// The operation set is pinned: adding or dropping one is a contract change.
 	operations := e.doc.Operations()
-	if len(operations) != 30 {
-		t.Fatalf("openapi operations = %d, want exactly 30", len(operations))
+	if len(operations) != 33 {
+		t.Fatalf("openapi operations = %d, want exactly 33", len(operations))
 	}
 
 	// ---- health & version -------------------------------------------------
@@ -698,7 +698,59 @@ func TestContractEndpoints(t *testing.T) {
 		"requirement_md": strings.Repeat("x", 9<<10),
 	}, nil, http.StatusRequestEntityTooLarge)
 
-	// ---- coverage: exactly the 28 operations, nothing more or less --------
+	// Independent documents retain their own histories while old readers see all specs.
+	multi := e.createDraftProject("APP", "多方案项目", "# 多方案需求\n")
+	multiID := stringField(t, multi, "project_id")
+	e.call(http.MethodPost, "/v1/projects/accept?id="+multiID, nil, nil, http.StatusOK)
+	raw, _ = e.call(http.MethodPost, "/v1/specs", map[string]any{
+		"project_id": multiID, "title": "前端方案", "body_md": "前端第一版",
+	}, nil, http.StatusCreated)
+	firstSpec := object(t, raw)
+	firstSpecID := stringField(t, firstSpec, "spec_id")
+	firstMaterial := stringField(t, objectField(t, firstSpec, "material"), "material_id")
+	raw, _ = e.call(http.MethodPost, "/v1/specs", map[string]any{
+		"project_id": multiID, "title": "后端方案", "body_md": "后端独立正文",
+	}, nil, http.StatusCreated)
+	secondSpecID := stringField(t, object(t, raw), "spec_id")
+	e.call(http.MethodGet, "/v1/specs?project_id="+multiID, nil, nil, http.StatusOK)
+	raw, _ = e.call(http.MethodPatch, "/v1/specs?id="+firstSpecID, map[string]any{
+		"title": "前端修订方案", "body_md": "前端第二版",
+	}, map[string]string{"If-Match": "1"}, http.StatusOK)
+	if got := intField(t, object(t, raw), "version"); got != 2 {
+		t.Errorf("revised document version = %d, want 2", got)
+	}
+	e.call(http.MethodPatch, "/v1/specs?id="+firstSpecID, map[string]any{
+		"title": "过期修改", "body_md": "不可覆盖",
+	}, map[string]string{"If-Match": "1"}, http.StatusConflict)
+	raw, _ = e.call(http.MethodGet, "/v1/specs?id="+firstSpecID+"&material_id="+firstMaterial, nil, nil, http.StatusOK)
+	if stringField(t, object(t, raw), "body_md") != "前端第一版" {
+		t.Error("independent historical document was overwritten")
+	}
+	raw, _ = e.call(http.MethodGet, "/v1/specs?id="+secondSpecID, nil, nil, http.StatusOK)
+	if intField(t, object(t, raw), "version") != 1 || stringField(t, object(t, raw), "body_md") != "后端独立正文" {
+		t.Error("revising the first document changed the second")
+	}
+	e.call(http.MethodPost, "/v1/projects/specs?id="+multiID,
+		map[string]any{"body_md": "旧客户端修订第一份"}, nil, http.StatusOK)
+	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+multiID, nil, nil, http.StatusOK)
+	if excerpt := stringField(t, object(t, raw), "spec_excerpt"); !strings.Contains(excerpt, "旧客户端修订第一份") || !strings.Contains(excerpt, "后端独立正文") {
+		t.Errorf("legacy execution snapshot omitted a document: %s", excerpt)
+	}
+	large := e.createDraftProject("APP", "方案包限额", "需求")
+	largeID := stringField(t, large, "project_id")
+	e.call(http.MethodPost, "/v1/projects/accept?id="+largeID, nil, nil, http.StatusOK)
+	e.call(http.MethodPost, "/v1/specs", map[string]any{
+		"project_id": largeID, "title": "第一份", "body_md": strings.Repeat("a", 5<<10),
+	}, nil, http.StatusCreated)
+	e.call(http.MethodPost, "/v1/specs", map[string]any{
+		"project_id": largeID, "title": "第二份", "body_md": strings.Repeat("b", 5<<10),
+	}, nil, http.StatusRequestEntityTooLarge)
+	raw, _ = e.call(http.MethodGet, "/v1/specs?project_id="+largeID, nil, nil, http.StatusOK)
+	if items := object(t, raw)["items"].([]any); len(items) != 1 {
+		t.Errorf("failed oversized bundle left %d documents, want 1", len(items))
+	}
+
+	// ---- coverage: every documented operation -----------------------------
 	want := map[string]bool{}
 	for _, op := range operations {
 		want[op.Method+" "+op.Path] = true
@@ -780,8 +832,8 @@ func TestRoutesMatchOpenAPI(t *testing.T) {
 	for _, route := range api.Routes() {
 		got[route.Method+" "+route.Path] = true
 	}
-	if len(want) != 30 {
-		t.Fatalf("openapi operations = %d, want 30", len(want))
+	if len(want) != 33 {
+		t.Fatalf("openapi operations = %d, want 33", len(want))
 	}
 	for key := range want {
 		if !got[key] {

@@ -9,6 +9,9 @@
 驿传平台（echuan）：单机协作平台，产品 → 项目 → 任务。一个项目 = 一条需求。
 形态是「带事务的队列 + 一份版本化的文档库」。
 
+每项目一份需求文档、多份独立技术方案；方案各自修订，项目统一评审当前方案集合。
+修改文档、方案评审或任务执行上下文前，读 [多方案能力与兼容约定](docs/project-specs.md)。
+
 技术栈（有意保持窄）：
 
 - **Go 1.26**，只用标准库 `net/http`，无第三方 router / ORM / 日志库（日志用 `log/slog`）
@@ -109,7 +112,7 @@ curl -s 127.0.0.1:18720/readyz    # 库可写 + 迁移版本匹配
 ## 5. 数据不变式（违反即视为 bug，不接受"先合并再修"）
 
 1. **版本链单向往回指。** `materials.previous_material_id` 指向前一版；`materials` 表**没有** `subject_type` / `subject_id`。
-2. **归属由持有方声明。** `projects.requirement_material_id`、`projects.spec_material_id`、`tasks.report_material_id`。想让"被引用方记住谁引用我"，就是设计错误。
+2. **归属由持有方声明。** `projects.requirement_material_id` 指当前需求，`project_specs.material_id` 指各独立方案当前版，`projects.spec_material_id` 指兼容旧接口和 Worker 的完整方案包，`tasks.report_material_id` 指报告。资料本身不记归属。
 3. **表关联用自增 `id`，对外用业务编号。** `product_id`=`APP`、`project_id`=`APP-1`、`task_id`=`APP-1-T0001`、`material_id`=ULID 形态 26 位字符串。
 4. **枚举落库一律存整数。** 名字只是代码别名（`taskStatusNames`），**永不持久化**。
 5. **SQLite 单写者。** 写池固定 1 连接，`BEGIN IMMEDIATE`；读池 `query_only=1`，只读。不要新开写连接，不要在事务外写库。
@@ -130,7 +133,7 @@ curl -s 127.0.0.1:18720/readyz    # 库可写 + 迁移版本匹配
 
 ## 7. 接口约定
 
-- 列表与详情**共用同一路径**，`?id=` 选详情。所以一个 `method+path` 只算一个 operation，共 28 个。
+- 列表与详情**共用同一路径**，`?id=` 选详情。所以一个 `method+path` 只算一个 operation，当前共 33 个（含独立方案的 GET/POST/PATCH `/v1/specs`）。
 - 路径只写资源名（`/v1/projects/specs`），语义参数走 JSON body，标识走 query。
 - `X-Actor` 是**身份声明，不是认证**——没有鉴权，别把它当安全边界。
 - 响应带 `X-Request-Id`；错误体是四字段 `{code, message, details[], request_id}`。`details` **永远是数组**（无明细为 `[]`），元素形如 `{field?, reason?}`（两个字段都 omitempty）；响应体里的 `request_id` 与 `X-Request-Id` 响应头**是同一个值**，排障和前端错误提示都依赖它。

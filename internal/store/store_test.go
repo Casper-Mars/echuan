@@ -98,7 +98,7 @@ func schemaColumns(t *testing.T, st *Store, table string) map[string]bool {
 func TestMigrateCreatesSchema(t *testing.T) {
 	st := openTestStore(t, 4)
 
-	wantTables := []string{"products", "projects", "tasks", "task_deps", "materials", "workers"}
+	wantTables := []string{"products", "projects", "tasks", "task_deps", "materials", "workers", "project_specs"}
 	tables := schemaObjects(t, st, "table")
 	for _, name := range wantTables {
 		if !tables[name] {
@@ -118,8 +118,8 @@ func TestMigrateCreatesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 3 {
-		t.Errorf("user_version = %d, want 3", version)
+	if version != 4 {
+		t.Errorf("user_version = %d, want 4", version)
 	}
 
 	columns := schemaColumns(t, st, "projects")
@@ -147,8 +147,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if applied != 3 {
-		t.Errorf("first applied = %d, want 3", applied)
+	if applied != 4 {
+		t.Errorf("first applied = %d, want 4", applied)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first: %v", err)
@@ -172,8 +172,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 3 {
-		t.Errorf("user_version = %d, want 3", version)
+	if version != 4 {
+		t.Errorf("user_version = %d, want 4", version)
 	}
 }
 
@@ -227,8 +227,8 @@ func TestMigrate0002PreservesExistingProjects(t *testing.T) {
 	if applied != 2 {
 		t.Fatalf("applied = %d, want 2 (0002 and 0003)", applied)
 	}
-	if version, err := st.MigrationVersion(ctx); err != nil || version != 3 {
-		t.Fatalf("version = %d (%v), want 3", version, err)
+	if version, err := st.MigrationVersion(ctx); err != nil || version != 4 {
+		t.Fatalf("version = %d (%v), want 4", version, err)
 	}
 	if !schemaColumns(t, st, "projects")["last_actor"] {
 		t.Fatal("projects.last_actor missing after 0002")
@@ -536,8 +536,8 @@ func TestMigrateRejectsNewerSchema(t *testing.T) {
 	if !errors.As(err, &sv) {
 		t.Fatalf("error = %v, want SchemaVersionError", err)
 	}
-	if sv.Database != 99 || sv.Binary != 3 {
-		t.Errorf("versions = %d/%d, want 99/3", sv.Database, sv.Binary)
+	if sv.Database != 99 || sv.Binary != 4 {
+		t.Errorf("versions = %d/%d, want 99/4", sv.Database, sv.Binary)
 	}
 }
 

@@ -33,7 +33,7 @@ export function Breadcrumbs() {
   let crumbs: Crumb[] = [{ label: '产品' }]
 
   if (workersMatch) {
-    crumbs = [{ label: 'Worker' }]
+    crumbs = [{ label: '执行节点' }]
   } else if (taskMatch) {
     const decodedProduct = decode(taskMatch[1])
     const decodedProject = decode(taskMatch[2])

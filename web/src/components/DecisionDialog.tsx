@@ -102,7 +102,7 @@ export function DecisionDialog({
     event.preventDefault()
     if (submitting) return
     if (requiresReason && !reason.trim()) {
-      setError('reason 为必填项，请填写后重试。')
+      setError('请填写原因后重试。')
       return
     }
     setSubmitting(true)
@@ -125,16 +125,16 @@ export function DecisionDialog({
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         if (err.code === 'invalid_version') {
-          setError('数据已变化（invalid_version）：已重新加载最新数据，请核对后再次提交。')
+          setError(`${errorMessage(err)} 已重新加载最新数据，请核对后再次提交。`)
         } else if (err.code === 'invalid_state') {
-          setError('当前状态不允许该操作（invalid_state）：已刷新最新状态。')
+          setError(`${errorMessage(err)} 已刷新最新状态。`)
         } else {
           setError(errorMessage(err))
         }
         // 保留 reason，不清空用户输入；只把状态与版本换成最新。
         await reloadLatest()
         onChanged()
-        setNotice('已自动刷新最新数据，你填写的 reason 仍然保留。')
+        setNotice('已自动刷新最新数据，你填写的原因仍然保留。')
         return
       }
       setError(errorMessage(err))
@@ -153,13 +153,13 @@ export function DecisionDialog({
           </div>
           <div className="dialog-target-meta">
             <span className={`badge status-${current.status}`}>{current.statusLabel}</span>
-            <span className="mono">本次 If-Match 版本 v{current.version}</span>
+            <span className="mono">本次提交依据第 {current.version} 版</span>
           </div>
         </div>
 
         <label className="field">
           <span>
-            reason {requiresReason ? <em className="required">（必填）</em> : <em className="optional">（可选）</em>}
+            原因 {requiresReason ? <em className="required">（必填）</em> : <em className="optional">（可选）</em>}
           </span>
           <textarea
             rows={4}
@@ -174,7 +174,7 @@ export function DecisionDialog({
         </label>
 
         {requiresReason && !reason.trim() && (
-          <p className="muted dialog-hint">提交前必须填写 reason，后端也会以 422/400 兜底校验。</p>
+          <p className="muted dialog-hint">请说明{label}的原因，方便后续查看记录。</p>
         )}
         {notice && (
           <p className="dialog-notice" role="status">

@@ -1,4 +1,4 @@
-import { ApiError, describeError } from '../api/client'
+import { ApiError, apiErrorSummary, describeError, errorDetailMessage } from '../api/client'
 import { formatClock } from '../lib/format'
 
 export function LoadingState({ label = '加载中…' }: { label?: string }) {
@@ -27,7 +27,7 @@ export function ErrorNotice({ error, onRetry }: { error: unknown; onRetry?: () =
   if (!error) return null
   const { title, hint } = describeError(error)
   const apiError = error instanceof ApiError ? error : null
-  const message = error instanceof Error ? error.message : String(error)
+  const message = apiError ? apiErrorSummary(apiError) : '无法连接服务，请检查网络或服务是否已启动。'
 
   return (
     <div className="notice error" role="alert">
@@ -44,13 +44,12 @@ export function ErrorNotice({ error, onRetry }: { error: unknown; onRetry?: () =
       {apiError && apiError.details.length > 0 && (
         <ul className="notice-details">
           {apiError.details.slice(0, 5).map((detail, index) => (
-            <li key={index}>{typeof detail === 'string' ? detail : JSON.stringify(detail)}</li>
+            <li key={index}>{errorDetailMessage(detail)}</li>
           ))}
         </ul>
       )}
       <div className="notice-meta">
-        <span>code: {apiError?.code ?? 'network_error'}</span>
-        <span>request_id: {apiError?.requestId || '—'}</span>
+        <span>请求编号：{apiError?.requestId || '—'}</span>
       </div>
     </div>
   )
