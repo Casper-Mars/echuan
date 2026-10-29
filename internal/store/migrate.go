@@ -80,11 +80,34 @@ func (s *Store) MigrateFS(ctx context.Context, fsys fs.FS) (int, error) {
 }
 
 // applyMigration executes one file and writes back its version atomically.
+//
+// Foreign key enforcement is suspended for the duration of the migration.
+// SQLite cannot alter a CHECK constraint, so a migration that widens one has
+// to rebuild the table (create → copy → drop → rename). With enforcement on,
+// the implicit DELETE performed by DROP TABLE fails as soon as child rows
+// reference the parent; PRAGMA defer_foreign_keys does not rescue that case
+// because the pending violation belongs to the dropped table and is not
+// resolved by rows inserted into the replacement. Migrations run at startup,
+// before the read pool is opened and before the HTTP server accepts writes,
+// so the guard can be lifted here; it is restored before applyMigration
+// returns, and callers can still verify the result with PRAGMA
+// foreign_key_check.
 func (s *Store) applyMigration(ctx context.Context, m migrations.Migration) error {
 	statements := splitStatements(string(m.SQL))
 	if len(statements) == 0 {
 		return &MigrationError{Version: m.Version, Name: m.Name, Err: fmt.Errorf("file contains no SQL statements")}
 	}
+
+	if err := s.setForeignKeys(ctx, false); err != nil {
+		return &MigrationError{Version: m.Version, Name: m.Name, Err: err}
+	}
+	// Restore on the way out even when the migration fails; a cancelled ctx
+	// must not leave the connection with the guard switched off.
+	defer func() {
+		if err := s.setForeignKeys(context.WithoutCancel(ctx), true); err != nil {
+			s.logger.Error("restore foreign_keys after migration", "version", m.Version, "error", err)
+		}
+	}()
 
 	s.logger.Info("applying migration", "version", m.Version, "name", m.Name, "statements", len(statements))
 
@@ -105,6 +128,27 @@ func (s *Store) applyMigration(ctx context.Context, m migrations.Migration) erro
 	}
 
 	s.logger.Info("migration applied", "version", m.Version, "name", m.Name)
+	return nil
+}
+
+// setForeignKeys toggles the write connection's foreign key guard and verifies
+// that the pragma took effect. The write pool is limited to one connection, so
+// the setting is visible to the transaction that follows.
+func (s *Store) setForeignKeys(ctx context.Context, enabled bool) error {
+	value := 0
+	if enabled {
+		value = 1
+	}
+	if _, err := s.write.ExecContext(ctx, fmt.Sprintf("PRAGMA foreign_keys = %d", value)); err != nil {
+		return fmt.Errorf("set foreign_keys=%d: %w", value, err)
+	}
+	var got int
+	if err := s.write.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&got); err != nil {
+		return fmt.Errorf("read foreign_keys: %w", err)
+	}
+	if got != value {
+		return fmt.Errorf("foreign_keys = %d, want %d (pragma ignored?)", got, value)
+	}
 	return nil
 }
 

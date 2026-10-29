@@ -241,8 +241,10 @@ paths:
         - name: status
           in: query
           required: false
+          description: 按项目状态过滤（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
           schema:
             type: integer
+            enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         - name: limit
           in: query
           required: false
@@ -1576,6 +1578,8 @@ components:
           type: string
         status:
           type: integer
+          description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status_name:
           type: string
         reason:
@@ -1612,6 +1616,8 @@ components:
           type: string
         status:
           type: integer
+          description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status_name:
           type: string
         reason:
@@ -1673,6 +1679,8 @@ components:
           type: string
         status:
           type: integer
+          description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         product_id:
           type: string
     RequirementRequest:
@@ -1701,6 +1709,8 @@ components:
           type: string
         status:
           type: integer
+          description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status_name:
           type: string
         project_version:
@@ -1775,6 +1785,8 @@ components:
           type: string
         status:
           type: integer
+          description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status_name:
           type: string
         project_version:
@@ -1800,8 +1812,12 @@ components:
           type: string
         from_status:
           type: integer
+          description: 审批前的项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status:
           type: integer
+          description: 审批后的项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
+          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status_name:
           type: string
         ready_tasks:

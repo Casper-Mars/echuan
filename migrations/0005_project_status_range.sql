@@ -7,13 +7,12 @@
 -- 0001_init.sql 的 CHECK 只允许 0–7，无法写入 cancelled(8)。SQLite 不能直接
 -- 修改 CHECK 约束，只能按官方推荐步骤重建表。
 --
--- defer_foreign_keys(ON) 把外键检查推迟到提交时刻：tasks.project_id 与
--- project_specs.project_id 都引用 projects(id)，本迁移在同一事务里以相同 id
--- 重建 projects，因此提交时引用仍然成立。
+-- 重建表期间子表（tasks.project_id / project_specs.project_id）仍引用
+-- projects(id)。迁移 runner 会在执行每个迁移时临时关闭 foreign_keys，提交
+-- 后再恢复（见 internal/store/migrate.go）；否则 DROP TABLE 的隐式 DELETE
+-- 会立刻撞上这些引用。数据完整性由迁移后的 PRAGMA foreign_key_check 兜底。
 --
 -- 除 CHECK 范围外，列、默认值、唯一约束与索引均与 0001(+0002) 完全一致。
-
-PRAGMA defer_foreign_keys = ON;
 
 CREATE TABLE projects_new (
   id                      INTEGER PRIMARY KEY AUTOINCREMENT,

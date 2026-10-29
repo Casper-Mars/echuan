@@ -13,6 +13,7 @@
 #   S8  平台重启 → 同一 worker id 心跳 200、不重复领卡
 #   S9  插件重启 → 新 w_ id，旧记录仍在且不领同一张卡
 #   S10 停用插件 → worker 在 worker_ttl(45s) 窗口内转 offline
+#   S10b/S10c 验收卡一后项目停在 pending_done，结清卡二后项目进入 completed
 #   S11 收尾：容器 / profile / 临时目录全清，~/echuan-data 指纹不变
 #
 # 隔离性（与 scripts/e2e-worker.sh 同一套策略）：
@@ -798,6 +799,57 @@ http_get "/v1/projects?id=$PROJECT_ID"
 require_code 200 "读取项目"
 [ "$(jqr '.status_name')" = "pending_done" ] || fail "最后一张卡未结清时项目应停在 pending_done，实际 $(jqr '.status_name')"
 pass "10b/11 验收卡一成功，项目保持 pending_done（等待卡二结清）"
+
+# --- 10c. 结清最后一张卡 → 项目进入 completed ------------------------------
+say ""
+say "== 10c/11 唤醒 worker 领取卡二 → 交报告 → 验收，项目应进入 completed =="
+
+# 卡二在 S7 被派给旧 worker 后一直未结清；S10 已停掉 dsh，90s 租约可能
+# 已过期并被回收成 ready。这里用同一条 HTTP 心跳把卡二重新拿回来：
+# 租约过期 → 当次心跳先回收再派单；未过期 → 原租约继续有效。
+T2_LEASE=""
+attempt=0
+while [ "$attempt" -lt 20 ]; do
+  attempt=$((attempt + 1))
+  http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$wid,state:"idle"}')"
+  require_code 200 "唤醒 worker 领取卡二"
+  http_get "/v1/tasks?id=$TASK2"
+  require_code 200 "读取卡二"
+  if [ "$(jqr '.status_name')" = "in_progress" ]; then
+    # busy 心跳续租，确保接下来的 report 不会撞上刚好过期的 lease。
+    http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$wid,state:"busy"}')"
+    require_code 200 "续租卡二"
+    http_get "/v1/tasks?id=$TASK2"
+    require_code 200 "复核卡二租约"
+    if [ "$(jqr '.status_name')" = "in_progress" ]; then
+      T2_LEASE="$(jqr '.lease.lease_id')"
+      [ -n "$T2_LEASE" ] && [ "$T2_LEASE" != "null" ] && break
+      T2_LEASE=""
+    fi
+  fi
+  sleep 2
+done
+[ -n "$T2_LEASE" ] || fail "卡二未能重新派给 $WORKER_ID（当前状态 $(jqr '.status_name')）"
+say "卡二租约：$T2_LEASE"
+
+http_post "/v1/tasks/report?id=$TASK2" "$(jq -nc --arg lease "$T2_LEASE" \
+  '{lease_id:$lease,summary_md:"## ①改了什么\n\n- kit/scripts/e2e.sh 结清最后一张卡；\n- 仅调用 POST /v1/tasks/report。\n\n## ②怎么自检\n\n- 断言卡二进入 pending_acceptance；\n- 验收后断言项目进入 completed。\n\n## ③遗留风险\n\n- 报告正文由验收脚本生成。"}')"
+require_code 200 "提交卡二报告"
+[ "$(jqr '.status_name')" = "pending_acceptance" ] || fail "报告后卡二应为 pending_acceptance，实际 $(jqr '.status_name')"
+T2_VERSION="$(jqr '.version')"
+
+http_get "/v1/projects?id=$PROJECT_ID"
+require_code 200 "读取项目"
+[ "$(jqr '.status_name')" = "pending_done" ] || fail "卡二未验收时项目应仍为 pending_done，实际 $(jqr '.status_name')"
+
+http_post "/v1/tasks/decide?id=$TASK2" '{"decision":"accept"}' -H "If-Match: $T2_VERSION"
+require_code 200 "验收卡二"
+[ "$(jqr '.status_name')" = "done" ] || fail "验收后卡二应为 done，实际 $(jqr '.status_name')"
+
+http_get "/v1/projects?id=$PROJECT_ID"
+require_code 200 "读取项目"
+[ "$(jqr '.status_name')" = "completed" ] || fail "最后一张卡结清后项目应为 completed，实际 $(jqr '.status_name')"
+pass "10c/11 卡二结清，项目进入 completed（$PROJECT_ID）"
 
 # --- 11. 收尾 --------------------------------------------------------------
 STEP="11/11 收尾"
