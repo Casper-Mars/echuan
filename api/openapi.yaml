@@ -225,6 +225,9 @@ paths:
     get:
       operationId: listOrGetProjects
       summary: 列出项目，或按 ?id= 取详情
+      description: |
+        不带 ?id= 时返回项目分页列表，按项目 id 倒序（最新在前）；cursor 为上一页最后一条的 id，
+        下一页返回更早的项目。带 ?id= 时返回该项目的详情。
       tags: [projects]
       parameters:
         - $ref: "#/components/parameters/Actor"
