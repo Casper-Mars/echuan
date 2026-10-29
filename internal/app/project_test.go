@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -533,6 +534,13 @@ func TestListProjectsFiltersAndPagination(t *testing.T) {
 	if len(all.Items) != 2 || all.NextID == 0 {
 		t.Fatalf("page = %d items, next=%d; want 2 items and a cursor", len(all.Items), all.NextID)
 	}
+	// Newest first: the SHOP project was created last, so it heads the list.
+	if all.Items[0].Title != "别家" || all.Items[1].Title != "三" {
+		t.Errorf("page 1 titles = %q, %q; want 别家, 三", all.Items[0].Title, all.Items[1].Title)
+	}
+	if all.Items[0].ID <= all.Items[1].ID {
+		t.Errorf("page 1 ids not descending: %d, %d", all.Items[0].ID, all.Items[1].ID)
+	}
 
 	next, err := env.service.ListProjects(ctx, "", nil, all.NextID, 2)
 	if err != nil {
@@ -541,6 +549,12 @@ func TestListProjectsFiltersAndPagination(t *testing.T) {
 	if len(next.Items) != 2 || next.NextID != 0 {
 		t.Errorf("page 2 = %d items, next=%d; want 2 items and no cursor", len(next.Items), next.NextID)
 	}
+	// Page 2 continues strictly older than page 1.
+	for _, item := range next.Items {
+		if item.ID >= all.Items[len(all.Items)-1].ID {
+			t.Errorf("page 2 item id %d not older than page 1 tail %d", item.ID, all.Items[len(all.Items)-1].ID)
+		}
+	}
 
 	app, err := env.service.ListProjects(ctx, "APP", nil, 0, 50)
 	if err != nil {
@@ -548,6 +562,11 @@ func TestListProjectsFiltersAndPagination(t *testing.T) {
 	}
 	if len(app.Items) != 3 {
 		t.Errorf("APP projects = %d, want 3", len(app.Items))
+	}
+	for i := 1; i < len(app.Items); i++ {
+		if app.Items[i-1].ID <= app.Items[i].ID {
+			t.Errorf("APP projects not newest first at %d: %d, %d", i, app.Items[i-1].ID, app.Items[i].ID)
+		}
 	}
 
 	draft := domain.StatusRequirementDraft
@@ -566,6 +585,55 @@ func TestListProjectsFiltersAndPagination(t *testing.T) {
 	}
 	if len(none.Items) != 0 {
 		t.Errorf("tasks_draft projects = %d, want 0", len(none.Items))
+	}
+}
+
+// TestListProjectsPagesNewestFirst walks the whole list page by page: every page
+// continues strictly older than the previous one, pages cover every project
+// exactly once, and the cursor chain terminates.
+func TestListProjectsPagesNewestFirst(t *testing.T) {
+	env := newProjectTestEnv(t)
+	env.createProduct(t, "APP")
+	ctx := context.Background()
+
+	const total = 25
+	for i := 0; i < total; i++ {
+		if _, err := env.service.CreateProject(ctx, CreateProjectInput{
+			ProductID: "APP", Title: fmt.Sprintf("项目-%02d", i), RequirementMD: "正文",
+		}); err != nil {
+			t.Fatalf("CreateProject(%d): %v", i, err)
+		}
+	}
+
+	var ids []int64
+	var afterID int64
+	pages := 0
+	for {
+		page, err := env.service.ListProjects(ctx, "APP", nil, afterID, 5)
+		if err != nil {
+			t.Fatalf("ListProjects(page %d): %v", pages+1, err)
+		}
+		pages++
+		if len(page.Items) == 0 {
+			break
+		}
+		for _, item := range page.Items {
+			if len(ids) > 0 && item.ID >= ids[len(ids)-1] {
+				t.Fatalf("ids not strictly descending: %d then %d", ids[len(ids)-1], item.ID)
+			}
+			ids = append(ids, item.ID)
+		}
+		if page.NextID == 0 {
+			break
+		}
+		afterID = page.NextID
+	}
+
+	if len(ids) != total {
+		t.Errorf("walked %d projects, want %d", len(ids), total)
+	}
+	if pages != total/5 {
+		t.Errorf("pages = %d, want %d", pages, total/5)
 	}
 }
 
