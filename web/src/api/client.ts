@@ -158,13 +158,26 @@ export function updateProduct(id: string, body: ProductPatchRequest): Promise<Pr
   return request<Product>('/v1/products', { method: 'PATCH', query: { id }, body })
 }
 
+export interface ListProjectsOptions {
+  /** 按项目状态过滤（九态），不传表示全部。 */
+  status?: number
+  /** 上一页最后一条的 id；不传表示第一页。 */
+  cursor?: string
+  /** 每页条数，默认 20。 */
+  limit?: number
+  signal?: AbortSignal
+}
+
 /**
- * 项目列表。后端 status 只接受单个整数，而“待我决策”包含 1/3/5，
- * 因此统一拉全量（上限 200）后在页面内过滤。
+ * 项目列表。过滤与分页都在服务端完成：status 单值过滤，cursor 向后翻页，
+ * 后端按 id 倒序返回（最新在前）。默认每页 20 条。
  */
-export function listProjects(productId: string, signal?: AbortSignal): Promise<ProjectList> {
+export function listProjects(
+  productId: string,
+  { status, cursor, limit = 20, signal }: ListProjectsOptions = {},
+): Promise<ProjectList> {
   return request<ProjectList>('/v1/projects', {
-    query: { product_id: productId, limit: 200 },
+    query: { product_id: productId, status, cursor, limit },
     signal,
   })
 }

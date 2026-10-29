@@ -879,38 +879,36 @@ button {
   margin-bottom: 14px;
 }
 
-.filter-chip {
+.filter-select {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 11px;
-  border-radius: 999px;
+  gap: 8px;
+  font-size: 0.86rem;
+}
+
+.filter-select select {
+  min-width: 180px;
+  padding: 5px 10px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel);
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-.filter-chip:hover {
-  border-color: #c3ccdb;
   color: var(--text);
+  font: inherit;
 }
 
-.filter-chip.is-active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
+/* 服务端分页 */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 18px;
+  font-size: 0.86rem;
 }
 
-.filter-chip .count {
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: #fff;
-  border: 1px solid var(--border);
-  font-size: 0.72rem;
-  line-height: 1.5;
+.pager .action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* 项目行内 reason 与滞留标记 */

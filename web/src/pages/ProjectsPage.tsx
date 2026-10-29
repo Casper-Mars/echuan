@@ -29,27 +29,40 @@ import {
 } from '../lib/format'
 import { isInteractiveTarget } from '../lib/interaction'
 
-type ProjectFilter = 'pending' | 'all' | number
+/** 'all' 表示不加 status 参数；数字走服务端单值过滤。 */
+type ProjectStatusFilter = 'all' | number
+
+const PAGE_SIZE = 20
 
 /**
- * 项目列表：默认只显示「待我决策」（status 1/3/5），可切换全部或具体状态。
- * 行内展示标题/状态/停留时长/reason，并提供立项、批准/驳回、取消与详情。
+ * 项目列表：默认显示「全部」，状态下拉框切换即请求服务端过滤。
+ * 分页也在服务端完成：下一页用响应的 next_cursor，上一页用页面内 cursor 栈。
  */
 export function ProjectsPage() {
   const navigate = useNavigate()
   const openDrawer = useDrawer()
   const { productId = '' } = useParams()
-  const [filter, setFilter] = useState<ProjectFilter>('pending')
+  const [status, setStatus] = useState<ProjectStatusFilter>('all')
+  // 首页 cursor 为 undefined；栈里存的是「进入下一页前所在页」的 cursor。
+  const [cursor, setCursor] = useState<string | undefined>(undefined)
+  const [cursorStack, setCursorStack] = useState<(string | undefined)[]>([])
   const [creating, setCreating] = useState(false)
   // 弹窗状态放在页面层：项目离开当前筛选时行会被卸载，但用户正在填写的弹窗必须保留。
   const [action, setAction] = useState<{ project: Project; request: ProjectActionRequest } | null>(null)
 
   const { data, error, loading, refreshing, lastUpdated, refresh } = usePolling(
-    (signal) => listProjects(productId, signal),
-    [productId],
+    (signal) =>
+      listProjects(productId, {
+        status: status === 'all' ? undefined : status,
+        cursor,
+        limit: PAGE_SIZE,
+        signal,
+      }),
+    [productId, status, cursor],
   )
   const projects = itemsOf(data)
-  const pendingCount = projects.filter((project) => isPendingProjectStatus(project.status)).length
+  const hasPrev = cursorStack.length > 0
+  const pageNo = cursorStack.length + 1
 
   // 记忆里的产品已被删除时回产品列表，而不是卡在错误页反复轮询。
   // 只在 404 时重定向一次，网络抖动等其它错误继续由 usePolling 自动重试。
@@ -72,18 +85,30 @@ export function ProjectsPage() {
     return () => controller.abort()
   }, [productId, navigate])
 
-  const visible =
-    filter === 'all'
-      ? projects
-      : filter === 'pending'
-        ? projects.filter((project) => isPendingProjectStatus(project.status))
-        : projects.filter((project) => project.status === filter)
+  // 切换产品时游标不再属于同一列表，回到第一页。
+  useEffect(() => {
+    setCursor(undefined)
+    setCursorStack([])
+  }, [productId])
 
-  const statusCount = (status: number) => projects.filter((project) => project.status === status).length
+  // 切换筛选：同时归零 cursor 与栈，React 批处理下只会发一次「新筛选 + 首页」请求。
+  const handleStatusChange = (value: string) => {
+    setStatus(value === 'all' ? 'all' : Number(value))
+    setCursor(undefined)
+    setCursorStack([])
+  }
 
-  const handleDecided = (updated: Project) => {
-    // 批准/取消后项目会离开“待我决策”，切到「全部」让新状态与 reason 立即可见。
-    if (filter === 'pending' && !isPendingProjectStatus(updated.status)) setFilter('all')
+  const goNext = () => {
+    const next = data?.next_cursor
+    if (!next) return
+    setCursorStack((prev) => [...prev, cursor])
+    setCursor(next)
+  }
+
+  const goPrev = () => {
+    if (cursorStack.length === 0) return
+    setCursor(cursorStack[cursorStack.length - 1])
+    setCursorStack(cursorStack.slice(0, -1))
   }
 
   return (
@@ -110,47 +135,45 @@ export function ProjectsPage() {
 
       <ErrorNotice error={error} onRetry={refresh} />
 
-      <div className="filter-bar" role="group" aria-label="项目状态筛选">
-        <button
-          type="button"
-          className={filter === 'pending' ? 'filter-chip is-active' : 'filter-chip'}
-          onClick={() => setFilter('pending')}
-        >
-          待我决策 <span className="count">{pendingCount}</span>
-        </button>
-        <button
-          type="button"
-          className={filter === 'all' ? 'filter-chip is-active' : 'filter-chip'}
-          onClick={() => setFilter('all')}
-        >
-          全部 <span className="count">{projects.length}</span>
-        </button>
-        {PROJECT_STATUS_OPTIONS.map((option) => (
-          <button
-            key={option.status}
-            type="button"
-            className={filter === option.status ? 'filter-chip is-active' : 'filter-chip'}
-            onClick={() => setFilter(option.status)}
+      <div className="filter-bar">
+        <label className="filter-select">
+          <span className="muted">状态</span>
+          <select
+            aria-label="项目状态筛选"
+            value={status === 'all' ? 'all' : String(status)}
+            onChange={(event) => handleStatusChange(event.target.value)}
           >
-            {option.label} <span className="count">{statusCount(option.status)}</span>
-          </button>
-        ))}
+            <option value="all">全部</option>
+            {PROJECT_STATUS_OPTIONS.map((option) => (
+              <option key={option.status} value={option.status}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {!data && loading && <LoadingState label="正在加载项目…" />}
       {!data && !loading && error && (
         <EmptyState title="项目加载失败" hint="页面会自动重试；也可以点击上方“重试”。" />
       )}
-      {data && projects.length === 0 && (
-        <EmptyState title="暂无项目" hint="点击右上角“新建需求项目”创建第一条需求。" />
+      {data && projects.length === 0 && !hasPrev && (
+        <EmptyState
+          title={status === 'all' ? '暂无项目' : '该筛选下暂无项目'}
+          hint={
+            status === 'all'
+              ? '点击右上角“新建需求项目”创建第一条需求。'
+              : '切换到“全部”或其他状态查看更多。'
+          }
+        />
       )}
-      {data && projects.length > 0 && visible.length === 0 && (
-        <EmptyState title="该筛选下没有项目" hint="切换到“全部”或其他状态查看更多。" />
+      {data && projects.length === 0 && hasPrev && (
+        <EmptyState title="本页已无项目" hint="数据可能已被删除或状态已变化，请回到上一页。" />
       )}
 
-      {visible.length > 0 && (
+      {projects.length > 0 && (
         <div className="list">
-          {visible.map((project) => {
+          {projects.map((project) => {
             const stale = isPendingProjectStatus(project.status) && isPendingStale(project.update_time)
             // 任务草稿去拆解，任务评审去评审；其余状态仍进同一张看板。
             const boardEntry =
@@ -224,12 +247,29 @@ export function ProjectsPage() {
         </div>
       )}
 
+      {data && (projects.length > 0 || hasPrev) && (
+        <nav className="pager" aria-label="项目分页">
+          <button type="button" className="action" onClick={goPrev} disabled={!hasPrev}>
+            上一页
+          </button>
+          <span className="muted">第 {pageNo} 页</span>
+          <button type="button" className="action" onClick={goNext} disabled={!data.next_cursor}>
+            下一页
+          </button>
+        </nav>
+      )}
+
       {creating && (
         <ProjectFormDialog
           mode="create"
           productId={productId}
           onClose={() => setCreating(false)}
-          onSaved={() => { setFilter('all'); refresh() }}
+          onSaved={() => {
+            setStatus('all')
+            setCursor(undefined)
+            setCursorStack([])
+            refresh()
+          }}
         />
       )}
 
@@ -239,7 +279,6 @@ export function ProjectsPage() {
           request={action.request}
           onClose={() => setAction(null)}
           onChanged={refresh}
-          onDecided={handleDecided}
         />
       )}
     </section>
