@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { listProjects } from '../api/client'
+import { ApiError, getProduct, listProjects } from '../api/client'
 import type { Project } from '../api/types'
 import { itemsOf } from '../api/types'
 import { useDrawer } from '../components/DrawerContext'
@@ -49,6 +49,27 @@ export function ProjectsPage() {
   )
   const projects = itemsOf(data)
   const pendingCount = projects.filter((project) => isPendingProjectStatus(project.status)).length
+
+  // 记忆里的产品已被删除时回产品列表，而不是卡在错误页反复轮询。
+  // 只在 404 时重定向一次，网络抖动等其它错误继续由 usePolling 自动重试。
+  useEffect(() => {
+    if (error instanceof ApiError && error.status === 404) {
+      navigate('/products', { replace: true })
+    }
+  }, [error, navigate])
+
+  // 后端对不存在的 product_id 只返回空列表（200）而非 404，仅靠上面的错误判断
+  // 会停在“一个不存在的产品的空项目页”。这里每次进入页面补一次产品存在性校验（不轮询），
+  // 产品已删则回产品列表，保证“任务 → 项目 → 产品”的回退链能收敛。
+  useEffect(() => {
+    const controller = new AbortController()
+    getProduct(productId, controller.signal).catch((err: unknown) => {
+      if (err instanceof ApiError && err.status === 404) {
+        navigate('/products', { replace: true })
+      }
+    })
+    return () => controller.abort()
+  }, [productId, navigate])
 
   const visible =
     filter === 'all'
