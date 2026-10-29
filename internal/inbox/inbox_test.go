@@ -98,7 +98,7 @@ func TestDeriveStateNamesFollowKind(t *testing.T) {
 		{Kind: KindTask, ID: "APP-1-T0002", State: 5, UpdateTime: "2026-10-27T08:00:00Z"},
 		{Kind: "unknown", ID: "X-1", State: 1, UpdateTime: "2026-10-27T08:00:00Z"},
 	}
-	want := []string{"spec_review", "plan_review", "delivery_review", "pending_acceptance", "failed", ""}
+	want := []string{"requirement_review", "spec_review", "tasks_review", "pending_acceptance", "failed", ""}
 
 	entries, err := Derive(items, fixedNow, staleAfter)
 	if err != nil {
@@ -133,7 +133,7 @@ func TestDerivePreservesOrderAndFields(t *testing.T) {
 	}
 
 	first := entries[0]
-	if first.Title != "订单导出" || first.State != 1 || first.StateName != "spec_review" {
+	if first.Title != "订单导出" || first.State != 1 || first.StateName != "requirement_review" {
 		t.Errorf("first = %+v", first)
 	}
 	if first.UpdateTime != "2026-10-24T09:00:00Z" {

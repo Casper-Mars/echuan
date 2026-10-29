@@ -5,36 +5,46 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
 	"github.com/Casper-Mars/echuan/internal/platform"
 )
 
-// newPlanningProject walks the real state machine to planning:
-// create → accept (draft → spec_review) → approve (spec_review → planning).
-func (e *projectTestEnv) newPlanningProject(t *testing.T, title string) string {
+// newTasksDraftProject walks the real state machine to tasks_draft:
+// create → submit (0→1) → approve (1→2) → spec → submit (2→3) → approve (3→4).
+func (e *projectTestEnv) newTasksDraftProject(t *testing.T, title string) string {
 	t.Helper()
 	e.createProduct(t, "APP")
 	projectID := e.createProject(t, "APP", title)
-
 	ctx := context.Background()
-	if _, err := e.service.AcceptProject(ctx, projectID, "pm"); err != nil {
-		t.Fatalf("AcceptProject(%s): %v", projectID, err)
+
+	if _, err := e.service.SubmitProject(ctx, projectID, "pm"); err != nil {
+		t.Fatalf("SubmitProject(%s): %v", projectID, err)
 	}
-	version := e.projectState(t, projectID).Version
-	if _, err := e.service.Decide(ctx, DecideInput{
-		Kind:          DecideKindProject,
-		ID:            projectID,
-		Decision:      domain.DecisionApprove,
-		ExpectVersion: &version,
-		Actor:         "human:pm",
-	}); err != nil {
-		t.Fatalf("Decide(approve spec) of %s: %v", projectID, err)
+	decision := func(decision domain.Decision) {
+		version := e.projectState(t, projectID).Version
+		if _, err := e.service.Decide(ctx, DecideInput{
+			Kind:          DecideKindProject,
+			ID:            projectID,
+			Decision:      decision,
+			ExpectVersion: &version,
+			Actor:         "human:pm",
+		}); err != nil {
+			t.Fatalf("Decide(%s) of %s: %v", decision, projectID, err)
+		}
 	}
-	if state := e.projectState(t, projectID); state.Status != domain.StatusPlanning {
-		t.Fatalf("status = %d, want planning", state.Status)
+	decision(domain.DecisionApprove)
+	if _, err := e.service.SubmitSpec(ctx, projectID, "pm", nil, "# 方案\n\n正文\n"); err != nil {
+		t.Fatalf("SubmitSpec(%s): %v", projectID, err)
+	}
+	if _, err := e.service.SubmitProject(ctx, projectID, "pm"); err != nil {
+		t.Fatalf("SubmitProject(spec) of %s: %v", projectID, err)
+	}
+	decision(domain.DecisionApprove)
+
+	if state := e.projectState(t, projectID); state.Status != domain.StatusTasksDraft {
+		t.Fatalf("status = %d, want tasks_draft", state.Status)
 	}
 	return projectID
 }
@@ -126,7 +136,7 @@ func (e *projectTestEnv) countTaskDeps(t *testing.T, projectID string) int64 {
 
 func fivePlanTasks() []PlanTask {
 	return []PlanTask{
-		{Title: "实现状态机", BodyMD: "# 实现状态机\n\n落地 0–7 状态表。", Priority: 10},
+		{Title: "实现状态机", BodyMD: "# 实现状态机\n\n落地九态状态表。", Priority: 10},
 		{Title: "补测试", BodyMD: "# 补测试\n\n覆盖状态迁移。", Priority: 5, DependsOn: []int{1}},
 		{Title: "接前端", BodyMD: "# 接前端\n\n暴露接口。", DependsOn: []int{1, 2}},
 		{Title: "写文档", BodyMD: "# 文档\n\n更新 README。", Priority: -1000, DependsOn: []int{2}},
@@ -136,7 +146,7 @@ func fivePlanTasks() []PlanTask {
 
 func TestSubmitPlanCreatesTasksAndDeps(t *testing.T) {
 	env := newProjectTestEnv(t)
-	projectID := env.newPlanningProject(t, "登录页改版")
+	projectID := env.newTasksDraftProject(t, "登录页改版")
 	before := env.projectState(t, projectID)
 
 	result, err := env.service.SubmitPlan(context.Background(), projectID, "agent:cto", fivePlanTasks())
@@ -147,8 +157,8 @@ func TestSubmitPlanCreatesTasksAndDeps(t *testing.T) {
 	if result.Project.ProjectID != projectID {
 		t.Errorf("project id = %q, want %q", result.Project.ProjectID, projectID)
 	}
-	if result.Project.Status != domain.StatusPlanReview {
-		t.Errorf("status = %d, want plan_review", result.Project.Status)
+	if result.Project.Status != domain.StatusTasksReview {
+		t.Errorf("status = %d, want tasks_review (first card opens the gate)", result.Project.Status)
 	}
 	if result.Project.Version != before.Version+1 {
 		t.Errorf("version = %d, want %d", result.Project.Version, before.Version+1)
@@ -237,8 +247,8 @@ func TestSubmitPlanCreatesTasksAndDeps(t *testing.T) {
 	}
 
 	state := env.projectState(t, projectID)
-	if state.Status != domain.StatusPlanReview || state.Version != before.Version+1 {
-		t.Errorf("project state = %d/v%d, want plan_review/v%d", state.Status, state.Version, before.Version+1)
+	if state.Status != domain.StatusTasksReview || state.Version != before.Version+1 {
+		t.Errorf("project state = %d/v%d, want tasks_review/v%d", state.Status, state.Version, before.Version+1)
 	}
 	if state.LastActor == nil || *state.LastActor != "agent:cto" {
 		t.Errorf("project last_actor = %v, want agent:cto", state.LastActor)
@@ -247,7 +257,7 @@ func TestSubmitPlanCreatesTasksAndDeps(t *testing.T) {
 
 func TestSubmitPlanBoundaries(t *testing.T) {
 	env := newProjectTestEnv(t)
-	projectID := env.newPlanningProject(t, "边界")
+	projectID := env.newTasksDraftProject(t, "边界")
 
 	tasks := make([]PlanTask, MaxPlanTasks)
 	body := strings.Repeat("a", MaxTaskBodyBytes)
@@ -275,7 +285,7 @@ func TestSubmitPlanBoundaries(t *testing.T) {
 
 func TestSubmitPlanValidationMatrix(t *testing.T) {
 	env := newProjectTestEnv(t)
-	projectID := env.newPlanningProject(t, "校验")
+	projectID := env.newTasksDraftProject(t, "校验")
 	before := env.projectState(t, projectID)
 
 	tooMany := make([]PlanTask, MaxPlanTasks+1)
@@ -345,14 +355,14 @@ func TestSubmitPlanValidationMatrix(t *testing.T) {
 		t.Errorf("persisted tasks = %d, want 0", len(rows))
 	}
 	state := env.projectState(t, projectID)
-	if state.Status != domain.StatusPlanning || state.Version != before.Version {
-		t.Errorf("project = %d/v%d, want planning/v%d", state.Status, state.Version, before.Version)
+	if state.Status != domain.StatusTasksDraft || state.Version != before.Version {
+		t.Errorf("project = %d/v%d, want tasks_draft/v%d", state.Status, state.Version, before.Version)
 	}
 }
 
 func TestSubmitPlanCycleDetection(t *testing.T) {
 	env := newProjectTestEnv(t)
-	projectID := env.newPlanningProject(t, "环检测")
+	projectID := env.newTasksDraftProject(t, "环检测")
 
 	cases := []struct {
 		name    string
@@ -400,8 +410,6 @@ func TestSubmitPlanCycleDetection(t *testing.T) {
 				t.Fatalf("error = %v, want ValidationError", err)
 			}
 			if tc.name == "self reference" {
-				// A self-edge is a field-level check, not a graph cycle, so it
-				// carries no ValidationError.Message.
 				if len(validation.Fields) != 1 || validation.Fields[0].Field != tc.field {
 					t.Errorf("fields = %+v, want %q", validation.Fields, tc.field)
 				}
@@ -425,14 +433,14 @@ func TestSubmitPlanCycleDetection(t *testing.T) {
 	if rows := env.planTaskRows(t, projectID); len(rows) != 0 {
 		t.Errorf("persisted tasks = %d, want 0", len(rows))
 	}
-	if state := env.projectState(t, projectID); state.Status != domain.StatusPlanning {
-		t.Errorf("status = %d, want planning", state.Status)
+	if state := env.projectState(t, projectID); state.Status != domain.StatusTasksDraft {
+		t.Errorf("status = %d, want tasks_draft", state.Status)
 	}
 }
 
 func TestSubmitPlanForwardReference(t *testing.T) {
 	env := newProjectTestEnv(t)
-	projectID := env.newPlanningProject(t, "前向引用")
+	projectID := env.newTasksDraftProject(t, "前向引用")
 
 	result, err := env.service.SubmitPlan(context.Background(), projectID, "agent:cto", []PlanTask{
 		{Title: "先做", BodyMD: "b", DependsOn: []int{2}},
@@ -452,19 +460,18 @@ func TestSubmitPlanForwardReference(t *testing.T) {
 
 func TestSubmitPlanInvalidStateZeroSideEffects(t *testing.T) {
 	statuses := []int{
-		domain.StatusDraft,
+		domain.StatusRequirementDraft,
+		domain.StatusRequirementReview,
+		domain.StatusSpecDraft,
 		domain.StatusSpecReview,
-		domain.StatusPlanReview,
-		domain.StatusDeveloping,
-		domain.StatusDeliveryReview,
-		domain.StatusAccepted,
+		domain.StatusCompleted,
 		domain.StatusCancelled,
 	}
 
 	for _, status := range statuses {
 		t.Run(domain.StatusName(status), func(t *testing.T) {
 			env := newProjectTestEnv(t)
-			projectID := env.newPlanningProject(t, "状态")
+			projectID := env.newTasksDraftProject(t, "状态")
 			reason := "历史理由"
 			env.setProjectState(t, projectID, status, 7, &reason)
 
@@ -507,7 +514,7 @@ func TestSubmitPlanNotFound(t *testing.T) {
 // The transaction must roll back the two tasks inserted before it.
 func TestSubmitPlanRollback(t *testing.T) {
 	env := newProjectTestEnv(t)
-	projectID := env.newPlanningProject(t, "回滚")
+	projectID := env.newTasksDraftProject(t, "回滚")
 	physical := env.physicalProjectID(t, projectID)
 	before := env.projectState(t, projectID)
 
@@ -534,16 +541,16 @@ func TestSubmitPlanRollback(t *testing.T) {
 		t.Errorf("task_deps = %d, want 0", got)
 	}
 	state := env.projectState(t, projectID)
-	if state.Status != domain.StatusPlanning || state.Version != before.Version {
-		t.Errorf("project = %d/v%d, want planning/v%d", state.Status, state.Version, before.Version)
+	if state.Status != domain.StatusTasksDraft || state.Version != before.Version {
+		t.Errorf("project = %d/v%d, want tasks_draft/v%d", state.Status, state.Version, before.Version)
 	}
 }
 
 func TestSubmitPlanReasonPreserved(t *testing.T) {
 	env := newProjectTestEnv(t)
-	projectID := env.newPlanningProject(t, "保留理由")
-	reason := "方案未覆盖会话续期"
-	env.setProjectState(t, projectID, domain.StatusPlanning, 4, &reason)
+	projectID := env.newTasksDraftProject(t, "保留理由")
+	reason := "任务拆分过粗"
+	env.setProjectState(t, projectID, domain.StatusTasksDraft, 4, &reason)
 
 	result, err := env.service.SubmitPlan(context.Background(), projectID, "agent:cto", fivePlanTasks())
 	if err != nil {
@@ -553,7 +560,10 @@ func TestSubmitPlanReasonPreserved(t *testing.T) {
 		t.Errorf("reason = %q, want %q", result.Project.Reason, reason)
 	}
 	if result.Project.Version != 5 {
-		t.Errorf("version = %d, want 5", result.Project.Version)
+		t.Errorf("version = %d, want 5 (task gate opened)", result.Project.Version)
+	}
+	if result.Project.Status != domain.StatusTasksReview {
+		t.Errorf("status = %d, want tasks_review", result.Project.Status)
 	}
 }
 
@@ -569,7 +579,7 @@ func TestSubmitPlanMaxAttemptsFromConfig(t *testing.T) {
 
 	env := newProjectTestEnv(t)
 	env.service.SetMaxAttempts(cfg.MaxAttempts)
-	projectID := env.newPlanningProject(t, "配置")
+	projectID := env.newTasksDraftProject(t, "配置")
 
 	if _, err := env.service.SubmitPlan(context.Background(), projectID, "agent:cto", fivePlanTasks()); err != nil {
 		t.Fatalf("SubmitPlan: %v", err)
@@ -583,7 +593,7 @@ func TestSubmitPlanMaxAttemptsFromConfig(t *testing.T) {
 
 func TestSubmitPlanSequenceContinuesWithoutGaps(t *testing.T) {
 	env := newProjectTestEnv(t)
-	projectID := env.newPlanningProject(t, "续号")
+	projectID := env.newTasksDraftProject(t, "续号")
 	physical := env.physicalProjectID(t, projectID)
 
 	// A historical row at seq 9999 proves both continuation and the 5-digit id
@@ -610,29 +620,30 @@ func TestSubmitPlanSequenceContinuesWithoutGaps(t *testing.T) {
 	}
 }
 
-// TestSubmitPlanThenApproveIsReady is the Task-06 linkage: approving the plan
-// review (plan_review → developing) puts every backlog task into ready.
+// TestSubmitPlanThenApproveIsReady is the task-batch linkage: approving the
+// batch (tasks_review → pending_done) puts every backlog card into ready.
 func TestSubmitPlanThenApproveIsReady(t *testing.T) {
 	env := newProjectTestEnv(t)
-	projectID := env.newPlanningProject(t, "批计划")
+	projectID := env.newTasksDraftProject(t, "批计划")
 
 	plan, err := env.service.SubmitPlan(context.Background(), projectID, "agent:cto", fivePlanTasks())
 	if err != nil {
 		t.Fatalf("SubmitPlan: %v", err)
 	}
 
-	approve, err := env.service.Decide(context.Background(), DecideInput{
-		Kind:          DecideKindProject,
-		ID:            projectID,
-		Decision:      domain.DecisionApprove,
-		ExpectVersion: intPtr(plan.Project.Version),
-		Actor:         "human:cto",
-	})
+	tasks := NewTaskService(env.store)
+	approve, err := tasks.ApproveTasks(context.Background(), projectID, "human:cto")
 	if err != nil {
-		t.Fatalf("Decide(approve plan): %v", err)
+		t.Fatalf("ApproveTasks: %v", err)
 	}
-	if approve.ToStatus != domain.StatusDeveloping {
-		t.Errorf("to status = %d, want developing", approve.ToStatus)
+	if approve.FromStatus != domain.StatusTasksReview || approve.ToStatus != domain.StatusPendingDone {
+		t.Errorf("edge = %d→%d, want 5→6", approve.FromStatus, approve.ToStatus)
+	}
+	if approve.ReadyTasks != 5 {
+		t.Errorf("ready = %d, want 5", approve.ReadyTasks)
+	}
+	if plan.Project.Status != domain.StatusTasksReview {
+		t.Errorf("plan status = %d, want tasks_review", plan.Project.Status)
 	}
 	for _, row := range env.planTaskRows(t, projectID) {
 		if row.Status != domain.TaskReady {
@@ -642,54 +653,31 @@ func TestSubmitPlanThenApproveIsReady(t *testing.T) {
 			t.Errorf("%s version = %d, want 2", row.TaskID, row.Version)
 		}
 	}
+	state := env.projectState(t, projectID)
+	if state.Status != domain.StatusPendingDone {
+		t.Errorf("project status = %d, want pending_done", state.Status)
+	}
 }
 
-func TestSubmitPlanConcurrentOnlyOneWins(t *testing.T) {
+func TestSubmitPlanAppendsAfterReview(t *testing.T) {
 	env := newProjectTestEnv(t)
-	projectID := env.newPlanningProject(t, "并发")
+	projectID := env.newTasksDraftProject(t, "追加")
 
-	const attempts = 10
-	var wg sync.WaitGroup
-	results := make(chan error, attempts)
-	for i := 0; i < attempts; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := env.service.SubmitPlan(context.Background(), projectID, "agent:cto", fivePlanTasks())
-			results <- err
-		}()
+	if _, err := env.service.SubmitPlan(context.Background(), projectID, "agent:cto", fivePlanTasks()); err != nil {
+		t.Fatalf("first SubmitPlan: %v", err)
 	}
-	wg.Wait()
-	close(results)
+	before := env.projectState(t, projectID)
 
-	success, invalidState := 0, 0
-	for err := range results {
-		switch {
-		case err == nil:
-			success++
-		case errors.Is(err, domain.ErrInvalidState):
-			invalidState++
-		default:
-			t.Errorf("unexpected error: %v", err)
-		}
+	result, err := env.service.SubmitPlan(context.Background(), projectID, "agent:cto", []PlanTask{
+		{Title: "补一张", BodyMD: "b"},
+	})
+	if err != nil {
+		t.Fatalf("second SubmitPlan in tasks_review: %v", err)
 	}
-	if success != 1 {
-		t.Errorf("successes = %d, want exactly 1", success)
+	if result.Tasks[0].ID != "APP-1-T0006" || result.Tasks[0].SeqNo != 6 {
+		t.Errorf("appended card = %s/seq %d, want APP-1-T0006/seq 6", result.Tasks[0].ID, result.Tasks[0].SeqNo)
 	}
-	if invalidState != attempts-1 {
-		t.Errorf("invalid_state = %d, want %d", invalidState, attempts-1)
-	}
-
-	rows := env.planTaskRows(t, projectID)
-	if len(rows) != 5 {
-		t.Fatalf("persisted tasks = %d, want 5", len(rows))
-	}
-	for i, row := range rows {
-		if row.SeqNo != i+1 || row.TaskID != fmt.Sprintf("APP-1-T%04d", i+1) {
-			t.Errorf("row %d = %s/seq %d, want contiguous seq", i, row.TaskID, row.SeqNo)
-		}
-	}
-	if got := env.countTaskDeps(t, projectID); got != 6 {
-		t.Errorf("task_deps = %d, want 6", got)
+	if result.Project.Status != domain.StatusTasksReview || result.Project.Version != before.Version {
+		t.Errorf("project = %d/v%d, want tasks_review/v%d", result.Project.Status, result.Project.Version, before.Version)
 	}
 }

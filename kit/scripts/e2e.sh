@@ -4,7 +4,7 @@
 #
 # 覆盖链路：
 #   S1  独立 docker compose 栈起平台（固定端口 18720，数据落临时目录）
-#   S2  播种产品 / 项目 / 两张任务卡
+#   S2  播种产品 / 项目 / 两张任务卡（需求评审 → 方案评审 → 任务评审全链路）
 #   S3  pnpm pack → 装进临时 dsh profile → profile 自身能 --help 退出
 #   S4  dsh 后台启动（ACP 长驻）→ 平台注册出 w_ 前缀 worker
 #   S5  平台派单 → 插件把任务投递给根 agent（日志证据）
@@ -327,7 +327,7 @@ HTTP_BODY=""
 pass "1/11 独立栈就绪（container=$CONTAINER base=$BASE data=$TMP/data，/readyz ok）"
 
 # --- 2. 播种产品 / 项目 / 两张卡 -------------------------------------------
-# 注意：两张卡先停在 plan_review（backlog），**批准拆解放到 S5**。
+# 注意：两张卡先停在 tasks_review（backlog），**批准批次放到 S5**。
 # 原因：首轮心跳（启动后约 5s）到达时 ACP 还没有根 agent，
 # 平台会先把卡派给一个「0 个根 agent」的 worker，投递被跳过且不会重投。
 # 因此在 agent 就绪后再让卡变 ready，才能观察到真实的「派单 → 投递」。
@@ -347,8 +347,14 @@ PROJECT_ID="$(jqr '.project_id')"
 PROJECT_VERSION="$(jqr '.version')"
 [ "$PROJECT_ID" = "$PRODUCT_ID-1" ] || fail "项目 id 应形如 <product_id>-1，实际 $PROJECT_ID"
 
-http_post "/v1/projects/accept?id=$PROJECT_ID" '{}'
-require_code 200 "accept 项目"
+http_post "/v1/projects/submit?id=$PROJECT_ID" '{}'
+require_code 200 "提交需求评审"
+[ "$(jqr '.status_name')" = "requirement_review" ] || fail "提交后应进入 requirement_review，实际 $(jqr '.status_name')"
+PROJECT_VERSION="$(jqr '.version')"
+
+http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' -H "If-Match: $PROJECT_VERSION"
+require_code 200 "需求评审通过"
+[ "$(jqr '.status_name')" = "spec_draft" ] || fail "需求通过后应进入 spec_draft，实际 $(jqr '.status_name')"
 PROJECT_VERSION="$(jqr '.version')"
 
 http_post "/v1/projects/specs?id=$PROJECT_ID" \
@@ -356,9 +362,14 @@ http_post "/v1/projects/specs?id=$PROJECT_ID" \
 require_code 200 "提交规格"
 PROJECT_VERSION="$(jqr '.project_version')"
 
+http_post "/v1/projects/submit?id=$PROJECT_ID" '{}'
+require_code 200 "提交方案评审"
+[ "$(jqr '.status_name')" = "spec_review" ] || fail "方案提交后应进入 spec_review，实际 $(jqr '.status_name')"
+PROJECT_VERSION="$(jqr '.version')"
+
 http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' -H "If-Match: $PROJECT_VERSION"
-require_code 200 "规格评审通过"
-[ "$(jqr '.status_name')" = "planning" ] || fail "规格通过后应进入 planning，实际 $(jqr '.status_name')"
+require_code 200 "方案评审通过"
+[ "$(jqr '.status_name')" = "tasks_draft" ] || fail "方案通过后应进入 tasks_draft，实际 $(jqr '.status_name')"
 PROJECT_VERSION="$(jqr '.version')"
 
 http_post "/v1/projects/plans?id=$PROJECT_ID" \
@@ -369,7 +380,8 @@ TASK2="$(jqr '.tasks[1].id')"
 [ -n "$TASK1" ] && [ "$TASK1" != "null" ] || fail "拆解响应缺少第一张卡 id"
 [ -n "$TASK2" ] && [ "$TASK2" != "null" ] || fail "拆解响应缺少第二张卡 id"
 PROJECT_VERSION="$(jqr '.project_version')"
-say "卡一=$TASK1  卡二=$TASK2（plan_review，待 S5 激活）"
+[ "$(jqr '.status_name')" = "tasks_review" ] || fail "批量添加第一张卡后应进入 tasks_review，实际 $(jqr '.status_name')"
+say "卡一=$TASK1  卡二=$TASK2（tasks_review，待 S5 审批）"
 pass "2/11 产品/项目/两张卡已入库（$TASK1, $TASK2）"
 
 # --- 3. 装插件到临时 profile ------------------------------------------------
@@ -499,7 +511,7 @@ pass "4/11 dsh 启动并注册成功（$WORKER_ID，presence=active state=idle m
 # --- 5. 派单与消息投递 ------------------------------------------------------
 STEP="5/11 派单与投递"
 say ""
-say "== 5/11 建 ACP 会话（根 agent 就绪）→ 激活拆解 → 观察派单与投递 =="
+say "== 5/11 建 ACP 会话（根 agent 就绪）→ 审批任务批次 → 观察派单与投递 =="
 
 acp_open_session "$TMP/work"
 SID=""
@@ -517,13 +529,14 @@ while :; do
 done
 say "ACP session: $SID"
 
-http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' -H "If-Match: $PROJECT_VERSION"
-require_code 200 "拆解评审通过"
-[ "$(jqr '.status_name')" = "developing" ] || fail "拆解通过后应进入 developing，实际 $(jqr '.status_name')"
+http_post "/v1/tasks/review?project_id=$PROJECT_ID" '{"decision":"approve"}'
+require_code 200 "任务批次审批通过"
+[ "$(jqr '.status_name')" = "pending_done" ] || fail "批次通过后项目应为 pending_done，实际 $(jqr '.status_name')"
+[ "$(jqr '.ready_tasks')" = "2" ] || fail "批次通过后应有 2 张卡转 ready，实际 $(jqr '.ready_tasks')"
 
 http_get "/v1/tasks?id=$TASK1"
 require_code 200 "读取卡一"
-[ "$(jqr '.status_name')" = "ready" ] || fail "拆解通过后卡一应为 ready，实际 $(jqr '.status_name')"
+[ "$(jqr '.status_name')" = "ready" ] || fail "批次通过后卡一应为 ready，实际 $(jqr '.status_name')"
 
 # 下一次心跳（≤15s）应拿到 run_task；插件随后投递给根 agent。
 deadline=$(( $(date +%s) + 70 ))
@@ -767,6 +780,24 @@ done
 ELAPSED=$(( OFFLINE_AT - LAST_SEEN_TS ))
 [ "$ELAPSED" -le 60 ] || fail "offline 判定过晚：${ELAPSED}s（worker_ttl=45s）"
 pass "10/11 停用后 ${ELAPSED}s 内转为 offline（$NEW_WID，worker_ttl=45s）"
+
+# --- 10b. 验收最后一张卡 → 项目进入 pending_done --------------------------
+say ""
+say "== 10b/11 验收卡一：项目应停在 pending_done（卡二仍未结清）=="
+
+http_get "/v1/tasks?id=$TASK1"
+require_code 200 "读取卡一"
+[ "$(jqr '.status_name')" = "pending_acceptance" ] || fail "卡一应为 pending_acceptance，实际 $(jqr '.status_name')"
+T1_VERSION="$(jqr '.version')"
+
+http_post "/v1/tasks/decide?id=$TASK1" '{"decision":"accept"}' -H "If-Match: $T1_VERSION"
+require_code 200 "验收卡一"
+[ "$(jqr '.status_name')" = "done" ] || fail "验收后卡一应为 done，实际 $(jqr '.status_name')"
+
+http_get "/v1/projects?id=$PROJECT_ID"
+require_code 200 "读取项目"
+[ "$(jqr '.status_name')" = "pending_done" ] || fail "最后一张卡未结清时项目应停在 pending_done，实际 $(jqr '.status_name')"
+pass "10b/11 验收卡一成功，项目保持 pending_done（等待卡二结清）"
 
 # --- 11. 收尾 --------------------------------------------------------------
 STEP="11/11 收尾"

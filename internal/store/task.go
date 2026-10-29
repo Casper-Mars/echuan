@@ -279,7 +279,7 @@ func CompleteTaskReport(ctx context.Context, tx *sql.Tx, id, materialID int64, l
 
 // CountUnsettledTasksByProject counts the tasks of one project that are
 // neither done (4) nor cancelled (7) — the terminal statuses of the task
-// machine. Task-11 uses zero as the trigger for developing → delivery_review.
+// machine. Zero is the trigger for pending_done → completed.
 func CountUnsettledTasksByProject(ctx context.Context, q Querier, projectID int64) (int64, error) {
 	row, err := One[struct {
 		Count int64 `db:"count"`

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,8 +127,8 @@ func TestCreateProjectHTTP(t *testing.T) {
 	if detail.ID != "APP-1" || detail.ProjectID != "APP-1" || detail.ProductID != "APP" {
 		t.Errorf("ids = %q/%q/%q, want APP-1/APP-1/APP", detail.ID, detail.ProjectID, detail.ProductID)
 	}
-	if detail.Status != 0 || detail.StatusName != "draft" {
-		t.Errorf("status = %d (%s), want 0 (draft)", detail.Status, detail.StatusName)
+	if detail.Status != 0 || detail.StatusName != "requirement_draft" {
+		t.Errorf("status = %d (%s), want 0 (requirement_draft)", detail.Status, detail.StatusName)
 	}
 	if detail.Reason != nil {
 		t.Errorf("reason = %v, want null", *detail.Reason)
@@ -516,9 +517,16 @@ func TestProjectDetailOmitsBodies(t *testing.T) {
 	}); rec.Code != http.StatusCreated {
 		t.Fatalf("create project: status = %d (body %s)", rec.Code, rec.Body.String())
 	}
-	if rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/accept?id=APP-1", nil,
-		map[string]string{HeaderActor: "pm"}); rec.Code != http.StatusOK {
-		t.Fatalf("accept project: status = %d (body %s)", rec.Code, rec.Body.String())
+	submit := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id=APP-1", nil,
+		map[string]string{HeaderActor: "pm"})
+	if submit.Code != http.StatusOK {
+		t.Fatalf("submit project: status = %d (body %s)", submit.Code, submit.Body.String())
+	}
+	submitted := decodeProjectFromResponse(t, submit)
+	if rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id=APP-1",
+		map[string]any{"decision": "approve"},
+		map[string]string{"If-Match": strconv.Itoa(submitted.Version)}); rec.Code != http.StatusOK {
+		t.Fatalf("approve requirement: status = %d (body %s)", rec.Code, rec.Body.String())
 	}
 	if rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/specs?id=APP-1",
 		map[string]any{"body_md": spec}, map[string]string{HeaderActor: "agent:cto"}); rec.Code != http.StatusOK {

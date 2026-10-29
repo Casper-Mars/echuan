@@ -161,7 +161,7 @@ func TestInboxIsNotCached(t *testing.T) {
 
 	// A decision on the project leaves the inbox; a retry clears the task.
 	if _, err := st.Write().ExecContext(context.Background(),
-		`UPDATE projects SET status = ?, reason = NULL`, domain.StatusPlanning); err != nil {
+		`UPDATE projects SET status = ?, reason = NULL`, domain.StatusSpecDraft); err != nil {
 		t.Fatalf("decide project: %v", err)
 	}
 	if _, err := st.Write().ExecContext(context.Background(),

@@ -15,7 +15,7 @@ func TestTaskResponsesExposeWorkerID(t *testing.T) {
 	h, st := workerHTTPEnv(t)
 	// Register while the queue is empty so registration dispatches nothing.
 	workerID := heartbeatWorker(t, h, map[string]any{}).Worker.WorkerID
-	projectID := createPlanningHTTPProject(t, h)
+	projectID := createTasksDraftHTTPProject(t, h)
 
 	claimed := postTask(t, h, projectID, "执行中的卡", "# 正文\n", 10)
 	forceTaskColumns(t, st, claimed.ID, domain.TaskReady, 0, nil, nil, nil)

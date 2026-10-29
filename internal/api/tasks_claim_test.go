@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,11 @@ import (
 func claimHTTPEnv(t *testing.T) (http.Handler, *store.Store, string, string) {
 	t.Helper()
 	h, st, projectID := newTaskHTTPEnv(t)
+	// Claim context still supports a project without a spec pointer.
+	if _, err := st.Write().ExecContext(context.Background(),
+		`UPDATE projects SET spec_material_id = NULL WHERE project_id = ?`, projectID); err != nil {
+		t.Fatalf("null spec pointer: %v", err)
+	}
 	detail := postTask(t, h, projectID, "领取卡", "# 正文\n", 10)
 	forceTaskColumns(t, st, detail.ID, domain.TaskReady, 0, nil, nil, nil)
 	return h, st, projectID, detail.ID

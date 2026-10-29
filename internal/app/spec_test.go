@@ -14,8 +14,9 @@ import (
 // titlePtr builds the optional title argument without a named variable.
 func titlePtr(v string) *string { return &v }
 
-// newSpecReviewProject creates one project and accepts it, so the project sits
-// in spec_review (status 1) — the state a spec is normally submitted in.
+// newSpecReviewProject creates one project and approves its requirement, so the
+// project sits in spec_draft (status 2) — the state a spec is normally written
+// and submitted in.
 func (e *projectTestEnv) newSpecReviewProject(t *testing.T, title string) string {
 	t.Helper()
 	e.createProduct(t, "APP")
@@ -29,8 +30,18 @@ func (e *projectTestEnv) newSpecReviewProject(t *testing.T, title string) string
 		t.Fatalf("CreateProject: %v", err)
 	}
 	projectID := detail.Project.ProjectID
-	if _, err := e.service.AcceptProject(context.Background(), projectID, "pm"); err != nil {
-		t.Fatalf("AcceptProject(%s): %v", projectID, err)
+	if _, err := e.service.SubmitProject(context.Background(), projectID, "pm"); err != nil {
+		t.Fatalf("SubmitProject(%s): %v", projectID, err)
+	}
+	version := e.projectState(t, projectID).Version
+	if _, err := e.service.Decide(context.Background(), DecideInput{
+		Kind:          DecideKindProject,
+		ID:            projectID,
+		Decision:      domain.DecisionApprove,
+		ExpectVersion: &version,
+		Actor:         "human:pm",
+	}); err != nil {
+		t.Fatalf("Decide(approve requirement) of %s: %v", projectID, err)
 	}
 	return projectID
 }
@@ -99,8 +110,8 @@ func TestSubmitSpecVersionChain(t *testing.T) {
 		t.Errorf("spec pointer = %q, want %q", got, first.Spec.MaterialID)
 	}
 	// Submitting must not move the gate.
-	if state := env.projectState(t, projectID); state.Status != domain.StatusSpecReview {
-		t.Errorf("status = %d, want %d (spec_review)", state.Status, domain.StatusSpecReview)
+	if state := env.projectState(t, projectID); state.Status != domain.StatusSpecDraft {
+		t.Errorf("status = %d, want %d (spec_draft)", state.Status, domain.StatusSpecDraft)
 	}
 
 	// v2 with an explicit title, chained onto v1.
@@ -122,7 +133,14 @@ func TestSubmitSpecVersionChain(t *testing.T) {
 		t.Errorf("chain head = %q, want %q", got.CurrentMaterialID, second.Spec.MaterialID)
 	}
 
-	// Reject: status stays spec_review, reason is readable, version bumps.
+	// Submit the spec for review, then reject: status falls back to spec_draft,
+	// the reason is readable and the version bumps.
+	if _, err := env.service.SubmitProject(context.Background(), projectID, "human:liu"); err != nil {
+		t.Fatalf("SubmitProject(spec): %v", err)
+	}
+	if state := env.projectState(t, projectID); state.Status != domain.StatusSpecReview {
+		t.Fatalf("status = %d, want spec_review", state.Status)
+	}
 	rejected, err := env.service.Decide(context.Background(), DecideInput{
 		Kind:          DecideKindProject,
 		ID:            projectID,
@@ -134,8 +152,8 @@ func TestSubmitSpecVersionChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decide(reject): %v", err)
 	}
-	if rejected.ToStatus != domain.StatusSpecReview {
-		t.Errorf("to status = %d, want %d", rejected.ToStatus, domain.StatusSpecReview)
+	if rejected.ToStatus != domain.StatusSpecDraft {
+		t.Errorf("to status = %d, want %d (spec_draft)", rejected.ToStatus, domain.StatusSpecDraft)
 	}
 	if got := env.specPointer(t, projectID); got != second.Spec.MaterialID {
 		t.Errorf("reject must not move the spec pointer: %q", got)
@@ -179,7 +197,10 @@ func TestSubmitSpecVersionChain(t *testing.T) {
 		}
 	}
 
-	// Approve: planning, reason cleared, pointer still v3.
+	// Resubmit, then approve: tasks_draft, reason cleared, pointer still v3.
+	if _, err := env.service.SubmitProject(context.Background(), projectID, "human:liu"); err != nil {
+		t.Fatalf("SubmitProject(spec v3): %v", err)
+	}
 	approved, err := env.service.Decide(context.Background(), DecideInput{
 		Kind:          DecideKindProject,
 		ID:            projectID,
@@ -190,8 +211,8 @@ func TestSubmitSpecVersionChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decide(approve): %v", err)
 	}
-	if approved.ToStatus != domain.StatusPlanning {
-		t.Errorf("to status = %d, want %d (planning)", approved.ToStatus, domain.StatusPlanning)
+	if approved.ToStatus != domain.StatusTasksDraft {
+		t.Errorf("to status = %d, want %d (tasks_draft)", approved.ToStatus, domain.StatusTasksDraft)
 	}
 	state := env.projectState(t, projectID)
 	if state.Reason != nil {
@@ -201,13 +222,9 @@ func TestSubmitSpecVersionChain(t *testing.T) {
 		t.Errorf("approve must not move the spec pointer: %q", got)
 	}
 
-	// planning accepts another spec (the CTO may revise while planning).
-	fourth := mustSubmitSpec(t, env, projectID, nil, "# 方案 v4\n\nplanning 阶段再改一次\n")
-	if fourth.Spec.Version != 4 {
-		t.Errorf("spec version = %d, want 4", fourth.Spec.Version)
-	}
-	if fourth.Project.Status != domain.StatusPlanning {
-		t.Errorf("status = %d, want %d (planning)", fourth.Project.Status, domain.StatusPlanning)
+	// An approved spec is frozen: tasks_draft no longer accepts spec writes.
+	if _, err := env.service.SubmitSpec(context.Background(), projectID, "agent:cto", nil, "# 方案 v4\n"); !errors.Is(err, domain.ErrInvalidState) {
+		t.Errorf("SubmitSpec after approval: error = %v, want invalid_state", err)
 	}
 }
 
@@ -217,11 +234,12 @@ func TestSubmitSpecStateGuard(t *testing.T) {
 
 	title := "方案"
 	for _, status := range []int{
-		domain.StatusDraft,
-		domain.StatusPlanReview,
-		domain.StatusDeveloping,
-		domain.StatusDeliveryReview,
-		domain.StatusAccepted,
+		domain.StatusRequirementDraft,
+		domain.StatusRequirementReview,
+		domain.StatusTasksDraft,
+		domain.StatusTasksReview,
+		domain.StatusPendingDone,
+		domain.StatusCompleted,
 		domain.StatusCancelled,
 	} {
 		t.Run(domain.StatusName(status), func(t *testing.T) {
@@ -237,7 +255,7 @@ func TestSubmitSpecStateGuard(t *testing.T) {
 			// The guard reports one fixed reason naming the states that do accept
 			// a spec, not the state the project happens to be in. Pin that text
 			// to the two allowed names rather than to the current status.
-			for _, allowed := range []int{domain.StatusSpecReview, domain.StatusPlanning} {
+			for _, allowed := range []int{domain.StatusSpecDraft, domain.StatusSpecReview} {
 				if name := domain.StatusName(allowed); !strings.Contains(stateErr.Reason, name) {
 					t.Errorf("reason = %q, want it to name the allowed state %s", stateErr.Reason, name)
 				}
@@ -250,8 +268,8 @@ func TestSubmitSpecStateGuard(t *testing.T) {
 		t.Errorf("kind=2 rows = %d, want 0", got)
 	}
 
-	// spec_review and planning are the two allowed states.
-	for _, status := range []int{domain.StatusSpecReview, domain.StatusPlanning} {
+	// spec_draft and spec_review are the two allowed states.
+	for _, status := range []int{domain.StatusSpecDraft, domain.StatusSpecReview} {
 		t.Run("allowed_"+domain.StatusName(status), func(t *testing.T) {
 			env.setProjectState(t, projectID, status, 7, nil)
 			if _, err := env.service.SubmitSpec(context.Background(), projectID, "agent:cto", &title, "# 方案\n"); err != nil {
@@ -402,13 +420,13 @@ func TestSubmitSpecConcurrent(t *testing.T) {
 	if got := env.specPointer(t, projectID); got != head.MaterialID {
 		t.Errorf("spec pointer = %q, want the v%d material %q", got, head.Version, head.MaterialID)
 	}
-	if state := env.projectState(t, projectID); state.Status != domain.StatusSpecReview {
-		t.Errorf("status = %d, want %d", state.Status, domain.StatusSpecReview)
+	if state := env.projectState(t, projectID); state.Status != domain.StatusSpecDraft {
+		t.Errorf("status = %d, want %d", state.Status, domain.StatusSpecDraft)
 	}
 
 	// The pointer moving only forward is not enough: the project version must
-	// have advanced once per submission on top of the accept bump.
-	wantVersion := 1 /* create */ + 1 /* accept */ + submissions
+	// have advanced once per submission on top of create/submit/approve.
+	wantVersion := 1 /* create */ + 1 /* submit */ + 1 /* approve */ + submissions
 	if state := env.projectState(t, projectID); state.Version != wantVersion {
 		t.Errorf("project version = %d, want %d", state.Version, wantVersion)
 	}

@@ -1,14 +1,15 @@
 /** 时间与状态展示的统一格式化。 */
 
 const PROJECT_STATUS: Record<number, string> = {
-  0: '草稿',
-  1: '规格评审',
-  2: '规划中',
+  0: '需求草稿',
+  1: '需求评审',
+  2: '方案草稿',
   3: '方案评审',
-  4: '开发中',
-  5: '交付评审',
-  6: '已验收',
-  7: '已取消',
+  4: '任务草稿',
+  5: '任务评审',
+  6: '待完成',
+  7: '已完成',
+  8: '已取消',
 }
 
 const TASK_STATUS: Record<number, string> = {
@@ -102,7 +103,7 @@ export const PROJECT_STATUS_OPTIONS: { status: number; label: string }[] = Objec
   .sort((a, b) => a - b)
   .map((status) => ({ status, label: projectStatusLabel(status) }))
 
-/** 需要人工决策的项目状态：规格评审 / 方案评审 / 交付评审。 */
+/** 需要人工决策的项目状态：需求评审 / 方案评审 / 任务评审。 */
 export const PROJECT_PENDING_STATUSES = [1, 3, 5] as const
 
 /** 待决策超过 72 小时视为滞留（阈值可在此统一调整）。 */

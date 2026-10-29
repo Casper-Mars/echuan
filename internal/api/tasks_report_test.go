@@ -480,21 +480,21 @@ func expectInvalidStateCode(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
-// newDevelopingProject creates a planning project with two cards and forces
-// the project into developing at version 7.
+// newDevelopingProject creates a tasks_draft project with two cards and forces
+// the project into pending_done at version 7.
 func newDevelopingProject(t *testing.T, h http.Handler, st *store.Store) (projectID string, cards [2]taskDetailResponse) {
 	t.Helper()
-	projectID = createPlanningHTTPProject(t, h)
+	projectID = createTasksDraftHTTPProject(t, h)
 	cards[0] = postTask(t, h, projectID, "第一张", "# 正文\n", 5)
 	cards[1] = postTask(t, h, projectID, "第二张", "# 正文\n", 5)
-	forceProjectState(t, st, projectID, domain.StatusDeveloping, 7, nil)
+	forceProjectState(t, st, projectID, domain.StatusPendingDone, 7, nil)
 	return projectID, cards
 }
 
 func TestAcceptLastTaskAdvancesProjectHTTP(t *testing.T) {
 	h, st, projectID := newTaskHTTPEnv(t)
 
-	t.Run("remaining ready keeps developing", func(t *testing.T) {
+	t.Run("remaining ready keeps pending_done", func(t *testing.T) {
 		pid, cards := newDevelopingProject(t, h, st)
 		forceTaskColumns(t, st, cards[0].ID, domain.TaskPendingAcceptance, 1, nil, nil, nil)
 		forceTaskColumns(t, st, cards[1].ID, domain.TaskReady, 0, nil, nil, nil)
@@ -503,12 +503,12 @@ func TestAcceptLastTaskAdvancesProjectHTTP(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("accept: status = %d (body %s)", rec.Code, rec.Body.String())
 		}
-		if project := getProjectHTTP(t, h, pid); project.Status != domain.StatusDeveloping {
-			t.Errorf("project status = %d, want developing", project.Status)
+		if project := getProjectHTTP(t, h, pid); project.Status != domain.StatusPendingDone {
+			t.Errorf("project status = %d, want pending_done", project.Status)
 		}
 	})
 
-	t.Run("last non-terminal card advances to delivery_review", func(t *testing.T) {
+	t.Run("last non-terminal card completes the project", func(t *testing.T) {
 		pid, cards := newDevelopingProject(t, h, st)
 		forceTaskColumns(t, st, cards[0].ID, domain.TaskDone, 1, nil, nil, nil)
 		forceTaskColumns(t, st, cards[1].ID, domain.TaskPendingAcceptance, 1, nil, nil, nil)
@@ -518,8 +518,8 @@ func TestAcceptLastTaskAdvancesProjectHTTP(t *testing.T) {
 			t.Fatalf("accept: status = %d (body %s)", rec.Code, rec.Body.String())
 		}
 		project := getProjectHTTP(t, h, pid)
-		if project.Status != domain.StatusDeliveryReview || project.StatusName != "delivery_review" {
-			t.Errorf("project status = %d (%s), want delivery_review", project.Status, project.StatusName)
+		if project.Status != domain.StatusCompleted || project.StatusName != "completed" {
+			t.Errorf("project status = %d (%s), want completed", project.Status, project.StatusName)
 		}
 		if project.Version != 8 {
 			t.Errorf("project version = %d, want 8", project.Version)
@@ -539,12 +539,12 @@ func TestAcceptWithOnlyTerminalTasksAdvancesProjectHTTP(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("accept: status = %d (body %s)", rec.Code, rec.Body.String())
 	}
-	if project := getProjectHTTP(t, h, pid); project.Status != domain.StatusDeliveryReview {
-		t.Errorf("project status = %d, want delivery_review (cancelled is terminal)", project.Status)
+	if project := getProjectHTTP(t, h, pid); project.Status != domain.StatusCompleted {
+		t.Errorf("project status = %d, want completed (cancelled is terminal)", project.Status)
 	}
 }
 
-func TestProjectDeliveryDecisionHTTP(t *testing.T) {
+func TestCompletedProjectRejectsDecisionHTTP(t *testing.T) {
 	h, st, _ := newTaskHTTPEnv(t)
 	pid, cards := newDevelopingProject(t, h, st)
 	forceTaskColumns(t, st, cards[0].ID, domain.TaskDone, 1, nil, nil, nil)
@@ -554,101 +554,20 @@ func TestProjectDeliveryDecisionHTTP(t *testing.T) {
 	}
 
 	project := getProjectHTTP(t, h, pid)
-	if project.Status != domain.StatusDeliveryReview {
-		t.Fatalf("project status = %d, want delivery_review", project.Status)
+	if project.Status != domain.StatusCompleted {
+		t.Fatalf("project status = %d, want completed", project.Status)
 	}
 
-	t.Run("approve accepts", func(t *testing.T) {
-		rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id="+pid,
-			map[string]any{"decision": "approve"},
-			map[string]string{"If-Match": strconv.Itoa(project.Version)})
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
-		}
-		got := decodeProjectFromResponse(t, rec)
-		if got.Status != domain.StatusAccepted || got.StatusName != "accepted" {
-			t.Errorf("status = %d, want accepted", got.Status)
-		}
-		if got.Reason != nil {
-			t.Errorf("reason = %v, want null", got.Reason)
-		}
-	})
-}
-
-func TestProjectDeliveryRejectAndReworkHTTP(t *testing.T) {
-	h, st, _ := newTaskHTTPEnv(t)
-	pid, cards := newDevelopingProject(t, h, st)
-	forceTaskColumns(t, st, cards[0].ID, domain.TaskDone, 1, nil, nil, nil)
-	forceTaskColumns(t, st, cards[1].ID, domain.TaskPendingAcceptance, 1, nil, nil, nil)
-	if rec := postTaskDecision(t, h, cards[1].ID, cards[1].Version, "accept", ""); rec.Code != http.StatusOK {
-		t.Fatalf("accept last card: status = %d", rec.Code)
-	}
-	project := getProjectHTTP(t, h, pid)
-	reason := "首页在移动端错位，请重做"
-
-	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id="+pid,
-		map[string]any{"decision": "reject", "reason": reason},
-		map[string]string{"If-Match": strconv.Itoa(project.Version)})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("reject: status = %d (body %s)", rec.Code, rec.Body.String())
-	}
-	rejected := decodeProjectFromResponse(t, rec)
-	if rejected.Status != domain.StatusDeveloping || rejected.Reason == nil || *rejected.Reason != reason {
-		t.Errorf("project = %+v, want developing with reason", rejected)
-	}
-
-	reworkID := pid + "-T0003"
-	rework := getTaskHTTP(t, h, reworkID)
-	if rework.Status != domain.TaskReady || rework.StatusName != "ready" {
-		t.Errorf("rework status = %d, want ready", rework.Status)
-	}
-	if rework.Title != "返工：登录页改版" {
-		t.Errorf("rework title = %q", rework.Title)
-	}
-	if rework.BodyMD != "返工说明：\n\n"+reason {
-		t.Errorf("rework body = %q", rework.BodyMD)
-	}
-	if rework.AttemptCount != 0 || rework.MaxAttempts != 3 || rework.Priority != 0 || rework.SeqNo != 3 {
-		t.Errorf("rework fields = attempt %d max %d priority %d seq %d",
-			rework.AttemptCount, rework.MaxAttempts, rework.Priority, rework.SeqNo)
-	}
-
-	// Replay: stale version must not create a second card.
-	replay := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id="+pid,
-		map[string]any{"decision": "reject", "reason": reason},
-		map[string]string{"If-Match": strconv.Itoa(project.Version)})
-	if replay.Code != http.StatusConflict {
-		t.Fatalf("replay status = %d, want 409", replay.Code)
-	}
-	if body := decodeError(t, replay); body.Code != "invalid_version" {
-		t.Errorf("replay code = %q, want invalid_version", body.Code)
-	}
-	var taskCount int
-	if err := st.Read().QueryRowContext(context.Background(),
-		`SELECT COUNT(*) FROM tasks WHERE project_id = (SELECT id FROM projects WHERE project_id = ?)`,
-		pid).Scan(&taskCount); err != nil {
-		t.Fatalf("count tasks: %v", err)
-	}
-	if taskCount != 3 {
-		t.Errorf("task count = %d, want 3 (no duplicate rework card)", taskCount)
-	}
-
-	// Full rework loop: claim → report → accept → delivery_review again.
-	claimRec := doJSON(t, h, http.MethodPost, "/v1/tasks/claim", map[string]any{"product": "APP", "task_id": reworkID})
-	if claimRec.Code != http.StatusOK {
-		t.Fatalf("claim rework: status = %d (body %s)", claimRec.Code, claimRec.Body.String())
-	}
-	claim := decodeClaim(t, claimRec)
-	reported := decodeTaskDetail(t, postReport(t, h, reworkID, claim.Lease.LeaseID, "已修复移动端布局"))
-	if reported.Status != domain.TaskPendingAcceptance {
-		t.Fatalf("rework report status = %d", reported.Status)
-	}
-	accept := postTaskDecision(t, h, reworkID, reported.Version, "accept", "")
-	if accept.Code != http.StatusOK {
-		t.Fatalf("accept rework: status = %d (body %s)", accept.Code, accept.Body.String())
-	}
-	if project := getProjectHTTP(t, h, pid); project.Status != domain.StatusDeliveryReview {
-		t.Errorf("project status = %d, want delivery_review after rework", project.Status)
+	for _, decision := range []string{"approve", "reject"} {
+		t.Run(decision, func(t *testing.T) {
+			body := map[string]any{"decision": decision}
+			if decision == "reject" {
+				body["reason"] = "想返工"
+			}
+			rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id="+pid,
+				body, map[string]string{"If-Match": strconv.Itoa(project.Version)})
+			expectInvalidStateCode(t, rec)
+		})
 	}
 }
 

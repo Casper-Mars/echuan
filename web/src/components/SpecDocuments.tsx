@@ -93,7 +93,7 @@ export function SpecDocuments({ projectId, status, onChanged }: {
   const { data, error, loading, refresh } = usePolling((signal) => listSpecs(projectId, signal), [projectId])
   const [reading, setReading] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ spec?: SpecDocument } | null>(null)
-  const editable = status === 1 || status === 2
+  const editable = status === 2 || status === 3
   return (
     <section className="detail-section">
       <h3>技术方案文档（{data?.items.length ?? 0} 份）</h3>

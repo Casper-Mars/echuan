@@ -75,18 +75,24 @@ func (s *ProjectService) SetMaxAttempts(n int) {
 	}
 }
 
-// SubmitPlan inserts one task breakdown and moves the project from planning to
-// plan_review (tech design §4.5, §5.8).
+// SubmitPlan adds one batch of task cards to a project (tech design §4.5).
+//
+// Despite the historical name it no longer submits a breakdown for review: a
+// batch is plain content, inserted in backlog, legal while the project is in
+// tasks_draft, tasks_review or pending_done. When the project is still in
+// tasks_draft the batch opens its review gate in the same transaction
+// (tasks_draft → tasks_review), so the first card always makes the batch
+// reviewable.
 //
 // Validation happens before the transaction, so a bad payload has no side
 // effect at all. The transaction then reads the project, guards its status,
 // takes a contiguous seq range with NextSeqNo, inserts tasks, resolves the
 // batch sequence numbers to physical ids, inserts task_deps, and finally moves
-// the project (status + version + last_actor + update_time). Any error rolls
-// the whole batch back: no task, no edge, no version bump.
+// the project when the gate opens. Any error rolls the whole batch back: no
+// task, no edge, no version bump.
 //
 // reason is deliberately preserved: a rejection objection stays readable while
-// the CTO re-plans (the same policy as spec submission and rework).
+// the CTO edits the batch (the same policy as spec submission and rework).
 func (s *ProjectService) SubmitPlan(ctx context.Context, projectID, actor string, tasks []PlanTask) (PlanResult, error) {
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
@@ -111,12 +117,15 @@ func (s *ProjectService) SubmitPlan(ctx context.Context, projectID, actor string
 			}
 			return err
 		}
-		// Submitting is only legal in planning. plan_review rejects a repeat
-		// submission here, before any write, so a duplicate request is a clean
-		// 409 invalid_state with zero side effects.
-		if row.Status != domain.StatusPlanning {
+		// Cards can be added while drafting, reviewing or after the batch was
+		// approved (pending_done). Terminal projects reject the batch here,
+		// before any write, so a duplicate request is a clean 409 invalid_state
+		// with zero side effects.
+		if row.Status != domain.StatusTasksDraft &&
+			row.Status != domain.StatusTasksReview &&
+			row.Status != domain.StatusPendingDone {
 			return &domain.InvalidStateError{Reason: fmt.Sprintf(
-				"project %q is in status %s; tasks can only be submitted in planning",
+				"project %q is in status %s; tasks can only be added in tasks_draft, tasks_review or pending_done",
 				projectID, domain.StatusName(row.Status))}
 		}
 
@@ -165,21 +174,26 @@ func (s *ProjectService) SubmitPlan(ctx context.Context, projectID, actor string
 			}
 		}
 
-		// reason is passed through unchanged (not cleared): the objection that
-		// produced this re-plan must stay readable.
-		affected, err := store.TransitionProject(ctx, tx, row.ID,
-			row.Status, row.Version, domain.StatusPlanReview, row.Reason, actor, updateTime)
-		if err != nil {
-			return err
-		}
-		if affected == 0 {
-			// Unreachable with the single-writer pool, but reporting the fresh
-			// version is the right answer if it ever happens.
-			fresh, readErr := store.GetProjectByProjectID(ctx, tx, projectID)
-			if readErr != nil {
-				return readErr
+		if row.Status == domain.StatusTasksDraft {
+			// The first card opens the batch review gate. reason is passed
+			// through unchanged (not cleared): the objection that produced this
+			// re-plan must stay readable.
+			next, err := domain.ProjectNextStatus(row.Status, domain.ProjectActionAddFirstTask, "")
+			if err != nil {
+				return err
 			}
-			return &domain.InvalidVersionError{Current: fresh.Version, Expected: row.Version}
+			affected, err := store.TransitionProject(ctx, tx, row.ID,
+				row.Status, row.Version, next, row.Reason, actor, updateTime)
+			if err != nil {
+				return err
+			}
+			if affected == 0 {
+				fresh, readErr := store.GetProjectByProjectID(ctx, tx, projectID)
+				if readErr != nil {
+					return readErr
+				}
+				return &domain.InvalidVersionError{Current: fresh.Version, Expected: row.Version}
+			}
 		}
 
 		result, err = s.planResult(ctx, tx, row.ID, created)

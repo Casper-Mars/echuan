@@ -74,19 +74,19 @@ func decodeProjectFromResponse(t *testing.T, rec *httptest.ResponseRecorder) pro
 	return project
 }
 
-func TestAcceptProjectHTTP(t *testing.T) {
+func TestSubmitProjectHTTP(t *testing.T) {
 	h, st := newProjectTestServer(t)
 	seedProduct(t, st, "APP")
 	projectID := createHTTPProject(t, h, "登录页改版")
 
-	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/accept?id="+projectID, nil,
+	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id="+projectID, nil,
 		map[string]string{HeaderActor: "alice"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
 	project := decodeProjectFromResponse(t, rec)
-	if project.Status != 1 || project.StatusName != "spec_review" {
-		t.Errorf("status = %d (%s), want 1 (spec_review)", project.Status, project.StatusName)
+	if project.Status != 1 || project.StatusName != "requirement_review" {
+		t.Errorf("status = %d (%s), want 1 (requirement_review)", project.Status, project.StatusName)
 	}
 	if project.Reason != nil {
 		t.Errorf("reason = %v, want null", *project.Reason)
@@ -98,17 +98,17 @@ func TestAcceptProjectHTTP(t *testing.T) {
 		t.Errorf("last_actor = %v, want alice", project.LastActor)
 	}
 
-	// A second accept is invalid state, not a version problem.
-	again := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/accept?id="+projectID, nil, nil)
+	// A second submit is invalid state, not a version problem.
+	again := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id="+projectID, nil, nil)
 	if again.Code != http.StatusConflict {
-		t.Fatalf("second accept status = %d, want 409", again.Code)
+		t.Fatalf("second submit status = %d, want 409", again.Code)
 	}
 	if body := decodeError(t, again); body.Code != "invalid_state" {
 		t.Errorf("code = %q, want invalid_state", body.Code)
 	}
 }
 
-func TestAcceptProjectWithoutRequirementHTTP(t *testing.T) {
+func TestSubmitProjectWithoutRequirementHTTP(t *testing.T) {
 	h, st := newProjectTestServer(t)
 	seedProduct(t, st, "APP")
 	projectID := createHTTPProject(t, h, "无需求项目")
@@ -118,7 +118,7 @@ func TestAcceptProjectWithoutRequirementHTTP(t *testing.T) {
 		t.Fatalf("null requirement: %v", err)
 	}
 
-	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/accept?id="+projectID, nil, nil)
+	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id="+projectID, nil, nil)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -216,8 +216,8 @@ func TestDecideProjectHTTPFlow(t *testing.T) {
 		}
 	})
 
-	t.Run("spec approve clears reason", func(t *testing.T) {
-		projectID := createHTTPProject(t, h, "规格批准")
+	t.Run("requirement approve clears reason", func(t *testing.T) {
+		projectID := createHTTPProject(t, h, "需求批准")
 		old := "旧理由"
 		forceProjectState(t, st, projectID, 1, 3, &old)
 
@@ -227,8 +227,8 @@ func TestDecideProjectHTTPFlow(t *testing.T) {
 			t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 		}
 		project := decodeProjectFromResponse(t, rec)
-		if project.Status != 2 || project.StatusName != "planning" {
-			t.Errorf("status = %d (%s), want planning", project.Status, project.StatusName)
+		if project.Status != 2 || project.StatusName != "spec_draft" {
+			t.Errorf("status = %d (%s), want spec_draft", project.Status, project.StatusName)
 		}
 		if project.Reason != nil {
 			t.Errorf("reason = %v, want null", *project.Reason)
@@ -238,8 +238,8 @@ func TestDecideProjectHTTPFlow(t *testing.T) {
 		}
 	})
 
-	t.Run("spec reject keeps the reason", func(t *testing.T) {
-		projectID := createHTTPProject(t, h, "规格驳回")
+	t.Run("requirement reject keeps the reason", func(t *testing.T) {
+		projectID := createHTTPProject(t, h, "需求驳回")
 		forceProjectState(t, st, projectID, 1, 1, nil)
 
 		rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id="+projectID,
@@ -249,8 +249,8 @@ func TestDecideProjectHTTPFlow(t *testing.T) {
 			t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 		}
 		project := decodeProjectFromResponse(t, rec)
-		if project.Status != 1 {
-			t.Errorf("status = %d, want spec_review", project.Status)
+		if project.Status != 0 {
+			t.Errorf("status = %d, want requirement_draft", project.Status)
 		}
 		if project.Reason == nil || *project.Reason != "缺少验收标准" {
 			t.Errorf("reason = %v, want the rejection reason", project.Reason)
@@ -263,15 +263,9 @@ func TestDecideProjectHTTPFlow(t *testing.T) {
 		}
 	})
 
-	t.Run("plan approve readies tasks", func(t *testing.T) {
+	t.Run("spec approve moves to tasks_draft", func(t *testing.T) {
 		projectID := createHTTPProject(t, h, "方案批准")
 		forceProjectState(t, st, projectID, 3, 1, nil)
-		if _, err := st.Write().ExecContext(context.Background(), `
-			INSERT INTO tasks (task_id, project_id, seq_no, title, body_md, status, create_time, update_time)
-			SELECT ?, id, 1, '任务', '正文', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
-			  FROM projects WHERE project_id = ?`, projectID+"-T0001", projectID); err != nil {
-			t.Fatalf("insert task: %v", err)
-		}
 
 		rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id="+projectID,
 			map[string]any{"decision": "approve"}, map[string]string{"If-Match": "1"})
@@ -279,17 +273,8 @@ func TestDecideProjectHTTPFlow(t *testing.T) {
 			t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 		}
 		project := decodeProjectFromResponse(t, rec)
-		if project.Status != 4 || project.StatusName != "developing" {
-			t.Errorf("status = %d (%s), want developing", project.Status, project.StatusName)
-		}
-		var tasks int64
-		if err := st.Read().QueryRowContext(context.Background(), `
-			SELECT COUNT(*) FROM tasks t JOIN projects p ON p.id = t.project_id
-			 WHERE p.project_id = ? AND t.status = 1`, projectID).Scan(&tasks); err != nil {
-			t.Fatalf("count ready tasks: %v", err)
-		}
-		if tasks != 1 {
-			t.Errorf("ready tasks = %d, want 1", tasks)
+		if project.Status != 4 || project.StatusName != "tasks_draft" {
+			t.Errorf("status = %d (%s), want tasks_draft", project.Status, project.StatusName)
 		}
 	})
 }
@@ -313,8 +298,8 @@ func TestCancelProjectHTTP(t *testing.T) {
 			t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 		}
 		project := decodeProjectFromResponse(t, rec)
-		if project.Status != 7 || project.StatusName != "cancelled" {
-			t.Errorf("status = %d (%s), want cancelled", project.Status, project.StatusName)
+		if project.Status != 8 || project.StatusName != "cancelled" {
+			t.Errorf("status = %d (%s), want cancelled(8)", project.Status, project.StatusName)
 		}
 
 		var cancelled int64
@@ -328,9 +313,9 @@ func TestCancelProjectHTTP(t *testing.T) {
 		}
 	})
 
-	t.Run("accepted cannot be cancelled", func(t *testing.T) {
-		projectID := createHTTPProject(t, h, "已验收")
-		forceProjectState(t, st, projectID, 6, 2, nil)
+	t.Run("completed cannot be cancelled", func(t *testing.T) {
+		projectID := createHTTPProject(t, h, "已完成")
+		forceProjectState(t, st, projectID, 7, 2, nil)
 		rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/cancel?id="+projectID, nil, nil)
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("status = %d, want 409 (body %s)", rec.Code, rec.Body.String())
@@ -345,7 +330,7 @@ func TestTerminalProjectRejectsHTTPActions(t *testing.T) {
 	h, st := newProjectTestServer(t)
 	seedProduct(t, st, "APP")
 
-	for _, terminal := range []int{6, 7} {
+	for _, terminal := range []int{7, 8} {
 		projectID := createHTTPProject(t, h, "终态")
 		forceProjectState(t, st, projectID, terminal, 1, nil)
 
@@ -355,7 +340,7 @@ func TestTerminalProjectRejectsHTTPActions(t *testing.T) {
 			body   any
 			header map[string]string
 		}{
-			{http.MethodPost, "/v1/projects/accept?id=" + projectID, nil, nil},
+			{http.MethodPost, "/v1/projects/submit?id=" + projectID, nil, nil},
 			{http.MethodPost, "/v1/projects/decide?id=" + projectID, map[string]any{"decision": "approve"}, map[string]string{"If-Match": "1"}},
 			{http.MethodPost, "/v1/projects/cancel?id=" + projectID, nil, nil},
 		}

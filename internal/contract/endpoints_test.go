@@ -305,21 +305,49 @@ func (e *endpointEnv) decideProject(projectID string, version int, decision, rea
 	return object(e.t, raw)
 }
 
-// planningProject creates a draft, accepts it and approves the spec, leaving
-// the project in planning with the returned version.
+// planningProject creates a draft and walks it to tasks_draft
+// (submit → approve → spec → submit → approve), returning its version.
 func (e *endpointEnv) planningProject(productID, title string) (string, int) {
 	e.t.Helper()
 	created := e.createDraftProject(productID, title, "# 需求\n")
 	projectID := stringField(e.t, created, "project_id")
+	version := e.advanceToTasksDraft(projectID)
+	return projectID, version
+}
 
-	raw, _ := e.call(http.MethodPost, "/v1/projects/accept?id="+projectID, nil, nil, http.StatusOK)
-	accepted := object(e.t, raw)
-
-	approved := e.decideProject(projectID, intField(e.t, accepted, "version"), "approve", "")
-	if name := stringField(e.t, approved, "status_name"); name != "planning" {
-		e.t.Fatalf("project %s status = %q, want planning", projectID, name)
+// advanceToTasksDraft walks requirement submit/approve and spec submit/approve,
+// leaving the project in tasks_draft.
+func (e *endpointEnv) advanceToTasksDraft(projectID string) int {
+	e.t.Helper()
+	raw, _ := e.call(http.MethodPost, "/v1/projects/submit?id="+projectID, nil, nil, http.StatusOK)
+	submitted := object(e.t, raw)
+	approved := e.decideProject(projectID, intField(e.t, submitted, "version"), "approve", "")
+	if name := stringField(e.t, approved, "status_name"); name != "spec_draft" {
+		e.t.Fatalf("project %s status = %q, want spec_draft", projectID, name)
 	}
-	return projectID, intField(e.t, approved, "version")
+	specRec, _ := e.call(http.MethodPost, "/v1/projects/specs?id="+projectID,
+		map[string]any{"body_md": "# 方案\n"}, nil, http.StatusOK)
+	specVersion := intField(e.t, object(e.t, specRec), "project_version")
+	raw, _ = e.call(http.MethodPost, "/v1/projects/submit?id="+projectID, nil, nil, http.StatusOK)
+	resubmitted := object(e.t, raw)
+	approved = e.decideProject(projectID, intField(e.t, resubmitted, "version"), "approve", "")
+	if name := stringField(e.t, approved, "status_name"); name != "tasks_draft" {
+		e.t.Fatalf("project %s status = %q, want tasks_draft (spec v%d)", projectID, name, specVersion)
+	}
+	return intField(e.t, approved, "version")
+}
+
+// advanceToSpecDraft submits the requirement and approves it, leaving the
+// project in spec_draft.
+func (e *endpointEnv) advanceToSpecDraft(projectID string) int {
+	e.t.Helper()
+	raw, _ := e.call(http.MethodPost, "/v1/projects/submit?id="+projectID, nil, nil, http.StatusOK)
+	submitted := object(e.t, raw)
+	approved := e.decideProject(projectID, intField(e.t, submitted, "version"), "approve", "")
+	if name := stringField(e.t, approved, "status_name"); name != "spec_draft" {
+		e.t.Fatalf("project %s status = %q, want spec_draft", projectID, name)
+	}
+	return intField(e.t, approved, "version")
 }
 
 func TestContractEndpoints(t *testing.T) {
@@ -327,8 +355,8 @@ func TestContractEndpoints(t *testing.T) {
 
 	// The operation set is pinned: adding or dropping one is a contract change.
 	operations := e.doc.Operations()
-	if len(operations) != 33 {
-		t.Fatalf("openapi operations = %d, want exactly 33", len(operations))
+	if len(operations) != 34 {
+		t.Fatalf("openapi operations = %d, want exactly 34", len(operations))
 	}
 
 	// ---- health & version -------------------------------------------------
@@ -429,10 +457,14 @@ func TestContractEndpoints(t *testing.T) {
 		t.Errorf("requirement version = %d, want 2", version)
 	}
 
-	raw, _ = e.call(http.MethodPost, "/v1/projects/accept?id="+mainID, nil, nil, http.StatusOK)
-	accepted := object(t, raw)
-	if name := stringField(t, accepted, "status_name"); name != "spec_review" {
-		t.Fatalf("after accept status = %q", name)
+	raw, _ = e.call(http.MethodPost, "/v1/projects/submit?id="+mainID, nil, nil, http.StatusOK)
+	submitted := object(t, raw)
+	if name := stringField(t, submitted, "status_name"); name != "requirement_review" {
+		t.Fatalf("after submit status = %q", name)
+	}
+	specGate := e.decideProject(mainID, intField(t, submitted, "version"), "approve", "")
+	if name := stringField(t, specGate, "status_name"); name != "spec_draft" {
+		t.Fatalf("after requirement approval status = %q", name)
 	}
 
 	raw, _ = e.call(http.MethodPost, "/v1/projects/specs?id="+mainID,
@@ -443,7 +475,15 @@ func TestContractEndpoints(t *testing.T) {
 		t.Fatal("spec response has an empty material_id")
 	}
 
-	e.decideProject(mainID, specVersion, "approve", "")
+	raw, _ = e.call(http.MethodPost, "/v1/projects/submit?id="+mainID, nil, nil, http.StatusOK)
+	reviewGate := object(t, raw)
+	if name := stringField(t, reviewGate, "status_name"); name != "spec_review" {
+		t.Fatalf("after spec submit status = %q", name)
+	}
+	if intField(t, reviewGate, "version") != specVersion+1 {
+		t.Errorf("spec submit version = %d, want %d", intField(t, reviewGate, "version"), specVersion+1)
+	}
+	e.decideProject(mainID, intField(t, reviewGate, "version"), "approve", "")
 
 	raw, _ = e.call(http.MethodPost, "/v1/projects/plans?id="+mainID, map[string]any{
 		"tasks": []any{
@@ -459,9 +499,10 @@ func TestContractEndpoints(t *testing.T) {
 	firstID := stringField(t, tasks[0].(map[string]any), "id")
 	secondID := stringField(t, tasks[1].(map[string]any), "id")
 
-	raw, _ = e.decideProjectRaw(mainID, intField(t, plan, "project_version"), "approve", "")
-	if name := stringField(t, object(t, raw), "status_name"); name != "developing" {
-		t.Fatalf("after plan approval status = %q", name)
+	raw, _ = e.call(http.MethodPost, "/v1/tasks/review?project_id="+mainID,
+		map[string]any{"decision": "approve"}, nil, http.StatusOK)
+	if name := stringField(t, object(t, raw), "status_name"); name != "pending_done" {
+		t.Fatalf("after batch approval status = %q", name)
 	}
 
 	e.call(http.MethodGet, "/v1/projects/materials?id="+mainID+"&kind=1", nil, nil, http.StatusOK)
@@ -512,8 +553,12 @@ func TestContractEndpoints(t *testing.T) {
 		map[string]any{"decision": "accept"},
 		map[string]string{"If-Match": strconv.Itoa(intField(t, report2, "version"))}, http.StatusOK)
 
-	// All work done: the queue is empty and the project waits for acceptance.
+	// All work done: the queue is empty and the project completed itself.
 	e.call(http.MethodPost, "/v1/tasks/claim", map[string]any{"product": "APP"}, nil, http.StatusNoContent)
+	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
+	if name := stringField(t, object(t, raw), "status_name"); name != "completed" {
+		t.Fatalf("project status = %q, want completed after the last acceptance", name)
+	}
 
 	// ---- worker registry: heartbeat, list, detail -------------------------
 	// The queue is empty here, so a heartbeat exercises the "no work" shape:
@@ -552,9 +597,12 @@ func TestContractEndpoints(t *testing.T) {
 	}
 
 	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
-	mainDetail := object(t, raw)
-	e.decideProject(mainID, intField(t, mainDetail, "version"), "approve", "")
-	e.call(http.MethodPost, "/v1/projects/accept?id="+mainID, nil, nil, http.StatusConflict)
+	completed := object(t, raw)
+	e.call(http.MethodPost, "/v1/projects/decide?id="+mainID,
+		map[string]any{"decision": "approve"},
+		map[string]string{"If-Match": strconv.Itoa(intField(t, completed, "version"))},
+		http.StatusConflict)
+	e.call(http.MethodPost, "/v1/projects/submit?id="+mainID, nil, nil, http.StatusConflict)
 
 	// ---- task CRUD on a second planning project ---------------------------
 	secondProject, _ := e.planningProject("APP", "契约任务项目")
@@ -577,11 +625,11 @@ func TestContractEndpoints(t *testing.T) {
 
 	pending := e.createDraftProject("APP", "待评审项目", "# 待评审\n")
 	pendingID := stringField(t, pending, "project_id")
-	raw, _ = e.call(http.MethodPost, "/v1/projects/accept?id="+pendingID, nil, nil, http.StatusOK)
-	pendingAccepted := object(t, raw)
+	raw, _ = e.call(http.MethodPost, "/v1/projects/submit?id="+pendingID, nil, nil, http.StatusOK)
+	pendingSubmitted := object(t, raw)
 	e.call(http.MethodPost, "/v1/projects/decide?id="+pendingID,
 		map[string]any{"decision": "approve"},
-		map[string]string{"If-Match": strconv.Itoa(intField(t, pendingAccepted, "version") + 99)},
+		map[string]string{"If-Match": strconv.Itoa(intField(t, pendingSubmitted, "version") + 99)},
 		http.StatusConflict)
 
 	e.call(http.MethodGet, "/v1/inbox", nil, nil, http.StatusOK)
@@ -682,7 +730,7 @@ func TestContractEndpoints(t *testing.T) {
 	}
 
 	// A business error must keep its own envelope rather than being replaced.
-	raw, _ = e.call(http.MethodPost, "/v1/projects/accept?id="+mainID, nil, nil, http.StatusConflict)
+	raw, _ = e.call(http.MethodPost, "/v1/projects/submit?id="+mainID, nil, nil, http.StatusConflict)
 	business := object(t, raw)
 	if code := stringField(t, business, "code"); code != "invalid_state" {
 		t.Errorf("business error code = %q, want invalid_state", code)
@@ -701,7 +749,7 @@ func TestContractEndpoints(t *testing.T) {
 	// Independent documents retain their own histories while old readers see all specs.
 	multi := e.createDraftProject("APP", "多方案项目", "# 多方案需求\n")
 	multiID := stringField(t, multi, "project_id")
-	e.call(http.MethodPost, "/v1/projects/accept?id="+multiID, nil, nil, http.StatusOK)
+	e.advanceToSpecDraft(multiID)
 	raw, _ = e.call(http.MethodPost, "/v1/specs", map[string]any{
 		"project_id": multiID, "title": "前端方案", "body_md": "前端第一版",
 	}, nil, http.StatusCreated)
@@ -742,7 +790,7 @@ func TestContractEndpoints(t *testing.T) {
 	}
 	large := e.createDraftProject("APP", "方案包限额", "需求")
 	largeID := stringField(t, large, "project_id")
-	e.call(http.MethodPost, "/v1/projects/accept?id="+largeID, nil, nil, http.StatusOK)
+	e.advanceToSpecDraft(largeID)
 	e.call(http.MethodPost, "/v1/specs", map[string]any{
 		"project_id": largeID, "title": "第一份", "body_md": strings.Repeat("a", 5<<10),
 	}, nil, http.StatusCreated)
@@ -836,8 +884,8 @@ func TestRoutesMatchOpenAPI(t *testing.T) {
 	for _, route := range api.Routes() {
 		got[route.Method+" "+route.Path] = true
 	}
-	if len(want) != 33 {
-		t.Fatalf("openapi operations = %d, want 33", len(want))
+	if len(want) != 34 {
+		t.Fatalf("openapi operations = %d, want 34", len(want))
 	}
 	for key := range want {
 		if !got[key] {

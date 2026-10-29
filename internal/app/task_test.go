@@ -45,7 +45,7 @@ func forceTaskState(t *testing.T, e *projectTestEnv, taskID string, status, atte
 
 func TestCreateTaskPersistsBacklogCard(t *testing.T) {
 	e, svc := newTaskEnv(t)
-	projectID := e.newPlanningProject(t, "任务 CRUD")
+	projectID := e.newTasksDraftProject(t, "任务 CRUD")
 
 	first := mustCreateTask(t, svc, projectID, "实现状态机", "# 实现状态机\n", 10)
 	if first.Task.ID != "APP-1-T0001" || first.Task.TaskID != "APP-1-T0001" {
@@ -94,7 +94,7 @@ func TestCreateTaskPersistsBacklogCard(t *testing.T) {
 
 func TestCreateTaskValidation(t *testing.T) {
 	e, svc := newTaskEnv(t)
-	projectID := e.newPlanningProject(t, "校验")
+	projectID := e.newTasksDraftProject(t, "校验")
 
 	cases := []struct {
 		name  string
@@ -160,7 +160,7 @@ func TestCreateTaskRequiresPlanningProject(t *testing.T) {
 
 func TestCreateTaskDependencyRules(t *testing.T) {
 	e, svc := newTaskEnv(t)
-	projectID := e.newPlanningProject(t, "依赖")
+	projectID := e.newTasksDraftProject(t, "依赖")
 	mustCreateTask(t, svc, projectID, "一", "b", 0)
 	mustCreateTask(t, svc, projectID, "二", "b", 0)
 
@@ -217,7 +217,7 @@ func TestFindTaskCycle(t *testing.T) {
 
 func TestGetTaskDetailAndLeaseVisibility(t *testing.T) {
 	e, svc := newTaskEnv(t)
-	projectID := e.newPlanningProject(t, "详情")
+	projectID := e.newTasksDraftProject(t, "详情")
 	mustCreateTask(t, svc, projectID, "一", "b", 0)
 	mustCreateTask(t, svc, projectID, "二", "# 二\n", 0, "APP-1-T0001")
 
@@ -279,7 +279,7 @@ func TestGetTaskDetailAndLeaseVisibility(t *testing.T) {
 
 func TestListTasksPaginationAndFilters(t *testing.T) {
 	e, svc := newTaskEnv(t)
-	projectID := e.newPlanningProject(t, "列表")
+	projectID := e.newTasksDraftProject(t, "列表")
 	for i := 0; i < 12; i++ {
 		mustCreateTask(t, svc, projectID, "任务", "b", i%3)
 	}
@@ -363,7 +363,7 @@ func TestListTasksPaginationAndFilters(t *testing.T) {
 
 func TestUpdateTaskPartialAndVersion(t *testing.T) {
 	e, svc := newTaskEnv(t)
-	projectID := e.newPlanningProject(t, "编辑")
+	projectID := e.newTasksDraftProject(t, "编辑")
 	created := mustCreateTask(t, svc, projectID, "原标题", "原正文", 1)
 
 	reason := "历史理由"
@@ -433,7 +433,7 @@ func TestUpdateTaskPartialAndVersion(t *testing.T) {
 
 func TestDeleteTaskBranches(t *testing.T) {
 	e, svc := newTaskEnv(t)
-	projectID := e.newPlanningProject(t, "删除")
+	projectID := e.newTasksDraftProject(t, "删除")
 	first := mustCreateTask(t, svc, projectID, "一", "b", 0)
 	mustCreateTask(t, svc, projectID, "二", "b", 0, "APP-1-T0001")
 	third := mustCreateTask(t, svc, projectID, "三", "b", 0)
@@ -485,5 +485,27 @@ func TestDeleteTaskBranches(t *testing.T) {
 		if !errors.As(err, &notFound) {
 			t.Errorf("error = %v, want NotFoundError", err)
 		}
+	}
+}
+
+// TestCreateTaskOpensTasksReview pins the 4 → 5 gate: the first card of a
+// tasks_draft project moves the project into review; later cards do not bump it.
+func TestCreateTaskOpensTasksReview(t *testing.T) {
+	e, svc := newTaskEnv(t)
+	projectID := e.newTasksDraftProject(t, "首卡开门")
+
+	first := mustCreateTask(t, svc, projectID, "第一张", "b", 0)
+	if first.Task.Status != domain.TaskBacklog {
+		t.Errorf("task status = %d, want backlog", first.Task.Status)
+	}
+	state := e.projectState(t, projectID)
+	if state.Status != domain.StatusTasksReview {
+		t.Fatalf("project status = %d, want tasks_review", state.Status)
+	}
+	version := state.Version
+
+	mustCreateTask(t, svc, projectID, "第二张", "b", 0)
+	if after := e.projectState(t, projectID); after.Status != domain.StatusTasksReview || after.Version != version {
+		t.Errorf("second card moved project to %d/v%d, want tasks_review/v%d", after.Status, after.Version, version)
 	}
 }

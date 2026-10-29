@@ -68,8 +68,7 @@ func newClaimEnvWithTTL(t *testing.T, ttl time.Duration) *claimEnv {
 }
 
 // newProductProject creates a product and drives one project of it to
-// planning — the only status in which cards can be added, and the status a
-// project is in when its cards are ready to be claimed.
+// tasks_draft — the only status in which new cards can be added.
 func (e *claimEnv) newProductProject(t *testing.T, productID, title string) string {
 	t.Helper()
 	e.createProduct(t, productID)
@@ -83,29 +82,51 @@ func (e *claimEnv) newProductProject(t *testing.T, productID, title string) stri
 		t.Fatalf("CreateProject(%s): %v", title, err)
 	}
 	projectID := detail.Project.ProjectID
-	e.toPlanning(t, projectID)
+	e.toTasksDraft(t, projectID)
 	return projectID
 }
 
-// toPlanning accepts the project and approves its spec review, which is the
-// production path from draft to planning.
-func (e *claimEnv) toPlanning(t *testing.T, projectID string) {
+// toTasksDraft walks the production path from requirement_draft to
+// tasks_draft: submit → approve → spec → submit → approve.
+func (e *claimEnv) toTasksDraft(t *testing.T, projectID string) {
 	t.Helper()
 	ctx := context.Background()
-	if e.projectState(t, projectID).Status == domain.StatusDraft {
-		if _, err := e.service.AcceptProject(ctx, projectID, "pm"); err != nil {
-			t.Fatalf("AcceptProject(%s): %v", projectID, err)
+	decide := func(decision domain.Decision) {
+		version := e.projectState(t, projectID).Version
+		if _, err := e.service.Decide(ctx, DecideInput{
+			Kind:          DecideKindProject,
+			ID:            projectID,
+			Decision:      decision,
+			ExpectVersion: &version,
+			Actor:         "human:pm",
+		}); err != nil {
+			t.Fatalf("Decide(%s) of %s: %v", decision, projectID, err)
 		}
 	}
-	version := e.projectState(t, projectID).Version
-	if _, err := e.service.Decide(ctx, DecideInput{
-		Kind:          DecideKindProject,
-		ID:            projectID,
-		Decision:      domain.DecisionApprove,
-		ExpectVersion: &version,
-		Actor:         "human:pm",
-	}); err != nil {
-		t.Fatalf("Decide(approve spec) of %s: %v", projectID, err)
+	state := func() int { return e.projectState(t, projectID).Status }
+
+	switch state() {
+	case domain.StatusRequirementDraft:
+		if _, err := e.service.SubmitProject(ctx, projectID, "pm"); err != nil {
+			t.Fatalf("SubmitProject(%s): %v", projectID, err)
+		}
+		fallthrough
+	case domain.StatusRequirementReview:
+		decide(domain.DecisionApprove)
+	}
+	if state() == domain.StatusSpecDraft {
+		if _, err := e.service.SubmitSpec(ctx, projectID, "pm", nil, "# 方案\n\n正文\n"); err != nil {
+			t.Fatalf("SubmitSpec(%s): %v", projectID, err)
+		}
+		if _, err := e.service.SubmitProject(ctx, projectID, "pm"); err != nil {
+			t.Fatalf("SubmitProject(spec) of %s: %v", projectID, err)
+		}
+	}
+	if state() == domain.StatusSpecReview {
+		decide(domain.DecisionApprove)
+	}
+	if status := state(); status != domain.StatusTasksDraft {
+		t.Fatalf("status = %d, want tasks_draft", status)
 	}
 }
 
@@ -634,6 +655,12 @@ func TestReclaimerStopWaitsForRun(t *testing.T) {
 func TestClaimContextWithoutSpec(t *testing.T) {
 	e := newClaimEnv(t)
 	projectID := e.newProductProject(t, "APP", "无方案")
+	// A legacy project may still have no spec pointer even though new projects
+	// cannot reach tasks_draft without one.
+	if _, err := e.store.Write().ExecContext(context.Background(),
+		`UPDATE projects SET spec_material_id = NULL WHERE project_id = ?`, projectID); err != nil {
+		t.Fatalf("null spec pointer: %v", err)
+	}
 	e.readyTask(t, projectID, "无方案卡", 0)
 
 	result := e.mustClaim(t, "APP", "")
@@ -683,10 +710,7 @@ func TestClaimContextWithSpec(t *testing.T) {
 func (e *claimEnv) newProjectIDWithSpec(t *testing.T) string {
 	t.Helper()
 	projectID := e.newSpecReviewProject(t, "有方案")
-	if _, err := e.service.SubmitSpec(context.Background(), projectID, "pm", nil, "# 方案\n\n正文\n"); err != nil {
-		t.Fatalf("SubmitSpec(%s): %v", projectID, err)
-	}
-	e.toPlanning(t, projectID)
+	e.toTasksDraft(t, projectID)
 	e.readyTask(t, projectID, "有方案卡", 0)
 	return projectID
 }

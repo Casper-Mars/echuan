@@ -32,3 +32,5 @@ NNNN_<description>.sql
 | 1 | `0001_init.sql` | products / materials / projects / tasks / task_deps 五张表与四个索引 |
 | 2 | `0002_project_last_actor.sql` | projects 新增 `last_actor` 列（可空） |
 | 3 | `0003_workers.sql` | workers 表（worker 心跳与任务占用）、`ix_workers_last_seen` 与部分唯一索引 `ux_workers_current_task` |
+| 4 | `0004_project_specs.sql` | 独立方案表 `project_specs`，旧 `projects.spec_material_id` 迁移为第 1 份方案 |
+| 5 | `0005_project_status_range.sql` | 重建 projects（九态状态机），`status` CHECK 放宽到 0–8 |

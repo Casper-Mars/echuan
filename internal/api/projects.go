@@ -288,8 +288,10 @@ func (h *projectsHandler) bodyLimit() int64 {
 	return h.service.MaxMaterialBytes() + extraBodyBytes
 }
 
-// acceptProject handles POST /v1/projects/accept?id=APP-1: draft → spec_review.
-func (h *projectsHandler) acceptProject(w http.ResponseWriter, r *http.Request) {
+// submitProject handles POST /v1/projects/submit?id=APP-1: the draft enters
+// its review gate (requirement_draft → requirement_review, or spec_draft →
+// spec_review).
+func (h *projectsHandler) submitProject(w http.ResponseWriter, r *http.Request) {
 	projectID := strings.TrimSpace(r.URL.Query().Get("id"))
 	if projectID == "" {
 		writeDomainError(w, r, h.logger, invalidField("id", "is required"))
@@ -297,12 +299,12 @@ func (h *projectsHandler) acceptProject(w http.ResponseWriter, r *http.Request) 
 	}
 	WithSubject(r.Context(), projectID)
 
-	result, err := h.service.AcceptProject(r.Context(), projectID, ActorFromContext(r.Context()))
+	result, err := h.service.SubmitProject(r.Context(), projectID, ActorFromContext(r.Context()))
 	if err != nil {
 		writeDomainError(w, r, h.logger, err)
 		return
 	}
-	h.logProjectTransition(r, domain.ProjectActionAccept, "", result)
+	h.logProjectTransition(r, domain.ProjectActionSubmit, "", result)
 	writeJSON(w, http.StatusOK, toProjectResponse(*result.Project))
 }
 

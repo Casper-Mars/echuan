@@ -121,12 +121,12 @@ curl -s 127.0.0.1:18720/readyz    # 库可写 + 迁移版本匹配
 
 ## 6. 状态机
 
-项目：`0 draft` · `1 spec_review` · `2 planning` · `3 plan_review` · `4 developing` · `5 delivery_review` · `6 accepted` · `7 cancelled`
+项目：`0 requirement_draft` · `1 requirement_review` · `2 spec_draft` · `3 spec_review` · `4 tasks_draft` · `5 tasks_review` · `6 pending_done` · `7 completed` · `8 cancelled`
 任务：`0 backlog` · `1 ready` · `2 in_progress` · `3 pending_acceptance` · `4 done` · `5 failed` · `6 blocked` · `7 cancelled`
 
 规则：
 
-- 客户端**只能提交意图**（`accept` / `decide` / `cancel`，任务的 `claim` / `report` / `decide`），不能直接写 `status`
+- 客户端**只能提交意图**（`submit` / `decide` / `cancel`，任务的 `claim` / `report` / `decide` / `review`），不能直接写 `status`
 - 目标状态由服务端按白名单推导；客户端传来的 `status` 一律忽略或拒绝
 - 项目决策二值：`approve` / `reject`；任务决策四值：`accept` / `rework` / `retry` / `abandon`
 - `rework` 与 `abandon` 必须带 `reason`

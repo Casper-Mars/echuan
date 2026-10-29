@@ -97,22 +97,22 @@ func expectValidationField(t *testing.T, err error, field string) {
 	t.Fatalf("fields = %+v, want %q", validation.Fields, field)
 }
 
-func TestAcceptProject(t *testing.T) {
+func TestSubmitProject(t *testing.T) {
 	env := newProjectTestEnv(t)
 	env.createProduct(t, "APP")
 	projectID := env.createProject(t, "APP", "登录页改版")
 	oldReason := "历史理由"
-	env.setProjectState(t, projectID, domain.StatusDraft, 1, &oldReason)
+	env.setProjectState(t, projectID, domain.StatusRequirementDraft, 1, &oldReason)
 
-	result, err := env.service.AcceptProject(context.Background(), projectID, "alice")
+	result, err := env.service.SubmitProject(context.Background(), projectID, "alice")
 	if err != nil {
-		t.Fatalf("AcceptProject: %v", err)
+		t.Fatalf("SubmitProject: %v", err)
 	}
-	if result.FromStatus != domain.StatusDraft || result.ToStatus != domain.StatusSpecReview {
+	if result.FromStatus != domain.StatusRequirementDraft || result.ToStatus != domain.StatusRequirementReview {
 		t.Errorf("edge = %d→%d, want 0→1", result.FromStatus, result.ToStatus)
 	}
-	if result.Project.Status != domain.StatusSpecReview {
-		t.Errorf("status = %d, want spec_review", result.Project.Status)
+	if result.Project.Status != domain.StatusRequirementReview {
+		t.Errorf("status = %d, want requirement_review", result.Project.Status)
 	}
 	if result.Project.Reason != "" {
 		t.Errorf("reason = %q, want cleared", result.Project.Reason)
@@ -125,7 +125,7 @@ func TestAcceptProject(t *testing.T) {
 	}
 
 	state := env.projectState(t, projectID)
-	if state.Status != domain.StatusSpecReview || state.Version != 2 || state.Reason != nil {
+	if state.Status != domain.StatusRequirementReview || state.Version != 2 || state.Reason != nil {
 		t.Errorf("persisted state = %+v", state)
 	}
 	if state.LastActor == nil || *state.LastActor != "alice" {
@@ -133,7 +133,7 @@ func TestAcceptProject(t *testing.T) {
 	}
 }
 
-func TestAcceptProjectRequiresRequirement(t *testing.T) {
+func TestSubmitProjectRequiresRequirement(t *testing.T) {
 	env := newProjectTestEnv(t)
 	env.createProduct(t, "APP")
 	projectID := env.createProject(t, "APP", "无需求项目")
@@ -143,15 +143,42 @@ func TestAcceptProjectRequiresRequirement(t *testing.T) {
 		t.Fatalf("null requirement: %v", err)
 	}
 
-	_, err := env.service.AcceptProject(context.Background(), projectID, "alice")
+	_, err := env.service.SubmitProject(context.Background(), projectID, "alice")
 	expectInvalidState(t, err)
 	if !strings.Contains(err.Error(), "requirement") {
 		t.Errorf("error = %q, want it to mention the missing requirement", err)
 	}
 
 	state := env.projectState(t, projectID)
-	if state.Status != domain.StatusDraft || state.Version != 1 {
-		t.Errorf("state = %+v, want unchanged draft/1", state)
+	if state.Status != domain.StatusRequirementDraft || state.Version != 1 {
+		t.Errorf("state = %+v, want unchanged requirement_draft/1", state)
+	}
+}
+
+func TestSubmitProjectRequiresSpec(t *testing.T) {
+	env := newProjectTestEnv(t)
+	env.createProduct(t, "APP")
+	projectID := env.createProject(t, "APP", "无方案项目")
+	env.setProjectState(t, projectID, domain.StatusSpecDraft, 3, nil)
+
+	_, err := env.service.SubmitProject(context.Background(), projectID, "alice")
+	expectInvalidState(t, err)
+	if !strings.Contains(err.Error(), "spec") {
+		t.Errorf("error = %q, want it to mention the missing spec", err)
+	}
+	if state := env.projectState(t, projectID); state.Status != domain.StatusSpecDraft || state.Version != 3 {
+		t.Errorf("state = %+v, want unchanged spec_draft/3", state)
+	}
+
+	if _, err := env.service.SubmitSpec(context.Background(), projectID, "cto", nil, "# 方案\n\n正文\n"); err != nil {
+		t.Fatalf("SubmitSpec: %v", err)
+	}
+	result, err := env.service.SubmitProject(context.Background(), projectID, "alice")
+	if err != nil {
+		t.Fatalf("SubmitProject with a spec: %v", err)
+	}
+	if result.ToStatus != domain.StatusSpecReview {
+		t.Errorf("to = %d, want spec_review", result.ToStatus)
 	}
 }
 
@@ -166,12 +193,10 @@ func TestDecideProjectStateMachine(t *testing.T) {
 		reason   string
 		want     int
 	}{
-		{"spec approve", domain.StatusSpecReview, domain.DecisionApprove, "", domain.StatusPlanning},
-		{"spec reject", domain.StatusSpecReview, domain.DecisionReject, "缺少验收标准", domain.StatusSpecReview},
-		{"plan approve", domain.StatusPlanReview, domain.DecisionApprove, "", domain.StatusDeveloping},
-		{"plan reject", domain.StatusPlanReview, domain.DecisionReject, "任务拆分过粗", domain.StatusPlanning},
-		{"delivery approve", domain.StatusDeliveryReview, domain.DecisionApprove, "", domain.StatusAccepted},
-		{"delivery reject", domain.StatusDeliveryReview, domain.DecisionReject, "按钮错位", domain.StatusDeveloping},
+		{"requirement approve", domain.StatusRequirementReview, domain.DecisionApprove, "", domain.StatusSpecDraft},
+		{"requirement reject", domain.StatusRequirementReview, domain.DecisionReject, "缺少验收标准", domain.StatusRequirementDraft},
+		{"spec approve", domain.StatusSpecReview, domain.DecisionApprove, "", domain.StatusTasksDraft},
+		{"spec reject", domain.StatusSpecReview, domain.DecisionReject, "方案未覆盖会话续期", domain.StatusSpecDraft},
 	}
 
 	for _, tc := range tests {
@@ -227,7 +252,7 @@ func TestDecideProjectGuards(t *testing.T) {
 
 	t.Run("reject needs reason", func(t *testing.T) {
 		projectID := env.createProject(t, "APP", "驳回无理由")
-		env.setProjectState(t, projectID, domain.StatusSpecReview, 1, nil)
+		env.setProjectState(t, projectID, domain.StatusRequirementReview, 1, nil)
 		_, err := env.service.Decide(context.Background(), DecideInput{
 			Kind: DecideKindProject, ID: projectID, Decision: domain.DecisionReject,
 			ExpectVersion: intPtr(1), Actor: "x",
@@ -237,7 +262,7 @@ func TestDecideProjectGuards(t *testing.T) {
 
 	t.Run("invalid decision", func(t *testing.T) {
 		projectID := env.createProject(t, "APP", "非法决策")
-		env.setProjectState(t, projectID, domain.StatusSpecReview, 1, nil)
+		env.setProjectState(t, projectID, domain.StatusRequirementReview, 1, nil)
 		_, err := env.service.Decide(context.Background(), DecideInput{
 			Kind: DecideKindProject, ID: projectID, Decision: "maybe",
 			ExpectVersion: intPtr(1), Actor: "x",
@@ -247,7 +272,7 @@ func TestDecideProjectGuards(t *testing.T) {
 
 	t.Run("version mismatch", func(t *testing.T) {
 		projectID := env.createProject(t, "APP", "版本不符")
-		env.setProjectState(t, projectID, domain.StatusSpecReview, 3, nil)
+		env.setProjectState(t, projectID, domain.StatusRequirementReview, 3, nil)
 		_, err := env.service.Decide(context.Background(), DecideInput{
 			Kind: DecideKindProject, ID: projectID, Decision: domain.DecisionApprove,
 			ExpectVersion: intPtr(9), Actor: "x",
@@ -266,7 +291,7 @@ func TestDecideProjectGuards(t *testing.T) {
 
 	t.Run("missing version", func(t *testing.T) {
 		projectID := env.createProject(t, "APP", "缺版本")
-		env.setProjectState(t, projectID, domain.StatusSpecReview, 1, nil)
+		env.setProjectState(t, projectID, domain.StatusRequirementReview, 1, nil)
 		_, err := env.service.Decide(context.Background(), DecideInput{
 			Kind: DecideKindProject, ID: projectID, Decision: domain.DecisionApprove,
 			Actor: "x",
@@ -275,25 +300,26 @@ func TestDecideProjectGuards(t *testing.T) {
 	})
 }
 
-func TestPlanReviewApproveReadiesTasks(t *testing.T) {
+func TestTasksReviewApproveReadiesTasks(t *testing.T) {
 	env := newProjectTestEnv(t)
 	env.createProduct(t, "APP")
 	projectID := env.createProject(t, "APP", "任务就绪")
-	env.setProjectState(t, projectID, domain.StatusPlanReview, 4, nil)
+	env.setProjectState(t, projectID, domain.StatusTasksReview, 4, nil)
 
 	env.insertTaskRow(t, projectID, projectID+"-T0001", 1, domain.TaskBacklog, 1)
 	env.insertTaskRow(t, projectID, projectID+"-T0002", 2, domain.TaskBacklog, 1)
 	env.insertTaskRow(t, projectID, projectID+"-T0003", 3, domain.TaskDone, 2)
 
-	result, err := env.service.Decide(context.Background(), DecideInput{
-		Kind: DecideKindProject, ID: projectID, Decision: domain.DecisionApprove,
-		ExpectVersion: intPtr(4), Actor: "cto",
-	})
+	tasks := NewTaskService(env.store)
+	result, err := tasks.ApproveTasks(context.Background(), projectID, "cto")
 	if err != nil {
-		t.Fatalf("Decide: %v", err)
+		t.Fatalf("ApproveTasks: %v", err)
 	}
-	if result.Project.Status != domain.StatusDeveloping {
-		t.Errorf("status = %d, want developing", result.Project.Status)
+	if result.ToStatus != domain.StatusPendingDone {
+		t.Errorf("to status = %d, want pending_done", result.ToStatus)
+	}
+	if result.ReadyTasks != 2 {
+		t.Errorf("ready tasks = %d, want 2", result.ReadyTasks)
 	}
 
 	var ready, done int64
@@ -322,88 +348,17 @@ func TestPlanReviewApproveReadiesTasks(t *testing.T) {
 	}
 }
 
-func TestPlanReviewRejectDeletesTasks(t *testing.T) {
+func TestTasksReviewWithoutBacklogIsInvalid(t *testing.T) {
 	env := newProjectTestEnv(t)
 	env.createProduct(t, "APP")
-	projectID := env.createProject(t, "APP", "重规划")
-	env.setProjectState(t, projectID, domain.StatusPlanReview, 2, nil)
+	projectID := env.createProject(t, "APP", "空批次")
+	env.setProjectState(t, projectID, domain.StatusTasksReview, 2, nil)
 
-	first := env.insertTaskRow(t, projectID, projectID+"-T0001", 1, domain.TaskBacklog, 1)
-	second := env.insertTaskRow(t, projectID, projectID+"-T0002", 2, domain.TaskBacklog, 1)
-	if _, err := env.store.Write().ExecContext(context.Background(), `
-		INSERT INTO task_deps (task_id, depends_on, create_time, update_time)
-		VALUES (?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, second, first); err != nil {
-		t.Fatalf("insert task dep: %v", err)
-	}
-
-	result, err := env.service.Decide(context.Background(), DecideInput{
-		Kind: DecideKindProject, ID: projectID, Decision: domain.DecisionReject,
-		Reason: "任务拆分过粗", ExpectVersion: intPtr(2), Actor: "cto",
-	})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if result.Project.Status != domain.StatusPlanning {
-		t.Errorf("status = %d, want planning", result.Project.Status)
-	}
-	if result.Project.Reason != "任务拆分过粗" {
-		t.Errorf("reason = %q", result.Project.Reason)
-	}
-	if got := env.count(t, `SELECT COUNT(*) FROM tasks t JOIN projects p ON p.id = t.project_id WHERE p.project_id = ?`, projectID); got != 0 {
-		t.Errorf("tasks = %d, want 0 after rejection", got)
-	}
-	if got := env.count(t, `SELECT COUNT(*) FROM task_deps`); got != 0 {
-		t.Errorf("task_deps = %d, want 0", got)
-	}
-}
-
-func TestDeliveryRejectCreatesReworkTask(t *testing.T) {
-	env := newProjectTestEnv(t)
-	env.createProduct(t, "APP")
-	projectID := env.createProject(t, "APP", "登录页改版")
-	env.setProjectState(t, projectID, domain.StatusDeliveryReview, 3, nil)
-
-	result, err := env.service.Decide(context.Background(), DecideInput{
-		Kind: DecideKindProject, ID: projectID, Decision: domain.DecisionReject,
-		Reason: "按钮错位", ExpectVersion: intPtr(3), Actor: "qa",
-	})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	if result.Project.Status != domain.StatusDeveloping {
-		t.Errorf("status = %d, want developing", result.Project.Status)
-	}
-	if result.Project.Reason != "按钮错位" {
-		t.Errorf("reason = %q", result.Project.Reason)
-	}
-
-	var (
-		taskID  string
-		title   string
-		body    string
-		status  int
-		version int
-	)
-	if err := env.store.Read().QueryRowContext(context.Background(), `
-		SELECT t.task_id, t.title, t.body_md, t.status, t.version
-		  FROM tasks t JOIN projects p ON p.id = t.project_id
-		 WHERE p.project_id = ?`, projectID).Scan(&taskID, &title, &body, &status, &version); err != nil {
-		t.Fatalf("read rework task: %v", err)
-	}
-	if title != "返工：登录页改版" {
-		t.Errorf("title = %q", title)
-	}
-	if !strings.Contains(body, "按钮错位") {
-		t.Errorf("body = %q, want the rejection reason", body)
-	}
-	if status != domain.TaskReady {
-		t.Errorf("status = %d, want ready", status)
-	}
-	if version != 2 {
-		t.Errorf("version = %d, want 2 (backlog → ready)", version)
-	}
-	if want := projectID + "-T0001"; taskID != want {
-		t.Errorf("task_id = %q, want %q", taskID, want)
+	tasks := NewTaskService(env.store)
+	_, err := tasks.ApproveTasks(context.Background(), projectID, "cto")
+	expectInvalidState(t, err)
+	if state := env.projectState(t, projectID); state.Status != domain.StatusTasksReview || state.Version != 2 {
+		t.Errorf("state = %+v, want unchanged", state)
 	}
 }
 
@@ -411,7 +366,7 @@ func TestCancelProjectCancelsUnfinishedTasks(t *testing.T) {
 	env := newProjectTestEnv(t)
 	env.createProduct(t, "APP")
 	projectID := env.createProject(t, "APP", "取消项目")
-	env.setProjectState(t, projectID, domain.StatusDeveloping, 1, nil)
+	env.setProjectState(t, projectID, domain.StatusTasksDraft, 1, nil)
 
 	env.insertTaskRow(t, projectID, projectID+"-T0001", 1, domain.TaskBacklog, 1)
 	env.insertTaskRow(t, projectID, projectID+"-T0002", 2, domain.TaskInProgress, 2)
@@ -452,12 +407,12 @@ func TestTerminalProjectRejectsEveryAction(t *testing.T) {
 	env := newProjectTestEnv(t)
 	env.createProduct(t, "APP")
 
-	for _, terminal := range []int{domain.StatusAccepted, domain.StatusCancelled} {
+	for _, terminal := range []int{domain.StatusCompleted, domain.StatusCancelled} {
 		projectID := env.createProject(t, "APP", "终态")
 		env.setProjectState(t, projectID, terminal, 2, nil)
 
-		if _, err := env.service.AcceptProject(context.Background(), projectID, "x"); !errors.Is(err, domain.ErrInvalidState) {
-			t.Errorf("accept on %s: error = %v", domain.StatusName(terminal), err)
+		if _, err := env.service.SubmitProject(context.Background(), projectID, "x"); !errors.Is(err, domain.ErrInvalidState) {
+			t.Errorf("submit on %s: error = %v", domain.StatusName(terminal), err)
 		}
 		if _, err := env.service.CancelProject(context.Background(), projectID, "x", ""); !errors.Is(err, domain.ErrInvalidState) {
 			t.Errorf("cancel on %s: error = %v", domain.StatusName(terminal), err)
@@ -477,7 +432,7 @@ func TestConcurrentProjectDecision(t *testing.T) {
 	env := newProjectTestEnv(t)
 	env.createProduct(t, "APP")
 	projectID := env.createProject(t, "APP", "并发决策")
-	env.setProjectState(t, projectID, domain.StatusSpecReview, 1, nil)
+	env.setProjectState(t, projectID, domain.StatusRequirementReview, 1, nil)
 
 	const workers = 10
 	var (
@@ -521,8 +476,8 @@ func TestConcurrentProjectDecision(t *testing.T) {
 	if len(other) > 0 {
 		t.Errorf("unexpected errors: %v", other)
 	}
-	if state := env.projectState(t, projectID); state.Status != domain.StatusPlanning || state.Version != 2 {
-		t.Errorf("final state = %+v, want planning/2", state)
+	if state := env.projectState(t, projectID); state.Status != domain.StatusSpecDraft || state.Version != 2 {
+		t.Errorf("final state = %+v, want spec_draft/2", state)
 	}
 }
 
