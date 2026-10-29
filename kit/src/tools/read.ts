@@ -389,8 +389,9 @@ export function createProjectGetTool(options: EchuanToolOptions): ToolDefinition
   return defineTool({
     name: 'echuan_project_get',
     description:
-      '查看一个驿传（echuan）项目的全景（只读，GET /v1/projects?id=）：状态、需求摘要、'
-      + '方案标题与版本、任务统计（总数与各状态计数）、原因说明。',
+      '查看一个驿传（echuan）项目的全景（只读，GET /v1/projects?id=）：状态、'
+      + '需求与方案的元信息（标题、版本、material_id）、任务统计（总数与各状态计数）、'
+      + '原因说明；正文用 `echuan_material_get` 按 material_id 取。',
     parameters: {
       id: {
         type: 'string',

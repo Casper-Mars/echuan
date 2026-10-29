@@ -141,8 +141,6 @@ const INBOX_PAYLOAD = {
   generated_at: '2026-10-28T20:56:00.000Z',
 }
 
-const REQUIREMENT_MD = '需求正文。'.repeat(400) // 2000 字，超过需求摘要上限
-
 const PROJECT_PAYLOAD = {
   id: 'APP-2',
   project_id: 'APP-2',
@@ -167,7 +165,6 @@ const PROJECT_PAYLOAD = {
     uploaded_by: 'human:alice',
     create_time: '2026-10-27T10:01:00.000Z',
   },
-  requirement_md: REQUIREMENT_MD,
   spec: {
     material_id: 'm_spec001',
     kind: 2,
@@ -178,7 +175,6 @@ const PROJECT_PAYLOAD = {
     uploaded_by: 'human:alice',
     create_time: '2026-10-28T09:40:00.000Z',
   },
-  spec_excerpt: '方案摘要：分层实现，先做会话再做权限。',
 }
 
 const TASK_PAYLOAD = {
@@ -358,7 +354,7 @@ describe('echuan_inbox：待办', () => {
 // ---------------------------------------------------------------------------
 
 describe('echuan_project_get：项目全景', () => {
-  it('render 含需求摘要（截断标注）、方案标题/版本、任务统计、reason', async () => {
+  it('render 给需求/方案的 material_id 索引、任务统计、reason，且不含正文', async () => {
     const platform = createPlatform(() => jsonResponse(PROJECT_PAYLOAD))
     const tool = toolsFor(platform.fetchImpl).get('echuan_project_get')
 
@@ -367,17 +363,16 @@ describe('echuan_project_get：项目全景', () => {
 
     expect(text).toContain('项目 APP-2：登录模块')
     expect(text).toContain('spec_review')
-    expect(text).toContain('需求摘要')
 
-    // 需求摘要被截断并标注完整长度
-    expect(text).toContain('已截断')
-    expect(text).toContain(`完整内容共 ${REQUIREMENT_MD.length} 字`)
+    // 需求与方案只给元信息（标题 / 版本 / material_id），正文入口是 material_id
+    expect(text).toContain('- 需求：登录需求（v2，material_id=m_req0001，3200B）')
+    expect(text).toContain('- 方案：登录技术方案（v3，material_id=m_spec001，12800B）')
+    expect(text).toContain('echuan_material_get')
 
-    // 方案标题与版本
-    expect(text).toContain('登录技术方案')
-    expect(text).toContain('v3')
-    expect(text).toContain('m_spec001')
-    expect(text).toContain('方案摘要：分层实现')
+    // 详情接口不再返回正文：既不能出现旧摘要，也不能出现截断标注
+    expect(text).not.toContain('需求正文')
+    expect(text).not.toContain('分层实现')
+    expect(text).not.toContain('已截断')
 
     // 任务统计数字
     expect(text).toContain('共 12 个')
@@ -392,6 +387,21 @@ describe('echuan_project_get：项目全景', () => {
     expect(text).not.toContain('requirement_md')
   })
 
+  it('mock 不带正文字段时仍给出 material_id 指引（防契约外字段漂移）', async () => {
+    // 详情响应契约里已经没有 `requirement_md` / `spec_excerpt`：
+    // 这里显式确认 mock 与契约一致，再验证渲染不依赖它们。
+    expect(JSON.stringify(PROJECT_PAYLOAD)).not.toContain('requirement_md')
+    expect(JSON.stringify(PROJECT_PAYLOAD)).not.toContain('spec_excerpt')
+
+    const platform = createPlatform(() => jsonResponse(PROJECT_PAYLOAD))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_project_get')
+
+    const { text } = await runTool(tool!, { id: 'APP-2' })
+    expect(text).toContain('material_id=m_req0001')
+    expect(text).toContain('material_id=m_spec001')
+    expect(text).toContain('echuan_material_get')
+  })
+
   it('GET /v1/projects?id=APP-2', async () => {
     const platform = createPlatform(() => jsonResponse(PROJECT_PAYLOAD))
     const tool = toolsFor(platform.fetchImpl).get('echuan_project_get')
@@ -403,19 +413,20 @@ describe('echuan_project_get：项目全景', () => {
     expect(platform.calls[0]!.url).toBe('http://platform.test/v1/projects?id=APP-2')
   })
 
-  it('需求为空时明说「需求正文为空」', async () => {
+  it('需求/方案缺失时输出「暂无」且不崩', async () => {
     const platform = createPlatform(() => jsonResponse({
       ...PROJECT_PAYLOAD,
-      requirement_md: '',
       requirement: null,
       spec: null,
-      spec_excerpt: null,
     }))
     const tool = toolsFor(platform.fetchImpl).get('echuan_project_get')
 
-    const { text } = await runTool(tool!, { id: 'APP-2' })
-    expect(text).toContain('需求正文为空')
-    expect(text).toContain('暂无（平台未给出方案）')
+    const { value, text } = await runTool(tool!, { id: 'APP-2' })
+    expectValidOutput(tool!, value)
+
+    expect(text).toContain('- 需求：暂无')
+    expect(text).toContain('- 方案：暂无')
+    expect(text).toContain('echuan_material_get')
   })
 })
 
@@ -820,7 +831,7 @@ describe('回归：get 工具仍走详情路径', () => {
     const task = await runTool(tools.get('echuan_task_get')!, { id: 'APP-1-T0007' })
 
     expect(project.text).toContain('项目 APP-2：登录模块')
-    expect(project.text).toContain('需求摘要：')
+    expect(project.text).toContain('material_id=m_req0001')
     expect(task.text).toContain('任务 APP-1-T0007：实现登录接口')
     expect(task.text).toContain('正文：')
 
