@@ -26,7 +26,6 @@ export { READ_TOOL_NAMES } from './read.js'
 export {
   LIST_TEXT_MAX_CHARS,
   MATERIAL_MAX_CHARS,
-  REQUIREMENT_MAX_CHARS,
   TASK_BODY_MAX_CHARS,
   formatDuration,
   formatInbox,

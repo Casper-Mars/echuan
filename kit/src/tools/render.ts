@@ -140,10 +140,6 @@ export function renderTextValue(value: unknown): TextContent[] {
   return [textBlock(text ?? '')]
 }
 
-/** 需求摘要的截断上限（字）。 */
-export const REQUIREMENT_MAX_CHARS = 1200
-/** 方案摘要（`spec_excerpt`）的截断上限（字）。 */
-export const SPEC_EXCERPT_MAX_CHARS = 800
 /** 任务正文的截断上限（字）。 */
 export const TASK_BODY_MAX_CHARS = 6000
 /** 报告标题的截断上限（字）。 */
@@ -350,28 +346,25 @@ function formatMaterialRef(material: unknown, emptyText: string): string {
 }
 
 /**
- * 项目全景：编号 / 标题 / 状态 / 需求摘要 / 方案标题与版本 / 任务统计 / 原因。
+ * 项目全景：编号 / 标题 / 状态 / 任务统计 / 原因 / 需求与方案的物料索引。
+ *
+ * 平台详情不再下发正文，这里只给 `material_id` 等元信息；正文由模型按需
+ * 调 `echuan_material_get` 取，所以输出末尾固定提示这一步。
  */
 export function formatProject(detail: Project): string {
   const projectId = asString(detail.project_id) ?? asString(detail.id) ?? '（编号缺失）'
   const title = orNone(asString(detail.title))
   const status = projectStatusLabel(asNumber(detail.status), asString(detail.status_name))
 
-  const requirement = asString(detail.requirement_md)?.trim() ?? ''
-  const excerpt = asString(detail.spec_excerpt)?.trim() ?? ''
-
-  const lines = [
+  return [
     `项目 ${projectId}：${title}`,
     `- 状态：${status}`,
     `- 任务统计：${formatTaskStats(detail.task_stats)}`,
     `- 原因说明：${orNone(asString(detail.reason))}`,
-    '需求摘要：',
-    requirement === '' ? '（需求正文为空）' : truncateText(requirement, REQUIREMENT_MAX_CHARS),
-    `方案：${formatMaterialRef(detail.spec, '暂无（平台未给出方案）')}`,
-  ]
-  if (excerpt !== '') lines.push(`方案摘要：${truncateText(excerpt, SPEC_EXCERPT_MAX_CHARS)}`)
-  lines.push('下一步：`echuan_task_get` 看具体任务；需求/方案全文用 `echuan_material_get` 取。')
-  return lines.join('\n')
+    `- 需求：${formatMaterialRef(detail.requirement, '暂无')}`,
+    `- 方案：${formatMaterialRef(detail.spec, '暂无')}`,
+    '下一步：正文用 `echuan_material_get` 按 `material_id` 取；任务用 `echuan_task_get` 看。',
+  ].join('\n')
 }
 
 /** `depends_on` → `A、B`；空数组/缺失 → `无`。 */
