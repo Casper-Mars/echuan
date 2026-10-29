@@ -136,28 +136,36 @@ func (h *tasksHandler) decideTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toTaskDetailResponse(result.Detail))
 }
 
-// reviewTasksRequest is the POST /v1/tasks/review body. Only the approval
-// branch is implemented; rejection is reserved for a follow-up task.
+// reviewTasksRequest is the POST /v1/tasks/review body. reason is required
+// when decision=reject and ignored otherwise; decision is also accepted here
+// for backwards compatibility with clients that send it in the body, but the
+// query parameter is the documented location.
 type reviewTasksRequest struct {
 	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
 }
 
 // reviewTasksResponse is the 200 body of POST /v1/tasks/review.
+//
+// reason/rejected_at are only set after a rejection; an approval clears them
+// and reports the new project version.
 type reviewTasksResponse struct {
-	ProjectID  string `json:"project_id"`
-	FromStatus int    `json:"from_status"`
-	Status     int    `json:"status"`
-	StatusName string `json:"status_name"`
-	ReadyTasks int64  `json:"ready_tasks"`
+	ProjectID  string  `json:"project_id"`
+	FromStatus int     `json:"from_status"`
+	Status     int     `json:"status"`
+	StatusName string  `json:"status_name"`
+	Version    int     `json:"version"`
+	ReadyTasks int64   `json:"ready_tasks"`
+	Reason     *string `json:"reason"`
+	RejectedAt *string `json:"rejected_at"`
 }
 
-// reviewTasks handles POST /v1/tasks/review?project_id=APP-1: approve the
-// backlog batch of a tasks_review project, moving the cards to ready and the
-// project to pending_done.
+// reviewTasks handles POST /v1/tasks/review?project_id=APP-1&decision=approve.
 //
-// Rejection is deliberately a 400: it is not implemented yet (a later task
-// owns the re-plan flow), and answering with 409 invalid_state would suggest
-// the batch could be rejected in its current state.
+// approve: the backlog batch becomes ready and the project moves to
+// pending_done (or stays there on a repeat approval).
+// reject: the batch and the project status are untouched; the reason is
+// recorded on the project and answered 400 when it is missing.
 func (h *tasksHandler) reviewTasks(w http.ResponseWriter, r *http.Request) {
 	projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
 	if projectID == "" {
@@ -172,37 +180,51 @@ func (h *tasksHandler) reviewTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch decision := strings.TrimSpace(req.Decision); decision {
-	case "approve":
-	case "reject":
-		writeDomainError(w, r, h.logger,
-			invalidField("decision", "reject is not supported yet; it will be added in a follow-up task"))
-		return
-	default:
-		writeDomainError(w, r, h.logger, invalidField("decision", "must be approve"))
+	raw := strings.TrimSpace(r.URL.Query().Get("decision"))
+	if raw == "" {
+		raw = strings.TrimSpace(req.Decision)
+	}
+	decision, ok := domain.ParseDecision(raw)
+	if !ok {
+		writeDomainError(w, r, h.logger, invalidField("decision", "must be approve or reject"))
 		return
 	}
 
-	result, err := h.service.ApproveTasks(r.Context(), projectID, ActorFromContext(r.Context()))
+	result, err := h.service.ReviewTasks(r.Context(), app.ReviewTasksInput{
+		ProjectID: projectID,
+		Decision:  decision,
+		Reason:    req.Reason,
+		Actor:     ActorFromContext(r.Context()),
+	})
 	if err != nil {
 		writeDomainError(w, r, h.logger, err)
 		return
 	}
 
-	h.logger.Info("task batch approved",
+	attrs := []any{
 		"request_id", RequestIDFromContext(r.Context()),
 		"actor", actorOrUnknown(r),
 		"project_id", result.ProjectID,
+		"decision", string(decision),
 		"from_status", domain.StatusName(result.FromStatus),
 		"to_status", domain.StatusName(result.ToStatus),
-		"ready_tasks", result.ReadyTasks,
-	)
+		"version", result.Version,
+	}
+	if decision == domain.DecisionReject {
+		attrs = append(attrs, "reason", result.Reason)
+	} else {
+		attrs = append(attrs, "ready_tasks", result.ReadyTasks)
+	}
+	h.logger.Info("task batch reviewed", attrs...)
 
 	writeJSON(w, http.StatusOK, reviewTasksResponse{
 		ProjectID:  result.ProjectID,
 		FromStatus: result.FromStatus,
 		Status:     result.ToStatus,
 		StatusName: domain.StatusName(result.ToStatus),
+		Version:    result.Version,
 		ReadyTasks: result.ReadyTasks,
+		Reason:     nullableString(result.Reason),
+		RejectedAt: nullableString(result.RejectedAt),
 	})
 }

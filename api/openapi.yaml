@@ -904,12 +904,16 @@ paths:
       operationId: reviewTasks
       summary: 审批任务批次
       description: |
-        `approve`：把项目的全部 `backlog` 卡置为 `ready`，并在同一事务里推进项目：
+        `approve`：把项目的全部 `backlog` 卡置为 `ready`，在同一事务里清空项目
+        的驳回字段并推进项目：
         - `tasks_review`(5) → `pending_done`(6)：首次批次审批。
         - `pending_done`(6) → `pending_done`(6)：待完成阶段加卡后再次审批，
           新卡变 `ready` 而项目停在 6；等全部卡片结清后项目才到 7。
-        没有 `backlog` 卡时返回 409 `invalid_state`。
-        `reject` 尚未实现（由后续任务补齐），当前返回 400 `invalid_argument`。
+        没有 `backlog` 卡时返回 409 `invalid_state`，且不产生写入。
+        `reject`：`reason` 必填（缺失/空白返回 400），只写入
+        `tasks_review_reason` / `tasks_review_rejected_at`、版本与操作人；
+        卡片与项目状态都不变（5 仍 5、6 仍 6），重复驳回覆盖旧值。
+        项目不在 5/6 时返回 409 `invalid_state`。
       tags: [tasks]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -919,6 +923,13 @@ paths:
           description: 项目业务编号（APP-1）
           schema:
             type: string
+        - name: decision
+          in: query
+          required: true
+          description: 评审结论（也兼容请求体中的同名字段）
+          schema:
+            type: string
+            enum: [approve, reject]
       requestBody:
         required: true
         content:
@@ -1567,7 +1578,7 @@ components:
     Project:
       type: object
       additionalProperties: false
-      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, task_stats, create_time, update_time]
+      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, task_stats, create_time, update_time]
       properties:
         id:
           type: string
@@ -1593,6 +1604,15 @@ components:
           nullable: true
         version:
           type: integer
+        tasks_review_reason:
+          type: string
+          nullable: true
+          description: 最近一次任务批次驳回的原因；approve 或任意加/改/删卡后清空
+        tasks_review_rejected_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近一次任务批次驳回的时间；与原因同时清空
         task_stats:
           $ref: "#/components/schemas/TaskStats"
         create_time:
@@ -1605,7 +1625,7 @@ components:
       type: object
       description: 项目详情。requirement/spec 仅返回材料元数据（含 material_id），正文请通过 GET /v1/materials?id=<material_id> 单独获取；详情响应不内嵌正文。
       additionalProperties: false
-      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, task_stats, create_time, update_time, requirement, spec]
+      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, task_stats, create_time, update_time, requirement, spec]
       properties:
         id:
           type: string
@@ -1631,6 +1651,15 @@ components:
           nullable: true
         version:
           type: integer
+        tasks_review_reason:
+          type: string
+          nullable: true
+          description: 最近一次任务批次驳回的原因；approve 或任意加/改/删卡后清空
+        tasks_review_rejected_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近一次任务批次驳回的时间；与原因同时清空
         task_stats:
           $ref: "#/components/schemas/TaskStats"
         create_time:
@@ -1801,15 +1830,18 @@ components:
     ReviewTasksRequest:
       type: object
       additionalProperties: false
-      required: [decision]
       properties:
         decision:
           type: string
           enum: [approve, reject]
+          description: 兼容字段；推荐放在 query 参数里
+        reason:
+          type: string
+          description: reject 时必填，approve 时忽略
     ReviewTasksResponse:
       type: object
       additionalProperties: false
-      required: [project_id, from_status, status, status_name, ready_tasks]
+      required: [project_id, from_status, status, status_name, version, ready_tasks, reason, rejected_at]
       properties:
         project_id:
           type: string
@@ -1823,8 +1855,17 @@ components:
           enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
         status_name:
           type: string
+        version:
+          type: integer
         ready_tasks:
           type: integer
+        reason:
+          type: string
+          nullable: true
+        rejected_at:
+          type: string
+          format: date-time
+          nullable: true
     ProjectDecideRequest:
       type: object
       additionalProperties: false

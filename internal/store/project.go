@@ -17,7 +17,7 @@ import (
 // depend on domain (the dependency runs domain ← store ← app ← api).
 const projectColumns = `p.id, p.project_id, pr.product_id AS product_code, p.seq_no,
 	p.title, p.requirement_material_id, p.spec_material_id, p.status, p.reason,
-	p.last_actor, p.version,
+	p.last_actor, p.version, p.tasks_review_reason, p.tasks_review_rejected_at,
 	(SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_total,
 	(SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 4) AS task_done,
 	p.create_time, p.update_time`
@@ -38,6 +38,8 @@ type Project struct {
 	Reason                *string `db:"reason"`
 	LastActor             *string `db:"last_actor"`
 	Version               int     `db:"version"`
+	TasksReviewReason     *string `db:"tasks_review_reason"`
+	TasksReviewRejectedAt *string `db:"tasks_review_rejected_at"`
 	TaskTotal             int64   `db:"task_total"`
 	TaskDone              int64   `db:"task_done"`
 	CreateTime            string  `db:"create_time"`
@@ -173,6 +175,76 @@ func TransitionProject(ctx context.Context, tx *sql.Tx, id int64, expectStatus, 
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("store: transition project %d: rows affected: %w", id, err)
+	}
+	return n, nil
+}
+
+// TransitionProjectClearTasksReview is TransitionProject plus the batch-review
+// rejection cleanup.
+//
+// An approved batch must both move the gate and drop the objection that
+// produced it, in one statement so the project version advances only once. It
+// is the approve branch of POST /v1/tasks/review; reject uses
+// SetTasksReviewRejection instead and never moves the status.
+func TransitionProjectClearTasksReview(ctx context.Context, tx *sql.Tx, id int64, expectStatus, expectVersion, nextStatus int, reason *string, lastActor, updateTime string) (int64, error) {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE projects
+		   SET status = ?, reason = ?, last_actor = ?,
+		       tasks_review_reason = NULL, tasks_review_rejected_at = NULL,
+		       version = version + 1, update_time = ?
+		 WHERE id = ? AND status = ? AND version = ?`,
+		nextStatus, reason, lastActor, updateTime, id, expectStatus, expectVersion)
+	if err != nil {
+		return 0, fmt.Errorf("store: transition project %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: transition project %d: rows affected: %w", id, err)
+	}
+	return n, nil
+}
+
+// SetTasksReviewRejection records a rejected task batch without moving the
+// project status: the gate stays where it is (5 stays 5, 6 stays 6) and only
+// the objection columns, actor, update_time and version change. A repeated
+// reject overwrites the previous reason and timestamp.
+func SetTasksReviewRejection(ctx context.Context, tx *sql.Tx, id int64, expectVersion int, reason, rejectedAt, lastActor, updateTime string) (int64, error) {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE projects
+		   SET tasks_review_reason = ?, tasks_review_rejected_at = ?,
+		       last_actor = ?, version = version + 1, update_time = ?
+		 WHERE id = ? AND version = ?`,
+		reason, rejectedAt, lastActor, updateTime, id, expectVersion)
+	if err != nil {
+		return 0, fmt.Errorf("store: reject task batch of project %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: reject task batch of project %d: rows affected: %w", id, err)
+	}
+	return n, nil
+}
+
+// ClearTasksReviewRejection drops a pending rejection once the batch changes.
+//
+// Any card write (create, patch, delete) reopens the conversation, so the old
+// objection no longer describes the batch. The WHERE clause keeps an untouched
+// project row untouched: when both columns are already NULL the statement
+// affects zero rows and the caller must not bump anything.
+func ClearTasksReviewRejection(ctx context.Context, tx *sql.Tx, id int64, lastActor, updateTime string) (int64, error) {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE projects
+		   SET tasks_review_reason = NULL, tasks_review_rejected_at = NULL,
+		       last_actor = ?, version = version + 1, update_time = ?
+		 WHERE id = ?
+		   AND (tasks_review_reason IS NOT NULL OR tasks_review_rejected_at IS NOT NULL)`,
+		lastActor, updateTime, id)
+	if err != nil {
+		return 0, fmt.Errorf("store: clear task review rejection of project %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: clear task review rejection of project %d: rows affected: %w", id, err)
 	}
 	return n, nil
 }

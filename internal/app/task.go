@@ -229,6 +229,13 @@ func (s *TaskService) CreateTask(ctx context.Context, in CreateTaskInput, actor 
 			}
 		}
 
+		// A new card reopens the batch: the previous rejection no longer
+		// describes what the reviewer is being asked to approve. The store
+		// only bumps the project when an objection was actually recorded.
+		if err := s.clearTasksReviewRejection(ctx, tx, project.ProjectID, actor); err != nil {
+			return err
+		}
+
 		out, err = s.detail(ctx, tx, id)
 		return err
 	})
@@ -492,6 +499,12 @@ func (s *TaskService) UpdateTask(ctx context.Context, taskID string, in UpdateTa
 			return err
 		}
 
+		// Editing a card is a batch change too: a recorded rejection stops
+		// describing the batch, so it is dropped in the same transaction.
+		if err := s.clearTasksReviewRejection(ctx, tx, row.ProjectCode, actor); err != nil {
+			return err
+		}
+
 		out, err = s.detail(ctx, tx, row.ID)
 		return err
 	})
@@ -504,11 +517,12 @@ func (s *TaskService) UpdateTask(ctx context.Context, taskID string, in UpdateTa
 // DeleteTask removes a card that was never picked up: status must still be
 // backlog and attempt_count must be 0. The guards, the dependency cleanup and
 // the row removal share one write transaction.
-func (s *TaskService) DeleteTask(ctx context.Context, taskID string) error {
+func (s *TaskService) DeleteTask(ctx context.Context, taskID, actor string) error {
 	taskID = strings.TrimSpace(taskID)
 	if taskID == "" {
 		return invalidField("id", "is required")
 	}
+	actor = actorOrDefault(actor)
 
 	return s.store.Tx(ctx, func(tx *sql.Tx) error {
 		row, err := store.GetTaskByTaskID(ctx, tx, taskID)
@@ -538,6 +552,11 @@ func (s *TaskService) DeleteTask(ctx context.Context, taskID string) error {
 		}
 
 		if _, err := store.DeleteDependenciesTouching(ctx, tx, row.ID); err != nil {
+			return err
+		}
+		// Removing a card changes the batch as much as adding one: drop the
+		// objection before the row disappears, in the same transaction.
+		if err := s.clearTasksReviewRejection(ctx, tx, row.ProjectCode, actor); err != nil {
 			return err
 		}
 		return store.DeleteTask(ctx, tx, row.ID)
@@ -763,4 +782,20 @@ func (s *TaskService) nextTimestamp(previous string) time.Time {
 		return old.Add(time.Millisecond)
 	}
 	return next
+}
+
+// clearTasksReviewRejection drops a recorded batch rejection after a card
+// write. It looks the project up by business id because task rows carry only
+// the project code; the caller is already inside the write transaction, so the
+// lookup and the clear see the same snapshot as the card change.
+func (s *TaskService) clearTasksReviewRejection(ctx context.Context, tx *sql.Tx, projectCode, actor string) error {
+	project, err := store.GetProjectByProjectID(ctx, tx, projectCode)
+	if err != nil {
+		return err
+	}
+	// nextTimestamp keeps the project's update_time monotonic even when the
+	// card write happens in the same millisecond as the rejection.
+	updateTime := formatTimestamp(s.nextTimestamp(project.UpdateTime))
+	_, err = store.ClearTasksReviewRejection(ctx, tx, project.ID, actor, updateTime)
+	return err
 }
