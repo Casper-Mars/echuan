@@ -1602,3 +1602,64 @@ button {
     grid-column: 1 / -1;
   }
 }
+
+/* 任务看板：待评审整批操作、驳回提示与卡片最小管理入口 */
+.board-column-review {
+  border: 1px solid #d9e2f2;
+}
+
+.board-review-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 2px 8px;
+}
+
+.action-compact {
+  padding: 3px 9px;
+  font-size: 0.76rem;
+}
+
+.review-banner {
+  margin: 0 2px 8px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--danger-soft);
+  border: 1px solid #f0c4c6;
+  color: #7c2020;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.review-banner-reason {
+  display: block;
+  margin-top: 2px;
+  font-weight: 550;
+}
+
+.review-banner-meta {
+  display: block;
+  margin-top: 4px;
+  color: #9a5b5b;
+  font-size: 0.72rem;
+}
+
+.board-card-admin {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ghost-mini {
+  padding: 2px 8px;
+  font-size: 0.72rem;
+}
+
+.row-reason-rejected {
+  color: #7c2020;
+}
+
+.row-reason-rejected .muted {
+  font-weight: 400;
+}

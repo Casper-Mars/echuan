@@ -21,6 +21,7 @@ import {
 import { usePolling } from '../hooks/usePolling'
 import {
   PROJECT_STATUS_OPTIONS,
+  formatDateTime,
   formatSince,
   isPendingProjectStatus,
   isPendingStale,
@@ -151,6 +152,11 @@ export function ProjectsPage() {
         <div className="list">
           {visible.map((project) => {
             const stale = isPendingProjectStatus(project.status) && isPendingStale(project.update_time)
+            // 任务草稿去拆解，任务评审去评审；其余状态仍进同一张看板。
+            const boardEntry =
+              project.status === 4 ? '去拆解 →' : project.status === 5 ? '去评审 →' : '任务看板 →'
+            // 驳回字段只可能落在任务评审(5)/待完成(6)；任一存在都直接展示。
+            const taskReviewReason = project.tasks_review_reason
             return (
               <article
                 key={project.project_id}
@@ -185,6 +191,15 @@ export function ProjectsPage() {
                   <p className={project.reason ? 'row-reason' : 'row-reason muted'}>
                     原因：{project.reason || '—'}
                   </p>
+                  {taskReviewReason && (
+                    <p className="row-reason row-reason-rejected">
+                      任务清单已驳回：{taskReviewReason}
+                      <span className="muted">
+                        {' '}· {project.last_actor || '—'} ·{' '}
+                        {formatDateTime(project.tasks_review_rejected_at)}
+                      </span>
+                    </p>
+                  )}
                 </div>
                 <div className="row-actions">
                   <ProjectActionButtons
@@ -201,7 +216,7 @@ export function ProjectsPage() {
                       })
                     }
                   />
-                  <span className="link">任务看板 →</span>
+                  <span className="link">{boardEntry}</span>
                 </div>
               </article>
             )
