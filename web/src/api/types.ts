@@ -85,12 +85,10 @@ export interface SpecDocument {
   versions?: MaterialVersion[]
 }
 
-/** GET /v1/projects?id= 的详情：在列表字段上追加正文与当前版元信息。 */
+/** GET /v1/projects?id= 的详情：在列表字段上追加当前版 Material 元信息。 */
 export interface ProjectDetail extends Project {
   requirement: Material | null
-  requirement_md: string
   spec: Material | null
-  spec_excerpt: string | null
 }
 
 export interface Task {

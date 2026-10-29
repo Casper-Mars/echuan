@@ -169,8 +169,8 @@ func TestCreateProjectStoresRequirement(t *testing.T) {
 	if detail.Requirement.UploadedBy != "human:liu" {
 		t.Errorf("uploaded_by = %q, want human:liu", detail.Requirement.UploadedBy)
 	}
-	if detail.RequirementMD != sampleRequirement {
-		t.Errorf("requirement_md = %q, want the written body", detail.RequirementMD)
+	if detail.Requirement.MaterialID == "" {
+		t.Error("requirement material_id is empty, want the loading handle")
 	}
 
 	// sha256 of the record must match both the body and the object on disk.
@@ -264,9 +264,6 @@ func TestWriteRequirementAppendsVersion(t *testing.T) {
 	if second.Project.RequirementMaterialID == firstPhysicalID {
 		t.Error("requirement_material_id did not move")
 	}
-	if second.RequirementMD != "第二版需求" {
-		t.Errorf("requirement_md = %q, want the new body", second.RequirementMD)
-	}
 	if second.Project.Version != 2 {
 		t.Errorf("project version = %d, want 2", second.Project.Version)
 	}
@@ -289,6 +286,13 @@ func TestWriteRequirementAppendsVersion(t *testing.T) {
 	}
 	if string(body) != "第一版需求" {
 		t.Errorf("v1 body = %q, want 第一版需求", body)
+	}
+	newBody, err := env.writer.Read(fresh)
+	if err != nil {
+		t.Fatalf("Read(v2): %v", err)
+	}
+	if string(newBody) != "第二版需求" {
+		t.Errorf("v2 body = %q, want 第二版需求", newBody)
 	}
 }
 

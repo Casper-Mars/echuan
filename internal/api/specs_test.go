@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"unicode/utf8"
 )
 
 // decodeSpecSubmit decodes one POST /v1/projects/specs response.
@@ -114,7 +113,7 @@ func TestSubmitSpecHTTP(t *testing.T) {
 		t.Errorf("status = %d, want 1 (submitting must not move the gate)", second.Status)
 	}
 
-	// The detail endpoint exposes the new head plus its excerpt.
+	// The detail endpoint exposes the new head metadata (no body).
 	detailRec := doJSON(t, env.handler, http.MethodGet, "/v1/projects?id=APP-1", nil)
 	if detailRec.Code != http.StatusOK {
 		t.Fatalf("detail status = %d, want 200", detailRec.Code)
@@ -126,41 +125,8 @@ func TestSubmitSpecHTTP(t *testing.T) {
 	if detail.Spec.MaterialID != second.Spec.MaterialID || detail.Spec.Version != 2 {
 		t.Errorf("detail.spec = %+v, want v2", detail.Spec)
 	}
-	if detail.SpecExcerpt == nil || *detail.SpecExcerpt != "# 方案 v2\n" {
-		t.Errorf("spec_excerpt = %v", detail.SpecExcerpt)
-	}
 	if detail.Status != 1 {
 		t.Errorf("detail status = %d, want 1", detail.Status)
-	}
-}
-
-func TestSubmitSpecHTTPDetailExcerptTruncation(t *testing.T) {
-	env := newMaterialTestServer(t, 1<<20)
-	createProjectWithRequirement(t, env, "# 需求\n")
-	acceptHTTPProject(t, env, "APP-1")
-
-	// 200 runes where rune 200 is an emoji: the excerpt must stop on a boundary.
-	body := strings.Repeat("方", 199) + "🚀" + strings.Repeat("尾", 50)
-	rec := doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/specs?id=APP-1",
-		map[string]any{"body_md": body}, map[string]string{HeaderActor: "agent:cto"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
-	}
-
-	detailRec := doJSON(t, env.handler, http.MethodGet, "/v1/projects?id=APP-1", nil)
-	detail := decodeProjectDetail(t, detailRec)
-	if detail.SpecExcerpt == nil {
-		t.Fatal("spec_excerpt = nil")
-	}
-	excerpt := *detail.SpecExcerpt
-	if !utf8.ValidString(excerpt) {
-		t.Fatalf("excerpt is not valid UTF-8: %q", excerpt)
-	}
-	if got := utf8.RuneCountInString(excerpt); got != 200 {
-		t.Errorf("excerpt runes = %d, want 200", got)
-	}
-	if !strings.HasSuffix(excerpt, "🚀") {
-		t.Errorf("excerpt = %q, want it to end on the emoji", excerpt)
 	}
 }
 
@@ -172,18 +138,21 @@ func TestSubmitSpecHTTPNoSpecDetail(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	// Both fields must be present as JSON null, not omitted.
+	// spec must be present as JSON null; the body fields must be gone.
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	for _, field := range []string{"spec", "spec_excerpt"} {
-		value, ok := raw[field]
-		if !ok {
-			t.Fatalf("%s missing from the detail response", field)
-		}
-		if string(value) != "null" {
-			t.Errorf("%s = %s, want null", field, value)
+	value, ok := raw["spec"]
+	if !ok {
+		t.Fatal("spec missing from the detail response")
+	}
+	if string(value) != "null" {
+		t.Errorf("spec = %s, want null", value)
+	}
+	for _, field := range []string{"requirement_md", "spec_excerpt"} {
+		if _, ok := raw[field]; ok {
+			t.Errorf("detail response still carries %q", field)
 		}
 	}
 }

@@ -1548,8 +1548,9 @@ components:
           format: date-time
     ProjectDetail:
       type: object
+      description: 项目详情。requirement/spec 仅返回材料元数据（含 material_id），正文请通过 GET /v1/materials?id=<material_id> 单独获取；详情响应不内嵌正文。
       additionalProperties: false
-      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, task_stats, create_time, update_time, requirement, requirement_md, spec, spec_excerpt]
+      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, task_stats, create_time, update_time, requirement, spec]
       properties:
         id:
           type: string
@@ -1585,15 +1586,10 @@ components:
           nullable: true
           allOf:
             - $ref: "#/components/schemas/Material"
-        requirement_md:
-          type: string
         spec:
           nullable: true
           allOf:
             - $ref: "#/components/schemas/Material"
-        spec_excerpt:
-          type: string
-          nullable: true
     SpecDocument:
       type: object
       additionalProperties: false

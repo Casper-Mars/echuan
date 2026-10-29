@@ -287,6 +287,35 @@ export function materialDownloadUrl(materialId: string): string {
   return `/v1/materials?id=${encodeURIComponent(materialId)}`
 }
 
+/**
+ * 取物料正文（渐进式加载：详情只给元信息，正文按 material_id 单独取）。
+ * 非 2xx 沿用统一错误体；成功返回 UTF-8 文本。
+ */
+export async function fetchMaterialText(materialId: string, signal?: AbortSignal): Promise<string> {
+  let response: Response
+  try {
+    response = await fetch(materialDownloadUrl(materialId), {
+      headers: { 'X-Actor': ACTOR },
+      signal,
+    })
+  } catch (error) {
+    if (isAbortError(error)) throw error
+    throw new NetworkError('无法连接服务，请检查网络或后端进程是否已启动。', { cause: error })
+  }
+
+  if (!response.ok) {
+    const payload = await parseBody(response)
+    const body = (payload ?? {}) as Partial<ErrorBody>
+    if (!body.request_id) {
+      const headerId = response.headers.get('X-Request-Id')
+      if (headerId) body.request_id = headerId
+    }
+    throw new ApiError(response.status, body, `读取正文失败（HTTP ${response.status}）`)
+  }
+
+  return response.text()
+}
+
 const ERROR_LABELS: Record<string, string> = {
   invalid_argument: '输入内容不符合要求，请检查后重试。',
   invalid_state: '当前状态不允许该操作，请刷新后核对。',

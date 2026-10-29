@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
 )
@@ -235,8 +234,13 @@ func TestSubmitSpecStateGuard(t *testing.T) {
 			if !errors.As(err, &stateErr) {
 				t.Fatalf("error = %T, want *domain.InvalidStateError", err)
 			}
-			if !strings.Contains(stateErr.Reason, domain.StatusName(status)) {
-				t.Errorf("reason = %q, want it to name %s", stateErr.Reason, domain.StatusName(status))
+			// The guard reports one fixed reason naming the states that do accept
+			// a spec, not the state the project happens to be in. Pin that text
+			// to the two allowed names rather than to the current status.
+			for _, allowed := range []int{domain.StatusSpecReview, domain.StatusPlanning} {
+				if name := domain.StatusName(allowed); !strings.Contains(stateErr.Reason, name) {
+					t.Errorf("reason = %q, want it to name the allowed state %s", stateErr.Reason, name)
+				}
 			}
 		})
 	}
@@ -438,87 +442,5 @@ func TestSubmitSpecDedup(t *testing.T) {
 	// Requirement (1 object) + one shared spec object.
 	if got := countObjectFiles(t, env.dataDir); got != 2 {
 		t.Errorf("object files = %d, want 2", got)
-	}
-}
-
-// TestProjectDetailSpecExcerpt covers the detail preview: null without a spec,
-// and the first 200 runes of the current body afterwards, never cut mid-rune.
-func TestProjectDetailSpecExcerpt(t *testing.T) {
-	env := newProjectTestEnv(t)
-	projectID := env.newSpecReviewProject(t, "登录页改版")
-
-	detail, err := env.service.GetProject(context.Background(), projectID)
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	if detail.Spec != nil || detail.SpecExcerpt != nil {
-		t.Fatalf("spec = %+v, excerpt = %v; want both nil before the first submission", detail.Spec, detail.SpecExcerpt)
-	}
-
-	// 199 CJK runes then an emoji straddling position 200: the excerpt ends on
-	// the emoji, not inside its 4-byte encoding.
-	body := strings.Repeat("方", specExcerptRunes-1) + "🚀" + strings.Repeat("尾", 60)
-	submitted := mustSubmitSpec(t, env, projectID, nil, body)
-
-	detail, err = env.service.GetProject(context.Background(), projectID)
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	if detail.Spec == nil || detail.Spec.MaterialID != submitted.Spec.MaterialID {
-		t.Fatalf("spec = %+v, want the submitted version", detail.Spec)
-	}
-	if detail.SpecExcerpt == nil {
-		t.Fatal("spec_excerpt = nil, want a preview")
-	}
-	excerpt := *detail.SpecExcerpt
-	if !utf8.ValidString(excerpt) {
-		t.Fatalf("excerpt is not valid UTF-8: %q", excerpt)
-	}
-	if got := utf8.RuneCountInString(excerpt); got != specExcerptRunes {
-		t.Errorf("excerpt runes = %d, want %d", got, specExcerptRunes)
-	}
-	if !strings.HasSuffix(excerpt, "🚀") {
-		t.Errorf("excerpt = %q, want it to end on the emoji at rune %d", excerpt, specExcerptRunes)
-	}
-	if want := string([]rune(body)[:specExcerptRunes]); excerpt != want {
-		t.Errorf("excerpt = %q, want %q", excerpt, want)
-	}
-
-	// A short body is previewed in full.
-	short := mustSubmitSpec(t, env, projectID, nil, "# 短方案\n")
-	detail, err = env.service.GetProject(context.Background(), projectID)
-	if err != nil {
-		t.Fatalf("GetProject: %v", err)
-	}
-	if detail.SpecExcerpt == nil || *detail.SpecExcerpt != "# 短方案\n" {
-		t.Errorf("excerpt = %v, want the whole short body", detail.SpecExcerpt)
-	}
-	if detail.Spec == nil || detail.Spec.Version != short.Spec.Version {
-		t.Errorf("spec version = %v, want %d", detail.Spec, short.Spec.Version)
-	}
-}
-
-// TestExcerptRunes pins the helper directly, including the boundaries.
-func TestExcerptRunes(t *testing.T) {
-	cases := []struct {
-		name  string
-		in    string
-		limit int
-		want  string
-	}{
-		{"empty", "", 3, ""},
-		{"shorter than limit", "ab", 3, "ab"},
-		{"exact", "abc", 3, "abc"},
-		{"cut", "abcdef", 3, "abc"},
-		{"zero limit", "abc", 0, ""},
-		{"multibyte", "中文🚀x", 3, "中文🚀"},
-		{"multibyte cut", "中文🚀x", 2, "中文"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := excerptRunes(tc.in, tc.limit); got != tc.want {
-				t.Errorf("excerptRunes(%q, %d) = %q, want %q", tc.in, tc.limit, got, tc.want)
-			}
-		})
 	}
 }

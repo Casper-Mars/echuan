@@ -211,17 +211,15 @@ type Project struct {
 	UpdateTime            time.Time
 }
 
-// ProjectDetail is a project plus the extra material data the detail endpoint
-// returns. Requirement/Spec are nil when the pointer is empty; RequirementMD
-// is the requirement body read back from the object store.
+// ProjectDetail is a project plus the material metadata the detail endpoint
+// returns. Requirement/Spec are nil when the pointer is empty.
 //
-// SpecExcerpt is the head of the current spec body (a bounded preview, not the
-// whole document) and stays nil when the project has no spec, matching the
-// null the wire contract requires for "no spec yet".
+// The bodies are deliberately absent: a detail response is a fixed-size
+// metadata document, and clients load the bytes from GET /v1/materials using
+// Requirement.MaterialID or Spec.MaterialID. That keeps a multi-megabyte
+// requirement from being re-serialised on every poll.
 type ProjectDetail struct {
-	Project       Project
-	Requirement   *Material
-	RequirementMD string
-	Spec          *Material
-	SpecExcerpt   *string
+	Project     Project
+	Requirement *Material
+	Spec        *Material
 }

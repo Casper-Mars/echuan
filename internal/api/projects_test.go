@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,8 +141,8 @@ func TestCreateProjectHTTP(t *testing.T) {
 	if detail.Requirement.Size != int64(len(httpRequirement)) {
 		t.Errorf("requirement size = %d, want %d", detail.Requirement.Size, len(httpRequirement))
 	}
-	if detail.RequirementMD != httpRequirement {
-		t.Errorf("requirement_md = %q, want the request body", detail.RequirementMD)
+	if detail.Requirement.MaterialID == "" {
+		t.Error("requirement material_id is empty, want the loading handle")
 	}
 	if detail.Spec != nil {
 		t.Errorf("spec = %+v, want null", *detail.Spec)
@@ -210,11 +211,8 @@ func TestGetProjectHTTP(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
 	detail := decodeProjectDetail(t, rec)
-	if detail.RequirementMD != httpRequirement {
-		t.Errorf("requirement_md = %q, want the stored body", detail.RequirementMD)
-	}
-	if detail.Requirement == nil || detail.Requirement.SHA256 == "" {
-		t.Errorf("requirement = %+v, want a summary with sha256", detail.Requirement)
+	if detail.Requirement == nil || detail.Requirement.SHA256 == "" || detail.Requirement.MaterialID == "" {
+		t.Errorf("requirement = %+v, want metadata with sha256 and material_id", detail.Requirement)
 	}
 
 	missing := doJSON(t, h, http.MethodGet, "/v1/projects?id=APP-404", nil)
@@ -458,8 +456,8 @@ func TestWriteRequirementHTTP(t *testing.T) {
 	if detail.Requirement == nil || detail.Requirement.Version != 2 {
 		t.Fatalf("requirement = %+v, want version 2", detail.Requirement)
 	}
-	if detail.RequirementMD != "第二版需求" {
-		t.Errorf("requirement_md = %q, want the new body", detail.RequirementMD)
+	if detail.Requirement.MaterialID == "" {
+		t.Error("requirement material_id is empty, want the new version's handle")
 	}
 
 	// Reading the project back returns the new version.
@@ -499,4 +497,67 @@ func TestWriteRequirementHTTP(t *testing.T) {
 			t.Errorf("code = %q, want invalid_state", body.Code)
 		}
 	})
+}
+
+// TestProjectDetailOmitsBodies is the regression guard for the detail
+// contract: neither the requirement nor the spec body may be serialised into
+// the response, no matter how large the documents are. It also proves the
+// bytes stay reachable through the content-addressed materials endpoint.
+func TestProjectDetailOmitsBodies(t *testing.T) {
+	h, st := newProjectTestServer(t)
+	seedProduct(t, st, "APP")
+
+	// 200k CJK characters: ~600KB of body, far past the 2KB response bound.
+	requirement := strings.Repeat("需", 200_000)
+	spec := strings.Repeat("方", 200_000)
+
+	if rec := doJSON(t, h, http.MethodPost, "/v1/projects", map[string]any{
+		"product_id": "APP", "title": "长正文项目", "requirement_md": requirement,
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create project: status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/accept?id=APP-1", nil,
+		map[string]string{HeaderActor: "pm"}); rec.Code != http.StatusOK {
+		t.Fatalf("accept project: status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/specs?id=APP-1",
+		map[string]any{"body_md": spec}, map[string]string{HeaderActor: "agent:cto"}); rec.Code != http.StatusOK {
+		t.Fatalf("submit spec: status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+
+	rec := doJSON(t, h, http.MethodGet, "/v1/projects?id=APP-1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if size := rec.Body.Len(); size >= 2048 {
+		t.Errorf("detail body = %d bytes, want < 2048", size)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	for _, key := range []string{"requirement_md", "spec_excerpt"} {
+		if _, ok := raw[key]; ok {
+			t.Errorf("detail response still carries %q", key)
+		}
+	}
+
+	detail := decodeProjectDetail(t, rec)
+	if detail.Requirement == nil || detail.Spec == nil {
+		t.Fatalf("requirement/spec metadata = %+v/%+v, want both present", detail.Requirement, detail.Spec)
+	}
+
+	// The bodies remain downloadable in full from the materials endpoint.
+	for name, materialID := range map[string]string{
+		"requirement": detail.Requirement.MaterialID,
+		"spec":        detail.Spec.MaterialID,
+	} {
+		got := doJSON(t, h, http.MethodGet, "/v1/materials?id="+materialID, nil)
+		if got.Code != http.StatusOK {
+			t.Fatalf("%s material: status = %d (body %s)", name, got.Code, got.Body.String())
+		}
+		if got.Body.Len() != 200_000*3 {
+			t.Errorf("%s material = %d bytes, want %d", name, got.Body.Len(), 200_000*3)
+		}
+	}
 }
