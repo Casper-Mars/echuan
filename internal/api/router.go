@@ -56,6 +56,9 @@ var routeSpecs = []routeSpec{
 	{http.MethodDelete, "/v1/projects", "projects"},
 	{http.MethodPost, "/v1/projects/requirement", "projects"},
 	{http.MethodPost, "/v1/projects/specs", "projects"},
+	{http.MethodGet, "/v1/specs", "projects"},
+	{http.MethodPost, "/v1/specs", "projects"},
+	{http.MethodPatch, "/v1/specs", "projects"},
 	{http.MethodPost, "/v1/projects/plans", "projects"},
 	{http.MethodPost, "/v1/projects/accept", "projects"},
 	{http.MethodPost, "/v1/projects/decide", "projects"},
@@ -158,6 +161,9 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		handlers["DELETE /v1/projects"] = projectsHandler.deleteProject
 		handlers["POST /v1/projects/requirement"] = projectsHandler.writeRequirement
 		handlers["POST /v1/projects/specs"] = projectsHandler.submitSpec
+		handlers["GET /v1/specs"] = projectsHandler.listOrGetSpec
+		handlers["POST /v1/specs"] = projectsHandler.saveSpecDocument
+		handlers["PATCH /v1/specs"] = projectsHandler.saveSpecDocument
 		handlers["POST /v1/projects/plans"] = projectsHandler.submitPlan
 		handlers["POST /v1/projects/accept"] = projectsHandler.acceptProject
 		handlers["POST /v1/projects/decide"] = projectsHandler.decideProject

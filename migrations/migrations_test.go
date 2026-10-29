@@ -13,8 +13,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(FS): %v", err)
 	}
-	if len(list) != 3 {
-		t.Fatalf("migrations = %d, want 3", len(list))
+	if len(list) != 4 {
+		t.Fatalf("migrations = %d, want 4", len(list))
 	}
 	if list[0].Version != 1 || list[0].Name != "0001_init.sql" {
 		t.Errorf("migration = %d/%s, want 1/0001_init.sql", list[0].Version, list[0].Name)
@@ -24,6 +24,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if list[2].Version != 3 || list[2].Name != "0003_workers.sql" {
 		t.Errorf("migration = %d/%s, want 3/0003_workers.sql", list[2].Version, list[2].Name)
+	}
+	if list[3].Version != 4 || list[3].Name != "0004_project_specs.sql" {
+		t.Errorf("migration = %d/%s, want 4/0004_project_specs.sql", list[3].Version, list[3].Name)
 	}
 	for _, migration := range list {
 		if len(migration.SQL) == 0 {
@@ -35,8 +38,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
 	}
-	if latest != 3 {
-		t.Errorf("latest = %d, want 3", latest)
+	if latest != 4 {
+		t.Errorf("latest = %d, want 4", latest)
 	}
 }
 

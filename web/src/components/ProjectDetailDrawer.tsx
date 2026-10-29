@@ -14,6 +14,7 @@ import { Markdown } from './Markdown'
 import { ProjectActions } from './ProjectActions'
 import { ProjectFormDialog } from './ProjectFormDialog'
 import { DrawerTitleContext } from './DrawerContext'
+import { SpecDocuments } from './SpecDocuments'
 
 interface ProjectBundle {
   detail: ProjectDetail
@@ -193,14 +194,14 @@ export function ProjectDetailDrawer({
 
       <section className="detail-section">
         <h3>
-          方案当前版摘要
+          项目方案包摘要
           {detail.spec && <span className="muted">（第 {detail.spec.version} 版）</span>}
         </h3>
         <Markdown source={detail.spec_excerpt} empty="暂无方案" />
         {detail.spec && (
           <p className="download-line">
             <a className="link" href={materialDownloadUrl(detail.spec.material_id)} download>
-              下载方案原件
+              下载全部当前方案
             </a>
             <span className="muted">
               第 {detail.spec.version} 版 · {formatBytes(detail.spec.size)} ·{' '}
@@ -210,7 +211,8 @@ export function ProjectDetailDrawer({
         )}
       </section>
 
-      <ChainList title="方案版本链" chain={specChain} currentMaterialId={detail.spec?.material_id} />
+      <SpecDocuments projectId={projectId} status={detail.status} onChanged={changed} />
+      <ChainList title="项目方案包历史" chain={specChain} currentMaterialId={detail.spec?.material_id} />
       {editing && (
         <ProjectFormDialog mode={editing} project={detail} onClose={() => setEditing(null)} onSaved={changed} />
       )}

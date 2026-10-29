@@ -353,6 +353,7 @@ paths:
     post:
       operationId: submitProjectSpec
       summary: 提交规格版本
+      description: 兼容接口：修订项目第一份独立方案；返回涵盖全部当前方案的版本化方案包。单文档时沿用原资料及版本链。
       tags: [projects]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -520,6 +521,117 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/specs:
+    get:
+      operationId: listOrGetSpecDocument
+      summary: 查询独立技术方案列表或全文与历史版本
+      description: id 指定方案时返回详情，可用 material_id 阅读该方案历史版本；否则必须用 project_id 查询列表。
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - name: id
+          in: query
+          schema: {type: string}
+        - name: project_id
+          in: query
+          schema: {type: string}
+        - name: material_id
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: 独立方案详情或列表
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/SpecDocument"
+                  - type: object
+                    required: [items]
+                    properties:
+                      items:
+                        type: array
+                        items: {$ref: "#/components/schemas/SpecDocument"}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createSpecDocument
+      summary: 创建独立技术方案并更新项目方案包
+      description: 仅规格评审、规划中可写。每份方案独立版本链；所有当前方案组成兼容旧接口及执行上下文的方案包。
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [project_id, title, body_md]
+              properties:
+                project_id: {type: string}
+                title: {type: string}
+                body_md: {type: string}
+      responses:
+        "201":
+          description: 独立方案已创建
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SpecDocument"}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+    patch:
+      operationId: reviseSpecDocument
+      summary: 修订独立方案并生成新的项目方案包
+      description: If-Match 为该独立文档的版本；任何方案修订也递增项目版本，使旧项目评审请求失效。
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [title, body_md]
+              properties:
+                title: {type: string}
+                body_md: {type: string}
+      responses:
+        "200":
+          description: 新版本已保存
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SpecDocument"}
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/TooLarge"
   /v1/tasks:
     post:
       operationId: createTask
@@ -1482,6 +1594,22 @@ components:
         spec_excerpt:
           type: string
           nullable: true
+    SpecDocument:
+      type: object
+      additionalProperties: false
+      required: [spec_id, project_id, title, version, material]
+      properties:
+        spec_id: {type: string}
+        project_id: {type: string}
+        title: {type: string}
+        version: {type: integer}
+        material: {$ref: "#/components/schemas/MaterialVersion"}
+        body_md:
+          type: string
+          description: 详情返回的完整正文
+        versions:
+          type: array
+          items: {$ref: "#/components/schemas/MaterialVersion"}
     ProjectCreateRequest:
       type: object
       additionalProperties: false

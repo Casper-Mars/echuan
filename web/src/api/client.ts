@@ -10,6 +10,7 @@ import type {
   ProjectDecision,
   ProjectDetail,
   ProjectList,
+  SpecDocument,
   Task,
   TaskDecision,
   TaskDetail,
@@ -168,6 +169,20 @@ export function getProject(id: string, signal?: AbortSignal): Promise<ProjectDet
   return request<ProjectDetail>('/v1/projects', { query: { id }, signal })
 }
 
+export function listSpecs(projectId: string, signal?: AbortSignal): Promise<{ items: SpecDocument[] }> {
+  return request('/v1/specs', { query: { project_id: projectId }, signal })
+}
+
+export function getSpec(id: string, materialId?: string, signal?: AbortSignal): Promise<SpecDocument> {
+  return request('/v1/specs', { query: { id, material_id: materialId }, signal })
+}
+
+export function saveSpec(projectId: string, title: string, body: string, spec?: SpecDocument): Promise<SpecDocument> {
+  return request('/v1/specs', spec
+    ? { method: 'PATCH', query: { id: spec.spec_id }, version: spec.version, body: { title, body_md: body } }
+    : { method: 'POST', body: { project_id: projectId, title, body_md: body } })
+}
+
 export function createProject(body: ProjectCreateRequest): Promise<ProjectDetail> {
   return request<ProjectDetail>('/v1/projects', { method: 'POST', body })
 }
@@ -297,7 +312,7 @@ export function apiErrorSummary(error: ApiError): string {
 
 export function errorDetailMessage(detail: unknown): string {
   const fields: Record<string, string> = {
-    product_id: '产品编号', project_id: '项目编号', task_id: '任务编号',
+    product_id: '产品编号', project_id: '项目编号', task_id: '任务编号', spec_id: '方案编号',
     id: '编号', title: '标题', name: '名称', git_url: '代码仓库地址',
     description: '描述', license: '许可证', requirement_md: '需求正文',
     body_md: '正文', reason: '原因', decision: '处理方式', status: '状态',
