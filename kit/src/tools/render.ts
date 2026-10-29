@@ -6,7 +6,7 @@
  */
 
 import { EchuanClientError } from '../errors.js'
-import type { InboxResponse, MaterialBody, Project, TaskDetail } from '../client.js'
+import type { InboxResponse, MaterialBody, Product, Project, TaskDetail } from '../client.js'
 import type { ClaimValue, RenewedValue, ReportedValue } from './write.js'
 
 /** render 返回的最小文本块形态（等价于 ContentBlock 的 `text` 分支）。 */
@@ -420,6 +420,72 @@ export function formatTask(detail: TaskDetail): string {
     )}`,
   )
   lines.push('下一步：报告全文用 `echuan_material_get`（material_id 见上）取；待办总览用 `echuan_inbox`。')
+  return lines.join('\n')
+}
+
+/** 列表项里描述/原因的截断上限（字）。 */
+export const LIST_TEXT_MAX_CHARS = 200
+
+/**
+ * 产品列表：编号 / 名称 / 仓库 / 许可 / 项目数 / 描述 / 更新时间。
+ *
+ * `git_url` 必须出现在每一行：Agent 靠它判断该拉哪个仓库，拿不到就会猜路径。
+ */
+export function formatProductList(products: readonly Product[]): string {
+  const lines = [`产品共 ${products.length} 个`]
+  for (const product of products) {
+    const productId = asString(product.product_id) ?? asString(product.id) ?? '（编号缺失）'
+    const name = orNone(asString(product.name))
+    const gitUrl = orNone(asString(product.git_url))
+    const license = orNone(asString(product.license))
+    const projectCount = asNumber(product.project_count)
+    lines.push(
+      `- ${productId}：${name}｜仓库：${gitUrl}｜许可：${license}｜项目数：${projectCount ?? '未知'}`,
+    )
+    const description = asString(product.description)?.trim() ?? ''
+    if (description !== '') {
+      lines.push(`  描述：${truncateText(description, LIST_TEXT_MAX_CHARS)}`)
+    }
+    const updated = asString(product.update_time)
+    if (updated !== undefined && updated !== '') lines.push(`  更新时间：${updated}`)
+  }
+  return lines.join('\n')
+}
+
+/** 项目列表：编号 / 标题 / 状态 / 任务统计 / 原因 / 更新时间。 */
+export function formatProjectList(projects: readonly Project[]): string {
+  const lines = [`项目共 ${projects.length} 个`]
+  for (const project of projects) {
+    const projectId = asString(project.project_id) ?? asString(project.id) ?? '（编号缺失）'
+    const title = orNone(asString(project.title))
+    const status = projectStatusLabel(asNumber(project.status), asString(project.status_name))
+    lines.push(
+      `- ${projectId}：${title}｜状态：${status}｜任务统计：${formatTaskStats(project.task_stats)}`,
+    )
+    const reason = asString(project.reason)?.trim() ?? ''
+    if (reason !== '') lines.push(`  原因：${truncateText(reason, LIST_TEXT_MAX_CHARS)}`)
+    const updated = asString(project.update_time)
+    if (updated !== undefined && updated !== '') lines.push(`  更新时间：${updated}`)
+  }
+  return lines.join('\n')
+}
+
+/** 任务列表：序号 / 编号 / 标题 / 状态 / 优先级 / 尝试次数 / 依赖。 */
+export function formatTaskList(tasks: readonly TaskDetail[]): string {
+  const lines = [`任务共 ${tasks.length} 个`]
+  for (const task of tasks) {
+    const taskId = asString(task.task_id) ?? asString(task.id) ?? '（编号缺失）'
+    const seq = asNumber(task.seq_no)
+    const seqLabel = seq === undefined ? '' : `#${seq} `
+    const attempt = asNumber(task.attempt_count)
+    lines.push(
+      `- ${seqLabel}${taskId}：${orNone(asString(task.title))}`
+        + `｜状态：${taskStatusLabel(asNumber(task.status), asString(task.status_name))}`
+        + `｜优先级：${asNumber(task.priority) ?? '未知'}`
+        + `｜尝试次数：${attempt ?? '未知'}`
+        + `｜依赖：${formatDependsOn(task.depends_on)}`,
+    )
+  }
   return lines.join('\n')
 }
 

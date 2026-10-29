@@ -12,13 +12,13 @@
  * - 本文件是 `kit/src` 里**唯一**调用 `fetch(` 的地方；
  * - `fetchImpl` 可注入（默认 `globalThis.fetch`），单测不连真实平台；
  * - 不读环境变量、不写磁盘、不缓存响应、不存业务状态；
- * - 只暴露工具包需要的 7 个动作（{@link TOOL_METHODS}），**没有任何门禁动作**
+ * - 只暴露工具包需要的 8 个客户端方法（{@link TOOL_METHODS}），**没有任何门禁动作**
  *   （accept / decide / cancel / rework / approve / reject 一律不提供）；
  * - 与 `api/openapi.yaml` 一一对应：{@link TOOL_OPERATIONS} 记录每个方法对应的
- *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 7 条确实存在。
+ *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 8 条确实存在。
  *
  * 任务-03 的 worker 注册/心跳方法由 {@link createWorkerClient} 提供，走
- * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 7 个」的断言；
+ * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 8 个」的断言；
  * 两者共用 `requestRaw` / `requestJson`，仍然是全插件唯一的 fetch 出口。
  */
 import {
@@ -174,6 +174,24 @@ export interface ProjectList {
   next_cursor?: string
 }
 
+export interface Product {
+  id?: string
+  product_id?: string
+  name?: string
+  git_url?: string
+  description?: string
+  license?: string
+  project_count?: number
+  create_time?: string
+  update_time?: string
+  [key: string]: unknown
+}
+
+export interface ProductList {
+  items: Product[]
+  next_cursor?: string
+}
+
 export interface InboxItem {
   kind?: string
   id?: string
@@ -229,9 +247,18 @@ export interface InboxQuery {
   limit?: number
 }
 
+export interface ProductsQuery {
+  /** 契约允许 `?id=` 取详情；列表工具只用 `limit` / `cursor`。 */
+  id?: string
+  limit?: number
+  cursor?: string
+}
+
 export interface ProjectsQuery {
   id?: string
   product_id?: string
+  /** 契约里 projects.status 是**单个 integer**，不是数组。 */
+  status?: number
   limit?: number
   cursor?: string
 }
@@ -248,12 +275,13 @@ export interface MaterialsQuery {
   id: string
 }
 
-/** 7 个工具方法的集合（顺序即客户端对象属性顺序）。 */
+/** 8 个客户端方法的集合（顺序即客户端对象属性顺序）。 */
 export const TOOL_METHODS = [
   'claimTask',
   'renewLease',
   'reportTask',
   'getInbox',
+  'listProducts',
   'listProjects',
   'listTasks',
   'getMaterials',
@@ -262,22 +290,26 @@ export const TOOL_METHODS = [
 export type ToolMethodName = (typeof TOOL_METHODS)[number]
 
 /**
- * 7 个方法 ↔ openapi operation 的对应表。
+ * 8 个方法 ↔ openapi operation 的对应表。
  *
  * `tool` 是客户端方法名；`method`/`path`/`operationId` 必须能在
  * `api/openapi.yaml` 的 `paths` 下原样找到（单测解析 yaml 校验）。
+ *
+ * 注意：10 个工具共用这 8 个 operation——`listProjects` / `listTasks`
+ * 各由一个 GET 同时承担「列表」与「按 id 取详情」两种工具语义。
  */
 export const TOOL_OPERATIONS = [
   { tool: 'claimTask', method: 'POST', path: '/v1/tasks/claim', operationId: 'claimTask' },
   { tool: 'renewLease', method: 'POST', path: '/v1/tasks/heartbeat', operationId: 'heartbeatTask' },
   { tool: 'reportTask', method: 'POST', path: '/v1/tasks/report', operationId: 'reportTask' },
   { tool: 'getInbox', method: 'GET', path: '/v1/inbox', operationId: 'listInbox' },
+  { tool: 'listProducts', method: 'GET', path: '/v1/products', operationId: 'listOrGetProducts' },
   { tool: 'listProjects', method: 'GET', path: '/v1/projects', operationId: 'listOrGetProjects' },
   { tool: 'listTasks', method: 'GET', path: '/v1/tasks', operationId: 'listOrGetTasks' },
   { tool: 'getMaterials', method: 'GET', path: '/v1/materials', operationId: 'downloadMaterial' },
 ] as const
 
-/** 客户端对外的 7 个动作。 */
+/** 客户端对外的 8 个方法。 */
 export interface EchuanClient {
   /**
    * `POST /v1/tasks/claim`（operationId `claimTask`）。
@@ -290,6 +322,8 @@ export interface EchuanClient {
   reportTask(input: ReportTaskInput): Promise<ApiResult<TaskDetail>>
   /** `GET /v1/inbox`（operationId `listInbox`）。 */
   getInbox(query?: InboxQuery): Promise<ApiResult<InboxResponse>>
+  /** `GET /v1/products`（operationId `listOrGetProducts`）；带 `id` 时为详情。 */
+  listProducts(query?: ProductsQuery): Promise<ApiResult<Product | ProductList>>
   /** `GET /v1/projects`（operationId `listOrGetProjects`）；带 `id` 时为详情。 */
   listProjects(query?: ProjectsQuery): Promise<ApiResult<Project | ProjectList>>
   /** `GET /v1/tasks`（operationId `listOrGetTasks`）；带 `id` 时为详情。 */
@@ -348,7 +382,7 @@ export interface WorkerHeartbeatPayload {
   [key: string]: unknown
 }
 
-/** worker 心跳客户端；与 7 个工具方法分开，避免污染 `TOOL_METHODS`。 */
+/** worker 心跳客户端；与 8 个客户端方法分开，避免污染 `TOOL_METHODS`。 */
 export interface WorkerClient {
   /** `POST /v1/workers/heartbeat`（operationId `heartbeatWorker`）。 */
   heartbeat(input: WorkerHeartbeatInput): Promise<ApiResult<WorkerHeartbeatPayload>>
@@ -478,7 +512,7 @@ export async function requestJson<T>(
 // ---------------------------------------------------------------------------
 
 /**
- * 创建客户端。返回对象**恰好**有 {@link TOOL_METHODS} 里的 7 个方法。
+ * 创建客户端。返回对象**恰好**有 {@link TOOL_METHODS} 里的 8 个方法。
  *
  * @param config 已归一化的配置（见 `resolveConfig`）
  * @param options `fetchImpl` 可注入，单测用假 fetch
@@ -533,6 +567,14 @@ export function createClient(
       })
     },
 
+    async listProducts(query) {
+      return requestJson<Product | ProductList>(ctx, {
+        method: 'GET',
+        path: '/v1/products',
+        ...(query === undefined ? {} : { query: toQuery(query) }),
+      })
+    },
+
     async listProjects(query) {
       return requestJson<Project | ProjectList>(ctx, {
         method: 'GET',
@@ -575,7 +617,7 @@ export function createClient(
 /**
  * 创建 worker 心跳客户端。
  *
- * 与 {@link createClient} 分开：7 个工具方法的对象键必须**恰好**是
+ * 与 {@link createClient} 分开：8 个客户端方法的对象键必须**恰好**是
  * {@link TOOL_METHODS}（任务-02 有断言），worker 心跳走独立命名空间。
  *
  * 首次注册时请求体里**没有** `worker_id` 键（不是空串、不是 null）；

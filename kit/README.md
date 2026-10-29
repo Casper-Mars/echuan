@@ -8,13 +8,20 @@
 
 1. **定时心跳**：上报 agent 状态与 metadata，并带上平台下发的 `worker_id`（仅存内存）。
 2. **投递派单**：把平台的 `run_task` 交给当前唯一的根 agent。
-3. **提供 7 个工具**：
+3. **提供 10 个工具**：
    - 写：`echuan_task_claim`（领卡）、`echuan_task_renew`（续租）、`echuan_task_report`（交报告）
-   - 读：`echuan_inbox`（待办）、`echuan_project_get`（项目）、`echuan_task_get`（任务）、`echuan_material_get`（资料）
+   - 读：`echuan_inbox`（待办）、`echuan_product_list`（产品列表）、`echuan_project_list`（项目列表）、`echuan_task_list`（任务列表）、`echuan_project_get`（项目详情）、`echuan_task_get`（任务详情）、`echuan_material_get`（资料）
 
-**不提供**：验收、返工、取消、改状态——所有门禁动作一律没有。
-**不代交报告**：报告必须由 agent 自己调 `echuan_task_report`。
-**不缓存、不落盘**：`worker_id` 只在内存，进程重启后重新注册（会拿到新的 `w_` id）。
+列表工具的参数（都只发 GET，不缓存、不落盘）：
+
+| 工具 | 筛选参数 | 分页 |
+|---|---|---|
+| `echuan_product_list` | 无 | `limit` 1–200、`cursor` |
+| `echuan_project_list` | `product_id`、`status`（单个整数） | `limit` 1–200、`cursor` |
+| `echuan_task_list` | `project_id`、`status`（可多个，按重复 key 传） | `limit` 1–200、`cursor` |
+`limit` 非整数或越界时本地拒绝、不发请求；空列表返回「当前没有…」而不是报错；回包带 `next_cursor` 时末尾提示 `cursor=…`。10 个工具共用 8 个 HTTP operation：项目/任务各由一个 `GET` 同时承担列表与按 `id` 取详情。
+
+**不提供**：验收、返工、取消、改状态——所有门禁动作一律没有。**不代交报告**：报告必须由 agent 自己调 `echuan_task_report`。**不缓存、不落盘**：`worker_id` 只在内存，进程重启后重新注册（会拿到新的 `w_` id）。
 
 ## 与平台的关系：同仓
 
@@ -103,7 +110,7 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 
 ```
 [dsh-echuan] 插件加载 ... poll=true
-[dsh-echuan] 已注册 7 个工具（3 写 + 4 读）：...
+[dsh-echuan] 已注册 10 个工具（3 写 + 7 读）：...
 [dsh-echuan] 已注册技能 echuan-task-execution（source=runtime）
 [dsh-echuan] worker 心跳已停止（plugin dispose）：定时器已清除，不再产生请求与日志
 [dsh-echuan] 已注销技能 echuan-task-execution
@@ -139,7 +146,7 @@ dsh plugin --profile <name> remove dsh-echuan
 ## 给维护者：测试与验收
 
 ```bash
-# 单测：typecheck + 198 条用例（在 kit/ 下）
+# 单测：typecheck + 227 条用例（在 kit/ 下）
 cd kit && pnpm verify
 
 # 真机端到端：独立 compose 栈 18720，约 90s，进/出不动 ~/echuan-data（在仓库根目录）

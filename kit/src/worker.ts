@@ -468,6 +468,7 @@ export function renderTaskMessage(command: RunTaskCommand): string {
     `标题：${task.title}`,
     `项目：${projectLabel}`,
     `产品：${context.product.name}（${context.product.id}）`,
+    `仓库：${context.product.git_url}`,
     `租约到期：${lease.until}`,
   ]
   if (context.workdir !== undefined && context.workdir !== '') {

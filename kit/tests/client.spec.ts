@@ -5,7 +5,7 @@
  * - 200 / 204 / 各类错误码的可读映射（保留 `code`）；
  * - 超时（含实际耗时）与网络失败；
  * - X-Actor、URL/query 编码、GET 不带 content-type；
- * - 恰好 7 个方法、与 openapi 一一对应；
+ * - 恰好 8 个方法、与 openapi 一一对应；
  * - 不读 env / 不写盘 / 不缓存；
  * - D-01 metadata 预算前置拒绝。
  */
@@ -430,13 +430,13 @@ describe('URL 与请求头', () => {
   })
 })
 
-describe('方法集合：恰好 7 个，无门禁动作', () => {
-  it('TOOL_METHODS 长度为 7，客户端对象键与之一致', () => {
+describe('方法集合：恰好 8 个，无门禁动作', () => {
+  it('TOOL_METHODS 长度为 8，客户端对象键与之一致', () => {
     const client = createClient(config, { fetchImpl: createFetch(() => jsonResponse({})).fetchImpl })
 
-    expect(TOOL_METHODS).toHaveLength(7)
+    expect(TOOL_METHODS).toHaveLength(8)
     expect(Object.keys(client)).toEqual([...TOOL_METHODS])
-    expect(Object.keys(client)).toHaveLength(7)
+    expect(Object.keys(client)).toHaveLength(8)
     for (const method of TOOL_METHODS) {
       expect(typeof client[method]).toBe('function')
     }
@@ -496,12 +496,12 @@ describe('与 openapi.yaml 一一对应', () => {
     return ops
   }
 
-  it('客户端用到的 7 个 operation 在 yaml 中恰好各命中一次', () => {
+  it('客户端用到的 8 个 operation 在 yaml 中恰好各命中一次', () => {
     const yaml = readFileSync(path.resolve(kitRoot, '..', 'api', 'openapi.yaml'), 'utf8')
     const ops = parseOperations(yaml)
-    expect(ops.length).toBeGreaterThan(7)
+    expect(ops.length).toBeGreaterThan(8)
 
-    expect(TOOL_OPERATIONS).toHaveLength(7)
+    expect(TOOL_OPERATIONS).toHaveLength(8)
     const matched: YamlOperation[] = []
     for (const entry of TOOL_OPERATIONS) {
       const hits = ops.filter(op => op.path === entry.path && op.method === entry.method)
@@ -510,8 +510,8 @@ describe('与 openapi.yaml 一一对应', () => {
       matched.push(hits[0]!)
     }
 
-    expect(matched).toHaveLength(7)
-    expect(new Set(matched.map(op => `${op.method} ${op.path}`)).size).toBe(7)
+    expect(matched).toHaveLength(8)
+    expect(new Set(matched.map(op => `${op.method} ${op.path}`)).size).toBe(8)
   })
 })
 

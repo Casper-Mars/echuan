@@ -6,7 +6,7 @@
  * 1. 源码级：`src` 下只有 `client.ts` 调 `fetch(`；没有任何写盘 API；
  *    `node:fs` 的导入只允许只读函数；`config.ts` 不读 `process.env`。
  * 2. 运行时级：把 `globalThis.fetch` 换成一被调用就抛错的哨兵，再跑
- *    ① 7 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
+ *    ① 10 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
  * 3. 运行时级：用 `vi.mock('node:fs', { spy: true })` 把 `node:fs` 的导出换成
  *    会记账的 spy（具名导入的 `import { writeFileSync }` 也能拦到），跑两轮
  *    worker 心跳 → 0 次写文件（worker_id 只在内存）。监视器先做一次自证
@@ -243,10 +243,16 @@ const respondByPath = (call: RecordedCall): Response => {
         review_stale_hours: 24,
         generated_at: '2026-10-28T00:00:00.000Z',
       })
+    case '/v1/products':
+      return json({ items: [] })
     case '/v1/projects':
-      return json({ project_id: 'APP-2', title: '示例项目' })
+      return call.url.searchParams.has('id')
+        ? json({ project_id: 'APP-2', title: '示例项目' })
+        : json({ items: [] })
     case '/v1/tasks':
-      return json({ task_id: 'APP-1-T0007', title: '示例任务' })
+      return call.url.searchParams.has('id')
+        ? json({ task_id: 'APP-1-T0007', title: '示例任务' })
+        : json({ items: [] })
     case '/v1/materials':
       return new Response('# 资料正文\n', {
         status: 200,
@@ -322,7 +328,7 @@ function createFakeTimer(): FakeTimer {
   }
 }
 
-/** 跑完 7 个工具的完整调用链（每类工具都真的发一次请求）。 */
+/** 跑完 10 个工具的完整调用链（每类工具都真的发一次请求）。 */
 async function runWholeToolChain(fetchImpl: FetchLike): Promise<void> {
   const options: EchuanToolOptions = {
     client: createClient(config, { fetchImpl }),
@@ -335,6 +341,9 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<void> {
     ['echuan_task_renew', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b' }],
     ['echuan_task_report', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b', summary_md: '三段式报告' }],
     ['echuan_inbox', { limit: 5 }],
+    ['echuan_product_list', { limit: 5 }],
+    ['echuan_project_list', { product_id: 'APP' }],
+    ['echuan_task_list', { project_id: 'APP-1' }],
     ['echuan_project_get', { id: 'APP-2' }],
     ['echuan_task_get', { id: 'APP-1-T0007' }],
     ['echuan_material_get', { id: 'M-1' }],
@@ -422,7 +431,7 @@ function installFetchSentinel(): Sentinel {
 }
 
 describe('运行时级：不触达真实 fetch', () => {
-  it('7 个工具完整链路：哨兵 0 次调用，假平台收到 7 个请求', async () => {
+  it('10 个工具完整链路：哨兵 0 次调用，假平台收到 10 个请求', async () => {
     const platform = createPlatform(respondByPath)
     const sentinel = installFetchSentinel()
     try {
@@ -432,7 +441,7 @@ describe('运行时级：不触达真实 fetch', () => {
       sentinel.restore()
     }
 
-    expect(platform.calls).toHaveLength(7)
+    expect(platform.calls).toHaveLength(10)
   })
 
   it('worker 心跳两轮（含派单投递）：哨兵 0 次调用', async () => {
@@ -490,13 +499,13 @@ describe('运行时级：不写盘', () => {
     expect(JSON.parse(secondBody)['worker_id']).toBe('w_TEST01ABCDEFGHIJKLMN')
   })
 
-  it('7 个工具完整链路：0 次写文件', async () => {
+  it('10 个工具完整链路：0 次写文件', async () => {
     const spies = writeSpies()
     const platform = createPlatform(respondByPath)
 
     await runWholeToolChain(platform.fetchImpl)
 
     for (const spy of spies) expect(spy.mock.calls).toEqual([])
-    expect(platform.calls).toHaveLength(7)
+    expect(platform.calls).toHaveLength(10)
   })
 })

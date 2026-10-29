@@ -1,8 +1,9 @@
 /**
- * 四个只读工具单测（任务-05：待办 / 项目全景 / 任务详情 / 资料正文）。
+ * 七个只读工具单测（任务-05 / 任务-11：待办 / 产品·项目·任务列表 /
+ * 项目全景 / 任务详情 / 资料正文）。
  *
  * 全部用假平台（注入 fetch），不连真实平台。覆盖：
- * 1. 7 个工具名（3 写 + 4 读），只读 4 个名字精确匹配；
+ * 1. 10 个工具名（3 写 + 7 读），只读 7 个名字精确匹配；
  * 2. inbox 的汇总、停留时长人话、超时标记、reason 为 null 显示「无」；
  * 3. project 的需求摘要（截断标注）、方案标题/版本、任务统计数字、reason；
  * 4. task 的 attempt_count/max_attempts、报告、reason、正文；
@@ -214,26 +215,55 @@ const TASK_PAYLOAD = {
 
 const MATERIAL_MD = '# 登录需求\n\n## 背景\n支持手机号+密码登录。\n'
 
+const PRODUCT_APP = {
+  id: 'p_app0001',
+  product_id: 'APP',
+  name: '驿传示例产品',
+  git_url: 'git@example.com:APP.git',
+  description: '驿传平台的示例产品，用来演示产品 → 项目 → 任务链路。',
+  license: 'MIT',
+  project_count: 3,
+  create_time: '2026-10-01T10:00:00.000Z',
+  update_time: '2026-10-28T09:00:00.000Z',
+}
+
+const PRODUCT_WEB = {
+  id: 'p_web0001',
+  product_id: 'WEB',
+  name: '官网',
+  git_url: 'git@example.com:WEB.git',
+  description: '',
+  license: 'Apache-2.0',
+  project_count: 0,
+  create_time: '2026-10-02T10:00:00.000Z',
+  update_time: '2026-10-27T18:00:00.000Z',
+}
+
+const PRODUCTS_PAYLOAD = { items: [PRODUCT_APP, PRODUCT_WEB], next_cursor: 'c_products_2' }
+
 // ---------------------------------------------------------------------------
-// 1. 工具集合：7 个（3 写 + 4 读）
+// 1. 工具集合：10 个（3 写 + 7 读）
 // ---------------------------------------------------------------------------
 
-describe('工具集合：7 个（3 写 + 4 读）', () => {
-  it('READ_TOOL_NAMES 精确是 4 个只读工具', () => {
+describe('工具集合：10 个（3 写 + 7 读）', () => {
+  it('READ_TOOL_NAMES 精确是 7 个只读工具', () => {
     expect([...READ_TOOL_NAMES]).toEqual([
       'echuan_inbox',
+      'echuan_product_list',
+      'echuan_project_list',
+      'echuan_task_list',
       'echuan_project_get',
       'echuan_task_get',
       'echuan_material_get',
     ])
   })
 
-  it('注册的 7 个名字 = 3 写 + 4 读，且写工具名未变', () => {
+  it('注册的 10 个名字 = 3 写 + 7 读，且写工具名未变', () => {
     expect([...TOOL_NAMES]).toEqual([
       ...WRITE_TOOL_NAMES,
       ...READ_TOOL_NAMES,
     ])
-    expect(TOOL_NAMES).toHaveLength(7)
+    expect(TOOL_NAMES).toHaveLength(10)
 
     const platform = createPlatform(() => jsonResponse({}))
     const names = [...toolsFor(platform.fetchImpl).keys()]
@@ -558,13 +588,14 @@ describe('平台 404：文案含「不存在」与「编号」', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 8. 只读：4 个工具只发 GET
+// 8. 只读：7 个工具只发 GET
 // ---------------------------------------------------------------------------
 
-describe('只读边界：4 个工具只发 GET', () => {
+describe('只读边界：7 个工具只发 GET', () => {
   it('记录所有 method，断言全部是 GET', async () => {
     const platform = createPlatform((url) => {
       if (url.includes('/v1/inbox')) return jsonResponse(INBOX_PAYLOAD)
+      if (url.includes('/v1/products')) return jsonResponse(PRODUCTS_PAYLOAD)
       if (url.includes('/v1/projects')) return jsonResponse(PROJECT_PAYLOAD)
       if (url.includes('/v1/tasks')) return jsonResponse(TASK_PAYLOAD)
       return textResponse(MATERIAL_MD, { 'content-type': 'text/markdown' })
@@ -572,20 +603,230 @@ describe('只读边界：4 个工具只发 GET', () => {
     const tools = toolsFor(platform.fetchImpl)
 
     await runTool(tools.get('echuan_inbox')!, {})
+    await runTool(tools.get('echuan_product_list')!, {})
+    await runTool(tools.get('echuan_project_list')!, { product_id: 'APP' })
+    await runTool(tools.get('echuan_task_list')!, { project_id: 'APP-1' })
     await runTool(tools.get('echuan_project_get')!, { id: 'APP-2' })
     await runTool(tools.get('echuan_task_get')!, { id: 'APP-1-T0007' })
     await runTool(tools.get('echuan_material_get')!, { id: 'm_req0001' })
 
-    expect(platform.calls).toHaveLength(4)
+    expect(platform.calls).toHaveLength(7)
     for (const call of platform.calls) {
       expect(call.init.method).toBe('GET')
       expect(call.body).toBeUndefined()
     }
     expect(platform.calls.map(call => new URL(call.url).pathname)).toEqual([
       '/v1/inbox',
+      '/v1/products',
+      '/v1/projects',
+      '/v1/tasks',
       '/v1/projects',
       '/v1/tasks',
       '/v1/materials',
     ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 9. 列表工具：产品 / 项目 / 任务
+// ---------------------------------------------------------------------------
+
+function queryOf(call: RecordedCall | undefined): URLSearchParams {
+  if (call === undefined) throw new Error('没有发出请求')
+  return new URL(call.url).searchParams
+}
+
+describe('echuan_product_list：产品列表', () => {
+  it('渲染编号 / 名称 / git_url / 描述 / 许可 / 项目数 / 更新时间，并带 cursor 提示', async () => {
+    const platform = createPlatform(() => jsonResponse(PRODUCTS_PAYLOAD))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_product_list')
+
+    const { value, text } = await runTool(tool!, {})
+    expectValidOutput(tool!, value)
+
+    expect(text).toContain('产品共 2 个')
+    expect(text).toContain('APP：驿传示例产品')
+    expect(text).toContain('仓库：git@example.com:APP.git')
+    expect(text).toContain('许可：MIT')
+    expect(text).toContain('项目数：3')
+    expect(text).toContain('描述：驿传平台的示例产品')
+    expect(text).toContain('更新时间：2026-10-28T09:00:00.000Z')
+    expect(text).toContain('WEB：官网')
+    expect(text).toContain('项目数：0')
+    // next_cursor 提示只出现在末尾，且形如 cursor=…
+    const lastLine = text.trimEnd().split('\n').at(-1) ?? ''
+    expect(lastLine).toContain('cursor=c_products_2')
+
+    expect(platform.calls).toHaveLength(1)
+    expect(platform.calls[0]!.init.method).toBe('GET')
+    expect(new URL(platform.calls[0]!.url).pathname).toBe('/v1/products')
+    expect([...queryOf(platform.calls[0]).keys()]).toEqual([])
+  })
+
+  it('拿到详情而不是列表 → 提示「列表接口应返回 items」，不硬渲染', async () => {
+    const platform = createPlatform(() => jsonResponse(PRODUCT_APP))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_product_list')
+
+    const { text } = await runTool(tool!, {})
+
+    expect(text).toContain('列表接口应返回 items')
+    expect(text).not.toContain('产品共')
+    expect(platform.calls).toHaveLength(1)
+  })
+})
+
+describe('echuan_project_list：项目列表', () => {
+  it('渲染 project_id / 标题 / 状态 / task_stats / reason / 更新时间', async () => {
+    const platform = createPlatform(() => jsonResponse({ items: [PROJECT_PAYLOAD] }))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_project_list')
+
+    const { value, text } = await runTool(tool!, {})
+    expectValidOutput(tool!, value)
+
+    expect(text).toContain('项目共 1 个')
+    expect(text).toContain('APP-2：登录模块')
+    expect(text).toContain('状态：方案评审（spec_review）')
+    expect(text).toContain('任务统计：共 12 个｜已完成 6 个')
+    expect(text).toContain('原因：等待人工确认方案')
+    expect(text).toContain('更新时间：2026-10-28T09:44:00.000Z')
+    expect(text).toContain('echuan_task_list')
+  })
+
+  it('筛选透传：product_id、status（单个整数，含 0）、limit、cursor', async () => {
+    const platform = createPlatform(() => jsonResponse({ items: [] }))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_project_list')
+
+    await runTool(tool!, { product_id: 'APP', status: 0, limit: 20, cursor: 'c_proj' })
+
+    const query = queryOf(platform.calls[0])
+    expect([...query.keys()].sort()).toEqual(['cursor', 'limit', 'product_id', 'status'])
+    expect(query.get('product_id')).toBe('APP')
+    expect(query.get('status')).toBe('0')
+    expect(query.get('limit')).toBe('20')
+    expect(query.get('cursor')).toBe('c_proj')
+  })
+})
+
+describe('echuan_task_list：任务列表', () => {
+  it('渲染 seq_no / task_id / 标题 / 状态 / 优先级 / 尝试次数 / 依赖', async () => {
+    const platform = createPlatform(() => jsonResponse({ items: [TASK_PAYLOAD] }))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_task_list')
+
+    const { value, text } = await runTool(tool!, {})
+    expectValidOutput(tool!, value)
+
+    expect(text).toContain('任务共 1 个')
+    expect(text).toContain('#7 APP-1-T0007：实现登录接口')
+    expect(text).toContain('状态：待验收（pending_acceptance）')
+    expect(text).toContain('优先级：10')
+    expect(text).toContain('尝试次数：2')
+    expect(text).toContain('依赖：APP-1-T0005')
+    expect(text).toContain('echuan_task_get')
+  })
+
+  it('筛选透传：project_id、status 数组按重复 key、limit、cursor', async () => {
+    const platform = createPlatform(() => jsonResponse({ items: [] }))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_task_list')
+
+    await runTool(tool!, { project_id: 'APP-1', status: [1, 2], limit: 5, cursor: 'c_task' })
+
+    const query = queryOf(platform.calls[0])
+    expect([...query.keys()].sort()).toEqual([
+      'cursor',
+      'limit',
+      'project_id',
+      'status',
+      'status',
+    ])
+    expect(query.getAll('status')).toEqual(['1', '2'])
+    expect(query.get('project_id')).toBe('APP-1')
+    expect(query.get('limit')).toBe('5')
+    expect(query.get('cursor')).toBe('c_task')
+  })
+})
+
+describe('列表工具：limit 本地校验（零请求）', () => {
+  const cases = [
+    ['echuan_product_list', {}],
+    ['echuan_project_list', { product_id: 'APP' }],
+    ['echuan_task_list', { project_id: 'APP-1' }],
+  ] as const
+
+  for (const [name, baseArgs] of cases) {
+    for (const limit of [0, 201, 1.5]) {
+      it(`${name}：limit=${limit} → 本地拒绝、零 HTTP 请求`, async () => {
+        const platform = createPlatform(() => jsonResponse({ items: [] }))
+        const tool = toolsFor(platform.fetchImpl).get(name)
+
+        const { text } = await runTool(tool!, { ...baseArgs, limit })
+
+        expect(text).toContain('本地拒绝')
+        expect(text).toContain('未发出任何请求')
+        expect(text).toContain('1–200')
+        expect(platform.calls).toHaveLength(0)
+      })
+    }
+  }
+})
+
+describe('列表工具：空列表不报错', () => {
+  for (const [name, subject] of [
+    ['echuan_product_list', '产品'],
+    ['echuan_project_list', '项目'],
+    ['echuan_task_list', '任务'],
+  ] as const) {
+    it(`${name}：items=[] →「当前没有${subject}」+ 下一步`, async () => {
+      const platform = createPlatform(() => jsonResponse({ items: [] }))
+      const tool = toolsFor(platform.fetchImpl).get(name)
+
+      const { value, text } = await runTool(tool!, {})
+      expectValidOutput(tool!, value)
+
+      expect(text).toContain(`当前没有${subject}`)
+      expect(text).toContain('下一步')
+      // 空列表是正常结果，不是错误文案。
+      expect(text).not.toContain('not_found')
+      expect(platform.calls).toHaveLength(1)
+    })
+  }
+})
+
+describe('列表工具：next_cursor 提示', () => {
+  it('回包带 next_cursor → 文本末尾含 cursor=…', async () => {
+    const platform = createPlatform(() => jsonResponse({
+      items: [TASK_PAYLOAD],
+      next_cursor: 'c_task_2',
+    }))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_task_list')
+
+    const { text } = await runTool(tool!, {})
+
+    const lastLine = text.trimEnd().split('\n').at(-1) ?? ''
+    expect(lastLine).toContain('还有更多')
+    expect(lastLine).toContain('cursor=c_task_2')
+    expect(platform.calls).toHaveLength(1)
+  })
+})
+
+describe('回归：get 工具仍走详情路径', () => {
+  it('echuan_project_get / echuan_task_get 带 id，返回详情而不是列表', async () => {
+    const platform = createPlatform((url) => {
+      if (url.includes('/v1/projects')) return jsonResponse(PROJECT_PAYLOAD)
+      return jsonResponse(TASK_PAYLOAD)
+    })
+    const tools = toolsFor(platform.fetchImpl)
+
+    const project = await runTool(tools.get('echuan_project_get')!, { id: 'APP-2' })
+    const task = await runTool(tools.get('echuan_task_get')!, { id: 'APP-1-T0007' })
+
+    expect(project.text).toContain('项目 APP-2：登录模块')
+    expect(project.text).toContain('需求摘要：')
+    expect(task.text).toContain('任务 APP-1-T0007：实现登录接口')
+    expect(task.text).toContain('正文：')
+
+    expect(queryOf(platform.calls[0]).get('id')).toBe('APP-2')
+    expect(queryOf(platform.calls[1]).get('id')).toBe('APP-1-T0007')
+    expect([...queryOf(platform.calls[0]).keys()]).toEqual(['id'])
+    expect([...queryOf(platform.calls[1]).keys()]).toEqual(['id'])
   })
 })

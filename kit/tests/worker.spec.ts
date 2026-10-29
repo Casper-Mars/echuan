@@ -416,9 +416,17 @@ describe('run_task 投递', () => {
     expect(text).toContain('2026-10-27T16:49:25.157Z')
     expect(text).toContain('APP-1')
     expect(text).toContain('驿传示例产品')
+    expect(text).toContain('仓库：git@example.com:APP.git')
     expect(text).toContain('/var/lib/echuan/workspaces/APP-1')
     expect(text).toContain('# 任务正文')
     expect(text).toContain('echuan_task_report')
+  })
+
+  it('renderTaskMessage 输出「仓库：」一行，且等于派单里的 git_url', () => {
+    const text = renderTaskMessage(RUN_TASK as never)
+    const line = text.split('\n').find(item => item.startsWith('仓库：'))
+    expect(line).toBe(`仓库：${RUN_TASK.context.product.git_url}`)
+    expect(line).toBe('仓库：git@example.com:APP.git')
   })
 
   it('renderTaskMessage 在没有 workdir 时不输出该行', () => {
@@ -696,8 +704,8 @@ describe('开关与卸载', () => {
 // ---------------------------------------------------------------------------
 
 describe('客户端与源码约束', () => {
-  it('worker 心跳走独立客户端，TOOL_METHODS 仍是恰好 7 个', () => {
-    expect(TOOL_METHODS).toHaveLength(7)
+  it('worker 心跳走独立客户端，TOOL_METHODS 仍是恰好 8 个', () => {
+    expect(TOOL_METHODS).toHaveLength(8)
     const config = resolveConfig({ worker: { poll: { enable: true } } })
     const client = createWorkerClient(config, {
       fetchImpl: async () => okResponse(heartbeatPayload(WORKER_ID)),

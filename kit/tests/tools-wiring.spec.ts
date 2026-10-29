@@ -2,7 +2,7 @@
  * 工具 → 端点逐项连线（任务-08 B）。
  *
  * 已有测试证明了「工具有什么行为」（render / 错误文案 / 缺参），这里补的是
- * **线怎么接**：7 个工具各自必须产生**恰好 1 个**请求，method / path / query 键 /
+ * **线怎么接**：10 个工具各自必须产生**恰好 1 个**请求，method / path / query 键 /
  * body 键与契约表一致；只读工具一律 GET 且无 body，写工具一律不发 GET。
  *
  * 全部用真 client + 假 fetch（不是假 client），因此连 URL 拼接、query 编码、
@@ -68,7 +68,7 @@ const CLAIM_PAYLOAD = {
   },
 }
 
-/** 按路径回包，让 7 个工具能在同一条链路上跑完。 */
+/** 按路径回包，让 10 个工具能在同一条链路上跑完。 */
 const respondByPath: Responder = (call) => {
   switch (call.url.pathname) {
     case '/v1/tasks/claim':
@@ -84,10 +84,17 @@ const respondByPath: Responder = (call) => {
         review_stale_hours: 24,
         generated_at: '2026-10-28T00:00:00.000Z',
       })
+    case '/v1/products':
+      return json({ items: [] })
     case '/v1/projects':
-      return json({ project_id: 'APP-2', title: '示例项目' })
+      // 带 id = 详情；不带 id = 列表。
+      return call.url.searchParams.has('id')
+        ? json({ project_id: 'APP-2', title: '示例项目' })
+        : json({ items: [] })
     case '/v1/tasks':
-      return json({ task_id: 'APP-1-T0007', title: '示例任务' })
+      return call.url.searchParams.has('id')
+        ? json({ task_id: 'APP-1-T0007', title: '示例任务' })
+        : json({ items: [] })
     case '/v1/materials':
       return new Response('# 资料正文\n', {
         status: 200,
@@ -123,7 +130,7 @@ function bodyKeys(call: RecordedCall): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// 1. 逐项连线：7 个工具，每个恰好 1 个请求
+// 1. 逐项连线：10 个工具，每个恰好 1 个请求
 // ---------------------------------------------------------------------------
 
 interface WiringCase {
@@ -173,6 +180,27 @@ const WIRING_CASES: WiringCase[] = [
     method: 'GET',
     path: '/v1/inbox',
     query: {},
+  },
+  {
+    name: 'echuan_product_list',
+    args: {},
+    method: 'GET',
+    path: '/v1/products',
+    query: {},
+  },
+  {
+    name: 'echuan_project_list',
+    args: { product_id: 'APP', status: 1, limit: 10, cursor: 'c1' },
+    method: 'GET',
+    path: '/v1/projects',
+    query: { product_id: 'APP', status: '1', limit: '10', cursor: 'c1' },
+  },
+  {
+    name: 'echuan_task_list',
+    args: { project_id: 'APP-1', status: [1], limit: 5 },
+    method: 'GET',
+    path: '/v1/tasks',
+    query: { project_id: 'APP-1', status: '1', limit: '5' },
   },
   {
     name: 'echuan_project_get',
@@ -282,10 +310,18 @@ describe('工具接线：可选参数', () => {
 // 3. 只读 / 写的方向性约束
 // ---------------------------------------------------------------------------
 
-const READ_TOOLS = ['echuan_inbox', 'echuan_project_get', 'echuan_task_get', 'echuan_material_get']
+const READ_TOOLS = [
+  'echuan_inbox',
+  'echuan_product_list',
+  'echuan_project_list',
+  'echuan_task_list',
+  'echuan_project_get',
+  'echuan_task_get',
+  'echuan_material_get',
+]
 const WRITE_TOOLS = ['echuan_task_claim', 'echuan_task_renew', 'echuan_task_report']
 
-/** 把 7 个工具都调用一遍，返回全部请求（用于方向性断言）。 */
+/** 把 10 个工具都调用一遍，返回全部请求（用于方向性断言）。 */
 async function runWholeChain(): Promise<RecordedCall[]> {
   const platform = createPlatform(respondByPath)
   const tools = toolsFor(platform.fetchImpl, 'w_TEST01ABCDEFGHIJKLMN')
@@ -297,7 +333,7 @@ async function runWholeChain(): Promise<RecordedCall[]> {
 }
 
 describe('工具接线：方向性约束', () => {
-  it('4 个只读工具全部 GET 且没有 body', async () => {
+  it('7 个只读工具全部 GET 且没有 body', async () => {
     const platform = createPlatform(respondByPath)
     const tools = toolsFor(platform.fetchImpl)
 
@@ -307,7 +343,7 @@ describe('工具接线：方向性约束', () => {
       await call(tools.get(name), wiring!.args)
     }
 
-    expect(platform.calls).toHaveLength(4)
+    expect(platform.calls).toHaveLength(7)
     for (const request of platform.calls) {
       expect(request.method).toBe('GET')
       expect(request.body).toBeUndefined()
@@ -332,14 +368,19 @@ describe('工具接线：方向性约束', () => {
     }
   })
 
-  it('7 个工具跑完一共只有 7 个请求，7 个端点点名不重复', async () => {
+  it('10 个工具跑完一共 10 个请求，共用 8 个 HTTP operation', async () => {
     const calls = await runWholeChain()
 
-    expect(calls).toHaveLength(7)
-    expect(calls.map(request => `${request.method} ${request.url.pathname}`).sort()).toEqual([
+    expect(calls).toHaveLength(10)
+    const endpoints = calls.map(request => `${request.method} ${request.url.pathname}`)
+    expect(new Set(endpoints).size).toBe(8)
+    expect([...endpoints].sort()).toEqual([
       'GET /v1/inbox',
       'GET /v1/materials',
+      'GET /v1/products',
       'GET /v1/projects',
+      'GET /v1/projects',
+      'GET /v1/tasks',
       'GET /v1/tasks',
       'POST /v1/tasks/claim',
       'POST /v1/tasks/heartbeat',

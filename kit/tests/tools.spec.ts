@@ -8,7 +8,7 @@
  * 4. report 空/全空白 summary_md → 本地拒绝、零请求、三段式提示；
  * 5. lease_lost / worker_busy / worker_unknown / material_required 的下一步文案；
  * 6. 工具名集合恰好 3 个，且没有门禁动作；
- * 7. TOOL_METHODS 仍恰好 7 个（工具层不污染客户端方法集）。
+ * 7. TOOL_METHODS 仍恰好 8 个（工具层不污染客户端方法集）。
  */
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
@@ -439,7 +439,7 @@ describe('工具集合：恰好 3 个写工具，无门禁动作', () => {
     }
   })
 
-  it('TOOL_METHODS 仍恰好 7 个（工具层没有污染客户端方法集）', () => {
-    expect(TOOL_METHODS).toHaveLength(7)
+  it('TOOL_METHODS 仍恰好 8 个（工具层没有污染客户端方法集）', () => {
+    expect(TOOL_METHODS).toHaveLength(8)
   })
 })
