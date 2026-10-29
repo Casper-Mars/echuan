@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { Breadcrumbs } from './Breadcrumbs'
 import { Drawer } from './Drawer'
-import { DrawerContext, type DrawerContent } from './DrawerContext'
+import { DrawerContext, DrawerTitleContext, type DrawerContent } from './DrawerContext'
 import { Sidebar } from './Sidebar'
 
 export function Layout() {
@@ -11,6 +11,9 @@ export function Layout() {
 
   const openDrawer = useCallback((content: DrawerContent) => setDrawer(content), [])
   const closeDrawer = useCallback(() => setDrawer(null), [])
+  const updateDrawerTitle = useCallback((title: string) => {
+    setDrawer((current) => current && current.title !== title ? { ...current, title } : current)
+  }, [])
 
   // 路由切换时收起抽屉，避免详情内容与页面层级不一致。
   useEffect(() => {
@@ -36,7 +39,9 @@ export function Layout() {
           </main>
         </div>
         <Drawer open={drawer !== null} title={drawer?.title ?? ''} onClose={closeDrawer}>
-          {drawer?.body}
+          <DrawerTitleContext.Provider value={updateDrawerTitle}>
+            {drawer?.body}
+          </DrawerTitleContext.Provider>
         </Drawer>
       </div>
     </DrawerContext.Provider>

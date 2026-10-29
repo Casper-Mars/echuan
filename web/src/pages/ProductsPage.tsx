@@ -74,7 +74,7 @@ export function ProductsPage() {
               </div>
               <h2 className="card-title">{product.name || product.product_id}</h2>
               <p className="mono muted ellipsis" title={product.git_url}>
-                {product.git_url || '未设置 git 地址'}
+                {product.git_url || '未设置代码仓库地址'}
               </p>
               <p className="muted card-desc">{product.description || '暂无描述'}</p>
               <footer className="card-foot">
@@ -134,16 +134,16 @@ function ProductDetail({ product }: { product: Product }) {
           <dd>{product.license || '—'}</dd>
         </div>
         <div>
-          <dt>create_time</dt>
+          <dt>创建时间</dt>
           <dd>{formatDateTime(product.create_time)}</dd>
         </div>
         <div>
-          <dt>update_time</dt>
+          <dt>更新时间</dt>
           <dd>{formatDateTime(product.update_time)}</dd>
         </div>
       </dl>
       <section className="detail-section">
-        <h3>git 地址</h3>
+        <h3>代码仓库地址</h3>
         <p className="mono">{product.git_url || '—'}</p>
       </section>
       <section className="detail-section">

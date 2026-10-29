@@ -144,7 +144,7 @@ export function WorkersPage() {
   const head = (
     <header className="page-head">
       <div>
-        <h1>Worker</h1>
+        <h1>执行节点</h1>
         <p className="muted">
           在线 {online} / 共 {workers.length}
           <span className="worker-ttl-hint">
@@ -169,24 +169,24 @@ export function WorkersPage() {
 
       <ErrorNotice error={error} onRetry={refresh} />
 
-      {!data && loading && <LoadingState label="正在加载 worker…" />}
+      {!data && loading && <LoadingState label="正在加载执行节点…" />}
       {!data && !loading && error && (
         <EmptyState
-          title="Worker 加载失败"
+          title="执行节点加载失败"
           hint="页面会自动重试；也可以点击上方“重试”。"
         />
       )}
       {data && workers.length === 0 && (
         <EmptyState
-          title="还没有 worker。"
-          hint="把工具包装到 dsh 上并开启 worker.poll.enable，这里就会出现。"
+          title="还没有执行节点"
+          hint="安装接入工具包并开启任务轮询后，执行节点会自动出现在这里。"
         />
       )}
 
       {workers.length > 0 && (
-        <div className="worker-table" role="table" aria-label="Worker 列表">
+        <div className="worker-table" role="table" aria-label="执行节点列表">
           <div className="worker-row worker-table-head" role="row">
-            <span role="columnheader">Worker</span>
+            <span role="columnheader">执行节点</span>
             <span role="columnheader">状态</span>
             <span role="columnheader">当前任务</span>
             <span role="columnheader">元数据</span>

@@ -6,6 +6,7 @@ import type {
   ProductList,
   ProductPatchRequest,
   Project,
+  ProjectCreateRequest,
   ProjectDecision,
   ProjectDetail,
   ProjectList,
@@ -167,6 +168,20 @@ export function getProject(id: string, signal?: AbortSignal): Promise<ProjectDet
   return request<ProjectDetail>('/v1/projects', { query: { id }, signal })
 }
 
+export function createProject(body: ProjectCreateRequest): Promise<ProjectDetail> {
+  return request<ProjectDetail>('/v1/projects', { method: 'POST', body })
+}
+
+export function updateProjectTitle(id: string, title: string): Promise<Project> {
+  return request<Project>('/v1/projects', { method: 'PATCH', query: { id }, body: { title } })
+}
+
+export function updateProjectRequirement(id: string, bodyMd: string): Promise<ProjectDetail> {
+  return request<ProjectDetail>('/v1/projects/requirement', {
+    method: 'POST', query: { id }, body: { body_md: bodyMd },
+  })
+}
+
 /** kind=1 需求 / kind=2 方案，返回该物料的完整版本链。 */
 export function listProjectMaterials(
   projectId: string,
@@ -257,17 +272,61 @@ export function materialDownloadUrl(materialId: string): string {
   return `/v1/materials?id=${encodeURIComponent(materialId)}`
 }
 
-/** 写操作失败时的单行提示：message + code + request_id。 */
+const ERROR_LABELS: Record<string, string> = {
+  invalid_argument: '输入内容不符合要求，请检查后重试。',
+  invalid_state: '当前状态不允许该操作，请刷新后核对。',
+  invalid_version: '数据已被更新，请刷新后重新提交。',
+  not_found: '未找到所需内容，可能已被删除或编号有误。',
+  conflict: '数据冲突，编号可能重复或数据已发生变化，请核对后重试。',
+  material_required: '缺少所需资料，请补充后再提交。',
+  too_large: '提交内容超过大小限制，请缩小后重试。',
+  lease_lost: '任务租约已失效，请重新确认任务归属。',
+  worker_unknown: '执行节点尚未注册或已失效，请重新连接。',
+  worker_busy: '执行节点正在处理其他任务，请稍后重试。',
+  method_not_allowed: '当前请求方式不受支持，请刷新页面后重试。',
+  internal: '服务暂时异常，请稍后重试。',
+  unauthorized: '身份信息无效，请检查身份配置。',
+  forbidden: '当前身份无法执行该操作。',
+  timeout: '请求超时，请稍后重试。',
+  rate_limited: '操作过于频繁，请稍后重试。',
+}
+
+export function apiErrorSummary(error: ApiError): string {
+  return ERROR_LABELS[error.code] ?? describeError(error).hint
+}
+
+export function errorDetailMessage(detail: unknown): string {
+  const fields: Record<string, string> = {
+    product_id: '产品编号', project_id: '项目编号', task_id: '任务编号',
+    id: '编号', title: '标题', name: '名称', git_url: '代码仓库地址',
+    description: '描述', license: '许可证', requirement_md: '需求正文',
+    body_md: '正文', reason: '原因', decision: '处理方式', status: '状态',
+    version: '版本', material_id: '资料编号', priority: '优先级',
+  }
+  if (!detail || typeof detail !== 'object') return '请检查提交内容。'
+  const item = detail as { field?: unknown; reason?: unknown }
+  const field = typeof item.field === 'string' ? fields[item.field] ?? '相关输入' : '提交内容'
+  const reasons: Record<string, string> = {
+    'is required': '不能为空',
+    'must not be blank': '不能为空',
+    'must not be empty': '不能为空',
+    'is not allowed': '不允许修改',
+    'is immutable': '不允许修改',
+  }
+  const reason = typeof item.reason === 'string' ? reasons[item.reason] : undefined
+  return `${field}${reason ?? '不符合要求，请检查后重试'}。`
+}
+
+/** User-facing messages leave protocol diagnostics on the original error. */
 export function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    const parts = [error.message || '请求失败']
-    parts.push(`code: ${error.code}`)
-    if (error.requestId) parts.push(`request_id: ${error.requestId}`)
+    const parts = [apiErrorSummary(error)]
+    parts.push(...error.details.slice(0, 5).map(errorDetailMessage))
+    if (error.requestId) parts.push(`请求编号：${error.requestId}`)
     return parts.join(' · ')
   }
-  if (error instanceof NetworkError) return `${error.message} · code: ${error.code}`
-  if (error instanceof Error) return error.message
-  return String(error)
+  if (error instanceof NetworkError) return error.message
+  return '操作失败，请稍后重试。'
 }
 
 export function isProduct(value: Product | ProductList): value is Product {
@@ -292,21 +351,27 @@ export function describeError(error: unknown): { title: string; hint: string } {
   }
   if (error instanceof ApiError) {
     switch (error.status) {
+      case 400:
+        return { title: '输入内容有误', hint: '请检查必填项和输入格式后重试。' }
       case 401:
-        return { title: '未授权（401）', hint: '身份信息缺失或无效，请确认 X-Actor 配置。' }
+        return { title: '身份信息无效', hint: '身份信息缺失或无效，请检查身份配置。' }
+      case 403:
+        return { title: '无法执行该操作', hint: '当前身份无法执行该操作。' }
       case 404:
-        return { title: '未找到（404）', hint: '资源不存在，可能已被删除。' }
+        return { title: '未找到所需内容', hint: '资源不存在，可能已被删除。' }
       case 409:
-        return { title: '冲突（409）', hint: '数据已被其他操作修改或当前状态不允许该操作，请刷新后重试。' }
+        return { title: '操作发生冲突', hint: '数据已被其他操作修改或当前状态不允许该操作，请刷新后重试。' }
+      case 413:
+        return { title: '内容过大', hint: '提交内容超过大小限制，请缩小后重试。' }
       case 422:
-        return { title: '参数不合法（422）', hint: '请检查提交内容后重试。' }
+        return { title: '提交内容不符合要求', hint: '请检查提交内容后重试。' }
       case 429:
-        return { title: '请求过于频繁（429）', hint: '已自动退避，稍后会继续自动刷新。' }
+        return { title: '操作过于频繁', hint: '稍后会继续自动刷新，也可稍等后重试。' }
       default:
         if (error.status >= 500) {
-          return { title: `服务异常（${error.status}）`, hint: '后端处理失败，页面会继续自动重试。' }
+          return { title: '服务异常', hint: '服务处理失败，页面会继续自动重试。' }
         }
-        return { title: `请求失败（${error.status}）`, hint: '请稍后重试。' }
+        return { title: '请求失败', hint: '请稍后重试。' }
     }
   }
   return { title: '未知错误', hint: '发生未预期的问题，请稍后重试。' }

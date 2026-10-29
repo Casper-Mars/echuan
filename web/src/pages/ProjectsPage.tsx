@@ -10,6 +10,7 @@ import {
   type ProjectActionRequest,
 } from '../components/ProjectActions'
 import { ProjectDetailDrawer } from '../components/ProjectDetailDrawer'
+import { ProjectFormDialog } from '../components/ProjectFormDialog'
 import {
   DetailButton,
   EmptyState,
@@ -38,6 +39,7 @@ export function ProjectsPage() {
   const openDrawer = useDrawer()
   const { productId = '' } = useParams()
   const [filter, setFilter] = useState<ProjectFilter>('pending')
+  const [creating, setCreating] = useState(false)
   // 弹窗状态放在页面层：项目离开当前筛选时行会被卸载，但用户正在填写的弹窗必须保留。
   const [action, setAction] = useState<{ project: Project; request: ProjectActionRequest } | null>(null)
 
@@ -71,12 +73,17 @@ export function ProjectsPage() {
             产品 <span className="code">{productId}</span> 下的需求项目
           </p>
         </div>
-        <RefreshBar
-          lastUpdated={lastUpdated}
-          refreshing={refreshing}
-          error={error}
-          onRefresh={refresh}
-        />
+        <div className="page-head-actions">
+          <RefreshBar
+            lastUpdated={lastUpdated}
+            refreshing={refreshing}
+            error={error}
+            onRefresh={refresh}
+          />
+          <button type="button" className="action action-primary" onClick={() => setCreating(true)}>
+            新建需求项目
+          </button>
+        </div>
       </header>
 
       <ErrorNotice error={error} onRetry={refresh} />
@@ -113,7 +120,7 @@ export function ProjectsPage() {
         <EmptyState title="项目加载失败" hint="页面会自动重试；也可以点击上方“重试”。" />
       )}
       {data && projects.length === 0 && (
-        <EmptyState title="暂无项目" hint="该产品下还没有需求项目。" />
+        <EmptyState title="暂无项目" hint="点击右上角“新建需求项目”创建第一条需求。" />
       )}
       {data && projects.length > 0 && visible.length === 0 && (
         <EmptyState title="该筛选下没有项目" hint="切换到“全部”或其他状态查看更多。" />
@@ -152,10 +159,10 @@ export function ProjectsPage() {
                     <span>
                       任务 {project.task_stats.done}/{project.task_stats.total}
                     </span>
-                    <span className="mono">v{project.version}</span>
+                    <span className="mono">第 {project.version} 版</span>
                   </div>
                   <p className={project.reason ? 'row-reason' : 'row-reason muted'}>
-                    reason：{project.reason || '—'}
+                    原因：{project.reason || '—'}
                   </p>
                 </div>
                 <div className="row-actions">
@@ -179,6 +186,15 @@ export function ProjectsPage() {
             )
           })}
         </div>
+      )}
+
+      {creating && (
+        <ProjectFormDialog
+          mode="create"
+          productId={productId}
+          onClose={() => setCreating(false)}
+          onSaved={() => { setFilter('all'); refresh() }}
+        />
       )}
 
       {action && (

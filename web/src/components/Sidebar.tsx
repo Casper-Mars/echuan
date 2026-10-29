@@ -37,7 +37,7 @@ const workerIcon = (
 
 const items: NavItem[] = [
   { to: '/products', label: '产品', icon: productIcon },
-  { to: '/workers', label: 'Worker', icon: workerIcon },
+  { to: '/workers', label: '执行节点', icon: workerIcon },
 ]
 
 /**

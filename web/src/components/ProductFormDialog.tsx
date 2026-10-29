@@ -40,7 +40,7 @@ export function ProductFormDialog({ product, onClose, onSaved }: ProductFormDial
       return
     }
     if (!gitUrl.trim()) {
-      setError('git 地址不能为空。')
+      setError('代码仓库地址不能为空。')
       return
     }
 
@@ -90,7 +90,7 @@ export function ProductFormDialog({ product, onClose, onSaved }: ProductFormDial
           <input value={name} onChange={(event) => setName(event.target.value)} disabled={submitting} />
         </label>
         <label className="field">
-          <span>git 地址</span>
+          <span>代码仓库地址</span>
           <input
             value={gitUrl}
             onChange={(event) => setGitUrl(event.target.value)}
@@ -99,7 +99,7 @@ export function ProductFormDialog({ product, onClose, onSaved }: ProductFormDial
           />
         </label>
         <label className="field">
-          <span>证书 / license（可选）</span>
+          <span>许可证（可选）</span>
           <input
             value={license}
             onChange={(event) => setLicense(event.target.value)}

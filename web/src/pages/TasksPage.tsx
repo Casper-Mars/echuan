@@ -73,7 +73,7 @@ export function TasksPage() {
               <span className={`badge status-${project.status}`}>
                 {projectStatusLabel(project.status)}
               </span>
-              <span className="muted">项目 reason：{project.reason || '—'}</span>
+              <span className="muted">项目原因：{project.reason || '—'}</span>
             </p>
           )}
         </div>
@@ -168,7 +168,7 @@ export function TasksPage() {
                           }
                           title={task.reason ?? undefined}
                         >
-                          reason：{task.reason || '—'}
+                          原因：{task.reason || '—'}
                         </p>
                         <footer className="board-card-foot">
                           <span>
