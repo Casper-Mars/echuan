@@ -6,9 +6,8 @@
 
 listen = "0.0.0.0:8720"
 
-# SQLite 库、objects、workspaces 的根目录（容器内路径）
+# SQLite 库、objects 的根目录（容器内路径）
 data_dir = "/data"
-workspace_dir = "/data/workspaces"
 
 # SQLite 读连接池大小（写池固定为 1）
 read_pool_size = 4

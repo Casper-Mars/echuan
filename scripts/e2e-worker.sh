@@ -150,7 +150,6 @@ write_config() {
 # e2e-worker.sh 生成的临时配置（每次运行都是新目录）
 listen = "127.0.0.1:$PORT"
 data_dir = "$TMP_DIR/data"
-workspace_dir = "$TMP_DIR/workspaces"
 read_pool_size = 4
 lease_ttl = "90s"
 max_attempts = 3
@@ -220,7 +219,7 @@ say "== 1/9 临时环境与进程启动 =="
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/echuan-e2e.XXXXXX")"
 CONFIG="$TMP_DIR/echuan.toml"
 LOG="$TMP_DIR/echuan.log"
-mkdir -p "$TMP_DIR/data" "$TMP_DIR/workspaces"
+mkdir -p "$TMP_DIR/data"
 say "临时目录: $TMP_DIR"
 
 BIN="$TMP_DIR/echuan"

@@ -112,8 +112,7 @@ LABEL org.opencontainers.image.title="echuan" \
 # 容器内默认监听 0.0.0.0；数据统一落 /data（compose 绑定宿主机目录）。
 ENV TZ=Asia/Shanghai \
     ECHUAN_LISTEN=0.0.0.0:8720 \
-    ECHUAN_DATA_DIR=/data \
-    ECHUAN_WORKSPACE_DIR=/data/workspaces
+    ECHUAN_DATA_DIR=/data
 
 # 非 root 运行：UID/GID 10001。
 USER 10001:10001

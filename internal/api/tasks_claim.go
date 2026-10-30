@@ -64,7 +64,6 @@ type claimContextResponse struct {
 	SpecVersion int                  `json:"spec_version"`
 	SpecDigest  string               `json:"spec_digest"`
 	Product     claimProductResponse `json:"product"`
-	Workdir     string               `json:"workdir"`
 }
 
 // claimResponse is the 200 body of POST /v1/tasks/claim.
@@ -185,6 +184,5 @@ func toClaimContextResponse(context app.ClaimContext) claimContextResponse {
 			Name:   context.Product.Name,
 			GitURL: context.Product.GitURL,
 		},
-		Workdir: context.Workdir,
 	}
 }

@@ -88,13 +88,12 @@ func newEndpointEnv(t *testing.T) *endpointEnv {
 	projects := app.NewProjectService(st, writer)
 	tasks := app.NewTaskService(st)
 	tasks.SetMaterialWriter(writer)
-	claims := app.NewClaimService(st, logger, 90*time.Second, filepath.Join(dir, "workspaces"))
+	claims := app.NewClaimService(st, logger, 90*time.Second)
 	workers := app.NewWorkerService(st, logger, app.WorkerServiceOptions{
 		LeaseTTL:          90 * time.Second,
 		WorkerTTL:         45 * time.Second,
 		HeartbeatInterval: 15 * time.Second,
 		MetadataMaxBytes:  8 << 10,
-		WorkspaceDir:      filepath.Join(dir, "workspaces"),
 	})
 	materials := app.NewMaterialService(st, writer)
 	inbox := app.NewInboxService(st, logger, 72)

@@ -14,7 +14,6 @@
 |---|---|---|---|---|
 | `listen` | `ECHUAN_LISTEN` | `127.0.0.1:8720` | HTTP 监听地址 | 容器内需 `0.0.0.0:8720`；本机默认只绑回环 |
 | `data_dir` | `ECHUAN_DATA_DIR` | `~/.echuan` | SQLite、objects 等运行数据根目录 | 备份/迁移要整目录一起 |
-| `workspace_dir` | `ECHUAN_WORKSPACE_DIR` | `~/.echuan/workspaces` | 每个项目/任务的工作区根目录 | 派卡响应里的 `context.workdir` 由它派生 |
 | `read_pool_size` | `ECHUAN_READ_POOL_SIZE` | `4` | SQLite 读连接池大小（写池固定 1） | 读多时上调，写不会因此并行 |
 | `lease_ttl` | `ECHUAN_LEASE_TTL` | `90s` | 任务租约有效期；派卡与续租都写这个时长 | 必须明显大于 Worker 心跳间隔，否则一次网络抖动就丢卡；建议 ≥ 3×`heartbeat_interval` |
 | `max_attempts` | `ECHUAN_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 | 新建任务时写入，改配置不影响存量任务 |

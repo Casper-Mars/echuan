@@ -49,13 +49,12 @@ func workerHTTPEnv(t *testing.T) (http.Handler, *store.Store) {
 	projects := app.NewProjectService(st, writer)
 	tasks := app.NewTaskService(st)
 	tasks.SetMaterialWriter(writer)
-	claims := app.NewClaimService(st, logger, 90*time.Second, filepath.Join(dir, "workspaces"))
+	claims := app.NewClaimService(st, logger, 90*time.Second)
 	workers := app.NewWorkerService(st, logger, app.WorkerServiceOptions{
 		LeaseTTL:          90 * time.Second,
 		WorkerTTL:         45 * time.Second,
 		HeartbeatInterval: 15 * time.Second,
 		MetadataMaxBytes:  8 << 10,
-		WorkspaceDir:      filepath.Join(dir, "workspaces"),
 	})
 
 	h := Chain(
@@ -105,7 +104,6 @@ type workerHTTPResponse struct {
 		Context *struct {
 			SpecVersion int    `json:"spec_version"`
 			SpecDigest  string `json:"spec_digest"`
-			Workdir     string `json:"workdir"`
 			Product     struct {
 				ID     string `json:"id"`
 				Name   string `json:"name"`
@@ -204,7 +202,7 @@ func TestWorkerHeartbeatDispatchesAndKeepsMetadata(t *testing.T) {
 	if !strings.HasPrefix(command.Lease.LeaseID, "l_") || command.Lease.TTLSeconds != 90 {
 		t.Errorf("lease = %+v", command.Lease)
 	}
-	if command.Context.Workdir == "" || command.Context.Product.ID != "APP" {
+	if command.Context.Product.ID != "APP" {
 		t.Errorf("context = %+v", command.Context)
 	}
 	// The pointer, not the declared state, is the occupancy signal.

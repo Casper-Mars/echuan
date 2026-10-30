@@ -49,10 +49,8 @@ func run() error {
 	// configured to warn/error.
 	banner := platform.NewBannerLogger(os.Stdout)
 
-	for _, dir := range []string{cfg.DataDir, cfg.WorkspaceDir} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create directory %s: %w", dir, err)
-		}
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		return fmt.Errorf("create directory %s: %w", cfg.DataDir, err)
 	}
 
 	// Database first: open, migrate, then start readers. A failure here
@@ -103,7 +101,7 @@ func run() error {
 
 	// Pull mode: workers claim a card, hold a lease and renew it. The reclaimer
 	// returns expired leases to the queue even when nobody is claiming.
-	claims := app.NewClaimService(st, logger, cfg.LeaseTTL, cfg.WorkspaceDir)
+	claims := app.NewClaimService(st, logger, cfg.LeaseTTL)
 
 	// The worker registry and worker-side dispatch. Every option is passed
 	// explicitly: a zero value silently falls back to the service default, so
@@ -114,7 +112,6 @@ func run() error {
 		WorkerTTL:         cfg.WorkerTTL,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		MetadataMaxBytes:  cfg.WorkerMetadataMaxBytes,
-		WorkspaceDir:      cfg.WorkspaceDir,
 	})
 	reclaimer := app.NewReclaimer(st, logger, app.DefaultReclaimInterval)
 	// worker_retention bounds how long an offline, task-free worker row is
@@ -242,7 +239,6 @@ func logStartup(banner *slog.Logger, cfg platform.Config, listenAddr string) {
 		"commit", platform.Commit,
 		"listen", listenAddr,
 		"data_dir", cfg.DataDir,
-		"workspace_dir", cfg.WorkspaceDir,
 		"log_level", cfg.LogLevel,
 	)
 }

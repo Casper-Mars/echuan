@@ -299,7 +299,6 @@ docker buildx rm echuan-cold                    # 只清掉这个 builder 的缓
 |----|--------|------|
 | `listen` | `0.0.0.0:8720` | 容器内必须监听 0.0.0.0 |
 | `data_dir` | `/data` | 由 compose bind mount 到宿主机 |
-| `workspace_dir` | `/data/workspaces` | 任务工作区 |
 | `read_pool_size` | `4` | SQLite 读连接池 |
 | `lease_ttl` | `90s` | 任务租约有效期 |
 | `max_attempts` | `3` | 单任务最大尝试次数 |
@@ -337,7 +336,7 @@ docker logs echuan --since 10m
 docker inspect echuan --format '{{json .HostConfig.LogConfig}}'
 ```
 
-启动 banner 会打印 `version / commit / listen / data_dir / workspace_dir / log_level`，可用来确认配置是否生效。
+启动 banner 会打印 `version / commit / listen / data_dir / log_level`，可用来确认配置是否生效。
 
 ---
 

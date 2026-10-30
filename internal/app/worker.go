@@ -49,9 +49,7 @@ const defaultWorkerHeartbeatInterval = 15 * time.Second
 const defaultWorkerMetadataMaxBytes = 8192
 
 // WorkerServiceOptions is the subset of the configuration the worker use cases
-// need. Zero values fall back to the defaults above, except WorkspaceDir which
-// is used as given (an empty root yields a relative workdir, which is what the
-// claim service does too).
+// need. Zero values fall back to the defaults above.
 type WorkerServiceOptions struct {
 	// LeaseTTL is the lease duration handed out on dispatch and renewal. It
 	// should match the claim service's TTL: both write tasks.lease_until.
@@ -63,8 +61,6 @@ type WorkerServiceOptions struct {
 	HeartbeatInterval time.Duration
 	// MetadataMaxBytes caps the free-form metadata document.
 	MetadataMaxBytes int64
-	// WorkspaceDir is the root of the per-project workdirs reported back.
-	WorkspaceDir string
 }
 
 // WorkerService implements registration, heartbeat and worker-side dispatch.
@@ -79,7 +75,6 @@ type WorkerService struct {
 	workerTTL         time.Duration
 	heartbeatInterval time.Duration
 	metadataMaxBytes  int64
-	workspaceDir      string
 }
 
 // NewWorkerService builds the worker service on top of an open store.
@@ -107,7 +102,6 @@ func NewWorkerService(st *store.Store, logger *slog.Logger, opts WorkerServiceOp
 		workerTTL:         opts.WorkerTTL,
 		heartbeatInterval: opts.HeartbeatInterval,
 		metadataMaxBytes:  opts.MetadataMaxBytes,
-		workspaceDir:      opts.WorkspaceDir,
 	}
 }
 
@@ -490,7 +484,7 @@ func (s *WorkerService) dispatch(ctx context.Context, tx *sql.Tx, workerID, acto
 		return nil, err
 	}
 
-	claim, err := buildClaimResult(ctx, tx, task, product, s.leaseTTL, now, s.workspaceDir)
+	claim, err := buildClaimResult(ctx, tx, task, product, s.leaseTTL, now)
 	if err != nil {
 		return nil, err
 	}

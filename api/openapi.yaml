@@ -1120,7 +1120,6 @@ paths:
                             id: APP
                             name: 驿传示例产品
                             git_url: git@example.com:APP.git
-                          workdir: /var/lib/echuan/workspaces/APP-1
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
@@ -2150,7 +2149,7 @@ components:
     ClaimContext:
       type: object
       additionalProperties: false
-      required: [spec_version, spec_digest, product, workdir]
+      required: [spec_version, spec_digest, product]
       properties:
         spec_version:
           type: integer
@@ -2158,8 +2157,6 @@ components:
           type: string
         product:
           $ref: "#/components/schemas/ClaimProduct"
-        workdir:
-          type: string
     ClaimResponse:
       type: object
       additionalProperties: false
