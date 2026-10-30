@@ -37,7 +37,7 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
   const [fileReading, setFileReading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const heading = mode === 'create' ? '新建需求项目' : mode === 'title' ? '编辑项目标题' : '编辑需求正文'
+  const heading = mode === 'create' ? '新建需求项目' : mode === 'title' ? '编辑项目标题' : '编辑需求文档'
 
   useEffect(() => {
     if (mode !== 'requirement' || !materialId) return
@@ -58,11 +58,14 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
     return () => controller.abort()
   }, [mode, materialId, reloadKey])
 
-  // 正文读取中 / 读取失败时不允许编辑和提交；缺 material 不阻止上传首版。
+  // 正文读取中 / 读取失败时不允许提交；缺 material 不阻止上传首版。
   const bodyBlocked = mode === 'requirement' && (bodyLoading || Boolean(bodyError))
+  // requirement 模式没有正文编辑框：既无当前文档又未选新文件时没有正文可用，
+  // 直接禁用保存，避免提交空正文。
+  const requirementMissing = mode === 'requirement' && !materialId && !file
   // 文件校验失败（含读取失败）时禁止提交：否则非法文件会把正文清空/回退，
   // create 模式便会静默创建一条无需求项目，requirement 模式则会生成重复版本。
-  const submitBlocked = submitting || fileReading || bodyBlocked || Boolean(fileError)
+  const submitBlocked = submitting || fileReading || bodyBlocked || Boolean(fileError) || requirementMissing
   // 文件选择本身不受 fileError 影响，否则用户无法重新选择或取消来解除阻塞。
   const fileInputBlocked = submitting || fileReading || bodyBlocked
 
@@ -193,9 +196,22 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
             />
           </label>
         )}
+        {mode === 'requirement' && (
+          <div className="field">
+            <span>当前文档</span>
+            {project?.requirement ? (
+              <span className="muted">
+                第 {project.requirement.version} 版 · {project.requirement.title} · {formatBytes(project.requirement.size)}
+              </span>
+            ) : (
+              <span className="muted">尚无需求文档，请选择 .md 文件上传首版</span>
+            )}
+            {bodyLoading && <span className="muted">读取当前文档…</span>}
+          </div>
+        )}
         {mode !== 'title' && (
           <div className="field">
-            <span>{mode === 'create' ? '需求文档（可选，.md / .markdown，最大 20 MiB）' : '选择文件替换正文（.md / .markdown，最大 20 MiB）'}</span>
+            <span>{mode === 'create' ? '需求文档（可选，.md / .markdown，最大 20 MiB）' : '选择新文件上传新版本（.md / .markdown，最大 20 MiB）'}</span>
             <input
               type="file"
               accept=".md,.markdown"
@@ -216,7 +232,9 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
               <span className="muted">
                 {mode === 'create'
                   ? '不选择也可以创建；项目会落在「需求待提交」，之后可在项目详情里上传首版。'
-                  : '选择文件会读取其内容并替换下方正文。'}
+                  : materialId
+                    ? '不选择新文件时，保存会沿用当前文档正文。'
+                    : '尚无需求文档，需选择 .md 文件后才能保存。'}
               </span>
             )}
             {fileReading && <span className="muted">读取中…</span>}
@@ -229,23 +247,6 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
               </>
             )}
           </div>
-        )}
-        {mode === 'requirement' && (
-          <label className="field">
-            <span>需求正文（必填，支持 Markdown）</span>
-            <textarea
-              rows={12}
-              value={body}
-              onChange={(event) => setBody(event.target.value)}
-              disabled={submitting || bodyBlocked}
-              placeholder={bodyLoading ? '读取中…' : undefined}
-              autoFocus={!bodyBlocked}
-            />
-            {bodyLoading && <span className="muted">读取中…</span>}
-            {!materialId && !file && (
-              <span className="muted">该项目尚无需求文档（material_id 为空），可选择上方文件上传首版。</span>
-            )}
-          </label>
         )}
         {mode === 'create' && body && (
           <div className="field">
