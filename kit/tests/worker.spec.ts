@@ -405,10 +405,14 @@ describe('run_task 投递', () => {
     const message = followup.mock.calls[0]?.[0] as {
       role: string
       content: Array<{ type: string; text: string }>
-      source: { kind: string; plugin: string }
+      source: { kind: string; plugin?: string }
     }
     expect(message.role).toBe('user')
-    expect(message.source).toEqual({ kind: 'plugin', plugin: 'echuan' })
+    // dsh v4：source.kind 是生产者自有 kind（`plugin:<name>`），不是共享的 `plugin`。
+    expect(message.source).toEqual({ kind: 'plugin:echuan' })
+    // 防回归：V3 写法（`kind: 'plugin'` + `plugin` 字段）会被 dsh v4 会话格式直接拒收。
+    expect(message.source.kind).not.toBe('plugin')
+    expect(message.source).not.toHaveProperty('plugin')
     const text = message.content.map(block => block.text).join('\n')
 
     expect(text).toContain('APP-1-T0001')
@@ -985,6 +989,16 @@ describe('客户端与源码约束', () => {
     for (const file of readdirSync(srcDir).filter(name => name.endsWith('.ts'))) {
       const text = readFileSync(path.join(srcDir, file), 'utf8')
       expect(text, `${file} 不应写盘`).not.toMatch(/writeFile|appendFile|createWriteStream/)
+    }
+  })
+
+  it('kit/src 不再出现 V3 的 `kind: \'plugin\'` 来源写法（dsh v4 会拒收）', () => {
+    const srcDir = path.resolve(here, '../src')
+    for (const file of readdirSync(srcDir).filter(name => name.endsWith('.ts'))) {
+      const text = readFileSync(path.join(srcDir, file), 'utf8')
+      // V3 写法是 `{ kind: 'plugin', plugin: <name> }`；dsh v4 的会话格式准入直接拒收
+      // `kind === 'plugin'`，第三方插件必须用 `plugin:<name>` 且不带 `plugin` 字段。
+      expect(text, `${file} 不应再写 V3 的 plugin 来源`).not.toMatch(/kind:\s*['"]plugin['"]\s*,/)
     }
   })
 })

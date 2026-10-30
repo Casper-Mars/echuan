@@ -92,8 +92,33 @@ export const MAX_REMEMBERED_DELIVERIES = 200
  */
 export const DEFAULT_ENSURE_TIMEOUT_MS = 10_000
 
-/** 插件投递消息时写入 `source.plugin` 的标识。 */
+/**
+ * 插件标识：派单消息的 `source.kind` 由它派生（`plugin:<name>`）。
+ *
+ * dsh v4 取消了共享的 `plugin` kind，改为「生产者自有 kind」：第三方插件的
+ * `source.kind` 形如 `plugin:<name>`，并且**不再带** `plugin` 字段。会话格式准入
+ * 直接拒收 `kind === 'plugin'`（`dsh-session-format-v3-to-v4` 的
+ * `src/message-sources.ts` → `assertV4MessageSources`），V3 → V4 迁移也按
+ * `plugin:<name>` 重写（同包 `src/sources.ts` → `producerKind` / `rewritePluginSource`）。
+ */
 export const WORKER_PLUGIN_SOURCE = 'echuan'
+
+/** 派单消息的 `source.kind`：`plugin:<插件标识>`，见 {@link WORKER_PLUGIN_SOURCE}。 */
+export const WORKER_PLUGIN_SOURCE_KIND = `plugin:${WORKER_PLUGIN_SOURCE}` as const
+
+/**
+ * 把本插件的生产者 kind 合并进 dsh-llm 的 `MessageSourceMap`。
+ *
+ * `MessageSourceMap` 是 dsh-llm 公开的合并扩展点（`packages/llm/llm/src/message.ts`，
+ * 已无共享 catch-all `plugin` kind）：声明之后 `createUserMessage` 的 `source` 仍走
+ * 完整类型检查，无需把字面量断言成 `any`。
+ */
+declare module '@deepseek-ai/dsh-llm/message' {
+  interface MessageSourceMap {
+    /** 驿传（echuan）插件投递的派单消息。 */
+    'plugin:echuan': { kind: 'plugin:echuan' }
+  }
+}
 
 /** 只声明循环用到的定时器能力。 */
 export interface WorkerTimerApi {
@@ -626,7 +651,8 @@ export function renderTaskMessage(command: RunTaskCommand): string {
 function defaultDeliver(agent: Agent, text: string): void {
   const message = createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: WORKER_PLUGIN_SOURCE },
+    // dsh v4：producer-owned kind（`plugin:<name>`），不再带 V3 的 `plugin` 字段。
+    source: { kind: WORKER_PLUGIN_SOURCE_KIND },
   })
   agent.followup(message)
 }
