@@ -328,8 +328,8 @@ export interface SubmitProjectInput {
 
 export interface CreateSpecInput {
   project_id: string
-  /** 方案标题；平台允许省略。 */
-  title?: string
+  /** 方案标题，契约必填（POST /v1/specs 的 required 含 title）。 */
+  title: string
   body_md: string
 }
 
@@ -338,8 +338,8 @@ export interface ReviseSpecInput {
   id: string
   /** 当前方案版本，走 `If-Match` 头（不放进 body）。 */
   version: number
-  /** 方案标题；平台允许省略。 */
-  title?: string
+  /** 方案标题，契约必填（PATCH /v1/specs 的 required 含 title）。 */
+  title: string
   body_md: string
 }
 
@@ -726,10 +726,10 @@ export function createClient(
 
     async createSpec(input) {
       const project_id = requireNonEmpty(input?.project_id, 'project_id')
+      const title = requireNonEmpty(input?.title, 'title')
       const body_md = requireNonBlank(input?.body_md, 'body_md')
-      const body: Record<string, unknown> = { project_id, body_md }
-      const title = optionalNonEmpty(input?.title, 'title')
-      if (title !== undefined) body.title = title
+      // 契约要求 title 必填：始终发送，不再按“可选”省略。
+      const body: Record<string, unknown> = { project_id, title, body_md }
       return requestJson<SpecDocument>(ctx, {
         method: 'POST',
         path: '/v1/specs',
@@ -740,10 +740,10 @@ export function createClient(
     async reviseSpec(input) {
       const id = requireNonEmpty(input?.id, 'id')
       const version = requirePositiveInt(input?.version, 'version')
+      const title = requireNonEmpty(input?.title, 'title')
       const body_md = requireNonBlank(input?.body_md, 'body_md')
-      const body: Record<string, unknown> = { body_md }
-      const title = optionalNonEmpty(input?.title, 'title')
-      if (title !== undefined) body.title = title
+      // 契约要求 title 必填：始终发送；version 仍只走 If-Match，不进 body。
+      const body: Record<string, unknown> = { title, body_md }
       return requestJson<SpecDocument>(ctx, {
         method: 'PATCH',
         path: '/v1/specs',
@@ -960,7 +960,7 @@ function toApiError(response: Response, text: string): EchuanApiError {
   return new EchuanApiError({
     code,
     status: response.status,
-    message: composeApiMessage(response.status, code, platformMessage, hint, retryNote),
+    message: composeApiMessage(response.status, code, platformMessage, hint, retryNote, details),
     platformMessage,
     hint,
     details,
@@ -1040,16 +1040,6 @@ function requireNonBlank(value: unknown, field: string): string {
     )
   }
   return value
-}
-
-/**
- * 可选字符串：缺失返回 `undefined`；给了就必须是非空白字符串。
- *
- * 用于平台「可省略、但一旦出现就不能为空」的字段（例如方案标题）。
- */
-function optionalNonEmpty(value: unknown, field: string): string | undefined {
-  if (value === undefined || value === null) return undefined
-  return requireNonEmpty(value, field)
 }
 
 /** 正整数（版本号 / 批内序号）；缺失或 <=0 在本地拒绝。 */

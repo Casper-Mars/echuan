@@ -235,6 +235,7 @@ describe('echuan_spec_revise：version 本地校验与 409 透出', () => {
 
     const err = await failureOf(call(tools, 'echuan_spec_revise', {
       spec_id: 'S-1',
+      title: '方案 A',
       body_md: '# 方案',
     }))
 
@@ -251,6 +252,7 @@ describe('echuan_spec_revise：version 本地校验与 409 透出', () => {
     const err = await failureOf(call(tools, 'echuan_spec_revise', {
       spec_id: 'S-1',
       version: 0,
+      title: '方案 A',
       body_md: '# 方案',
     }))
 
@@ -280,6 +282,98 @@ describe('echuan_spec_revise：version 本地校验与 409 透出', () => {
     expect(request.headers['If-Match']).toBe('2')
     expect(request.body).toEqual({ title: '方案 A', body_md: '# 方案 v2' })
     expect(request.body).not.toHaveProperty('version')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3.5 spec 写工具 title 必填（D1）
+// ---------------------------------------------------------------------------
+
+describe('echuan_spec_create / echuan_spec_revise：title 必填', () => {
+  it('spec_create 缺 title：本地拒绝且零请求', async () => {
+    const platform = createPlatform(() => json({}))
+    const tools = toolsFor(platform.fetchImpl)
+
+    const err = await failureOf(call(tools, 'echuan_spec_create', {
+      project_id: 'APP-2',
+      body_md: '# 方案正文',
+    }))
+
+    // dsh 按 parameters schema 拒绝缺参（本地、零请求）。
+    expect(err.message).toMatch(/invalid argument|\[invalid_argument\]/)
+    expect(err.message).toContain('title')
+    expect(platform.calls).toHaveLength(0)
+  })
+
+  it('spec_create 空白 title：本地拒绝且零请求', async () => {
+    const platform = createPlatform(() => json({}))
+    const tools = toolsFor(platform.fetchImpl)
+
+    const err = await failureOf(call(tools, 'echuan_spec_create', {
+      project_id: 'APP-2',
+      title: '   ',
+      body_md: '# 方案正文',
+    }))
+
+    expect(err.message).toContain('[invalid_argument]')
+    expect(err.message).toContain('title')
+    expect(platform.calls).toHaveLength(0)
+  })
+
+  it('spec_create 合法请求：body 始终包含 title', async () => {
+    const platform = createPlatform(() => json({
+      spec_id: 'APP-2-S1',
+      project_id: 'APP-2',
+      title: '方案 A',
+      version: 1,
+    }, 201))
+    const tools = toolsFor(platform.fetchImpl)
+
+    await call(tools, 'echuan_spec_create', {
+      project_id: 'APP-2',
+      title: '方案 A',
+      body_md: '# 方案正文',
+    })
+
+    expect(platform.calls).toHaveLength(1)
+    expect(platform.calls[0]!.method).toBe('POST')
+    expect(platform.calls[0]!.url.pathname).toBe('/v1/specs')
+    expect(platform.calls[0]!.body).toEqual({
+      project_id: 'APP-2',
+      title: '方案 A',
+      body_md: '# 方案正文',
+    })
+  })
+
+  it('spec_revise 缺 title：本地拒绝且零请求', async () => {
+    const platform = createPlatform(() => json({}))
+    const tools = toolsFor(platform.fetchImpl)
+
+    const err = await failureOf(call(tools, 'echuan_spec_revise', {
+      spec_id: 'S-1',
+      version: 1,
+      body_md: '# 方案正文 v2',
+    }))
+
+    expect(err.message).toMatch(/invalid argument|\[invalid_argument\]/)
+    expect(err.message).toContain('title')
+    expect(platform.calls).toHaveLength(0)
+  })
+
+  it('spec_revise 空白 title：本地拒绝且零请求', async () => {
+    const platform = createPlatform(() => json({}))
+    const tools = toolsFor(platform.fetchImpl)
+
+    const err = await failureOf(call(tools, 'echuan_spec_revise', {
+      spec_id: 'S-1',
+      version: 1,
+      title: '  ',
+      body_md: '# 方案正文 v2',
+    }))
+
+    expect(err.message).toContain('[invalid_argument]')
+    expect(err.message).toContain('title')
+    expect(platform.calls).toHaveLength(0)
   })
 })
 
@@ -359,5 +453,55 @@ describe('生命周期写工具：必填入参本地校验', () => {
     }))
 
     expect(platform.calls).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6. 400 details 渲染（D2）
+// ---------------------------------------------------------------------------
+
+describe('错误渲染：400 details 的 field/reason 进入错误文本', () => {
+  it('单条 details：错误文本包含（title: is required）', async () => {
+    const platform = createPlatform(() => json({
+      code: 'invalid_argument',
+      message: 'invalid argument',
+      details: [{ field: 'title', reason: 'is required' }],
+      request_id: 'req-d1',
+    }, 400))
+    const tools = toolsFor(platform.fetchImpl)
+
+    const err = await failureOf(call(tools, 'echuan_spec_create', {
+      project_id: 'APP-2',
+      title: '方案 A',
+      body_md: '# 方案正文',
+    }))
+
+    expect(err.message).toContain('[invalid_argument]')
+    expect(err.message).toContain('400')
+    expect(err.message).toContain('（title: is required）')
+    expect(platform.calls).toHaveLength(1)
+  })
+
+  it('多条 details：用 · 分隔且全部可见', async () => {
+    const platform = createPlatform(() => json({
+      code: 'invalid_argument',
+      message: 'invalid argument',
+      details: [
+        { field: 'title', reason: 'is required' },
+        { field: 'body_md', reason: 'is required' },
+      ],
+    }, 400))
+    const tools = toolsFor(platform.fetchImpl)
+
+    const err = await failureOf(call(tools, 'echuan_spec_revise', {
+      spec_id: 'S-1',
+      version: 1,
+      title: '方案 A',
+      body_md: '# 方案正文 v2',
+    }))
+
+    expect(err.message).toContain('title: is required')
+    expect(err.message).toContain('body_md: is required')
+    expect(err.message).toContain('（title: is required · body_md: is required）')
   })
 })

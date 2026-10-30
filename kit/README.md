@@ -20,8 +20,8 @@
 | `echuan_project_create` | `POST /v1/projects` | `product_id`、`title`、可选 `requirement_md` | `project_id`、状态、`version` |
 | `echuan_project_requirement_write` | `POST /v1/projects/requirement?id=` | `project_id`、`body_md` | 需求物料 `material_id` / 版本 / 字节数 |
 | `echuan_project_submit` | `POST /v1/projects/submit?id=` | `project_id`（无 body） | 新状态；缺需求时平台 409「请先上传需求文档」原样透出 |
-| `echuan_spec_create` | `POST /v1/specs` | `project_id`、`body_md`、可选 `title` | `spec_id`、`version` |
-| `echuan_spec_revise` | `PATCH /v1/specs?id=` | `spec_id`、`body_md`、必填 `version`（走 `If-Match` 头）、可选 `title` | 新 `version`；错版本 409 `invalid_version` 透出 |
+| `echuan_spec_create` | `POST /v1/specs` | `project_id`、`title`、`body_md`（均必填） | `spec_id`、`version` |
+| `echuan_spec_revise` | `PATCH /v1/specs?id=` | `spec_id`、`title`、`body_md`（均必填）、必填 `version`（走 `If-Match` 头） | 新 `version`；错版本 409 `invalid_version` 透出 |
 | `echuan_plan_submit` | `POST /v1/projects/plans?id=` | `project_id`、`tasks[]`（`title`/`body_md`，可选 `priority`、`depends_on` 为 1-based 批内序号） | 项目状态 + 新卡列表（含 `task_id`） |
 
 **典型调用顺序**：`echuan_project_create` → `echuan_project_requirement_write` → `echuan_project_submit`（需求评审）→ 人工评审通过 → `echuan_spec_create` → `echuan_project_submit`（方案评审）→ 人工评审通过 → `echuan_plan_submit`（批量建卡，项目进入任务评审）。
@@ -35,7 +35,7 @@
 | `echuan_task_list` | `project_id`、`status`（可多个，按重复 key 传） | `limit` 1–200、`cursor` |
 `limit` 非整数或越界时本地拒绝、不发请求；空列表返回「当前没有…」而不是报错；回包带 `next_cursor` 时末尾提示 `cursor=…`。16 个工具共用 14 个 HTTP operation：项目/任务各由一个 `GET` 同时承担列表与按 `id` 取详情。
 
-写工具在本地先校验：缺字段、空白正文、空 `tasks`、缺失或非正的 `version` 都直接报 `invalid_argument`，**不发请求**；平台错误（400 / 409 / 413）原样透出 code 与 message，不自动重试。
+写工具在本地先校验：缺字段（含 `echuan_spec_create` / `echuan_spec_revise` 的 `title`）、空白正文、空 `tasks`、缺失或非正的 `version` 都直接报 `invalid_argument`，**不发请求**；平台错误（400 / 409 / 413）原样透出 code 与 message，`details` 中的 `field` / `reason` 也会附加到错误文本（如 `（title: is required）`），不自动重试。
 
 **不提供**：验收、返工、取消、改状态——所有审批类动作一律没有。**不代交报告**：报告必须由 agent 自己调 `echuan_task_report`。**不缓存、不落盘**：`worker_id` 只在内存，进程重启后重新注册（会拿到新的 `w_` id）。
 

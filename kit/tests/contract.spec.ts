@@ -121,6 +121,86 @@ function findYamlOperation(method: string, requestPath: string): YamlOperation |
   return yamlOperations.find(op => op.method === method && op.path === requestPath)
 }
 
+/**
+ * 读取某个 operation 的 `requestBody` 契约：
+ * - `requestBodyRequired`：requestBody 本身是否 `required: true`；
+ * - `schemaRequired`：`content.application/json.schema.required` 的字段名。
+ *
+ * 只服务于「请求体必填字段」这类轻量断言（D1/D3 落点），仍不引入 yaml 依赖；
+ * 结构若被改写（例如 schema 换成 `$ref`、required 改成多行块），这里会拿不到值，
+ * 由调用方断言变红，而不是静默通过。
+ */
+interface RequestBodyContract {
+  requestBodyRequired: boolean
+  schemaRequired: string[]
+}
+
+function parseRequestBodyContract(operationId: string): RequestBodyContract | undefined {
+  const lines = openapiYaml.split(/\r?\n/)
+  const anchorLine = `      operationId: ${operationId}`
+  const start = lines.findIndex(line => line === anchorLine)
+  if (start < 0) return undefined
+
+  // 向后扫到下一个 method 键（4 空格）/ path 键 / 顶层键为止。
+  let end = lines.length
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (line.trim() === '') continue
+    if (/^ {4}(get|post|put|patch|delete|head|options):\s*$/i.test(line)) {
+      end = index
+      break
+    }
+    if (/^ {2}\//.test(line) || /^\S/.test(line)) {
+      end = index
+      break
+    }
+  }
+
+  let requestBodyRequired = false
+  let schemaRequired: string[] | undefined
+  let inRequestBody = false
+  let inJsonContent = false
+  let inSchema = false
+
+  for (let index = start + 1; index < end; index += 1) {
+    const line = lines[index] as string
+    if (/^ {6}requestBody:\s*$/.test(line)) {
+      inRequestBody = true
+      inJsonContent = false
+      inSchema = false
+      continue
+    }
+    if (!inRequestBody) continue
+
+    if (/^ {8}required:\s*true\s*$/.test(line)) {
+      requestBodyRequired = true
+      continue
+    }
+    if (/^ {10}application\/json:\s*$/.test(line)) {
+      inJsonContent = true
+      inSchema = false
+      continue
+    }
+    if (inJsonContent && /^ {12}schema:\s*$/.test(line)) {
+      inSchema = true
+      continue
+    }
+    if (inSchema) {
+      const requiredMatch = /^ {14}required:\s*\[(.*)\]\s*$/.exec(line)
+      if (requiredMatch?.[1] !== undefined) {
+        schemaRequired = requiredMatch[1]
+          .split(',')
+          .map(item => item.trim())
+          .filter(item => item !== '')
+        break
+      }
+    }
+  }
+
+  if (schemaRequired === undefined) return undefined
+  return { requestBodyRequired, schemaRequired }
+}
+
 // ---------------------------------------------------------------------------
 // 客户端声明（真实值，逐字抄自 src/client.ts；改契约必须先改这里）
 // ---------------------------------------------------------------------------
@@ -403,6 +483,68 @@ describe('契约闸门：16 个工具逐个映射到 14 个 operation', () => {
       expect(operationIssue(mutated), `删掉 ${entry.operationId} 后闸门应报错`).toContain(
         entry.tool,
       )
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6. 请求体必填字段（D1/D3：title 不得再被客户端做成可选）
+// ---------------------------------------------------------------------------
+
+describe('契约闸门：spec 写操作 requestBody required 含 title', () => {
+  const SPEC_WRITE_CASES = [
+    {
+      tool: 'echuan_spec_create',
+      operationId: 'createSpecDocument',
+      method: 'POST',
+      path: '/v1/specs',
+      expectedRequired: ['project_id', 'title', 'body_md'],
+    },
+    {
+      tool: 'echuan_spec_revise',
+      operationId: 'reviseSpecDocument',
+      method: 'PATCH',
+      path: '/v1/specs',
+      expectedRequired: ['title', 'body_md'],
+    },
+  ] as const
+
+  it.each(SPEC_WRITE_CASES)(
+    '$operationId：openapi requestBody 必填且 schema.required 含 title',
+    ({ operationId, expectedRequired }) => {
+      const contract = parseRequestBodyContract(operationId)
+      expect(contract, `${operationId} 的 requestBody 契约解析失败`).toBeDefined()
+      expect(contract?.requestBodyRequired).toBe(true)
+      expect(contract?.schemaRequired).toContain('title')
+      expect(contract?.schemaRequired).toContain('body_md')
+      expect(contract?.schemaRequired).toEqual([...expectedRequired])
+    },
+  )
+
+  it('kit 工具参数 required 与 openapi 同步（title 不可再被做成可选）', () => {
+    const anyClient = createClient(config, { fetchImpl: async () => new Response('{}') })
+    const tools = new Map(
+      createAllEchuanTools({ client: anyClient, identity: { workerId: undefined } })
+        .map(tool => [tool.name, tool]),
+    )
+
+    for (const { tool, operationId, expectedRequired } of SPEC_WRITE_CASES) {
+      const definition = tools.get(tool)
+      expect(definition, `${tool} 未注册`).toBeDefined()
+
+      // dsh 编译后的 parameters 是 JSON Schema：required 为字段名数组。
+      // 工具 required 还含路由参数（如 revise 的 spec_id / version），
+      // 因此这里断言「契约 body 必填字段 ⊆ 工具 required」，title 必须在其中。
+      const parameters = definition!.parameters as { required?: string[] }
+      const toolRequired = parameters.required ?? []
+      expect(toolRequired, `${tool} 参数 required 漂移`).toEqual(
+        expect.arrayContaining([...expectedRequired]),
+      )
+      expect(toolRequired).toContain('title')
+
+      // 与契约侧逐项对齐，防止单边修改。
+      const contractRequired = parseRequestBodyContract(operationId)?.schemaRequired ?? []
+      expect(toolRequired).toEqual(expect.arrayContaining(contractRequired))
     }
   })
 })

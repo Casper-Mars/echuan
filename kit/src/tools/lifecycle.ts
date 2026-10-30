@@ -209,12 +209,6 @@ function requireBody(value: unknown, field: string): string {
   return value
 }
 
-/** 可选字符串：缺失 → undefined；给了就不能是空白。 */
-function optionalText(value: unknown, field: string): string | undefined {
-  if (value === undefined || value === null) return undefined
-  return requireText(value, field)
-}
-
 /** 版本号必须是 >0 的整数（缺省不合法，避免漏带 If-Match）。 */
 function requireVersion(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
@@ -579,10 +573,11 @@ export function createSpecCreateTool(options: EchuanToolOptions): ToolDefinition
     name: 'echuan_spec_create',
     description:
       '为驿传（echuan）项目创建一份独立技术方案（POST /v1/specs）。'
-      + '返回 spec_id 与版本；后续修订用 `echuan_spec_revise`（必须带 version）。',
+      + 'title 与 body_md 均为必填（平台契约 required 含 title，缺失会被 400 拒绝）。'
+      + '返回 spec_id 与版本；后续修订用 `echuan_spec_revise`（必须带 version 与 title）。',
     parameters: {
       project_id: { type: 'string', required: true, description: '项目编号（必填）' },
-      title: { type: 'string', description: '方案标题（可选；不传则平台沿用项目标题）' },
+      title: { type: 'string', required: true, description: '方案标题（必填，不能为空白）' },
       body_md: { type: 'string', required: true, description: '方案正文（必填，Markdown）' },
     },
     output: {
@@ -591,12 +586,12 @@ export function createSpecCreateTool(options: EchuanToolOptions): ToolDefinition
     },
     async execute(args) {
       try {
+        // 契约（openapi createSpecDocument）required 含 title：缺失/空白一律本地拒绝，零请求。
         const input: CreateSpecInput = {
           project_id: requireText(args.project_id, 'project_id'),
+          title: requireText(args.title, 'title'),
           body_md: requireBody(args.body_md, 'body_md'),
         }
-        const title = optionalText(args.title, 'title')
-        if (title !== undefined) input.title = title
 
         const result = await client.createSpec(input)
         if (result.kind === 'empty') {
@@ -623,6 +618,7 @@ export function createSpecReviseTool(options: EchuanToolOptions): ToolDefinition
     name: 'echuan_spec_revise',
     description:
       '修订一份驿传（echuan）独立技术方案（PATCH /v1/specs?id=）。'
+      + 'title 与 body_md 均为必填（平台契约 required 含 title，缺失会被 400 拒绝）；'
       + '必须带当前 version（走 If-Match 头，不放进 body）；版本过期时平台返回 409 invalid_version。',
     parameters: {
       spec_id: { type: 'string', required: true, description: '方案编号（必填，走 query `?id=`）' },
@@ -631,7 +627,7 @@ export function createSpecReviseTool(options: EchuanToolOptions): ToolDefinition
         required: true,
         description: '方案当前版本号（必填，>0；走 If-Match 头）',
       },
-      title: { type: 'string', description: '方案标题（可选；不传则平台沿用原标题）' },
+      title: { type: 'string', required: true, description: '方案标题（必填，不能为空白）' },
       body_md: { type: 'string', required: true, description: '方案正文（必填，Markdown）' },
     },
     output: {
@@ -640,13 +636,13 @@ export function createSpecReviseTool(options: EchuanToolOptions): ToolDefinition
     },
     async execute(args) {
       try {
+        // 契约（openapi reviseSpecDocument）required 含 title：缺失/空白一律本地拒绝，零请求。
         const input: ReviseSpecInput = {
           id: requireText(args.spec_id, 'spec_id'),
           version: requireVersion(args.version),
+          title: requireText(args.title, 'title'),
           body_md: requireBody(args.body_md, 'body_md'),
         }
-        const title = optionalText(args.title, 'title')
-        if (title !== undefined) input.title = title
 
         const result = await client.reviseSpec(input)
         if (result.kind === 'empty') {

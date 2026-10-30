@@ -532,3 +532,39 @@ describe('工具接线：方向性约束', () => {
     ])
   })
 })
+
+// ---------------------------------------------------------------------------
+// 5. spec 写工具 title 必填（D1）
+// ---------------------------------------------------------------------------
+
+describe('工具接线：spec 写工具缺 title 本地拒绝且零请求', () => {
+  const MISSING_TITLE_CASES = [
+    {
+      name: 'echuan_spec_create',
+      args: { project_id: 'APP-2', body_md: '# 方案正文' },
+    },
+    {
+      name: 'echuan_spec_revise',
+      args: { spec_id: 'S-1', version: 3, body_md: '# 方案正文 v2' },
+    },
+  ] as const
+
+  for (const { name, args } of MISSING_TITLE_CASES) {
+    it(`${name} 缺 title：本地拒绝且 0 请求`, async () => {
+      const platform = createPlatform(respondByPath)
+
+      let failure: unknown
+      try {
+        await call(toolsFor(platform.fetchImpl).get(name), args)
+      } catch (err) {
+        failure = err
+      }
+
+      expect(failure).toBeInstanceOf(Error)
+      const message = (failure as Error).message
+      expect(message).toMatch(/invalid argument|\[invalid_argument\]/)
+      expect(message).toContain('title')
+      expect(platform.calls).toHaveLength(0)
+    })
+  }
+})
