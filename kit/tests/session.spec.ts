@@ -1,5 +1,5 @@
 /**
- * ensureSession 单测：三条路径 + 优先链五个分支 + 降级与幂等 + 修复回归（19 条）。
+ * ensureSession 单测：三条路径 + 优先链五个分支 + 降级与幂等 + 修复回归（21 条）。
  *
  * 全部依赖注入，测试里不碰真实文件系统（`mkdir` / `cwd` 都是替身），
  * 断言同时覆盖 warn 文案里的项目号与选中路径。
@@ -204,6 +204,7 @@ describe('ensureSession：三条路径', () => {
     const resumed = h.calls.resume[0]!
     expect(resumed.resumeSessionId).toBe(PROJECT)
     expect('meta' in resumed).toBe(false)
+    expect(resumed.agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
     expect(typeof resumed.setup).toBe('function')
 
     const agentCtx = { fake: true }
@@ -534,5 +535,43 @@ describe('ensureSession：修复回归', () => {
     expect(h.warns[0]).toContain('ghost-preset')
     expect(h.warns[0]).toContain(PROJECT)
     expect(h.warns[0]).toContain('继续恢复')
+  })
+
+  it('20) resume 传 agentOptions（与 create 同源，含 reasoningEffort）', async () => {
+    const h = createHarness({
+      stat: async id => (id === PROJECT ? { header: { cwd: '/legacy/APP-1' } } : undefined),
+      selection: () => ({
+        provider: 'deepseek',
+        model: 'deepseek-reasoner',
+        reasoningEffort: 'high',
+      }),
+    })
+
+    const result = await ensureSession(PROJECT, h.deps)
+
+    // 关键：恢复出的 agent 必须拿到模型，否则回合只有 turn/start → turn/end。
+    expect(result?.outcome).toBe('resumed')
+    expect(h.calls.resume).toHaveLength(1)
+    expect(h.calls.resume[0]!.agentOptions).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-reasoner',
+      reasoningEffort: 'high',
+    })
+    expect(h.calls.mkdir).toEqual([])
+    expect(h.calls.create).toEqual([])
+  })
+
+  it('21) agentDefaultModel 缺失 → resume 仍调用且不带 agentOptions', async () => {
+    const h = createHarness({
+      stat: async id => (id === PROJECT ? { header: { cwd: '/legacy/APP-1' } } : undefined),
+    })
+    const deps: EnsureSessionDeps = { ...h.deps }
+    delete deps.agentDefaultModel
+
+    const result = await ensureSession(PROJECT, deps)
+
+    expect(result?.outcome).toBe('resumed')
+    expect(h.calls.resume).toHaveLength(1)
+    expect('agentOptions' in h.calls.resume[0]!).toBe(false)
   })
 })

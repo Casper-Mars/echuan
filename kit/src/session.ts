@@ -5,7 +5,8 @@
  *
  *   1. `agents.get(id)` 命中（live）→ 直接复用，不调 stat / resume / create；
  *   2. `sessionPersistence.stat(id)` 命中（已持久化）→ `resume` 恢复，cwd / preset
- *      一律取会话 header，**不 mkdir、不覆盖 meta**；
+ *      一律取会话 header，**不 mkdir、不覆盖 meta**；`agentOptions` 与 create 同源，
+ *      否则恢复出的 agent 没有模型，回合发不出请求；
  *   3. 都不存在 → `create` 新建：按 §4.1 优先链选根目录，拼 `<root>/<projectId>`，
  *      `mkdir -p` 后建会话并挂 registry 默认 preset。
  *
@@ -62,6 +63,7 @@ export interface EnsureCreateOptions {
 /** 恢复会话选项（对齐 harness `ctx.agents.resume`）。 */
 export interface EnsureResumeOptions {
   resumeSessionId: string
+  agentOptions?: EnsureAgentOptions
   setup?: (agentCtx: unknown) => void | Promise<void>
 }
 
@@ -239,9 +241,13 @@ export async function ensureSession(
         }
       }
     }
+    // resume 与 create 必须用同一份 agentOptions：宿主 `dsh-agent-loop` 用
+    // `options.agentOptions ?? {}` 建 agent，缺模型时回合只能空转（无 request/header）。
+    const agentOptions = await resolveAgentOptions(deps.agentDefaultModel, id, warn, 'resume')
     try {
       const handle = await deps.agents.resume({
         resumeSessionId: id,
+        ...(agentOptions === undefined ? {} : { agentOptions }),
         ...(setup === undefined ? {} : { setup }),
       })
       info(`${TAG} 会话已持久化，resume 恢复：${id}（cwd=${header.cwd ?? '未记录'}）`)
@@ -538,13 +544,18 @@ async function resolveAgentOptions(
   service: EnsureAgentDefaultModelLike | undefined,
   projectId: string,
   warn: (message: string) => void,
+  mode: PresetResolutionMode = 'create',
 ): Promise<EnsureAgentOptions | undefined> {
   if (service === undefined) return undefined
   let selection: EnsureAgentOptions | undefined
   try {
     selection = await service.currentSelection()
   } catch (err) {
-    warn(`${TAG} 警告：读取默认模型失败，本次 create 不带 agentOptions（project=${projectId}）：${messageOf(err)}`)
+    warn(
+      mode === 'resume'
+        ? `${TAG} 警告：读取默认模型失败，本次 resume 不带 agentOptions（project=${projectId}）：${messageOf(err)}`
+        : `${TAG} 警告：读取默认模型失败，本次 create 不带 agentOptions（project=${projectId}）：${messageOf(err)}`,
+    )
     return undefined
   }
   if (selection === undefined || selection === null) return undefined
