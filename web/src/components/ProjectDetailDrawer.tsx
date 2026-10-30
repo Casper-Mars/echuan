@@ -1,5 +1,5 @@
 import { useContext, useEffect, useState } from 'react'
-import { getProject, listProjectMaterials, materialDownloadUrl } from '../api/client'
+import { getProject, listProjectMaterials, materialDownloadUrl, projectPackageUrl } from '../api/client'
 import type { MaterialChain, MaterialVersion, ProjectDetail } from '../api/types'
 import { usePolling } from '../hooks/usePolling'
 import {
@@ -188,26 +188,24 @@ export function ProjectDetailDrawer({
       />
 
       <section className="detail-section">
-        <h3>
-          项目方案包摘要
-          {detail.spec && <span className="muted">（第 {detail.spec.version} 版）</span>}
-        </h3>
-        {!detail.spec && <p className="muted">暂无方案</p>}
-        {detail.spec && (
+        <h3>项目资料包</h3>
+        {!detail.requirement && !detail.spec && <p className="muted">暂无资料</p>}
+        {(detail.requirement || detail.spec) && (
           <p className="download-line">
-            <a className="link" href={materialDownloadUrl(detail.spec.material_id)} download>
-              下载全部当前方案
+            <a className="link" href={projectPackageUrl(detail.project_id)} download>
+              下载项目资料包
             </a>
             <span className="muted">
-              第 {detail.spec.version} 版 · {formatBytes(detail.spec.size)} ·{' '}
-              {detail.spec.uploaded_by || '—'}
+              {detail.requirement ? `需求第 ${detail.requirement.version} 版` : '无需求'}
+              {' · '}
+              {detail.spec ? `最近方案第 ${detail.spec.version} 版` : '无方案'}
             </span>
           </p>
         )}
       </section>
 
       <SpecDocuments projectId={projectId} status={detail.status} onChanged={changed} />
-      <ChainList title="项目方案包历史" chain={specChain} currentMaterialId={detail.spec?.material_id} />
+      <ChainList title="方案提交历史" chain={specChain} currentMaterialId={detail.spec?.material_id} />
       {editing && (
         <ProjectFormDialog mode={editing} project={detail} onClose={() => setEditing(null)} onSaved={changed} />
       )}

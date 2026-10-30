@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -355,8 +357,8 @@ func TestContractEndpoints(t *testing.T) {
 
 	// The operation set is pinned: adding or dropping one is a contract change.
 	operations := e.doc.Operations()
-	if len(operations) != 34 {
-		t.Fatalf("openapi operations = %d, want exactly 34", len(operations))
+	if len(operations) != 35 {
+		t.Fatalf("openapi operations = %d, want exactly 35", len(operations))
 	}
 
 	// ---- health & version -------------------------------------------------
@@ -781,25 +783,56 @@ func TestContractEndpoints(t *testing.T) {
 	e.call(http.MethodPost, "/v1/projects/specs?id="+multiID,
 		map[string]any{"body_md": "旧客户端修订第一份"}, nil, http.StatusOK)
 	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+multiID, nil, nil, http.StatusOK)
-	// The detail carries only the spec metadata; the aggregate body is read
-	// back through the content-addressed materials channel.
+	// The pointer names exactly the document this submission wrote: there is
+	// no aggregated "技术方案包" material any more.
 	specMaterialID := stringField(t, objectField(t, object(t, raw), "spec"), "material_id")
 	raw, _ = e.call(http.MethodGet, "/v1/materials?id="+specMaterialID, nil, nil, http.StatusOK)
-	if snapshot := string(raw); !strings.Contains(snapshot, "旧客户端修订第一份") || !strings.Contains(snapshot, "后端独立正文") {
-		t.Errorf("legacy execution snapshot omitted a document: %s", snapshot)
+	if body := string(raw); body != "旧客户端修订第一份" {
+		t.Errorf("legacy pointer body = %q, want only the submitted document", body)
 	}
-	large := e.createDraftProject("APP", "方案包限额", "需求")
+	var bundles int
+	if err := e.store.Read().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM materials WHERE title LIKE '%技术方案包'`).Scan(&bundles); err != nil {
+		t.Fatalf("count bundle materials: %v", err)
+	}
+	if bundles != 0 {
+		t.Errorf("materials titled 技术方案包 = %d, want 0", bundles)
+	}
+
+	// The package endpoint assembles every current document on demand.
+	raw, headers = e.call(http.MethodGet, "/v1/projects/package?id="+multiID, nil, nil, http.StatusOK)
+	if got := headers.Get("Content-Type"); got != "application/zip" {
+		t.Errorf("package Content-Type = %q, want application/zip", got)
+	}
+	disposition := headers.Get("Content-Disposition")
+	_, encoded, ok := strings.Cut(disposition, "filename*=UTF-8''")
+	if !ok {
+		t.Fatalf("package Content-Disposition = %q, want filename*", disposition)
+	}
+	decoded, err := url.PathUnescape(encoded)
+	if err != nil || decoded != multiID+"-资料包.zip" {
+		t.Errorf("decoded filename* = %q (%v), want %q", decoded, err, multiID+"-资料包.zip")
+	}
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatalf("open package zip: %v", err)
+	}
+	if len(zr.File) != 3 {
+		t.Errorf("package entries = %d, want 3 (requirement + 2 specs)", len(zr.File))
+	}
+	e.call(http.MethodGet, "/v1/projects/package", nil, nil, http.StatusBadRequest)
+	e.call(http.MethodGet, "/v1/projects/package?id=NOPE", nil, nil, http.StatusNotFound)
+
+	// A single document over material_max_bytes is rejected; nothing is left.
+	large := e.createDraftProject("APP", "单份方案限额", "需求")
 	largeID := stringField(t, large, "project_id")
 	e.advanceToSpecDraft(largeID)
 	e.call(http.MethodPost, "/v1/specs", map[string]any{
-		"project_id": largeID, "title": "第一份", "body_md": strings.Repeat("a", 5<<10),
-	}, nil, http.StatusCreated)
-	e.call(http.MethodPost, "/v1/specs", map[string]any{
-		"project_id": largeID, "title": "第二份", "body_md": strings.Repeat("b", 5<<10),
+		"project_id": largeID, "title": "超限方案", "body_md": strings.Repeat("a", 9<<10),
 	}, nil, http.StatusRequestEntityTooLarge)
 	raw, _ = e.call(http.MethodGet, "/v1/specs?project_id="+largeID, nil, nil, http.StatusOK)
-	if items := object(t, raw)["items"].([]any); len(items) != 1 {
-		t.Errorf("failed oversized bundle left %d documents, want 1", len(items))
+	if items := object(t, raw)["items"].([]any); len(items) != 0 {
+		t.Errorf("failed oversized document left %d documents, want 0", len(items))
 	}
 
 	// ---- coverage: every documented operation -----------------------------
@@ -884,8 +917,8 @@ func TestRoutesMatchOpenAPI(t *testing.T) {
 	for _, route := range api.Routes() {
 		got[route.Method+" "+route.Path] = true
 	}
-	if len(want) != 34 {
-		t.Fatalf("openapi operations = %d, want 34", len(want))
+	if len(want) != 35 {
+		t.Fatalf("openapi operations = %d, want 35", len(want))
 	}
 	for key := range want {
 		if !got[key] {

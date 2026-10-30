@@ -340,6 +340,11 @@ export function materialDownloadUrl(materialId: string): string {
   return `/v1/materials?id=${encodeURIComponent(materialId)}`
 }
 
+/** 项目资料包下载地址（需求 + 全部方案当前版，服务端按需现拼 zip）。 */
+export function projectPackageUrl(projectId: string): string {
+  return `/v1/projects/package?id=${encodeURIComponent(projectId)}`
+}
+
 /**
  * 取物料正文（渐进式加载：详情只给元信息，正文按 material_id 单独取）。
  * 非 2xx 沿用统一错误体；成功返回 UTF-8 文本。

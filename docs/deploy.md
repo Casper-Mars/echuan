@@ -502,7 +502,7 @@ REQ_MATERIAL=$(curl -fsS "$BASE/v1/projects?id=APP-1" | jq -r '.requirement.mate
 curl -fsS "$BASE/v1/materials?id=$REQ_MATERIAL"
 ```
 
-方案包同理：取 `.spec.material_id` 再请求 `/v1/materials`。详情响应与需求长度无关，可以直接轮询。
+方案同理：取 `.spec.material_id`（最后提交的单份方案）再请求 `/v1/materials`；全部方案当前版走 `GET /v1/projects/package?id=`。详情响应与需求长度无关，可以直接轮询。
 
 ### 9.3 提交需求评审
 

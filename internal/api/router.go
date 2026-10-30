@@ -56,6 +56,7 @@ var routeSpecs = []routeSpec{
 	{http.MethodDelete, "/v1/projects", "projects"},
 	{http.MethodPost, "/v1/projects/requirement", "projects"},
 	{http.MethodPost, "/v1/projects/specs", "projects"},
+	{http.MethodGet, "/v1/projects/package", "projects"},
 	{http.MethodGet, "/v1/specs", "projects"},
 	{http.MethodPost, "/v1/specs", "projects"},
 	{http.MethodPatch, "/v1/specs", "projects"},
@@ -108,6 +109,7 @@ func Routes() []Route {
 //	DELETE /v1/projects              delete a draft/cancelled project (?id=)
 //	POST /v1/projects/requirement    append a requirement version (?id=)
 //	POST /v1/projects/specs          append a spec version (?id=)
+//	GET /v1/projects/package         download every current document as a zip (?id=)
 //	POST /v1/projects/plans          add a batch of task cards (?id=)
 //	POST /v1/projects/submit         draft → its review gate (?id=)
 //	POST /v1/projects/decide         approve/reject a review gate (?id=, If-Match)
@@ -163,6 +165,7 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		handlers["DELETE /v1/projects"] = projectsHandler.deleteProject
 		handlers["POST /v1/projects/requirement"] = projectsHandler.writeRequirement
 		handlers["POST /v1/projects/specs"] = projectsHandler.submitSpec
+		handlers["GET /v1/projects/package"] = projectsHandler.downloadPackage
 		handlers["GET /v1/specs"] = projectsHandler.listOrGetSpec
 		handlers["POST /v1/specs"] = projectsHandler.saveSpecDocument
 		handlers["PATCH /v1/specs"] = projectsHandler.saveSpecDocument
