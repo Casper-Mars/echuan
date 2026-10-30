@@ -449,8 +449,8 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
 /**
  * 渲染派单消息。
  *
- * 必须包含：任务编号、标题、正文、租约到期、项目、产品、工作目录（有则带），
- * 以及结尾的行动指令「干完用 `echuan_task_report` 汇报」。
+ * 只放任务事实：任务编号、标题、正文、租约到期、项目、产品、仓库。
+ * 不放操作指示——「怎么开工、怎么汇报」由 `echuan-task-execution` 技能负责。
  */
 export function renderTaskMessage(command: RunTaskCommand): string {
   const { task, lease, context } = command
@@ -462,7 +462,7 @@ export function renderTaskMessage(command: RunTaskCommand): string {
       : task.project_id
 
   const lines: string[] = [
-    '【驿传派单】收到新任务，请立即执行。',
+    '【驿传派单】',
     '',
     `任务编号：${task.id}`,
     `标题：${task.title}`,
@@ -471,15 +471,10 @@ export function renderTaskMessage(command: RunTaskCommand): string {
     `仓库：${context.product.git_url}`,
     `租约到期：${lease.until}`,
   ]
-  if (context.workdir !== undefined && context.workdir !== '') {
-    lines.push(`工作目录：${context.workdir}`)
-  }
   lines.push(
     '',
     '任务正文：',
     task.body_md,
-    '',
-    '干完用 `echuan_task_report` 汇报。',
   )
   return lines.join('\n')
 }

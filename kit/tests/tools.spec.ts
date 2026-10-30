@@ -2,7 +2,7 @@
  * 三个写工具单测（任务-04：领卡 / 续租 / 交报告）。
  *
  * 全部用假平台（注入 fetch），不连真实平台。覆盖：
- * 1. 领卡成功的 render（任务编号 / 标题 / 租约到期 / workdir）；
+ * 1. 领卡成功的 render（任务编号 / 标题 / 租约到期，不含工作目录与操作指示）；
  * 2. 204 → 「当前无活」，正常返回不抛错；
  * 3. 请求体 worker_id 与心跳循环内存 id 一致；未注册时该键完全不出现；
  * 4. report 空/全空白 summary_md → 本地拒绝、零请求、三段式提示；
@@ -103,7 +103,6 @@ const CLAIM_PAYLOAD = {
     spec_version: 1,
     spec_digest: 'sha256:bb23da360a3b21e827138bad027ef3f30a29699e84014bc520e4f40131ea2d76',
     product: { id: 'APP', name: '驿传示例产品', git_url: 'git@example.com:APP.git' },
-    workdir: '/var/lib/echuan/workspaces/APP-1',
   },
 }
 
@@ -155,7 +154,7 @@ function toolsFor(fetchImpl: FetchLike, workerId: string | undefined): Map<strin
 // ---------------------------------------------------------------------------
 
 describe('echuan_task_claim：领到卡', () => {
-  it('render 含任务编号、标题、租约到期时间与 workdir', async () => {
+  it('render 含任务编号、标题、租约到期，不含工作目录与操作指示', async () => {
     const platform = createPlatform(() => jsonResponse(CLAIM_PAYLOAD))
     const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_claim')
 
@@ -165,7 +164,9 @@ describe('echuan_task_claim：领到卡', () => {
     expect(text).toContain('任务编号：APP-1-T0001')
     expect(text).toContain('标题：实现登录接口')
     expect(text).toContain('2026-10-27T16:49:25.157Z')
-    expect(text).toContain('/var/lib/echuan/workspaces/APP-1')
+    expect(text).not.toContain('工作目录')
+    expect(text).not.toContain('echuan_task_report')
+    expect(text).not.toContain('下一步')
     // 正文也要给到模型，否则没法干活。
     expect(text).toContain('请实现登录接口。')
   })

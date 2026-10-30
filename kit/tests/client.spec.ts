@@ -124,7 +124,6 @@ const claimBody = {
     spec_version: 1,
     spec_digest: 'sha256:abc',
     product: { id: 'APP', name: '示例', git_url: 'git@example.com:APP.git' },
-    workdir: '/tmp/APP-1',
   },
 }
 

@@ -244,7 +244,6 @@ const RUN_TASK = {
     spec_version: 1,
     spec_digest: 'sha256:bb23da360a3b21e827138bad027ef3f30a29699e84014bc520e4f40131ea2d76',
     product: { id: 'APP', name: '驿传示例产品', git_url: 'git@example.com:APP.git' },
-    workdir: '/var/lib/echuan/workspaces/APP-1',
   },
 }
 
@@ -392,7 +391,7 @@ describe('心跳间隔', () => {
 // ---------------------------------------------------------------------------
 
 describe('run_task 投递', () => {
-  it('唯一根 agent 收到一条消息，文案含任务编号/标题/租约/项目/产品/工作目录与行动指令', async () => {
+  it('唯一根 agent 收到一条消息，文案只含任务事实（编号/标题/租约/项目/产品/仓库），不含操作指示', async () => {
     const { agent, followup } = buildAgent('idle')
     const { loop, scheduler } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
@@ -417,9 +416,9 @@ describe('run_task 投递', () => {
     expect(text).toContain('APP-1')
     expect(text).toContain('驿传示例产品')
     expect(text).toContain('仓库：git@example.com:APP.git')
-    expect(text).toContain('/var/lib/echuan/workspaces/APP-1')
     expect(text).toContain('# 任务正文')
-    expect(text).toContain('echuan_task_report')
+    expect(text).not.toContain('echuan_task_report')
+    expect(text).not.toContain('汇报')
   })
 
   it('renderTaskMessage 输出「仓库：」一行，且等于派单里的 git_url', () => {
@@ -429,13 +428,13 @@ describe('run_task 投递', () => {
     expect(line).toBe('仓库：git@example.com:APP.git')
   })
 
-  it('renderTaskMessage 在没有 workdir 时不输出该行', () => {
-    const text = renderTaskMessage({
-      ...RUN_TASK,
-      context: { ...RUN_TASK.context, workdir: '' },
-    } as never)
+  it('renderTaskMessage 首行严格是【驿传派单】，且不含操作指示与工作目录字段', () => {
+    const text = renderTaskMessage(RUN_TASK as never)
+    expect(text.split('\n')[0]).toBe('【驿传派单】')
+    expect(text).not.toContain('echuan_task_report')
+    expect(text).not.toContain('汇报')
+    expect(text).not.toContain('请立即执行')
     expect(text).not.toContain('工作目录：')
-    expect(text).toContain('干完用 `echuan_task_report` 汇报')
   })
 
   it('根 agent 为 0 个：warn + 不投递，id 保持不变', async () => {

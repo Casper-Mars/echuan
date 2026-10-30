@@ -237,7 +237,6 @@ const CLAIM_PAYLOAD = {
     spec_version: 1,
     spec_digest: 'sha256:bb23',
     product: { id: 'APP', name: '驿传示例产品', git_url: 'git@example.com:APP.git' },
-    workdir: '/var/lib/echuan/workspaces/APP-1',
   },
 }
 
