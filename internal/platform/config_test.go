@@ -68,8 +68,35 @@ func TestLoadDefaults(t *testing.T) {
 	if want := filepath.Join(home, ".echuan"); cfg.DataDir != want {
 		t.Errorf("DataDir = %q, want %q", cfg.DataDir, want)
 	}
-	if want := filepath.Join(home, ".echuan", "workspaces"); cfg.WorkspaceDir != want {
-		t.Errorf("WorkspaceDir = %q, want %q", cfg.WorkspaceDir, want)
+}
+
+// TestLoadIgnoresRemovedWorkspaceKey pins the migration behaviour after the
+// per-task workspace root was dropped from the platform: a leftover config key
+// or environment variable is simply an unknown key, so loading must neither
+// fail nor change anything.
+func TestLoadIgnoresRemovedWorkspaceKey(t *testing.T) {
+	clearEnv(t)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "echuan.toml")
+	legacyKey := "workspace" + "_dir"
+	legacyEnv := "ECHUAN_WORKSPACE" + "_DIR"
+	t.Setenv(legacyEnv, filepath.Join(dir, "env-ws"))
+
+	content := strings.Join([]string{
+		"data_dir = \"" + filepath.Join(dir, "data") + "\"",
+		legacyKey + " = \"" + filepath.Join(dir, "ws") + "\"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with removed key: %v", err)
+	}
+	if cfg.DataDir != filepath.Join(dir, "data") {
+		t.Errorf("DataDir = %q, want %q", cfg.DataDir, filepath.Join(dir, "data"))
 	}
 }
 
@@ -82,7 +109,6 @@ func TestLoadFromTOML(t *testing.T) {
 		"# echuan configuration",
 		"listen = \"0.0.0.0:9000\"",
 		"data_dir = \"" + filepath.Join(dir, "data") + "\"",
-		"workspace_dir = \"" + filepath.Join(dir, "ws") + "\"",
 		"",
 		"lease_ttl = \"45s\"",
 		"max_attempts = 7",
@@ -110,9 +136,6 @@ func TestLoadFromTOML(t *testing.T) {
 	}
 	if cfg.DataDir != filepath.Join(dir, "data") {
 		t.Errorf("DataDir = %q", cfg.DataDir)
-	}
-	if cfg.WorkspaceDir != filepath.Join(dir, "ws") {
-		t.Errorf("WorkspaceDir = %q", cfg.WorkspaceDir)
 	}
 	if cfg.LeaseTTL != 45*time.Second {
 		t.Errorf("LeaseTTL = %s", cfg.LeaseTTL)

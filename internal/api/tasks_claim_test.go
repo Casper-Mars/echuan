@@ -46,7 +46,6 @@ type claimResponseHTTP struct {
 	Context struct {
 		SpecVersion int    `json:"spec_version"`
 		SpecDigest  string `json:"spec_digest"`
-		Workdir     string `json:"workdir"`
 		Product     struct {
 			ID     string `json:"id"`
 			Name   string `json:"name"`
@@ -102,10 +101,6 @@ func TestClaimHTTP(t *testing.T) {
 	if body.Context.Product.ID != "APP" || body.Context.Product.Name != "APP 产品" ||
 		body.Context.Product.GitURL != "git@example.com:APP.git" {
 		t.Errorf("product = %+v", body.Context.Product)
-	}
-	if want := "/workspaces/" + projectID; len(body.Context.Workdir) < len(want) ||
-		body.Context.Workdir[len(body.Context.Workdir)-len(want):] != want {
-		t.Errorf("workdir = %q, want suffix %q", body.Context.Workdir, want)
 	}
 
 	// The queue is empty now: 204 with no body at all.

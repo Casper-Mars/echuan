@@ -15,10 +15,9 @@ func TestLogStartupIgnoresLogLevel(t *testing.T) {
 	for _, level := range []string{"warn", "error"} {
 		t.Run(level, func(t *testing.T) {
 			cfg := platform.Config{
-				Listen:       "127.0.0.1:8720",
-				DataDir:      "/var/lib/echuan",
-				WorkspaceDir: "/var/lib/echuan/workspaces",
-				LogLevel:     level,
+				Listen:   "127.0.0.1:8720",
+				DataDir:  "/var/lib/echuan",
+				LogLevel: level,
 			}
 
 			var buf bytes.Buffer
@@ -44,9 +43,6 @@ func TestLogStartupIgnoresLogLevel(t *testing.T) {
 			}
 			if entry["data_dir"] != "/var/lib/echuan" {
 				t.Errorf("data_dir = %v, want /var/lib/echuan", entry["data_dir"])
-			}
-			if entry["workspace_dir"] != "/var/lib/echuan/workspaces" {
-				t.Errorf("workspace_dir = %v", entry["workspace_dir"])
 			}
 			if entry["version"] == nil || entry["commit"] == nil {
 				t.Errorf("version/commit missing: %v", entry)

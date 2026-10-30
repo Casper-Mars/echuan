@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -86,7 +85,6 @@ type ClaimContext struct {
 	SpecVersion int
 	SpecDigest  string
 	Product     ClaimProduct
-	Workdir     string
 }
 
 // ClaimResult is the body of a 200 claim response.
@@ -111,16 +109,15 @@ type LeaseRenewal struct {
 // sleeping, and lease deadlines are stored in a fixed-width layout (see
 // leaseTimeLayout) so the SQL can compare them as strings.
 type ClaimService struct {
-	store        *store.Store
-	logger       *slog.Logger
-	clock        platform.Clock
-	leaseTTL     time.Duration
-	workspaceDir string
+	store    *store.Store
+	logger   *slog.Logger
+	clock    platform.Clock
+	leaseTTL time.Duration
 }
 
 // NewClaimService builds the claim service. A non-positive ttl falls back to
 // 90s so a misconfigured value never issues an already-expired lease.
-func NewClaimService(st *store.Store, logger *slog.Logger, ttl time.Duration, workspaceDir string) *ClaimService {
+func NewClaimService(st *store.Store, logger *slog.Logger, ttl time.Duration) *ClaimService {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
@@ -128,11 +125,10 @@ func NewClaimService(st *store.Store, logger *slog.Logger, ttl time.Duration, wo
 		ttl = defaultLeaseTTL
 	}
 	return &ClaimService{
-		store:        st,
-		logger:       logger,
-		clock:        platform.RealClock{},
-		leaseTTL:     ttl,
-		workspaceDir: workspaceDir,
+		store:    st,
+		logger:   logger,
+		clock:    platform.RealClock{},
+		leaseTTL: ttl,
 	}
 }
 
@@ -341,7 +337,7 @@ func (s *ClaimService) Heartbeat(ctx context.Context, taskID, leaseID string) (L
 // project pointed at when the card was leased.
 func (s *ClaimService) executionContext(ctx context.Context, tx *sql.Tx, task store.Task, product store.Product) (*ClaimResult, error) {
 	return buildClaimResult(ctx, tx, task, product,
-		s.leaseTTL, s.clock.Now().UTC(), s.workspaceDir)
+		s.leaseTTL, s.clock.Now().UTC())
 }
 
 // buildClaimResult assembles the task/lease/context triple of a claim.
@@ -351,7 +347,7 @@ func (s *ClaimService) executionContext(ctx context.Context, tx *sql.Tx, task st
 // exactly the same payload as a pull-mode claim: one definition, two callers.
 // The lease deadline is read from the task row written by the claim statement;
 // now and ttl are only the fallback when the row carries no deadline.
-func buildClaimResult(ctx context.Context, tx *sql.Tx, task store.Task, product store.Product, ttl time.Duration, now time.Time, workspaceDir string) (*ClaimResult, error) {
+func buildClaimResult(ctx context.Context, tx *sql.Tx, task store.Task, product store.Product, ttl time.Duration, now time.Time) (*ClaimResult, error) {
 	project, err := store.GetProjectByProjectID(ctx, tx, task.ProjectCode)
 	if err != nil {
 		return nil, err
@@ -398,15 +394,8 @@ func buildClaimResult(ctx context.Context, tx *sql.Tx, task store.Task, product 
 				Name:   product.Name,
 				GitURL: product.GitURL,
 			},
-			Workdir: workdir(workspaceDir, task.ProjectCode),
 		},
 	}, nil
-}
-
-// workdir renders <workspace_dir>/<project_id>. The directory is not created:
-// the worker owns its workspace layout.
-func workdir(workspaceDir, projectID string) string {
-	return filepath.Join(workspaceDir, projectID)
 }
 
 // lostLeaseError names the condition that made a heartbeat fail, from the

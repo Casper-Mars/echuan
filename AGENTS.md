@@ -65,14 +65,13 @@ make docker-clean   # 删本项目容器/镜像并清构建缓存（不动宿主
 本地起服务（开发）：
 
 > **本机 8720 常被已部署的 `echuan` 容器占用**，直接 `./echuan` 会 `address already in use`；
-> 且默认数据目录 `~/.echuan` 可能已有线上数据。开发**一律**用独立端口 + 独立数据/工作区目录，
-> 三个变量一起给才是完全隔离；不要停线上容器。
+> 且默认数据目录 `~/.echuan` 可能已有线上数据。开发**一律**用独立端口 + 独立数据目录，
+> 两个变量一起给才是完全隔离；不要停线上容器。
 
 ```bash
 DEV_DIR=$(mktemp -d)
 ECHUAN_LISTEN=127.0.0.1:18720 \
 ECHUAN_DATA_DIR="$DEV_DIR" \
-ECHUAN_WORKSPACE_DIR="$DEV_DIR/workspaces" \
 ./echuan
 
 curl -s 127.0.0.1:18720/healthz   # 200 即活
@@ -97,7 +96,6 @@ curl -s 127.0.0.1:18720/readyz    # 库可写 + 迁移版本匹配
 |---|---|---|
 | `listen` | `ECHUAN_LISTEN` | `127.0.0.1:8720` |
 | `data_dir` | `ECHUAN_DATA_DIR` | `~/.echuan` |
-| `workspace_dir` | `ECHUAN_WORKSPACE_DIR` | `~/.echuan/workspaces` |
 | `read_pool_size` | `ECHUAN_READ_POOL_SIZE` | `4`（写池恒为 1） |
 | `lease_ttl` | `ECHUAN_LEASE_TTL` | `90s` |
 | `max_attempts` | `ECHUAN_MAX_ATTEMPTS` | `3` |
@@ -106,8 +104,7 @@ curl -s 127.0.0.1:18720/readyz    # 库可写 + 迁移版本匹配
 | `material_max_bytes` | `ECHUAN_MATERIAL_MAX_BYTES` | `20971520`（20 MiB） |
 | `log_level` | `ECHUAN_LOG_LEVEL` | `info` |
 
-数据目录布局：`{data_dir}/state.db`、`{data_dir}/objects/`、`{data_dir}/tmp/`；
-任务工作区 `{workspace_dir}/{project_id}`。
+数据目录布局：`{data_dir}/state.db`、`{data_dir}/objects/`、`{data_dir}/tmp/`。
 
 ## 5. 数据不变式（违反即视为 bug，不接受"先合并再修"）
 
@@ -220,7 +217,7 @@ scripts/backup.sh                  # 产物在 ~/echuan-backups/echuan-<时间�
 ## 11. 禁止事项
 
 - ❌ 手工改 `state.db`，或用 `sqlite3` 直接写库排查问题
-- ❌ 在 `products` 存 root 路径——工作区由 `workspace_dir` + `project_id` 推导
+- ❌ 在 `products` 存 root 路径——平台不推导、不下发本地路径
 - ❌ 在 handler 里拼 SQL；SQL 只允许出现在 `internal/store`
 - ❌ 引入第三方 router / ORM / 日志库
 - ❌ 打开 CGO（`CGO_ENABLED=0` 是交付前提）

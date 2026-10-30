@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -56,8 +55,7 @@ func newClaimEnvWithTTL(t *testing.T, ttl time.Duration) *claimEnv {
 	t.Helper()
 	e := newProjectTestEnv(t)
 	clock := newFakeClock()
-	claims := NewClaimService(e.store, slog.New(slog.DiscardHandler), ttl,
-		filepath.Join(e.dataDir, "workspaces"))
+	claims := NewClaimService(e.store, slog.New(slog.DiscardHandler), ttl)
 	claims.SetClock(clock)
 	return &claimEnv{
 		projectTestEnv: e,
@@ -674,9 +672,6 @@ func TestClaimContextWithoutSpec(t *testing.T) {
 		result.Context.Product.GitURL != "git@example.com:APP.git" {
 		t.Errorf("product = %+v", result.Context.Product)
 	}
-	if want := filepath.Join(e.dataDir, "workspaces", projectID); result.Context.Workdir != want {
-		t.Errorf("workdir = %q, want %q", result.Context.Workdir, want)
-	}
 }
 
 // TestClaimContextWithSpec proves the context reports the project's current spec
@@ -727,7 +722,7 @@ func TestReclaimLogFields(t *testing.T) {
 	e.clock.Advance(91 * time.Second)
 
 	var buf bytes.Buffer
-	claims := NewClaimService(e.store, slog.New(slog.NewJSONHandler(&buf, nil)), 90*time.Second, "")
+	claims := NewClaimService(e.store, slog.New(slog.NewJSONHandler(&buf, nil)), 90*time.Second)
 	claims.SetClock(e.clock)
 	if result, err := claims.Claim(context.Background(), ClaimInput{Product: "APP"}); err != nil || result == nil {
 		t.Fatalf("Claim after expiry = %+v/%v, want the reclaimed card", result, err)

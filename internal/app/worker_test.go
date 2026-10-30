@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -33,7 +32,6 @@ func newWorkerEnvWithMetadataLimit(t *testing.T, limit int64) *workerEnv {
 		LeaseTTL:         e.claims.LeaseTTL(),
 		WorkerTTL:        45 * time.Second,
 		MetadataMaxBytes: limit,
-		WorkspaceDir:     filepath.Join(e.dataDir, "workspaces"),
 	})
 	workers.SetClock(e.clock)
 	return &workerEnv{claimEnv: e, workers: workers}
@@ -192,9 +190,6 @@ func TestHeartbeatDispatchesFirstCard(t *testing.T) {
 	}
 	if command.Context.Product.ID != "APP" || command.Context.Product.GitURL == "" {
 		t.Errorf("context product = %+v", command.Context.Product)
-	}
-	if want := filepath.Join(e.dataDir, "workspaces", projectID); command.Context.Workdir != want {
-		t.Errorf("workdir = %q, want %q", command.Context.Workdir, want)
 	}
 	if result.Worker.CurrentTaskID == nil || *result.Worker.CurrentTaskID != taskID {
 		t.Errorf("current_task_id = %v, want %s", result.Worker.CurrentTaskID, taskID)
