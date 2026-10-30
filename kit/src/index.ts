@@ -3,7 +3,7 @@
  *
  * 职责边界（技术方案 v0.6 §1）：
  * - 声明插件标识 `name` 与依赖服务 `inject`；
- * - 在 `apply(ctx, config)` 里解析 6 项配置、落加载日志；
+ * - 在 `apply(ctx, config)` 里解析配置（baseUrl / actor / 超时 / exclude / worker）、落加载日志；
  * - 注册最多 22 个工具（`exclude` 可裁剪，默认全量）：15 个写（项目创建 / 需求写入 / 提交评审 / 方案创建 /
  *   方案修订 / 批量建卡 / 领卡 / 续租 / 交报告 / 单卡增改删 / 项目改标题 /
  *   建产品 / 资料包下载）+ 7 个只读
@@ -56,6 +56,29 @@ export type { ConfigInput, ResolvedConfig } from './config.js'
 export { READ_TOOL_NAMES, TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from './tool-names.js'
 export { DEFAULT_POLL_INTERVAL_MS, createEchuanRuntime } from './runtime.js'
 export type { EchuanRuntime, EchuanRuntimeOptions, Logger, TimerApi } from './runtime.js'
+export { DEFAULT_PERMISSION_PRESET, createSessionEnsurer, ensureSession } from './session.js'
+export type {
+  EnsureAgent,
+  EnsureAgentDefaultModelLike,
+  EnsureAgentHandle,
+  EnsureAgentOptions,
+  EnsureAgentPreset,
+  EnsureAgentPresetsLike,
+  EnsureAgentsLike,
+  EnsureCreateOptions,
+  EnsureOutcome,
+  EnsurePermissionPresetsLike,
+  EnsureResumeOptions,
+  EnsureSessionConfigLike,
+  EnsureSessionDeps,
+  EnsureSessionHeader,
+  EnsureSessionLogger,
+  EnsureSessionPersistenceLike,
+  EnsureSessionResult,
+  EnsureSessionTitleLike,
+  EnsureWorkspaceLike,
+  EnsureWorkspaceRegistryLike,
+} from './session.js'
 export type { WorkerLoop, WorkerLoopOptions } from './worker.js'
 export {
   ECHUAN_SKILL_DESCRIPTION,

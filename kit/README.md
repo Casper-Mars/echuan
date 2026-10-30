@@ -113,6 +113,7 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
     requestTimeoutMs: 35000               # 单请求超时
     exclude: []                           # 不注册的工具名；默认 [] = 全量 22 个
     worker:
+      workspaceRoot: /Users/you/project/opc  # 可选；绝对路径，只在新建会话时生效
       poll:
         enable: false                     # 默认关闭；打开才会定时心跳
       metadata:                           # 原样上报，序列化后 ≤8KiB
@@ -121,6 +122,7 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
         agent_version: 0.1.0
 ```
 
+- `worker.workspaceRoot`（可选，**绝对路径**）：新建项目会话时用它作根目录，会话 cwd 为 `<workspaceRoot>/<projectId>`。只在**新建会话**生效：已存在会话走 resume / live 复用时完全不看它，也不改已有会话的 cwd。留空（不写或写空串）时走优先链：唯一工作区 → 最近有新会话的工作区 → `process.cwd()`。相对路径非法，插件**激活时直接报错**（`worker.workspaceRoot 必须是绝对路径`），不会静默忽略。
 - `worker.poll.enable=false` 是默认值：不建定时器、零请求；**手动领卡照常可用**（工具与心跳开关无关）。
 - `metadata` 序列化后超过 8KiB 时插件**不启动心跳循环**并 warn 一条（不是截断），避免每轮都被平台拒。
 - `exclude` 默认 `[]`（不排除，全量 22 个）；工具名写错或含空白项时**插件激活直接失败**（`TypeError`，错误里列出未知项与合法名单），不会静默少注册。
