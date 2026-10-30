@@ -39,7 +39,7 @@ interface FakeContext {
 /**
  * 构造只提供 effect / logger / agents / tools / skills 的假上下文。
  *
- * `tools` 记录工具注册（22 个：15 写 + 7 读）；`skills` 记录技能注册（1 个）；
+ * `tools` 记录工具注册（23 个：15 写 + 8 读）；`skills` 记录技能注册（1 个）；
  * `agents` 记录访问次数，用于断言 poll=false 时连 agent 列表都不读。
  */
 function createFakeContext(): FakeContext {
@@ -80,6 +80,7 @@ function createFakeContext(): FakeContext {
         agentAccess.push('agents')
         return []
       },
+      get: () => undefined,
     },
     logger: {
       info: () => {},
@@ -116,10 +117,10 @@ function createFakeContext(): FakeContext {
   }
 }
 
-/** 等惰性 import 完成、22 个工具注册就绪（避免异步日志干扰后续断言）。 */
+/** 等惰性 import 完成、23 个工具注册就绪（避免异步日志干扰后续断言）。 */
 async function settleTools(fake: FakeContext): Promise<void> {
   await vi.waitFor(() => {
-    expect(fake.registrations).toHaveLength(22)
+    expect(fake.registrations).toHaveLength(23)
   })
 }
 
@@ -211,7 +212,7 @@ describe('apply：加载与生命周期', () => {
       .some(line => line.includes('已注销技能 echuan-task-execution'))).toBe(true)
   })
 
-  it('惰性注册 22 个工具（15 写 + 7 读）并打印注册日志', async () => {
+  it('惰性注册 23 个工具（15 写 + 8 读）并打印注册日志', async () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const fake = createFakeContext()
 
@@ -241,13 +242,14 @@ describe('apply：加载与生命周期', () => {
       'echuan_project_get',
       'echuan_task_get',
       'echuan_material_get',
+      'echuan_worker_info',
     ])
     const lines = spy.mock.calls.map(call => String(call[0]))
-    expect(lines.some(line => line.includes('已注册 22 个工具'))).toBe(true)
-    expect(lines.some(line => line.includes('15 写 + 7 读'))).toBe(true)
-    // 不配 exclude 时日志与升级前逐字一致（含工具顺序）。
-    expect(lines.find(line => line.includes('已注册 22 个工具'))).toBe(
-      `[dsh-echuan] 已注册 22 个工具（15 写 + 7 读）：${TOOL_NAMES.join(', ')}`,
+    expect(lines.some(line => line.includes('已注册 23 个工具'))).toBe(true)
+    expect(lines.some(line => line.includes('15 写 + 8 读'))).toBe(true)
+    // 不配 exclude 时日志与工具清单逐字一致（含工具顺序）。
+    expect(lines.find(line => line.includes('已注册 23 个工具'))).toBe(
+      `[dsh-echuan] 已注册 23 个工具（15 写 + 8 读）：${TOOL_NAMES.join(', ')}`,
     )
 
     fake.disposeAll()
@@ -305,14 +307,14 @@ describe('apply：加载与生命周期', () => {
 })
 
 describe('apply：exclude 按 agent 裁剪工具', () => {
-  it('exclude 两项：注册 20 个（13 写 + 7 读），被排除项不在 ctx.tools', async () => {
+  it('exclude 两项：注册 21 个（13 写 + 8 读），被排除项不在 ctx.tools', async () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const fake = createFakeContext()
     const exclude = ['echuan_project_create', 'echuan_plan_submit']
 
     apply(fake.ctx, { exclude })
     await vi.waitFor(() => {
-      expect(fake.registrations).toHaveLength(20)
+      expect(fake.registrations).toHaveLength(21)
     })
 
     expect(fake.registrations).not.toContain('echuan_project_create')
@@ -320,22 +322,22 @@ describe('apply：exclude 按 agent 裁剪工具', () => {
     // 其余工具保持原顺序，且一个不少。
     expect(fake.registrations).toEqual([...TOOL_NAMES].filter(name => !exclude.includes(name)))
 
-    const registered = logLines(spy).find(line => line.includes('已注册 20 个工具'))
+    const registered = logLines(spy).find(line => line.includes('已注册 21 个工具'))
     expect(registered).toBeDefined()
-    expect(registered).toContain('13 写 + 7 读')
+    expect(registered).toContain('13 写 + 8 读')
     expect(registered).toContain('已排除 2 个：echuan_project_create, echuan_plan_submit')
-    expect(registered).not.toContain('15 写 + 7 读')
+    expect(registered).not.toContain('15 写 + 8 读')
 
     fake.disposeAll()
     expect(fake.registrations).toEqual([])
   })
 
-  it('exclude: [] 与不配置完全等价（22 个、日志逐字一致）', async () => {
+  it('exclude: [] 与不配置完全等价（23 个、日志逐字一致）', async () => {
     const spyDefault = vi.spyOn(console, 'log').mockImplementation(() => {})
     const fakeDefault = createFakeContext()
     apply(fakeDefault.ctx, undefined)
     await settleTools(fakeDefault)
-    const defaultLog = logLines(spyDefault).find(line => line.includes('已注册 22 个工具'))
+    const defaultLog = logLines(spyDefault).find(line => line.includes('已注册 23 个工具'))
     const defaultRegistrations = [...fakeDefault.registrations]
     fakeDefault.disposeAll()
     spyDefault.mockRestore()
@@ -344,10 +346,10 @@ describe('apply：exclude 按 agent 裁剪工具', () => {
     const fakeEmpty = createFakeContext()
     apply(fakeEmpty.ctx, { exclude: [] })
     await settleTools(fakeEmpty)
-    const emptyLog = logLines(spyEmpty).find(line => line.includes('已注册 22 个工具'))
+    const emptyLog = logLines(spyEmpty).find(line => line.includes('已注册 23 个工具'))
 
     expect(emptyLog).toBe(defaultLog)
-    expect(emptyLog).toContain('15 写 + 7 读')
+    expect(emptyLog).toContain('15 写 + 8 读')
     expect(emptyLog).not.toContain('已排除')
     expect(fakeEmpty.registrations).toEqual(defaultRegistrations)
 
@@ -364,7 +366,7 @@ describe('apply：exclude 按 agent 裁剪工具', () => {
     expect(() => apply(fake.ctx, { exclude: ['echuan_plan_submitt'] }))
       .toThrow(/echuan_plan_submitt/)
     expect(() => apply(fake.ctx, { exclude: ['echuan_plan_submitt'] }))
-      .toThrow(/合法工具名（22 个）/)
+      .toThrow(/合法工具名（23 个）/)
 
     // 校验发生在任何 effect/日志之前：没有注册、没有心跳、没有加载日志。
     expect(fake.labels).toEqual([])

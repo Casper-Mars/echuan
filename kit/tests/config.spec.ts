@@ -18,7 +18,7 @@ describe('resolveConfig：默认值', () => {
     expect(resolved.baseUrl).toBe('http://127.0.0.1:8720')
     expect(resolved.actor).toBe('agent:echuan')
     expect(resolved.requestTimeoutMs).toBe(35_000)
-    // 默认不排除任何工具（全量 22 个）。
+    // 默认不排除任何工具（全量 23 个）。
     expect(resolved.exclude).toEqual([])
     // 嵌套：worker.poll.enable / worker.metadata
     expect(resolved.worker.poll.enable).toBe(false)

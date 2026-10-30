@@ -9,11 +9,11 @@
  *    `src/session.ts` 导入 `mkdir`（新建会话必须建目录的显式例外）；`config.ts` 不读
  *    `process.env`。模块导入检查同时覆盖单/双引号与 `import(...)` 动态导入形式。
  * 2. 运行时级：把 `globalThis.fetch` 换成一被调用就抛错的哨兵，再跑
- *    ① 22 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
+ *    ① 23 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
  * 3. 运行时级：用 `vi.mock('node:fs', { spy: true })` 把 `node:fs` 的导出换成
  *    会记账的 spy（具名导入的 `import { writeFileSync }` 也能拦到），跑两轮
  *    worker 心跳 → 0 次写文件（worker_id 只在内存）。监视器先做一次自证
- *    （真的能抓到写入），避免「spy 没挂上」导致的假绿。22 个工具链路里只有
+ *    （真的能抓到写入），避免「spy 没挂上」导致的假绿。23 个工具链路里只有
  *    `echuan_project_package` 允许写 1 次 tmpdir，且失败时 unlink。
  */
 import * as fs from 'node:fs'
@@ -595,7 +595,7 @@ function createFakeTimer(): FakeTimer {
   }
 }
 
-/** 跑完 22 个工具的完整调用链（每类工具都真的发一次请求），返回 package 落盘路径。 */
+/** 跑完 23 个工具的完整调用链（`echuan_worker_info` 零 HTTP），返回 package 落盘路径。 */
 async function runWholeToolChain(fetchImpl: FetchLike): Promise<string[]> {
   const options: EchuanToolOptions = {
     client: createClient(config, { fetchImpl }),
@@ -639,6 +639,8 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<string[]> {
     ['echuan_project_get', { id: 'APP-2' }],
     ['echuan_task_get', { id: 'APP-1-T0007' }],
     ['echuan_material_get', { id: 'M-1' }],
+    // 只读诊断：零 HTTP、零写盘。
+    ['echuan_worker_info', {}],
   ]
 
   const savedPaths: string[] = []
@@ -660,8 +662,8 @@ interface WorkerRun {
   delivered: string[]
 }
 
-/** 唯一的根 agent 桩：派单投递要求「恰好 1 个且 running」。 */
-const ROOT_AGENT = { id: 'root-1', status: 'running' } as unknown as Agent
+/** 项目会话桩：`id` 即项目号（APP-1），投递按 `task.project_id` 命中它。 */
+const ROOT_AGENT = { id: 'APP-1', status: 'running' } as unknown as Agent
 
 /** 跑 `rounds` 轮 worker 心跳（每轮都由假定时器触发：首轮也要推进过 5s 延迟）。 */
 async function runWorkerRounds(rounds = 2): Promise<WorkerRun> {
@@ -672,7 +674,10 @@ async function runWorkerRounds(rounds = 2): Promise<WorkerRun> {
   const loop = createWorkerLoop({
     config: pollConfig,
     client: createWorkerClient(config, { fetchImpl: platform.fetchImpl }),
-    agents: () => [ROOT_AGENT],
+    sessions: { get: (id: string) => (id === ROOT_AGENT.id ? ROOT_AGENT : undefined) },
+    ensureSession: async (projectId: string) => (
+      projectId === ROOT_AGENT.id ? { agent: ROOT_AGENT } : undefined
+    ),
     logger: silentLogger,
     timer: timer.api,
     deliver: (_agent, text) => delivered.push(text),
@@ -728,7 +733,7 @@ function installFetchSentinel(): Sentinel {
 }
 
 describe('运行时级：不触达真实 fetch', () => {
-  it('22 个工具完整链路：哨兵 0 次调用，假平台收到 22 个请求', async () => {
+  it('23 个工具完整链路：哨兵 0 次调用，假平台收到 22 个请求（worker_info 零 HTTP）', async () => {
     const platform = createPlatform(respondByPath)
     const sentinel = installFetchSentinel()
     const savedPaths: string[] = []
@@ -798,7 +803,7 @@ describe('运行时级：不写盘', () => {
     expect(JSON.parse(secondBody)['worker_id']).toBe('w_TEST01ABCDEFGHIJKLMN')
   })
 
-  it('22 个工具完整链路：只有资料包写 1 次 tmpdir，其余 0 次写盘', async () => {
+  it('23 个工具完整链路：只有资料包写 1 次 tmpdir，其余 0 次写盘', async () => {
     const spies = writeSpies()
     const platform = createPlatform(respondByPath)
 

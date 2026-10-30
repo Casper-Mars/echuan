@@ -2,7 +2,7 @@
  * 工具名清单与 `exclude` 校验（任务-09）。
  *
  * 这里是「唯一真源」的自检：
- * - 15 写 + 7 读 = 22，顺序与分组固定；
+ * - 15 写 + 8 读 = 23，顺序与分组固定；
  * - `TOOL_NAMES` 始终是全集，不随 `exclude` 变化；
  * - `validateExclude` 的 trim / 去重 / 空白报错 / 未知名称报错；
  * - 清单与 `createAllEchuanTools`（不传 exclude）实际产出的名字逐项一致。
@@ -28,15 +28,15 @@ function toolNames(exclude?: readonly string[]): string[] {
   return createAllEchuanTools(options).map(tool => tool.name)
 }
 
-describe('工具名清单：15 写 + 7 读 = 22', () => {
-  it('分组数量固定：22 / 15 / 7', () => {
+describe('工具名清单：15 写 + 8 读 = 23', () => {
+  it('分组数量固定：23 / 15 / 8', () => {
     expect(WRITE_TOOL_NAMES).toHaveLength(15)
-    expect(READ_TOOL_NAMES).toHaveLength(7)
-    expect(TOOL_NAMES).toHaveLength(22)
+    expect(READ_TOOL_NAMES).toHaveLength(8)
+    expect(TOOL_NAMES).toHaveLength(23)
   })
 
   it('全集无重复，且等于「写 + 读」的顺序拼接', () => {
-    expect(new Set(TOOL_NAMES).size).toBe(22)
+    expect(new Set(TOOL_NAMES).size).toBe(23)
     expect([...TOOL_NAMES]).toEqual([...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES])
   })
 
@@ -53,7 +53,7 @@ describe('工具名清单：15 写 + 7 读 = 22', () => {
     expect(toolNames(['echuan_project_create', 'echuan_plan_submit']))
       .toEqual([...TOOL_NAMES].filter(name => name !== 'echuan_project_create'
         && name !== 'echuan_plan_submit'))
-    expect(TOOL_NAMES).toHaveLength(22)
+    expect(TOOL_NAMES).toHaveLength(23)
   })
 })
 
@@ -99,10 +99,11 @@ describe('validateExclude：报错', () => {
     expect(error).toBeInstanceOf(TypeError)
     const message = (error as Error).message
     expect(message).toContain('echuan_project_create2')
-    // 合法名单以「22 个」开头并包含首尾两个真实工具名。
+    // 合法名单以「23 个」开头并包含首尾两个真实工具名。
     expect(message).toContain(`合法工具名（${TOOL_NAMES.length} 个）`)
     expect(message).toContain('echuan_task_claim')
     expect(message).toContain('echuan_material_get')
+    expect(message).toContain('echuan_worker_info')
   })
 
   it('多个未知项一次列全', () => {

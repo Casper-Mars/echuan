@@ -10,6 +10,7 @@
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { ClaimTaskInput, EchuanClient } from '../client.js'
 import { EchuanValidationError } from '../errors.js'
+import type { WorkerInfoDeps } from './worker-info.js'
 import {
   renderClaimed,
   renderNoWork,
@@ -67,6 +68,11 @@ export interface ReportedValue {
  */
 export interface WorkerIdentity {
   readonly workerId: string | undefined
+  /**
+   * 报告成功的回调（可选）：由 `index.ts` 接到心跳循环的 `notifyReported`，
+   * 用于清除该任务的 inflight。只在平台 HTTP 成功后调用。
+   */
+  notifyReported?(taskId: string): void
 }
 
 export interface EchuanToolOptions {
@@ -75,8 +81,13 @@ export interface EchuanToolOptions {
   /** 共享身份（心跳循环）。 */
   identity: WorkerIdentity
   /**
+   * `echuan_worker_info` 的只读依赖（可选）。缺省时该工具返回「诊断不可用」，
+   * 不影响其余工具；依赖本身也是每次调用惰性读取。
+   */
+  workerInfo?: WorkerInfoDeps
+  /**
    * 不注册的工具名（可选）。只影响本进程注册哪些工具，不改变工具定义与 HTTP 契约；
-   * 缺省等价于 `[]`（全量 22 个）。名称的归一化与校验见 `../tool-names.js`。
+   * 缺省等价于 `[]`（全量 23 个）。名称的归一化与校验见 `../tool-names.js`。
    */
   exclude?: readonly string[]
 }
@@ -245,7 +256,7 @@ export const REPORT_STRUCTURE_HINT =
  * 入口先做本地校验：`summary_md` 去空白后为空 → 直接拒绝，**不发任何请求**。
  */
 export function createReportTool(options: EchuanToolOptions): ToolDefinition {
-  const { client } = options
+  const { client, identity } = options
 
   return defineTool({
     name: 'echuan_task_report',
@@ -285,6 +296,12 @@ export function createReportTool(options: EchuanToolOptions): ToolDefinition {
         const detail = result.data
         const value: ReportedValue = { kind: 'reported', task_id: args.task_id }
         if (typeof detail.status_name === 'string') value.status_name = detail.status_name
+        // inflight 只跟「平台确认收到报告」走：本地校验失败与请求失败都不会到这里。
+        try {
+          identity.notifyReported?.(args.task_id)
+        } catch {
+          // 回调失败不影响已成功的报告。
+        }
         return value
       } catch (err) {
         return toToolError(err)

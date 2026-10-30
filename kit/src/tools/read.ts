@@ -1,5 +1,6 @@
 /**
- * 七个只读工具：待办 / 产品列表 / 项目列表 / 任务列表 / 项目全景 / 任务详情 / 资料正文。
+ * 八个只读工具：待办 / 产品列表 / 项目列表 / 任务列表 / 项目全景 / 任务详情 /
+ * 资料正文 / worker 诊断（`echuan_worker_info`，零 HTTP、零副作用）。
  *
  * 边界（硬约束）：
  * - **只发 GET**：`getInbox` / `listProducts` / `listProjects` / `listTasks` /
@@ -41,6 +42,7 @@ import {
   renderTextValue as renderText,
   toToolError,
 } from './render.js'
+import { createWorkerInfoTool } from './worker-info.js'
 import type { EchuanToolOptions } from './write.js'
 
 /** 只读工具的规范值 schema：一段文本。 */
@@ -528,13 +530,13 @@ export function createMaterialGetTool(options: EchuanToolOptions): ToolDefinitio
 }
 
 /**
- * 七个只读工具名（顺序即向模型暴露的顺序）。
+ * 八个只读工具名（顺序即向模型暴露的顺序）。
  *
  * 定义在 `../tool-names.js`（唯一真源），这里只做再导出，避免两处名单漂移。
  */
 export { READ_TOOL_NAMES } from '../tool-names.js'
 
-/** 构造 7 个只读工具定义。 */
+/** 构造 8 个只读工具定义（`echuan_worker_info` 不碰 client，零 HTTP）。 */
 export function createEchuanReadTools(options: EchuanToolOptions): ToolDefinition[] {
   return [
     createInboxTool(options),
@@ -544,5 +546,6 @@ export function createEchuanReadTools(options: EchuanToolOptions): ToolDefinitio
     createProjectGetTool(options),
     createTaskGetTool(options),
     createMaterialGetTool(options),
+    createWorkerInfoTool(options),
   ]
 }

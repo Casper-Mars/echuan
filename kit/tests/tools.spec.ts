@@ -219,7 +219,8 @@ describe('echuan_task_claim：worker_id 的唯一来源是心跳循环', () => {
     const loop = createWorkerLoop({
       config,
       client: createWorkerClient(config, { fetchImpl: loopPlatform.fetchImpl }),
-      agents: () => [],
+      sessions: { get: () => undefined },
+      ensureSession: async () => undefined,
       logger: { info: () => {}, warn: () => {} },
       timer: {
         setTimeout: (handler: () => void) => {
@@ -319,6 +320,54 @@ describe('echuan_task_report：summary_md 本地校验', () => {
     })
     expect(text).toContain('任务已转待验收')
     expect(text).toContain('APP-1-T0001')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 4b. 报告成功 → notifyReported
+// ---------------------------------------------------------------------------
+
+describe('echuan_task_report：成功后回调 notifyReported', () => {
+  it('HTTP 成功 → notifyReported(task_id) 恰好 1 次', async () => {
+    const platform = createPlatform(() => jsonResponse({ task_id: 'APP-1-T0001', status_name: '待验收' }))
+    const client = createClient(resolveConfig({ baseUrl: 'http://platform.test' }), {
+      fetchImpl: platform.fetchImpl,
+    })
+    const seen: string[] = []
+    const tool = createEchuanTools({
+      client,
+      identity: { workerId: WORKER_ID, notifyReported: taskId => seen.push(taskId) },
+    }).find(item => item.name === 'echuan_task_report')
+
+    await runTool(tool!, {
+      task_id: 'APP-1-T0001',
+      lease_id: 'l_9f8b',
+      summary_md: '①改了什么 ②怎么自检 ③遗留风险',
+    })
+
+    expect(platform.calls).toHaveLength(1)
+    expect(seen).toEqual(['APP-1-T0001'])
+  })
+
+  it('本地校验失败（空 summary）→ 0 请求、notifyReported 0 次', async () => {
+    const platform = createPlatform(() => jsonResponse({}))
+    const client = createClient(resolveConfig({ baseUrl: 'http://platform.test' }), {
+      fetchImpl: platform.fetchImpl,
+    })
+    const seen: string[] = []
+    const tool = createEchuanTools({
+      client,
+      identity: { workerId: WORKER_ID, notifyReported: taskId => seen.push(taskId) },
+    }).find(item => item.name === 'echuan_task_report')
+
+    await expect(runTool(tool!, {
+      task_id: 'APP-1-T0001',
+      lease_id: 'l_9f8b',
+      summary_md: '   ',
+    })).rejects.toThrow(/summary_md 为空或全空白/)
+
+    expect(platform.calls).toHaveLength(0)
+    expect(seen).toEqual([])
   })
 })
 
