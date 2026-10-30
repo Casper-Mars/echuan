@@ -12,13 +12,13 @@
  * - 本文件是 `kit/src` 里**唯一**调用 `fetch(` 的地方；
  * - `fetchImpl` 可注入（默认 `globalThis.fetch`），单测不连真实平台；
  * - 不读环境变量、不写磁盘、不缓存响应、不存业务状态；
- * - 只暴露工具包需要的 8 个客户端方法（{@link TOOL_METHODS}），**没有任何门禁动作**
+ * - 只暴露工具包需要的 14 个客户端方法（{@link TOOL_METHODS}），**没有任何门禁动作**
  *   （accept / decide / cancel / rework / approve / reject 一律不提供）；
  * - 与 `api/openapi.yaml` 一一对应：{@link TOOL_OPERATIONS} 记录每个方法对应的
- *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 8 条确实存在。
+ *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 14 条确实存在。
  *
  * 任务-03 的 worker 注册/心跳方法由 {@link createWorkerClient} 提供，走
- * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 8 个」的断言；
+ * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 14 个」的断言；
  * 两者共用 `requestRaw` / `requestJson`，仍然是全插件唯一的 fetch 出口。
  */
 import {
@@ -68,12 +68,14 @@ export interface ClientOptions {
 
 /** 一次请求的描述。 */
 export interface RequestSpec {
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE'
   /** 必须以 `/` 开头（契约里都是 `/v1/...`）。 */
   path: string
   query?: QueryParams
   /** 有值时序列化为 JSON 并带 `content-type`；GET 不传。 */
   body?: unknown
+  /** 额外请求头（如 `If-Match`）；与 `X-Actor` / `content-type` 合并。 */
+  headers?: Record<string, string>
 }
 
 /** 核心请求层的原始响应（未解析业务语义）。 */
@@ -221,6 +223,69 @@ export interface MaterialBody {
   materialVersion: number | undefined
 }
 
+/** 项目详情（`ProjectDetail`）：在列表项之上带需求/方案物料元信息。 */
+export interface ProjectDetail extends Project {
+  requirement?: MaterialMeta | null
+  spec?: MaterialMeta | null
+}
+
+/** 物料元信息（`Material` / `MaterialVersion`）里本工具包读取的字段。 */
+export interface MaterialMeta {
+  material_id?: string
+  kind?: number
+  version?: number
+  title?: string
+  sha256?: string
+  size?: number
+  previous_material_id?: string
+  uploaded_by?: string
+  create_time?: string
+  [key: string]: unknown
+}
+
+/** 独立技术方案（`SpecDocument`）。 */
+export interface SpecDocument {
+  spec_id: string
+  project_id: string
+  title: string
+  version: number
+  material: MaterialMeta
+  body_md?: string
+  versions?: MaterialMeta[]
+  [key: string]: unknown
+}
+
+/** `POST /v1/projects/plans` 的单张任务卡入参（`depends_on` 为 1-based 批内序号）。 */
+export interface PlanTaskInput {
+  title: string
+  body_md: string
+  priority?: number
+  depends_on?: number[]
+}
+
+/** `PlanResponse.tasks` 里的一行。 */
+export interface PlanTaskResult {
+  id: string
+  seq_no: number
+  title: string
+  priority: number
+  status: number
+  status_name: string
+  /** 平台返回的是任务 id（不是批内序号）。 */
+  depends_on: string[]
+  [key: string]: unknown
+}
+
+/** 批量建卡回包（`PlanResponse`）。 */
+export interface PlanResponse {
+  project_id: string
+  status: number
+  status_name: string
+  project_version: number
+  tasks: PlanTaskResult[]
+  [key: string]: unknown
+}
+
 // ---------------------------------------------------------------------------
 // 方法入参
 // ---------------------------------------------------------------------------
@@ -241,6 +306,47 @@ export interface ReportTaskInput {
   id: string
   lease_id: string
   summary_md: string
+}
+
+export interface CreateProjectInput {
+  product_id: string
+  title: string
+  /** 首版需求正文（可选；缺失/空白时项目建为 requirement_draft）。 */
+  requirement_md?: string
+}
+
+export interface WriteRequirementInput {
+  /** 项目编号，走 query `?id=`。 */
+  id: string
+  body_md: string
+}
+
+export interface SubmitProjectInput {
+  /** 项目编号，走 query `?id=`。 */
+  id: string
+}
+
+export interface CreateSpecInput {
+  project_id: string
+  /** 方案标题，契约必填（POST /v1/specs 的 required 含 title）。 */
+  title: string
+  body_md: string
+}
+
+export interface ReviseSpecInput {
+  /** 方案编号，走 query `?id=`。 */
+  id: string
+  /** 当前方案版本，走 `If-Match` 头（不放进 body）。 */
+  version: number
+  /** 方案标题，契约必填（PATCH /v1/specs 的 required 含 title）。 */
+  title: string
+  body_md: string
+}
+
+export interface SubmitPlanInput {
+  /** 项目编号，走 query `?id=`。 */
+  id: string
+  tasks: PlanTaskInput[]
 }
 
 export interface InboxQuery {
@@ -275,11 +381,17 @@ export interface MaterialsQuery {
   id: string
 }
 
-/** 8 个客户端方法的集合（顺序即客户端对象属性顺序）。 */
+/** 14 个客户端方法的集合（顺序即客户端对象属性顺序）。 */
 export const TOOL_METHODS = [
   'claimTask',
   'renewLease',
   'reportTask',
+  'createProject',
+  'writeRequirement',
+  'submitProject',
+  'createSpec',
+  'reviseSpec',
+  'submitPlan',
   'getInbox',
   'listProducts',
   'listProjects',
@@ -290,18 +402,24 @@ export const TOOL_METHODS = [
 export type ToolMethodName = (typeof TOOL_METHODS)[number]
 
 /**
- * 8 个方法 ↔ openapi operation 的对应表。
+ * 14 个方法 ↔ openapi operation 的对应表。
  *
  * `tool` 是客户端方法名；`method`/`path`/`operationId` 必须能在
  * `api/openapi.yaml` 的 `paths` 下原样找到（单测解析 yaml 校验）。
  *
- * 注意：10 个工具共用这 8 个 operation——`listProjects` / `listTasks`
+ * 注意：16 个工具共用这 14 个 operation——`listProjects` / `listTasks`
  * 各由一个 GET 同时承担「列表」与「按 id 取详情」两种工具语义。
  */
 export const TOOL_OPERATIONS = [
   { tool: 'claimTask', method: 'POST', path: '/v1/tasks/claim', operationId: 'claimTask' },
   { tool: 'renewLease', method: 'POST', path: '/v1/tasks/heartbeat', operationId: 'heartbeatTask' },
   { tool: 'reportTask', method: 'POST', path: '/v1/tasks/report', operationId: 'reportTask' },
+  { tool: 'createProject', method: 'POST', path: '/v1/projects', operationId: 'createProject' },
+  { tool: 'writeRequirement', method: 'POST', path: '/v1/projects/requirement', operationId: 'writeProjectRequirement' },
+  { tool: 'submitProject', method: 'POST', path: '/v1/projects/submit', operationId: 'submitProject' },
+  { tool: 'createSpec', method: 'POST', path: '/v1/specs', operationId: 'createSpecDocument' },
+  { tool: 'reviseSpec', method: 'PATCH', path: '/v1/specs', operationId: 'reviseSpecDocument' },
+  { tool: 'submitPlan', method: 'POST', path: '/v1/projects/plans', operationId: 'submitProjectPlan' },
   { tool: 'getInbox', method: 'GET', path: '/v1/inbox', operationId: 'listInbox' },
   { tool: 'listProducts', method: 'GET', path: '/v1/products', operationId: 'listOrGetProducts' },
   { tool: 'listProjects', method: 'GET', path: '/v1/projects', operationId: 'listOrGetProjects' },
@@ -309,7 +427,7 @@ export const TOOL_OPERATIONS = [
   { tool: 'getMaterials', method: 'GET', path: '/v1/materials', operationId: 'downloadMaterial' },
 ] as const
 
-/** 客户端对外的 8 个方法。 */
+/** 客户端对外的 14 个方法。 */
 export interface EchuanClient {
   /**
    * `POST /v1/tasks/claim`（operationId `claimTask`）。
@@ -320,6 +438,18 @@ export interface EchuanClient {
   renewLease(input: RenewLeaseInput): Promise<ApiResult<HeartbeatResponse>>
   /** `POST /v1/tasks/report`（operationId `reportTask`）。 */
   reportTask(input: ReportTaskInput): Promise<ApiResult<TaskDetail>>
+  /** `POST /v1/projects`（operationId `createProject`）；返回 `ProjectDetail`。 */
+  createProject(input: CreateProjectInput): Promise<ApiResult<ProjectDetail>>
+  /** `POST /v1/projects/requirement?id=`（operationId `writeProjectRequirement`）。 */
+  writeRequirement(input: WriteRequirementInput): Promise<ApiResult<ProjectDetail>>
+  /** `POST /v1/projects/submit?id=`（operationId `submitProject`）；无 body。 */
+  submitProject(input: SubmitProjectInput): Promise<ApiResult<Project>>
+  /** `POST /v1/specs`（operationId `createSpecDocument`）。 */
+  createSpec(input: CreateSpecInput): Promise<ApiResult<SpecDocument>>
+  /** `PATCH /v1/specs?id=`（operationId `reviseSpecDocument`）；`If-Match: <version>`。 */
+  reviseSpec(input: ReviseSpecInput): Promise<ApiResult<SpecDocument>>
+  /** `POST /v1/projects/plans?id=`（operationId `submitProjectPlan`）。 */
+  submitPlan(input: SubmitPlanInput): Promise<ApiResult<PlanResponse>>
   /** `GET /v1/inbox`（operationId `listInbox`）。 */
   getInbox(query?: InboxQuery): Promise<ApiResult<InboxResponse>>
   /** `GET /v1/products`（operationId `listOrGetProducts`）；带 `id` 时为详情。 */
@@ -382,7 +512,7 @@ export interface WorkerHeartbeatPayload {
   [key: string]: unknown
 }
 
-/** worker 心跳客户端；与 8 个客户端方法分开，避免污染 `TOOL_METHODS`。 */
+/** worker 心跳客户端；与 14 个客户端方法分开，避免污染 `TOOL_METHODS`。 */
 export interface WorkerClient {
   /** `POST /v1/workers/heartbeat`（operationId `heartbeatWorker`）。 */
   heartbeat(input: WorkerHeartbeatInput): Promise<ApiResult<WorkerHeartbeatPayload>>
@@ -448,6 +578,7 @@ export async function requestRaw(
   const url = buildUrl(ctx.config.baseUrl, spec.path, spec.query)
   const headers: Record<string, string> = { 'X-Actor': ctx.config.actor }
   if (bodyText !== undefined) headers['content-type'] = 'application/json'
+  if (spec.headers !== undefined) Object.assign(headers, spec.headers)
 
   const timeoutMs = ctx.config.requestTimeoutMs
   const controller = new AbortController()
@@ -512,7 +643,7 @@ export async function requestJson<T>(
 // ---------------------------------------------------------------------------
 
 /**
- * 创建客户端。返回对象**恰好**有 {@link TOOL_METHODS} 里的 8 个方法。
+ * 创建客户端。返回对象**恰好**有 {@link TOOL_METHODS} 里的 14 个方法。
  *
  * @param config 已归一化的配置（见 `resolveConfig`）
  * @param options `fetchImpl` 可注入，单测用假 fetch
@@ -556,6 +687,80 @@ export function createClient(
         path: '/v1/tasks/report',
         query: { id },
         body: { lease_id, summary_md },
+      })
+    },
+
+    async createProject(input) {
+      const product_id = requireNonEmpty(input?.product_id, 'product_id')
+      const title = requireNonEmpty(input?.title, 'title')
+      const body: Record<string, unknown> = { product_id, title }
+      if (input?.requirement_md !== undefined && input.requirement_md.trim() !== '') {
+        body.requirement_md = input.requirement_md
+      }
+      return requestJson<ProjectDetail>(ctx, {
+        method: 'POST',
+        path: '/v1/projects',
+        body,
+      })
+    },
+
+    async writeRequirement(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      const body_md = requireNonBlank(input?.body_md, 'body_md')
+      return requestJson<ProjectDetail>(ctx, {
+        method: 'POST',
+        path: '/v1/projects/requirement',
+        query: { id },
+        body: { body_md },
+      })
+    },
+
+    async submitProject(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      return requestJson<Project>(ctx, {
+        method: 'POST',
+        path: '/v1/projects/submit',
+        query: { id },
+      })
+    },
+
+    async createSpec(input) {
+      const project_id = requireNonEmpty(input?.project_id, 'project_id')
+      const title = requireNonEmpty(input?.title, 'title')
+      const body_md = requireNonBlank(input?.body_md, 'body_md')
+      // 契约要求 title 必填：始终发送，不再按“可选”省略。
+      const body: Record<string, unknown> = { project_id, title, body_md }
+      return requestJson<SpecDocument>(ctx, {
+        method: 'POST',
+        path: '/v1/specs',
+        body,
+      })
+    },
+
+    async reviseSpec(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      const version = requirePositiveInt(input?.version, 'version')
+      const title = requireNonEmpty(input?.title, 'title')
+      const body_md = requireNonBlank(input?.body_md, 'body_md')
+      // 契约要求 title 必填：始终发送；version 仍只走 If-Match，不进 body。
+      const body: Record<string, unknown> = { title, body_md }
+      return requestJson<SpecDocument>(ctx, {
+        method: 'PATCH',
+        path: '/v1/specs',
+        query: { id },
+        headers: { 'If-Match': String(version) },
+        body,
+      })
+    },
+
+    async submitPlan(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      const tasks = requirePlanTasks(input?.tasks)
+      return requestJson<PlanResponse>(ctx, {
+        method: 'POST',
+        path: '/v1/projects/plans',
+        query: { id },
+        body: { tasks },
       })
     },
 
@@ -617,7 +822,7 @@ export function createClient(
 /**
  * 创建 worker 心跳客户端。
  *
- * 与 {@link createClient} 分开：8 个客户端方法的对象键必须**恰好**是
+ * 与 {@link createClient} 分开：14 个客户端方法的对象键必须**恰好**是
  * {@link TOOL_METHODS}（任务-02 有断言），worker 心跳走独立命名空间。
  *
  * 首次注册时请求体里**没有** `worker_id` 键（不是空串、不是 null）；
@@ -755,7 +960,7 @@ function toApiError(response: Response, text: string): EchuanApiError {
   return new EchuanApiError({
     code,
     status: response.status,
-    message: composeApiMessage(response.status, code, platformMessage, hint, retryNote),
+    message: composeApiMessage(response.status, code, platformMessage, hint, retryNote, details),
     platformMessage,
     hint,
     details,
@@ -823,6 +1028,89 @@ function requireNonEmpty(value: unknown, field: string): string {
     )
   }
   return value.trim()
+}
+
+/** 必填正文：保留首尾空白，只拒绝全空白（Markdown 原样保存）。 */
+function requireNonBlank(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new EchuanValidationError(
+      `${field} 不能为空。下一步：检查调用参数，按 api/openapi.yaml 传入非空 Markdown 正文。`,
+      'invalid_argument',
+      field,
+    )
+  }
+  return value
+}
+
+/** 正整数（版本号 / 批内序号）；缺失或 <=0 在本地拒绝。 */
+function requirePositiveInt(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new EchuanValidationError(
+      `${field} 必须是大于 0 的整数，收到 ${String(value)}。`
+        + '下一步：传入当前版本号（例如项目/方案详情里的 version），不要用字符串或小数。',
+      'invalid_argument',
+      field,
+    )
+  }
+  return value
+}
+
+/** 校验批量建卡入参：非空数组，逐项校验 title/body_md/priority/depends_on。 */
+function requirePlanTasks(value: unknown): PlanTaskInput[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new EchuanValidationError(
+      'tasks 不能为空。下一步：至少给一张卡（title + body_md），不要发空批次。',
+      'invalid_argument',
+      'tasks',
+    )
+  }
+
+  return value.map((item, index) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new EchuanValidationError(
+        `tasks[${index}] 必须是对象。下一步：按 api/openapi.yaml 传 { title, body_md }。`,
+        'invalid_argument',
+        'tasks',
+      )
+    }
+    const record = item as Record<string, unknown>
+    const task: PlanTaskInput = {
+      title: requireNonEmpty(record['title'], `tasks[${index}].title`),
+      body_md: requireNonEmpty(record['body_md'], `tasks[${index}].body_md`),
+    }
+    if (record['priority'] !== undefined) {
+      const priority = record['priority']
+      if (typeof priority !== 'number' || !Number.isInteger(priority)) {
+        throw new EchuanValidationError(
+          `tasks[${index}].priority 必须是整数，收到 ${String(priority)}。`,
+          'invalid_argument',
+          'tasks',
+        )
+      }
+      task.priority = priority
+    }
+    if (record['depends_on'] !== undefined) {
+      const dependsOn = record['depends_on']
+      if (!Array.isArray(dependsOn)) {
+        throw new EchuanValidationError(
+          `tasks[${index}].depends_on 必须是数组（1-based 批内序号）。`,
+          'invalid_argument',
+          'tasks',
+        )
+      }
+      task.depends_on = dependsOn.map((dep, depIndex) => {
+        if (typeof dep !== 'number' || !Number.isInteger(dep) || dep <= 0) {
+          throw new EchuanValidationError(
+            `tasks[${index}].depends_on[${depIndex}] 必须是大于 0 的整数（1-based 批内序号）。`,
+            'invalid_argument',
+            'tasks',
+          )
+        }
+        return dep
+      })
+    }
+    return task
+  })
 }
 
 function requireString(value: unknown, field: string): string {

@@ -2,7 +2,7 @@
  * 三个写工具：领卡 / 续租 / 交报告。
  *
  * 边界（硬约束）：
- * - 只有这三个动作，**没有**验收/退回/取消/改状态一类的门禁工具；
+ * - 本文件只有这三个任务执行动作，**没有**验收/退回/取消/改状态一类的门禁工具；
  * - 工具层不代交报告、不重试、不判断任务成败、不落盘；
  * - worker_id 只有**一个内存来源**——心跳循环（{@link WorkerIdentity} 由 `index.ts`
  *   把 `createWorkerLoop` 的实例传进来），本模块不缓存、不读磁盘、不读 env。
@@ -71,7 +71,7 @@ export interface WorkerIdentity {
 }
 
 export interface EchuanToolOptions {
-  /** 平台 HTTP 客户端（8 个客户端方法的那个）。 */
+  /** 平台 HTTP 客户端（TOOL_METHODS 里的 14 个方法）。 */
   client: EchuanClient
   /** 共享身份（心跳循环）。 */
   identity: WorkerIdentity

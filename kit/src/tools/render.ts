@@ -5,7 +5,7 @@
  * 错误只做「原样透传 code + 平台事实 + 下一步」，不重试、不兜底。
  */
 
-import { EchuanClientError } from '../errors.js'
+import { EchuanApiError, EchuanClientError, formatErrorDetails } from '../errors.js'
 import type { InboxResponse, MaterialBody, Product, Project, TaskDetail } from '../client.js'
 import type { ClaimValue, RenewedValue, ReportedValue } from './write.js'
 
@@ -32,7 +32,11 @@ export function textBlock(text: string): TextContent {
  */
 export function toToolError(err: unknown): never {
   if (err instanceof EchuanClientError) {
-    throw new Error(`[${err.code}] ${err.message}`)
+    // 平台 400 等错误带 `details`（field/reason）时一并渲染，agent 才能知道缺哪个字段。
+    // 客户端已把它拼进 message 的情况下不重复追加（保留 `EchuanApiError.details` 原结构）。
+    const detailText = err instanceof EchuanApiError ? formatErrorDetails(err.details) : ''
+    const suffix = detailText !== '' && !err.message.includes(detailText) ? detailText : ''
+    throw new Error(`[${err.code}] ${err.message}${suffix}`)
   }
   throw err instanceof Error ? err : new Error(String(err))
 }

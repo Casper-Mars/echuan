@@ -192,17 +192,46 @@ export function hintForCode(code: string, status: number): string {
   return '下一步：把 code 与 requestId 反馈给平台维护者，确认契约后再重试。'
 }
 
-/** 拼装最终给模型看的中文错误消息：平台事实 + 下一步 +（429）退避说明。 */
+/**
+ * 把平台 `details` 排成短括号说明，例如 `（title: is required）`。
+ *
+ * 多个明细用 ` · ` 分隔；`field` / `reason` 缺失的一侧自动省略，
+ * 两者都缺失的条目直接丢弃。没有可展示内容时返回空串。
+ */
+export function formatErrorDetails(details: readonly ErrorDetail[]): string {
+  const parts: string[] = []
+  for (const detail of details) {
+    const field = detail.field?.trim() ?? ''
+    const reason = detail.reason?.trim() ?? ''
+    if (field !== '' && reason !== '') {
+      parts.push(`${field}: ${reason}`)
+    } else if (field !== '') {
+      parts.push(field)
+    } else if (reason !== '') {
+      parts.push(reason)
+    }
+  }
+  return parts.length === 0 ? '' : `（${parts.join(' · ')}）`
+}
+
+/**
+ * 拼装最终给模型看的中文错误消息：平台事实（含 details）+ 下一步 +（429）退避说明。
+ *
+ * `details` 紧跟在平台 message 后，便于 agent 直接看到 `field/reason`；
+ * 不改变 `EchuanApiError.details` 的结构。
+ */
 export function composeApiMessage(
   status: number,
   code: string,
   platformMessage: string,
   hint: string,
   retryNote?: string,
+  details: readonly ErrorDetail[] = [],
 ): string {
+  const detailText = formatErrorDetails(details)
   const base = platformMessage === ''
-    ? `平台返回 ${status} ${code}。`
-    : `平台返回 ${status} ${code}：${platformMessage}。`
+    ? `平台返回 ${status} ${code}${detailText}。`
+    : `平台返回 ${status} ${code}：${platformMessage}${detailText}。`
   return retryNote === undefined ? `${base}${hint}` : `${base}${hint}${retryNote}`
 }
 

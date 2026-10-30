@@ -6,7 +6,7 @@
  * 1. 源码级：`src` 下只有 `client.ts` 调 `fetch(`；没有任何写盘 API；
  *    `node:fs` 的导入只允许只读函数；`config.ts` 不读 `process.env`。
  * 2. 运行时级：把 `globalThis.fetch` 换成一被调用就抛错的哨兵，再跑
- *    ① 10 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
+ *    ① 16 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
  * 3. 运行时级：用 `vi.mock('node:fs', { spy: true })` 把 `node:fs` 的导出换成
  *    会记账的 spy（具名导入的 `import { writeFileSync }` 也能拦到），跑两轮
  *    worker 心跳 → 0 次写文件（worker_id 只在内存）。监视器先做一次自证
@@ -246,9 +246,50 @@ const respondByPath = (call: RecordedCall): Response => {
     case '/v1/products':
       return json({ items: [] })
     case '/v1/projects':
+      if (call.method === 'POST') {
+        return json({
+          project_id: 'APP-3',
+          product_id: 'APP',
+          title: '新项目',
+          status: 0,
+          status_name: '需求草稿',
+          version: 1,
+        })
+      }
       return call.url.searchParams.has('id')
         ? json({ project_id: 'APP-2', title: '示例项目' })
         : json({ items: [] })
+    case '/v1/projects/requirement':
+      return json({
+        project_id: 'APP-2',
+        requirement: { material_id: 'M-REQ-2', version: 2, title: '需求', size: 128 },
+      })
+    case '/v1/projects/submit':
+      return json({ project_id: 'APP-2', status: 1, status_name: '需求评审', version: 2 })
+    case '/v1/projects/plans':
+      return json({
+        project_id: 'APP-2',
+        status: 5,
+        status_name: '任务评审',
+        project_version: 6,
+        tasks: [{
+          id: 'APP-2-T0001',
+          seq_no: 1,
+          title: '卡 1',
+          priority: 0,
+          status: 0,
+          status_name: '待办',
+          depends_on: [],
+        }],
+      })
+    case '/v1/specs':
+      return json({
+        spec_id: 'S-1',
+        project_id: 'APP-2',
+        title: '方案 A',
+        version: call.method === 'PATCH' ? 4 : 1,
+        material: { material_id: 'M-SPEC-1' },
+      })
     case '/v1/tasks':
       return call.url.searchParams.has('id')
         ? json({ task_id: 'APP-1-T0007', title: '示例任务' })
@@ -328,7 +369,7 @@ function createFakeTimer(): FakeTimer {
   }
 }
 
-/** 跑完 10 个工具的完整调用链（每类工具都真的发一次请求）。 */
+/** 跑完 16 个工具的完整调用链（每类工具都真的发一次请求）。 */
 async function runWholeToolChain(fetchImpl: FetchLike): Promise<void> {
   const options: EchuanToolOptions = {
     client: createClient(config, { fetchImpl }),
@@ -340,6 +381,15 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<void> {
     ['echuan_task_claim', { product: 'APP' }],
     ['echuan_task_renew', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b' }],
     ['echuan_task_report', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b', summary_md: '三段式报告' }],
+    ['echuan_project_create', { product_id: 'APP', title: '新项目' }],
+    ['echuan_project_requirement_write', { project_id: 'APP-2', body_md: '# 需求正文' }],
+    ['echuan_project_submit', { project_id: 'APP-2' }],
+    ['echuan_spec_create', { project_id: 'APP-2', title: '方案 A', body_md: '# 方案正文' }],
+    ['echuan_spec_revise', { spec_id: 'S-1', version: 1, title: '方案 A', body_md: '# 方案正文 v2' }],
+    ['echuan_plan_submit', {
+      project_id: 'APP-2',
+      tasks: [{ title: '卡 1', body_md: '正文 1' }],
+    }],
     ['echuan_inbox', { limit: 5 }],
     ['echuan_product_list', { limit: 5 }],
     ['echuan_project_list', { product_id: 'APP' }],
@@ -431,7 +481,7 @@ function installFetchSentinel(): Sentinel {
 }
 
 describe('运行时级：不触达真实 fetch', () => {
-  it('10 个工具完整链路：哨兵 0 次调用，假平台收到 10 个请求', async () => {
+  it('16 个工具完整链路：哨兵 0 次调用，假平台收到 16 个请求', async () => {
     const platform = createPlatform(respondByPath)
     const sentinel = installFetchSentinel()
     try {
@@ -441,7 +491,7 @@ describe('运行时级：不触达真实 fetch', () => {
       sentinel.restore()
     }
 
-    expect(platform.calls).toHaveLength(10)
+    expect(platform.calls).toHaveLength(16)
   })
 
   it('worker 心跳两轮（含派单投递）：哨兵 0 次调用', async () => {
@@ -499,13 +549,13 @@ describe('运行时级：不写盘', () => {
     expect(JSON.parse(secondBody)['worker_id']).toBe('w_TEST01ABCDEFGHIJKLMN')
   })
 
-  it('10 个工具完整链路：0 次写文件', async () => {
+  it('16 个工具完整链路：0 次写文件', async () => {
     const spies = writeSpies()
     const platform = createPlatform(respondByPath)
 
     await runWholeToolChain(platform.fetchImpl)
 
     for (const spy of spies) expect(spy.mock.calls).toEqual([])
-    expect(platform.calls).toHaveLength(10)
+    expect(platform.calls).toHaveLength(16)
   })
 })

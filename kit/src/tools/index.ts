@@ -1,6 +1,10 @@
 /**
- * 工具层入口：装配并注册 10 个工具（3 个写：领卡 / 续租 / 交报告；7 个读：
- * 待办 / 产品列表 / 项目列表 / 任务列表 / 项目全景 / 任务详情 / 资料正文）。
+ * 工具层入口：装配并注册 16 个工具（9 个写：项目创建 / 需求写入 / 提交评审 /
+ * 方案创建 / 方案修订 / 批量建卡 / 领卡 / 续租 / 交报告；7 个读：待办 / 产品列表 /
+ * 项目列表 / 任务列表 / 项目全景 / 任务详情 / 资料正文）。
+ *
+ * 写工具只覆盖「起草 → 提交评审 → 建卡」与任务执行（领卡/续租/交报告），
+ * **不提供任何审批 / 驳回 / 取消动作**。
  *
  * 加载时机：本模块会静态引入 `@deepseek-ai/dsh-tools`（较重的模块图），
  * 因此**只能**由 `index.ts` 在 `apply` 内惰性 `import('./tools/index.js')`，
@@ -13,6 +17,14 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { READ_TOOL_NAMES, createEchuanReadTools } from './read.js'
+import {
+  createPlanSubmitTool,
+  createProjectCreateTool,
+  createProjectSubmitTool,
+  createRequirementWriteTool,
+  createSpecCreateTool,
+  createSpecReviseTool,
+} from './lifecycle.js'
 import {
   createClaimTool,
   createRenewTool,
@@ -39,40 +51,52 @@ export {
 } from './render.js'
 export { NO_WORK_TEXT } from './render.js'
 
-/** 三个写工具的名字（顺序即向模型暴露的顺序；不含任何门禁动作）。 */
+/** 九个写工具的名字（顺序即向模型暴露的顺序；不含任何审批动作）。 */
 export const WRITE_TOOL_NAMES = [
   'echuan_task_claim',
   'echuan_task_renew',
   'echuan_task_report',
+  'echuan_project_create',
+  'echuan_project_requirement_write',
+  'echuan_project_submit',
+  'echuan_spec_create',
+  'echuan_spec_revise',
+  'echuan_plan_submit',
 ] as const
 
-/** 全部 10 个工具名（3 写 + 7 读）。 */
+/** 全部 16 个工具名（9 写 + 7 读）。 */
 export const TOOL_NAMES = [...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES] as const
 
-/** 构造 3 个写工具定义（历史名称，等价于 {@link createEchuanWriteTools}）。 */
+/** 构造 9 个写工具定义（历史名称，等价于 {@link createEchuanWriteTools}）。 */
 export function createEchuanTools(options: EchuanToolOptions): ToolDefinition[] {
   return createEchuanWriteTools(options)
 }
 
-/** 构造 3 个写工具定义。 */
+/** 构造 9 个写工具定义（生命周期 6 个 + 任务执行 3 个）。 */
 export function createEchuanWriteTools(options: EchuanToolOptions): ToolDefinition[] {
   return [
     createClaimTool(options),
     createRenewTool(options),
     createReportTool(options),
+    createProjectCreateTool(options),
+    createRequirementWriteTool(options),
+    createProjectSubmitTool(options),
+    createSpecCreateTool(options),
+    createSpecReviseTool(options),
+    createPlanSubmitTool(options),
   ]
 }
 
 /** 构造 7 个只读工具定义。 */
 export { createEchuanReadTools }
 
-/** 构造全部 10 个工具定义（先写后读，与注册顺序一致）。 */
+/** 构造全部 16 个工具定义（先写后读，与注册顺序一致）。 */
 export function createAllEchuanTools(options: EchuanToolOptions): ToolDefinition[] {
   return [...createEchuanWriteTools(options), ...createEchuanReadTools(options)]
 }
 
 /**
- * 在上下文中注册全部 10 个工具，返回注销器（按注册逆序注销）。
+ * 在上下文中注册全部 16 个工具，返回注销器（按注册逆序注销）。
  *
  * @param ctx 插件上下文（`inject` 已包含 `tools`）
  * @param options 客户端 + 共享身份
