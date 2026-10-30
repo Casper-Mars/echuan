@@ -174,7 +174,7 @@ dsh plugin --profile <name> remove dsh-echuan
 ## 给维护者：测试与验收
 
 ```bash
-# 单测：typecheck + 273 条用例（在 kit/ 下）
+# 单测：typecheck + 274 条用例（在 kit/ 下）
 cd kit && pnpm verify
 
 # 真机端到端：独立 compose 栈 18720，约 90s，进/出不动 ~/echuan-data（在仓库根目录）
