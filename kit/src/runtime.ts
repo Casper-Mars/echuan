@@ -31,7 +31,7 @@ export interface Logger {
 }
 
 /**
- * 心跳间隔（毫秒）。本阶段的内部常量，不属 5 项配置；
+ * 心跳间隔（毫秒）。本阶段的内部常量，不属 6 项配置；
  * 任务-02 若平台契约要求可配置，再提升到 `Config.worker.poll` 下。
  */
 export const DEFAULT_POLL_INTERVAL_MS = 60_000

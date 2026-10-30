@@ -7,6 +7,11 @@
  * 写工具只覆盖「起草 → 提交评审 → 建卡」、任务执行（领卡/续租/交报告）与
  * 单卡增改删等辅助动作，**不提供任何审批 / 驳回 / 取消动作**。
  *
+ * 裁剪：`EchuanToolOptions.exclude` 里的工具名不会进入本进程的注册表。过滤只发生在
+ * 「构造 → 注册」这一层，工具定义、参数与平台 HTTP 契约完全不变；不传 `exclude`
+ * 时行为与升级前一致（全量 22 个）。工具名清单的唯一真源是 `../tool-names.js`
+ * （纯常量、不依赖 dsh-tools），因此入口可以在同步阶段就校验配置。
+ *
  * 加载时机：本模块会静态引入 `@deepseek-ai/dsh-tools`（较重的模块图），
  * 因此**只能**由 `index.ts` 在 `apply` 内惰性 `import('./tools/index.js')`，
  * 不能在插件入口静态引入，否则会拖慢 `dsh --profile echuan --help` 这类快路径。
@@ -17,7 +22,8 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-import { READ_TOOL_NAMES, createEchuanReadTools } from './read.js'
+import { validateExclude } from '../tool-names.js'
+import { createEchuanReadTools } from './read.js'
 import {
   createProductCreateTool,
   createProjectUpdateTool,
@@ -43,7 +49,8 @@ import {
 
 export type { ClaimValue, EchuanToolOptions, WorkerIdentity } from './write.js'
 export { REPORT_STRUCTURE_HINT } from './write.js'
-export { READ_TOOL_NAMES } from './read.js'
+/** 工具名清单唯一真源在 `../tool-names.js`，这里原样再导出（保持旧导入路径可用）。 */
+export { READ_TOOL_NAMES, TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from '../tool-names.js'
 export {
   LIST_TEXT_MAX_CHARS,
   MATERIAL_MAX_CHARS,
@@ -59,28 +66,6 @@ export {
   truncateText,
 } from './render.js'
 export { NO_WORK_TEXT } from './render.js'
-
-/** 十五个写工具的名字（顺序即向模型暴露的顺序；不含任何审批动作）。 */
-export const WRITE_TOOL_NAMES = [
-  'echuan_task_claim',
-  'echuan_task_renew',
-  'echuan_task_report',
-  'echuan_project_create',
-  'echuan_project_requirement_write',
-  'echuan_project_submit',
-  'echuan_spec_create',
-  'echuan_spec_revise',
-  'echuan_plan_submit',
-  'echuan_task_create',
-  'echuan_task_update',
-  'echuan_task_delete',
-  'echuan_project_update',
-  'echuan_product_create',
-  'echuan_project_package',
-] as const
-
-/** 全部 22 个工具名（15 写 + 7 读）。 */
-export const TOOL_NAMES = [...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES] as const
 
 /** 构造 15 个写工具定义（历史名称，等价于 {@link createEchuanWriteTools}）。 */
 export function createEchuanTools(options: EchuanToolOptions): ToolDefinition[] {
@@ -111,16 +96,25 @@ export function createEchuanWriteTools(options: EchuanToolOptions): ToolDefiniti
 /** 构造 7 个只读工具定义。 */
 export { createEchuanReadTools }
 
-/** 构造全部 22 个工具定义（先写后读，与注册顺序一致）。 */
+/**
+ * 构造**过滤后**的 22 个工具定义（先写后读，与注册顺序一致）。
+ *
+ * - 不传 / 传空 `exclude`：返回全部 22 个，顺序与 {@link TOOL_NAMES} 完全一致；
+ * - 传了 `exclude`：先按 {@link validateExclude} 归一化（trim / 去重 / 未知名称抛错），
+ *   再按名字过滤。未知名称在这里也会抛 `TypeError`，作为入口校验之外的第二道防线。
+ */
 export function createAllEchuanTools(options: EchuanToolOptions): ToolDefinition[] {
-  return [...createEchuanWriteTools(options), ...createEchuanReadTools(options)]
+  const excluded = new Set(validateExclude(options.exclude))
+  const all = [...createEchuanWriteTools(options), ...createEchuanReadTools(options)]
+  if (excluded.size === 0) return all
+  return all.filter(tool => !excluded.has(tool.name))
 }
 
 /**
- * 在上下文中注册全部 22 个工具，返回注销器（按注册逆序注销）。
+ * 在上下文中注册**过滤后**的工具，返回注销器（按注册逆序注销）。
  *
  * @param ctx 插件上下文（`inject` 已包含 `tools`）
- * @param options 客户端 + 共享身份
+ * @param options 客户端 + 共享身份 + 可选的 `exclude` 裁剪列表
  */
 export function registerEchuanTools(ctx: Context, options: EchuanToolOptions): () => void {
   const disposers = createAllEchuanTools(options).map(tool => ctx.tools.register(tool))

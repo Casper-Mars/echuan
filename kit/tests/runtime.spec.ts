@@ -52,6 +52,7 @@ function config(pollEnable: boolean): ResolvedConfig {
     baseUrl: 'http://127.0.0.1:8720',
     actor: 'agent:echuan',
     requestTimeoutMs: 35_000,
+    exclude: [],
     worker: { poll: { enable: pollEnable }, metadata: {} },
   }
 }

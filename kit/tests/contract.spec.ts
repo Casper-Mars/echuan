@@ -349,6 +349,27 @@ describe('契约闸门：注册工具数 = 22', () => {
     expect([...READ_TOOL_NAMES]).toHaveLength(7)
     expect([...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES]).toEqual([...TOOL_NAMES])
   })
+
+  it('exclude 只裁剪本进程注册集合，契约仍以 TOOL_NAMES 全集（22）为准', () => {
+    const anyClient = createClient(config, { fetchImpl: async () => new Response('{}') })
+    const exclude = ['echuan_project_create', 'echuan_plan_submit']
+    const tools = createAllEchuanTools({
+      client: anyClient,
+      identity: { workerId: undefined },
+      exclude,
+    })
+
+    // 注册数 = 22 − exclude（这里只是「注册集合」的期望值，不是契约数）。
+    expect(tools).toHaveLength(20)
+    expect(tools.map(tool => tool.name))
+      .toEqual([...TOOL_NAMES].filter(name => !exclude.includes(name)))
+
+    // 契约数不随 exclude 变化：TOOL_NAMES 仍是 22，写/读分组不变。
+    expect([...TOOL_NAMES]).toHaveLength(22)
+    for (const name of exclude) {
+      expect(TOOL_NAMES).toContain(name)
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
