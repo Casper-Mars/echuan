@@ -54,7 +54,11 @@ function SpecEditor({ projectId, spec, onClose, onSaved }: {
   }, [materialId, reloadKey])
 
   const bodyBlocked = bodyLoading || Boolean(bodyError)
-  const submitBlocked = submitting || fileReading || bodyBlocked
+  // 文件校验失败（含读取失败）时禁止保存：正文已回退到旧内容，继续提交只会
+  // 生成一个正文完全相同的新版本。
+  const submitBlocked = submitting || fileReading || bodyBlocked || Boolean(fileError)
+  // 文件选择本身不受 fileError 影响，否则用户无法重新选择或取消来解除阻塞。
+  const fileInputBlocked = submitting || fileReading || bodyBlocked
 
   async function chooseFile(next: File | null) {
     setFileError(null)
@@ -99,6 +103,7 @@ function SpecEditor({ projectId, spec, onClose, onSaved }: {
     if (submitting) return
     if (bodyLoading) { setError('方案正文尚未就绪，请稍后再试。'); return }
     if (bodyError) { setError('方案正文读取失败，请重试。'); return }
+    if (fileError) { setError('文件未通过校验，请重新选择或清除后再提交。'); return }
     if (!title.trim() || !body.trim()) { setError('请填写方案标题和正文。'); return }
     setSubmitting(true); setError(null)
     try {
@@ -128,7 +133,7 @@ function SpecEditor({ projectId, spec, onClose, onSaved }: {
             className="file-input"
             aria-label="选择 Markdown 方案文档"
             onChange={handleFileChange}
-            disabled={submitBlocked}
+            disabled={fileInputBlocked}
           />
           {file ? (
             <span className="file-meta">
@@ -144,7 +149,14 @@ function SpecEditor({ projectId, spec, onClose, onSaved }: {
             </span>
           )}
           {fileReading && <span className="muted">读取中…</span>}
-          {fileError && <span className="field-error" role="alert">{fileError}</span>}
+          {fileError && (
+            <>
+              <span className="field-error" role="alert">{fileError}</span>{' '}
+              <button type="button" className="ghost" onClick={() => void chooseFile(null)} disabled={fileInputBlocked}>
+                清除
+              </button>
+            </>
+          )}
         </div>
         {editing ? (
           <label className="field"><span>方案正文（必填，支持 Markdown）</span>

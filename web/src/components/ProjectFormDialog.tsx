@@ -60,7 +60,11 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
 
   // 正文读取中 / 读取失败时不允许编辑和提交；缺 material 不阻止上传首版。
   const bodyBlocked = mode === 'requirement' && (bodyLoading || Boolean(bodyError))
-  const submitBlocked = submitting || fileReading || bodyBlocked
+  // 文件校验失败（含读取失败）时禁止提交：否则非法文件会把正文清空/回退，
+  // create 模式便会静默创建一条无需求项目，requirement 模式则会生成重复版本。
+  const submitBlocked = submitting || fileReading || bodyBlocked || Boolean(fileError)
+  // 文件选择本身不受 fileError 影响，否则用户无法重新选择或取消来解除阻塞。
+  const fileInputBlocked = submitting || fileReading || bodyBlocked
 
   async function chooseFile(next: File | null) {
     setFileError(null)
@@ -80,6 +84,11 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
       setFile(null)
       setFileError(validation.message)
       setBody(mode === 'requirement' ? loadedBody : '')
+      // 旧文件的自动标题一并清除，避免「标题来自旧文件、实际无文档」。
+      if (mode === 'create' && !titleEdited && title === autoTitle) {
+        setTitle('')
+        setAutoTitle('')
+      }
       return
     }
 
@@ -99,6 +108,10 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
       setFile(null)
       setFileError('读取文件失败，请重试。')
       setBody(mode === 'requirement' ? loadedBody : '')
+      if (mode === 'create' && !titleEdited && title === autoTitle) {
+        setTitle('')
+        setAutoTitle('')
+      }
     } finally {
       setFileReading(false)
     }
@@ -120,6 +133,10 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
     }
     if (bodyError) {
       setError('需求正文读取失败，请重试。')
+      return
+    }
+    if (fileError) {
+      setError('文件未通过校验，请重新选择或清除后再提交。')
       return
     }
     if (mode !== 'requirement' && !title.trim()) {
@@ -185,7 +202,7 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
               className="file-input"
               aria-label="选择 Markdown 需求文档"
               onChange={handleFileChange}
-              disabled={submitBlocked}
+              disabled={fileInputBlocked}
             />
             {file ? (
               <span className="file-meta">
@@ -203,7 +220,14 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
               </span>
             )}
             {fileReading && <span className="muted">读取中…</span>}
-            {fileError && <span className="field-error" role="alert">{fileError}</span>}
+            {fileError && (
+              <>
+                <span className="field-error" role="alert">{fileError}</span>{' '}
+                <button type="button" className="ghost" onClick={() => void chooseFile(null)} disabled={fileInputBlocked}>
+                  清除
+                </button>
+              </>
+            )}
           </div>
         )}
         {mode === 'requirement' && (
