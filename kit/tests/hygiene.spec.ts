@@ -3,14 +3,16 @@
  *
  * 这个文件回答一个问题：**凭什么相信「测试全程不需要真实平台与网络」**。
  *
- * 1. 源码级：`src` 下只有 `client.ts` 调 `fetch(`；没有任何写盘 API；
- *    `node:fs` 的导入只允许只读函数；`config.ts` 不读 `process.env`。
+ * 1. 源码级：`src` 下只有 `client.ts` 调 `fetch(`；写盘 API 只允许出现在
+ *    `src/tools/package.ts`（资料包下载，唯一例外）；`node:fs` 的导入只允许只读函数
+ *    （package.ts 额外允许 `writeFileSync` / `unlinkSync`）；`config.ts` 不读 `process.env`。
  * 2. 运行时级：把 `globalThis.fetch` 换成一被调用就抛错的哨兵，再跑
- *    ① 16 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
+ *    ① 22 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
  * 3. 运行时级：用 `vi.mock('node:fs', { spy: true })` 把 `node:fs` 的导出换成
  *    会记账的 spy（具名导入的 `import { writeFileSync }` 也能拦到），跑两轮
  *    worker 心跳 → 0 次写文件（worker_id 只在内存）。监视器先做一次自证
- *    （真的能抓到写入），避免「spy 没挂上」导致的假绿。
+ *    （真的能抓到写入），避免「spy 没挂上」导致的假绿。22 个工具链路里只有
+ *    `echuan_project_package` 允许写 1 次 tmpdir，且失败时 unlink。
  */
 import * as fs from 'node:fs'
 import os from 'node:os'
@@ -24,6 +26,7 @@ import { resolveConfig } from '../src/config.js'
 import { createAllEchuanTools } from '../src/tools/index.js'
 import type { EchuanToolOptions } from '../src/tools/index.js'
 import { createWorkerLoop, type WorkerTimerApi } from '../src/worker.js'
+import { buildZip } from './helpers/zip.js'
 
 // 整个文件都跑在「fs 导出被 spy 包裹」的环境里：具名导入与属性调用都能记账，
 // 但实现仍是真实 fs（readFileSync / readdirSync 照常工作）。
@@ -117,18 +120,26 @@ const WRITE_APIS = [
   'renameSync',
 ]
 
-describe('源码级：不写盘', () => {
-  it('src 下不出现任何写盘 API', () => {
+/** 唯一允许写盘的源码文件：资料包下载（且只能写 os.tmpdir()）。 */
+const WRITE_EXCEPTION_FILE = 'src/tools/package.ts'
+
+describe('源码级：不写盘（package.ts 是唯一例外）', () => {
+  it('除 package.ts 外不出现任何写盘 API', () => {
     const hits: string[] = []
     for (const file of sourceFiles) {
+      if (file.relative === WRITE_EXCEPTION_FILE) continue
       for (const api of WRITE_APIS) {
         if (new RegExp(`\\b${api}\\s*\\(`).test(file.code)) hits.push(`${file.relative}: ${api}`)
       }
     }
     expect(hits).toEqual([])
+    // 自证：例外文件确实写盘，否则「唯一例外」无从谈起。
+    expect(sourceOf(WRITE_EXCEPTION_FILE)).toContain('writeFileSync')
+    expect(sourceOf(WRITE_EXCEPTION_FILE)).toContain('unlinkSync')
+    expect(sourceOf(WRITE_EXCEPTION_FILE)).toContain('os.tmpdir()')
   })
 
-  it('node:fs 的具名导入只允许只读函数（skill.ts 的 readFileSync 是唯一允许项）', () => {
+  it('node:fs 的具名导入只允许只读函数（package.ts 额外允许独占写与清理）', () => {
     const allowed = new Set([
       'readFileSync',
       'readFile',
@@ -137,6 +148,7 @@ describe('源码级：不写盘', () => {
       'readdirSync',
       'createReadStream',
     ])
+    const allowedForPackage = new Set([...allowed, 'writeFileSync', 'unlinkSync'])
 
     const violations: string[] = []
     for (const file of sourceFiles) {
@@ -148,7 +160,8 @@ describe('源码级：不写盘', () => {
           .map(part => part.trim().split(/\s+as\s+/)[0]?.trim() ?? '')
           .filter(name => name !== '')
         for (const name of names) {
-          if (!allowed.has(name)) violations.push(`${file.relative}: ${name}`)
+          const allowedHere = file.relative === WRITE_EXCEPTION_FILE ? allowedForPackage : allowed
+          if (!allowedHere.has(name)) violations.push(`${file.relative}: ${name}`)
         }
       }
     }
@@ -244,6 +257,9 @@ const respondByPath = (call: RecordedCall): Response => {
         generated_at: '2026-10-28T00:00:00.000Z',
       })
     case '/v1/products':
+      if (call.method === 'POST') {
+        return json({ product_id: 'APPX', name: '示例产品', git_url: 'git@example.com:APPX.git' })
+      }
       return json({ items: [] })
     case '/v1/projects':
       if (call.method === 'POST') {
@@ -255,6 +271,9 @@ const respondByPath = (call: RecordedCall): Response => {
           status_name: '需求草稿',
           version: 1,
         })
+      }
+      if (call.method === 'PATCH') {
+        return json({ project_id: 'APP-2', title: '新项目名', status: 2, status_name: '方案草稿', version: 4 })
       }
       return call.url.searchParams.has('id')
         ? json({ project_id: 'APP-2', title: '示例项目' })
@@ -291,9 +310,36 @@ const respondByPath = (call: RecordedCall): Response => {
         material: { material_id: 'M-SPEC-1' },
       })
     case '/v1/tasks':
+      if (call.method === 'POST') {
+        return json({
+          task_id: 'APP-2-T0003',
+          project_id: 'APP-2',
+          seq_no: 3,
+          title: '卡 3',
+          body_md: '正文 3',
+          priority: 7,
+          status: 0,
+          status_name: '待办',
+          depends_on: ['APP-2-T0001'],
+        })
+      }
+      if (call.method === 'PATCH') {
+        return json({ task_id: 'APP-2-T0003', title: '新标题', priority: 1, status: 0, status_name: '待办' })
+      }
+      if (call.method === 'DELETE') {
+        return new Response(null, { status: 204 })
+      }
       return call.url.searchParams.has('id')
         ? json({ task_id: 'APP-1-T0007', title: '示例任务' })
         : json({ items: [] })
+    case '/v1/projects/package':
+      return new Response(buildZip([
+        { name: '需求-v1-示例.md', content: '# 需求' },
+        { name: '方案-S0001-v1-示例.md', content: '# 方案' },
+      ]), {
+        status: 200,
+        headers: { 'content-type': 'application/zip' },
+      })
     case '/v1/materials':
       return new Response('# 资料正文\n', {
         status: 200,
@@ -369,8 +415,8 @@ function createFakeTimer(): FakeTimer {
   }
 }
 
-/** 跑完 16 个工具的完整调用链（每类工具都真的发一次请求）。 */
-async function runWholeToolChain(fetchImpl: FetchLike): Promise<void> {
+/** 跑完 22 个工具的完整调用链（每类工具都真的发一次请求），返回 package 落盘路径。 */
+async function runWholeToolChain(fetchImpl: FetchLike): Promise<string[]> {
   const options: EchuanToolOptions = {
     client: createClient(config, { fetchImpl }),
     identity: { workerId: 'w_TEST01ABCDEFGHIJKLMN' },
@@ -390,6 +436,22 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<void> {
       project_id: 'APP-2',
       tasks: [{ title: '卡 1', body_md: '正文 1' }],
     }],
+    ['echuan_task_create', {
+      project_id: 'APP-2',
+      title: '卡 3',
+      body_md: '正文 3',
+      priority: 7,
+      depends_on: ['APP-2-T0001'],
+    }],
+    ['echuan_task_update', { task_id: 'APP-2-T0003', title: '新标题' }],
+    ['echuan_task_delete', { task_id: 'APP-2-T0003' }],
+    ['echuan_project_update', { project_id: 'APP-2', title: '新项目名' }],
+    ['echuan_product_create', {
+      product_id: 'APPX',
+      name: '示例产品',
+      git_url: 'git@example.com:APPX.git',
+    }],
+    ['echuan_project_package', { project_id: 'APP-2' }],
     ['echuan_inbox', { limit: 5 }],
     ['echuan_product_list', { limit: 5 }],
     ['echuan_project_list', { product_id: 'APP' }],
@@ -399,11 +461,16 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<void> {
     ['echuan_material_get', { id: 'M-1' }],
   ]
 
+  const savedPaths: string[] = []
   for (const [name, args] of calls) {
     const tool = tools.get(name)
     if (tool === undefined) throw new Error(`工具 ${name} 未注册`)
-    await tool.execute(args, exec)
+    const value = await tool.execute(args, exec) as unknown
+    if (name === 'echuan_project_package') {
+      savedPaths.push((value as { saved_path: string }).saved_path)
+    }
   }
+  return savedPaths
 }
 
 interface WorkerRun {
@@ -481,17 +548,19 @@ function installFetchSentinel(): Sentinel {
 }
 
 describe('运行时级：不触达真实 fetch', () => {
-  it('16 个工具完整链路：哨兵 0 次调用，假平台收到 16 个请求', async () => {
+  it('22 个工具完整链路：哨兵 0 次调用，假平台收到 22 个请求', async () => {
     const platform = createPlatform(respondByPath)
     const sentinel = installFetchSentinel()
+    const savedPaths: string[] = []
     try {
-      await runWholeToolChain(platform.fetchImpl)
+      savedPaths.push(...await runWholeToolChain(platform.fetchImpl))
       expect(sentinel.calls).toBe(0)
     } finally {
       sentinel.restore()
+      for (const saved of savedPaths) fs.unlinkSync(saved)
     }
 
-    expect(platform.calls).toHaveLength(16)
+    expect(platform.calls).toHaveLength(22)
   })
 
   it('worker 心跳两轮（含派单投递）：哨兵 0 次调用', async () => {
@@ -549,13 +618,25 @@ describe('运行时级：不写盘', () => {
     expect(JSON.parse(secondBody)['worker_id']).toBe('w_TEST01ABCDEFGHIJKLMN')
   })
 
-  it('16 个工具完整链路：0 次写文件', async () => {
+  it('22 个工具完整链路：只有资料包写 1 次 tmpdir，其余 0 次写盘', async () => {
     const spies = writeSpies()
     const platform = createPlatform(respondByPath)
 
-    await runWholeToolChain(platform.fetchImpl)
+    const savedPaths = await runWholeToolChain(platform.fetchImpl)
+    try {
+      // 唯一允许的写入：writeFileSync，且路径必须在 os.tmpdir() 下。
+      expect(savedPaths).toHaveLength(1)
+      expect(savedPaths[0]!.startsWith(os.tmpdir())).toBe(true)
 
-    for (const spy of spies) expect(spy.mock.calls).toEqual([])
-    expect(platform.calls).toHaveLength(16)
+      const writeCalls = spies[0]!.mock.calls
+      expect(writeCalls).toHaveLength(1)
+      expect(String(writeCalls[0]![0]).startsWith(os.tmpdir())).toBe(true)
+      // flag 必须是 wx（不覆盖已有文件）。
+      expect((writeCalls[0]![2] as { flag?: string } | undefined)?.flag).toBe('wx')
+      for (const spy of spies.slice(1)) expect(spy.mock.calls).toEqual([])
+      expect(platform.calls).toHaveLength(22)
+    } finally {
+      for (const saved of savedPaths) fs.unlinkSync(saved)
+    }
   })
 })

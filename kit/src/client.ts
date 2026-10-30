@@ -12,13 +12,13 @@
  * - 本文件是 `kit/src` 里**唯一**调用 `fetch(` 的地方；
  * - `fetchImpl` 可注入（默认 `globalThis.fetch`），单测不连真实平台；
  * - 不读环境变量、不写磁盘、不缓存响应、不存业务状态；
- * - 只暴露工具包需要的 14 个客户端方法（{@link TOOL_METHODS}），**没有任何门禁动作**
+ * - 只暴露工具包需要的 20 个客户端方法（{@link TOOL_METHODS}），**没有任何门禁动作**
  *   （accept / decide / cancel / rework / approve / reject 一律不提供）；
  * - 与 `api/openapi.yaml` 一一对应：{@link TOOL_OPERATIONS} 记录每个方法对应的
  *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 14 条确实存在。
  *
  * 任务-03 的 worker 注册/心跳方法由 {@link createWorkerClient} 提供，走
- * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 14 个」的断言；
+ * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 20 个」的断言；
  * 两者共用 `requestRaw` / `requestJson`，仍然是全插件唯一的 fetch 出口。
  */
 import {
@@ -82,6 +82,14 @@ export interface RequestSpec {
 export interface RawResponse {
   status: number
   text: string
+  headers: Headers
+  requestId: string | undefined
+}
+
+/** 二进制响应（下载资料包用）：`bytes` 原样返回，不做文本解码。 */
+export interface BytesResponse {
+  status: number
+  bytes: Uint8Array
   headers: Headers
   requestId: string | undefined
 }
@@ -349,6 +357,48 @@ export interface SubmitPlanInput {
   tasks: PlanTaskInput[]
 }
 
+export interface CreateTaskInput {
+  /** 项目编号，走 query `?project_id=`。 */
+  project_id: string
+  title: string
+  body_md: string
+  priority?: number
+  /** 依赖的任务 id（平台返回的是任务 id，不是批内序号）。 */
+  depends_on?: string[]
+}
+
+export interface UpdateTaskInput {
+  /** 任务编号，走 query `?id=`。 */
+  id: string
+  title?: string
+  body_md?: string
+  priority?: number
+}
+
+export interface DeleteTaskInput {
+  /** 任务编号，走 query `?id=`。 */
+  id: string
+}
+
+export interface UpdateProjectInput {
+  /** 项目编号，走 query `?id=`。 */
+  id: string
+  title: string
+}
+
+export interface CreateProductInput {
+  product_id: string
+  name: string
+  git_url: string
+  description?: string
+  license?: string
+}
+
+export interface DownloadProjectPackageInput {
+  /** 项目编号，走 query `?id=`。 */
+  id: string
+}
+
 export interface InboxQuery {
   limit?: number
 }
@@ -381,7 +431,7 @@ export interface MaterialsQuery {
   id: string
 }
 
-/** 14 个客户端方法的集合（顺序即客户端对象属性顺序）。 */
+/** 20 个客户端方法的集合（顺序即客户端对象属性顺序）。 */
 export const TOOL_METHODS = [
   'claimTask',
   'renewLease',
@@ -392,6 +442,12 @@ export const TOOL_METHODS = [
   'createSpec',
   'reviseSpec',
   'submitPlan',
+  'createTask',
+  'updateTask',
+  'deleteTask',
+  'updateProject',
+  'createProduct',
+  'downloadProjectPackage',
   'getInbox',
   'listProducts',
   'listProjects',
@@ -402,12 +458,12 @@ export const TOOL_METHODS = [
 export type ToolMethodName = (typeof TOOL_METHODS)[number]
 
 /**
- * 14 个方法 ↔ openapi operation 的对应表。
+ * 20 个方法 ↔ openapi operation 的对应表。
  *
  * `tool` 是客户端方法名；`method`/`path`/`operationId` 必须能在
  * `api/openapi.yaml` 的 `paths` 下原样找到（单测解析 yaml 校验）。
  *
- * 注意：16 个工具共用这 14 个 operation——`listProjects` / `listTasks`
+ * 注意：22 个工具共用这 20 个 operation——`listProjects` / `listTasks`
  * 各由一个 GET 同时承担「列表」与「按 id 取详情」两种工具语义。
  */
 export const TOOL_OPERATIONS = [
@@ -420,6 +476,17 @@ export const TOOL_OPERATIONS = [
   { tool: 'createSpec', method: 'POST', path: '/v1/specs', operationId: 'createSpecDocument' },
   { tool: 'reviseSpec', method: 'PATCH', path: '/v1/specs', operationId: 'reviseSpecDocument' },
   { tool: 'submitPlan', method: 'POST', path: '/v1/projects/plans', operationId: 'submitProjectPlan' },
+  { tool: 'createTask', method: 'POST', path: '/v1/tasks', operationId: 'createTask' },
+  { tool: 'updateTask', method: 'PATCH', path: '/v1/tasks', operationId: 'updateTask' },
+  { tool: 'deleteTask', method: 'DELETE', path: '/v1/tasks', operationId: 'deleteTask' },
+  { tool: 'updateProject', method: 'PATCH', path: '/v1/projects', operationId: 'updateProject' },
+  { tool: 'createProduct', method: 'POST', path: '/v1/products', operationId: 'createProduct' },
+  {
+    tool: 'downloadProjectPackage',
+    method: 'GET',
+    path: '/v1/projects/package',
+    operationId: 'downloadProjectPackage',
+  },
   { tool: 'getInbox', method: 'GET', path: '/v1/inbox', operationId: 'listInbox' },
   { tool: 'listProducts', method: 'GET', path: '/v1/products', operationId: 'listOrGetProducts' },
   { tool: 'listProjects', method: 'GET', path: '/v1/projects', operationId: 'listOrGetProjects' },
@@ -427,7 +494,7 @@ export const TOOL_OPERATIONS = [
   { tool: 'getMaterials', method: 'GET', path: '/v1/materials', operationId: 'downloadMaterial' },
 ] as const
 
-/** 客户端对外的 14 个方法。 */
+/** 客户端对外的 20 个方法。 */
 export interface EchuanClient {
   /**
    * `POST /v1/tasks/claim`（operationId `claimTask`）。
@@ -450,6 +517,18 @@ export interface EchuanClient {
   reviseSpec(input: ReviseSpecInput): Promise<ApiResult<SpecDocument>>
   /** `POST /v1/projects/plans?id=`（operationId `submitProjectPlan`）。 */
   submitPlan(input: SubmitPlanInput): Promise<ApiResult<PlanResponse>>
+  /** `POST /v1/tasks?project_id=`（operationId `createTask`）。 */
+  createTask(input: CreateTaskInput): Promise<ApiResult<TaskDetail>>
+  /** `PATCH /v1/tasks?id=`（operationId `updateTask`）；无 If-Match。 */
+  updateTask(input: UpdateTaskInput): Promise<ApiResult<TaskDetail>>
+  /** `DELETE /v1/tasks?id=`（operationId `deleteTask`）；204 表示已删除。 */
+  deleteTask(input: DeleteTaskInput): Promise<ApiResult<TaskDetail>>
+  /** `PATCH /v1/projects?id=`（operationId `updateProject`）；只发 title。 */
+  updateProject(input: UpdateProjectInput): Promise<ApiResult<Project>>
+  /** `POST /v1/products`（operationId `createProduct`）。 */
+  createProduct(input: CreateProductInput): Promise<ApiResult<Product>>
+  /** `GET /v1/projects/package?id=`（operationId `downloadProjectPackage`）；返回 zip 字节。 */
+  downloadProjectPackage(input: DownloadProjectPackageInput): Promise<BytesResponse>
   /** `GET /v1/inbox`（operationId `listInbox`）。 */
   getInbox(query?: InboxQuery): Promise<ApiResult<InboxResponse>>
   /** `GET /v1/products`（operationId `listOrGetProducts`）；带 `id` 时为详情。 */
@@ -512,7 +591,7 @@ export interface WorkerHeartbeatPayload {
   [key: string]: unknown
 }
 
-/** worker 心跳客户端；与 14 个客户端方法分开，避免污染 `TOOL_METHODS`。 */
+/** worker 心跳客户端；与 20 个客户端方法分开，避免污染 `TOOL_METHODS`。 */
 export interface WorkerClient {
   /** `POST /v1/workers/heartbeat`（operationId `heartbeatWorker`）。 */
   heartbeat(input: WorkerHeartbeatInput): Promise<ApiResult<WorkerHeartbeatPayload>>
@@ -628,6 +707,79 @@ export async function requestRaw(
   return { status: response.status, text, headers: response.headers, requestId }
 }
 
+/**
+ * 二进制响应：返回 `Uint8Array` + headers + requestId，不做文本解码。
+ *
+ * 与 {@link requestRaw} 共用同一套超时 / 网络错误处理；非 2xx 时仍把响应体
+ * 按 UTF-8 解码后交给 `toApiError`（平台的错误体是 JSON），保证错误码/提示一致。
+ */
+export async function requestBytes(
+  ctx: RequestContext,
+  spec: RequestSpec,
+): Promise<BytesResponse> {
+  if (!spec.path.startsWith('/')) {
+    throw new EchuanValidationError(
+      `请求路径必须以 / 开头，收到 ${JSON.stringify(spec.path)}。`
+        + '下一步：修正客户端实现（契约路径都形如 /v1/...）。',
+      'invalid_argument',
+      'path',
+    )
+  }
+
+  const bodyText = serializeBody(spec.body)
+  const url = buildUrl(ctx.config.baseUrl, spec.path, spec.query)
+  const headers: Record<string, string> = { 'X-Actor': ctx.config.actor }
+  if (bodyText !== undefined) headers['content-type'] = 'application/json'
+  if (spec.headers !== undefined) Object.assign(headers, spec.headers)
+
+  const timeoutMs = ctx.config.requestTimeoutMs
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  const startedAt = Date.now()
+  let response: Response
+  try {
+    response = await ctx.fetchImpl(url, {
+      method: spec.method,
+      headers,
+      ...(bodyText === undefined ? {} : { body: bodyText }),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    clearTimeout(timer)
+    const elapsedMs = Date.now() - startedAt
+    if (timedOut || isAbortError(err)) {
+      throw new EchuanTimeoutError(timeoutMs, elapsedMs)
+    }
+    throw new EchuanNetworkError(elapsedMs)
+  }
+
+  let buffer: ArrayBuffer
+  try {
+    buffer = await response.arrayBuffer()
+  } catch (err) {
+    const elapsedMs = Date.now() - startedAt
+    if (timedOut || isAbortError(err)) {
+      throw new EchuanTimeoutError(timeoutMs, elapsedMs)
+    }
+    throw new EchuanNetworkError(elapsedMs)
+  } finally {
+    clearTimeout(timer)
+  }
+
+  if (!response.ok) {
+    const text = new TextDecoder().decode(buffer)
+    throw toApiError(response, text)
+  }
+
+  const requestId = response.headers.get('x-request-id') ?? undefined
+  return { status: response.status, bytes: new Uint8Array(buffer), headers: response.headers, requestId }
+}
+
 /** JSON 响应包装：204 统一转成「无活」，2xx 解析 JSON。 */
 export async function requestJson<T>(
   ctx: RequestContext,
@@ -643,7 +795,7 @@ export async function requestJson<T>(
 // ---------------------------------------------------------------------------
 
 /**
- * 创建客户端。返回对象**恰好**有 {@link TOOL_METHODS} 里的 14 个方法。
+ * 创建客户端。返回对象**恰好**有 {@link TOOL_METHODS} 里的 20 个方法。
  *
  * @param config 已归一化的配置（见 `resolveConfig`）
  * @param options `fetchImpl` 可注入，单测用假 fetch
@@ -764,6 +916,79 @@ export function createClient(
       })
     },
 
+    async createTask(input) {
+      const project_id = requireNonEmpty(input?.project_id, 'project_id')
+      const title = requireNonEmpty(input?.title, 'title')
+      const body_md = requireNonBlank(input?.body_md, 'body_md')
+      const body: Record<string, unknown> = { title, body_md }
+      if (input?.priority !== undefined) body.priority = requireInteger(input.priority, 'priority')
+      if (input?.depends_on !== undefined) body.depends_on = requireIdList(input.depends_on, 'depends_on')
+      return requestJson<TaskDetail>(ctx, {
+        method: 'POST',
+        path: '/v1/tasks',
+        query: { project_id },
+        body,
+      })
+    },
+
+    async updateTask(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      const body: Record<string, unknown> = {}
+      if (input?.title !== undefined) body.title = requireString(input.title, 'title')
+      if (input?.body_md !== undefined) body.body_md = requireString(input.body_md, 'body_md')
+      if (input?.priority !== undefined) body.priority = requireInteger(input.priority, 'priority')
+      // 空 patch 不本地拦截：交给平台按契约返回 400（错误原样透出）。
+      return requestJson<TaskDetail>(ctx, {
+        method: 'PATCH',
+        path: '/v1/tasks',
+        query: { id },
+        body,
+      })
+    },
+
+    async deleteTask(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      return requestJson<TaskDetail>(ctx, {
+        method: 'DELETE',
+        path: '/v1/tasks',
+        query: { id },
+      })
+    },
+
+    async updateProject(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      const title = requireNonEmpty(input?.title, 'title')
+      return requestJson<Project>(ctx, {
+        method: 'PATCH',
+        path: '/v1/projects',
+        query: { id },
+        body: { title },
+      })
+    },
+
+    async createProduct(input) {
+      const product_id = requireNonEmpty(input?.product_id, 'product_id')
+      const name = requireNonEmpty(input?.name, 'name')
+      const git_url = requireNonEmpty(input?.git_url, 'git_url')
+      const body: Record<string, unknown> = { product_id, name, git_url }
+      if (input?.description !== undefined) body.description = requireString(input.description, 'description')
+      if (input?.license !== undefined) body.license = requireString(input.license, 'license')
+      return requestJson<Product>(ctx, {
+        method: 'POST',
+        path: '/v1/products',
+        body,
+      })
+    },
+
+    async downloadProjectPackage(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      return requestBytes(ctx, {
+        method: 'GET',
+        path: '/v1/projects/package',
+        query: { id },
+      })
+    },
+
     async getInbox(query) {
       return requestJson<InboxResponse>(ctx, {
         method: 'GET',
@@ -822,7 +1047,7 @@ export function createClient(
 /**
  * 创建 worker 心跳客户端。
  *
- * 与 {@link createClient} 分开：14 个客户端方法的对象键必须**恰好**是
+ * 与 {@link createClient} 分开：20 个客户端方法的对象键必须**恰好**是
  * {@link TOOL_METHODS}（任务-02 有断言），worker 心跳走独立命名空间。
  *
  * 首次注册时请求体里**没有** `worker_id` 键（不是空串、不是 null）；
@@ -1111,6 +1336,28 @@ function requirePlanTasks(value: unknown): PlanTaskInput[] {
     }
     return task
   })
+}
+
+function requireInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new EchuanValidationError(
+      `${field} 必须是整数，收到 ${String(value)}。下一步：传入整数值后重试。`,
+      'invalid_argument',
+      field,
+    )
+  }
+  return value
+}
+
+function requireIdList(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new EchuanValidationError(
+      `${field} 必须是字符串数组。下一步：传入任务 id 数组（不是批内序号）。`,
+      'invalid_argument',
+      field,
+    )
+  }
+  return value.map((item, index) => requireNonEmpty(item, `${field}[${index}]`))
 }
 
 function requireString(value: unknown, field: string): string {

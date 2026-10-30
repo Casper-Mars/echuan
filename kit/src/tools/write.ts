@@ -71,7 +71,7 @@ export interface WorkerIdentity {
 }
 
 export interface EchuanToolOptions {
-  /** 平台 HTTP 客户端（TOOL_METHODS 里的 14 个方法）。 */
+  /** 平台 HTTP 客户端（TOOL_METHODS 里的 20 个方法）。 */
   client: EchuanClient
   /** 共享身份（心跳循环）。 */
   identity: WorkerIdentity

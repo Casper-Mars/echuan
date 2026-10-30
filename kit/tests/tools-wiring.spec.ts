@@ -2,15 +2,17 @@
  * 工具 → 端点逐项连线（任务-08 B）。
  *
  * 已有测试证明了「工具有什么行为」（render / 错误文案 / 缺参），这里补的是
- * **线怎么接**：16 个工具各自必须产生**恰好 1 个**请求，method / path / query 键 /
- * body 键与契约表一致；只读工具一律 GET 且无 body，写工具一律不发 GET
- * （方案修订是 PATCH，且 `If-Match` 走请求头）。
+ * **线怎么接**：22 个工具各自必须产生**恰好 1 个**请求，method / path / query 键 /
+ * body 键与契约表一致；只读工具一律 GET 且无 body；写工具里除资料包下载
+ * （GET 二进制）外一律不发 GET（方案修订是 PATCH，且 `If-Match` 走请求头）。
  *
  * 全部用真 client + 假 fetch（不是假 client），因此连 URL 拼接、query 编码、
  * body 序列化都一起被验证。
  */
+import { unlinkSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import { buildZip } from './helpers/zip.js'
 import { createClient, type FetchLike } from '../src/client.js'
 import { resolveConfig } from '../src/config.js'
 import { createAllEchuanTools } from '../src/tools/index.js'
@@ -69,7 +71,7 @@ const CLAIM_PAYLOAD = {
   },
 }
 
-/** 按路径回包，让 16 个工具能在同一条链路上跑完。 */
+/** 按路径回包，让 22 个工具能在同一条链路上跑完。 */
 const respondByPath: Responder = (call) => {
   switch (call.url.pathname) {
     case '/v1/tasks/claim':
@@ -86,6 +88,13 @@ const respondByPath: Responder = (call) => {
         generated_at: '2026-10-28T00:00:00.000Z',
       })
     case '/v1/products':
+      if (call.method === 'POST') {
+        return json({
+          product_id: 'APPX',
+          name: '示例产品',
+          git_url: 'git@example.com:APPX.git',
+        })
+      }
       return json({ items: [] })
     case '/v1/projects':
       // POST = 新建；带 id = 详情；不带 id = 列表。
@@ -97,6 +106,15 @@ const respondByPath: Responder = (call) => {
           status: 0,
           status_name: '需求草稿',
           version: 1,
+        })
+      }
+      if (call.method === 'PATCH') {
+        return json({
+          project_id: 'APP-2',
+          title: '新项目名',
+          status: 2,
+          status_name: '方案草稿',
+          version: 4,
         })
       }
       return call.url.searchParams.has('id')
@@ -155,9 +173,43 @@ const respondByPath: Responder = (call) => {
         material: { material_id: call.method === 'PATCH' ? 'M-SPEC-4' : 'M-SPEC-1' },
       })
     case '/v1/tasks':
+      if (call.method === 'POST') {
+        return json({
+          task_id: 'APP-2-T0003',
+          id: 'APP-2-T0003',
+          project_id: 'APP-2',
+          seq_no: 3,
+          title: '卡 3',
+          body_md: '正文 3',
+          priority: 7,
+          status: 0,
+          status_name: '待办',
+          depends_on: ['APP-2-T0001'],
+        })
+      }
+      if (call.method === 'PATCH') {
+        return json({
+          task_id: 'APP-2-T0003',
+          title: '新标题',
+          priority: 1,
+          status: 0,
+          status_name: '待办',
+        })
+      }
+      if (call.method === 'DELETE') {
+        return new Response(null, { status: 204 })
+      }
       return call.url.searchParams.has('id')
         ? json({ task_id: 'APP-1-T0007', title: '示例任务' })
         : json({ items: [] })
+    case '/v1/projects/package':
+      return new Response(buildZip([
+        { name: '需求-v1-示例.md', content: '# 需求' },
+        { name: '方案-S0001-v1-示例.md', content: '# 方案' },
+      ]), {
+        status: 200,
+        headers: { 'content-type': 'application/zip' },
+      })
     case '/v1/materials':
       return new Response('# 资料正文\n', {
         status: 200,
@@ -193,14 +245,14 @@ function bodyKeys(call: RecordedCall): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// 1. 逐项连线：16 个工具，每个恰好 1 个请求
+// 1. 逐项连线：22 个工具，每个恰好 1 个请求
 // ---------------------------------------------------------------------------
 
 interface WiringCase {
   /** 用例标签，同时作为工具名断言的目标。 */
   name: string
   args: Record<string, unknown>
-  method: 'GET' | 'POST' | 'PATCH'
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE'
   path: string
   /** 期望的 query（键与值都要精确匹配，不允许出现多余键）。 */
   query: Record<string, string>
@@ -208,6 +260,8 @@ interface WiringCase {
   bodyKeys?: string[]
   /** 期望的额外请求头（例如 `If-Match`）。 */
   headers?: Record<string, string>
+  /** 唯一的 tmpdir 写盘工具（资料包）：测试后删掉落盘文件。 */
+  cleanupSavedFile?: boolean
 }
 
 const WIRING_CASES: WiringCase[] = [
@@ -295,6 +349,64 @@ const WIRING_CASES: WiringCase[] = [
     bodyKeys: ['tasks'],
   },
   {
+    name: 'echuan_task_create',
+    args: {
+      project_id: 'APP-2',
+      title: '卡 3',
+      body_md: '正文 3',
+      priority: 7,
+      depends_on: ['APP-2-T0001'],
+    },
+    method: 'POST',
+    path: '/v1/tasks',
+    query: { project_id: 'APP-2' },
+    bodyKeys: ['body_md', 'depends_on', 'priority', 'title'],
+  },
+  {
+    name: 'echuan_task_update',
+    args: { task_id: 'APP-2-T0003', title: '新标题', priority: 1 },
+    method: 'PATCH',
+    path: '/v1/tasks',
+    query: { id: 'APP-2-T0003' },
+    bodyKeys: ['priority', 'title'],
+  },
+  {
+    name: 'echuan_task_delete',
+    args: { task_id: 'APP-2-T0003' },
+    method: 'DELETE',
+    path: '/v1/tasks',
+    query: { id: 'APP-2-T0003' },
+    bodyKeys: [],
+  },
+  {
+    name: 'echuan_project_update',
+    args: { project_id: 'APP-2', title: '新项目名' },
+    method: 'PATCH',
+    path: '/v1/projects',
+    query: { id: 'APP-2' },
+    bodyKeys: ['title'],
+  },
+  {
+    name: 'echuan_product_create',
+    args: {
+      product_id: 'APPX',
+      name: '示例产品',
+      git_url: 'git@example.com:APPX.git',
+    },
+    method: 'POST',
+    path: '/v1/products',
+    query: {},
+    bodyKeys: ['git_url', 'name', 'product_id'],
+  },
+  {
+    name: 'echuan_project_package',
+    args: { project_id: 'APP-2' },
+    method: 'GET',
+    path: '/v1/projects/package',
+    query: { id: 'APP-2' },
+    cleanupSavedFile: true,
+  },
+  {
     name: 'echuan_inbox',
     args: {},
     method: 'GET',
@@ -350,7 +462,10 @@ describe('工具接线：逐个工具恰好 1 个请求，method/path/query/body
     it(`${wiring.name} → ${wiring.method} ${wiring.path}`, async () => {
       const platform = createPlatform(respondByPath)
 
-      await call(toolsFor(platform.fetchImpl).get(wiring.name), wiring.args)
+      const value = await call(toolsFor(platform.fetchImpl).get(wiring.name), wiring.args)
+      if (wiring.cleanupSavedFile === true) {
+        unlinkSync((value as { saved_path: string }).saved_path)
+      }
 
       expect(platform.calls, `${wiring.name} 应当只发 1 个请求`).toHaveLength(1)
       const request = platform.calls[0]!
@@ -457,9 +572,15 @@ const WRITE_TOOLS = [
   'echuan_spec_create',
   'echuan_spec_revise',
   'echuan_plan_submit',
+  'echuan_task_create',
+  'echuan_task_update',
+  'echuan_task_delete',
+  'echuan_project_update',
+  'echuan_product_create',
+  'echuan_project_package',
 ]
 
-/** 把 16 个工具都调用一遍，返回全部请求（用于方向性断言）。 */
+/** 把 22 个工具都调用一遍，返回全部请求（用于方向性断言）。 */
 async function runWholeChain(): Promise<RecordedCall[]> {
   const platform = createPlatform(respondByPath)
   const tools = toolsFor(platform.fetchImpl, 'w_TEST01ABCDEFGHIJKLMN')
@@ -489,43 +610,57 @@ describe('工具接线：方向性约束', () => {
     }
   })
 
-  it('9 个写工具都不发 GET（方案修订为 PATCH）', async () => {
+  it('15 个写工具里除资料包下载外都不是 GET（PATCH 3 个、DELETE 1 个）', async () => {
     const platform = createPlatform(respondByPath)
     const tools = toolsFor(platform.fetchImpl)
 
     for (const name of WRITE_TOOLS) {
       const wiring = WIRING_CASES.find(item => item.name === name)
       expect(wiring, `${name} 缺少接线用例`).toBeDefined()
-      await call(tools.get(name), wiring!.args)
+      const value = await call(tools.get(name), wiring!.args)
+      if (wiring!.cleanupSavedFile === true) {
+        unlinkSync((value as { saved_path: string }).saved_path)
+      }
     }
 
-    expect(platform.calls).toHaveLength(9)
+    expect(platform.calls).toHaveLength(15)
+    const downloadCalls = platform.calls.filter(request => request.url.pathname === '/v1/projects/package')
+    expect(downloadCalls).toHaveLength(1)
+    expect(downloadCalls[0]!.method).toBe('GET')
     for (const request of platform.calls) {
+      if (request.url.pathname === '/v1/projects/package') continue
       expect(request.method).not.toBe('GET')
     }
-    expect(platform.calls.filter(request => request.method === 'PATCH')).toHaveLength(1)
+    expect(platform.calls.filter(request => request.method === 'PATCH')).toHaveLength(3)
+    expect(platform.calls.filter(request => request.method === 'DELETE')).toHaveLength(1)
   })
 
-  it('16 个工具跑完一共 16 个请求，共用 14 个 HTTP operation', async () => {
+  it('22 个工具跑完一共 22 个请求，共用 20 个 HTTP operation', async () => {
     const calls = await runWholeChain()
 
-    expect(calls).toHaveLength(16)
+    expect(calls).toHaveLength(22)
     const endpoints = calls.map(request => `${request.method} ${request.url.pathname}`)
-    expect(new Set(endpoints).size).toBe(14)
+    expect(new Set(endpoints).size).toBe(20)
     expect([...endpoints].sort()).toEqual([
+      'DELETE /v1/tasks',
       'GET /v1/inbox',
       'GET /v1/materials',
       'GET /v1/products',
       'GET /v1/projects',
       'GET /v1/projects',
+      'GET /v1/projects/package',
       'GET /v1/tasks',
       'GET /v1/tasks',
+      'PATCH /v1/projects',
       'PATCH /v1/specs',
+      'PATCH /v1/tasks',
+      'POST /v1/products',
       'POST /v1/projects',
       'POST /v1/projects/plans',
       'POST /v1/projects/requirement',
       'POST /v1/projects/submit',
       'POST /v1/specs',
+      'POST /v1/tasks',
       'POST /v1/tasks/claim',
       'POST /v1/tasks/heartbeat',
       'POST /v1/tasks/report',
