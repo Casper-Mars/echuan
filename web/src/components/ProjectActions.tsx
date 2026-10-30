@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { cancelProject, submitProject } from '../api/client'
+import { cancelProject, getProject, submitProject } from '../api/client'
 import type { Project, ProjectDecision } from '../api/types'
 import { isPendingProjectStatus, projectStatusLabel } from '../lib/format'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -106,6 +106,14 @@ export function ProjectActionDialogs({
         confirmLabel="确认提交"
         onClose={onClose}
         onConfirm={async () => {
+          // 列表行不含 requirement 字段：需求草稿提交前先读详情做前置校验，
+          // 与后端 409 的文案保持一致，缺需求时不发送 submit 请求。
+          if (project.status === 0) {
+            const detail = await getProject(project.project_id)
+            if (!detail.requirement) {
+              throw new Error('请先上传需求文档')
+            }
+          }
           const updated = await submitProject(project.project_id)
           onDecided?.(updated)
           onChanged()

@@ -423,6 +423,8 @@ export function errorMessage(error: unknown): string {
     return parts.join(' · ')
   }
   if (error instanceof NetworkError) return error.message
+  // 前端前置校验（如“请先上传需求文档”）直接抛出 Error，原样展示。
+  if (error instanceof Error && error.message.trim()) return error.message
   return '操作失败，请稍后重试。'
 }
 

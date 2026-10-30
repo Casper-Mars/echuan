@@ -716,7 +716,6 @@ func TestCreateProjectValidation(t *testing.T) {
 		{name: "missing title", in: CreateProjectInput{ProductID: "APP", RequirementMD: "b"}, field: "title"},
 		{name: "blank title", in: CreateProjectInput{ProductID: "APP", Title: "  ", RequirementMD: "b"}, field: "title"},
 		{name: "long title", in: CreateProjectInput{ProductID: "APP", Title: strings.Repeat("标", 201), RequirementMD: "b"}, field: "title"},
-		{name: "missing body", in: CreateProjectInput{ProductID: "APP", Title: "t", RequirementMD: "  \n"}, field: "requirement_md"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -735,6 +734,104 @@ func TestCreateProjectValidation(t *testing.T) {
 				t.Errorf("details = %+v, want a detail for %q", validation.Fields, tc.field)
 			}
 		})
+	}
+}
+
+func TestCreateProjectWithoutRequirement(t *testing.T) {
+	env := newProjectTestEnv(t)
+	env.createProduct(t, "APP")
+	ctx := context.Background()
+
+	detail, err := env.service.CreateProject(ctx, CreateProjectInput{
+		ProductID: "APP", Title: "无需求项目", RequirementMD: "  \n",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if detail.Project.Status != domain.StatusRequirementDraft || detail.Project.Version != 1 {
+		t.Errorf("project = status %d version %d, want requirement_draft/1",
+			detail.Project.Status, detail.Project.Version)
+	}
+	if detail.Project.RequirementMaterialID != 0 {
+		t.Errorf("requirement_material_id = %d, want 0 (NULL)", detail.Project.RequirementMaterialID)
+	}
+	if detail.Requirement != nil {
+		t.Errorf("requirement = %+v, want nil", *detail.Requirement)
+	}
+	if got := env.count(t, "SELECT COUNT(*) FROM materials"); got != 0 {
+		t.Errorf("materials rows = %d, want 0", got)
+	}
+	if got := countObjectFiles(t, env.dataDir); got != 0 {
+		t.Errorf("object files = %d, want 0", got)
+	}
+
+	// A project without a requirement cannot be submitted; the reason is the
+	// exact string the web client shows before it ever sends the request.
+	_, err = env.service.SubmitProject(ctx, detail.Project.ProjectID, "alice")
+	var invalid *domain.InvalidStateError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("SubmitProject err = %v, want InvalidStateError", err)
+	}
+	if invalid.Reason != "请先上传需求文档" {
+		t.Errorf("reason = %q, want 请先上传需求文档", invalid.Reason)
+	}
+	if state := env.projectState(t, detail.Project.ProjectID); state.Status != domain.StatusRequirementDraft {
+		t.Errorf("status after rejected submit = %d, want requirement_draft", state.Status)
+	}
+}
+
+func TestWriteRequirementFromNilPointer(t *testing.T) {
+	env := newProjectTestEnv(t)
+	env.createProduct(t, "APP")
+	ctx := context.Background()
+
+	created, err := env.service.CreateProject(ctx, CreateProjectInput{
+		ProductID: "APP", Title: "无需求项目",
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if created.Requirement != nil {
+		t.Fatal("requirement should be nil before the first upload")
+	}
+
+	first, err := env.service.WriteRequirement(ctx, created.Project.ProjectID, WriteRequirementInput{
+		BodyMD: "# 首版需求\n\n正文\n", UploadedBy: "human:liu",
+	})
+	if err != nil {
+		t.Fatalf("WriteRequirement: %v", err)
+	}
+	if first.Requirement == nil {
+		t.Fatal("requirement = nil after upload, want the first version")
+	}
+	if first.Requirement.Version != 1 {
+		t.Errorf("version = %d, want 1", first.Requirement.Version)
+	}
+	if first.Requirement.Title != "无需求项目" {
+		t.Errorf("title = %q, want the project title", first.Requirement.Title)
+	}
+	if first.Project.RequirementMaterialID == 0 {
+		t.Error("requirement_material_id was not attached")
+	}
+	if first.Project.Version != 2 {
+		t.Errorf("project version = %d, want 2", first.Project.Version)
+	}
+
+	row, err := store.GetMaterialByID(ctx, env.store.Read(), first.Project.RequirementMaterialID)
+	if err != nil {
+		t.Fatalf("GetMaterialByID: %v", err)
+	}
+	if row.PreviousMaterialID != nil {
+		t.Errorf("previous_material_id = %d, want nil for the first version", *row.PreviousMaterialID)
+	}
+
+	// The freshly uploaded requirement satisfies the submit precondition.
+	submitted, err := env.service.SubmitProject(ctx, created.Project.ProjectID, "alice")
+	if err != nil {
+		t.Fatalf("SubmitProject after upload: %v", err)
+	}
+	if submitted.ToStatus != domain.StatusRequirementReview {
+		t.Errorf("to_status = %d, want requirement_review", submitted.ToStatus)
 	}
 }
 

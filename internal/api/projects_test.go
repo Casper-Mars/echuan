@@ -169,14 +169,37 @@ func TestCreateProjectHTTPValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("missing requirement", func(t *testing.T) {
+	t.Run("missing requirement creates draft", func(t *testing.T) {
 		rec := doJSON(t, h, http.MethodPost, "/v1/projects", map[string]any{
-			"product_id": "APP", "title": "t",
+			"product_id": "APP", "title": "无需求项目",
 		})
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400", rec.Code)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body.String())
 		}
-		requireFieldDetail(t, decodeError(t, rec), "requirement_md")
+		detail := decodeProjectDetail(t, rec)
+		if detail.Status != 0 || detail.StatusName != "requirement_draft" {
+			t.Errorf("status = %d (%s), want 0 (requirement_draft)", detail.Status, detail.StatusName)
+		}
+		if detail.Requirement != nil {
+			t.Errorf("requirement = %+v, want null", *detail.Requirement)
+		}
+		if detail.Spec != nil {
+			t.Errorf("spec = %+v, want null", *detail.Spec)
+		}
+
+		// The draft can be read back, and submit hits the 409 gate with the
+		// exact message the web client pre-checks.
+		submit := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id="+detail.ProjectID, nil, nil)
+		if submit.Code != http.StatusConflict {
+			t.Fatalf("submit status = %d, want 409 (body %s)", submit.Code, submit.Body.String())
+		}
+		body := decodeError(t, submit)
+		if body.Code != "invalid_state" {
+			t.Errorf("submit code = %q, want invalid_state", body.Code)
+		}
+		if body.Message != "请先上传需求文档" {
+			t.Errorf("submit message = %q, want 请先上传需求文档", body.Message)
+		}
 	})
 
 	t.Run("unknown field", func(t *testing.T) {

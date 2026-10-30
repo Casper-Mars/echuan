@@ -126,8 +126,8 @@ func TestSubmitProjectWithoutRequirementHTTP(t *testing.T) {
 	if body.Code != "invalid_state" {
 		t.Errorf("code = %q, want invalid_state", body.Code)
 	}
-	if !strings.Contains(body.Message, "requirement") {
-		t.Errorf("message = %q, want it to mention the requirement", body.Message)
+	if body.Message != "请先上传需求文档" {
+		t.Errorf("message = %q, want 请先上传需求文档", body.Message)
 	}
 }
 

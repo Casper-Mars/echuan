@@ -135,18 +135,23 @@ func (s *ProjectService) CreateProject(ctx context.Context, in CreateProjectInpu
 			return err
 		}
 
-		written, err = s.materials.Write(ctx, tx, material.WriteInput{
-			Kind:       domain.MaterialKindRequirement,
-			Title:      normalized.Title,
-			Body:       []byte(normalized.RequirementMD),
-			UploadedBy: normalized.UploadedBy,
-		})
-		if err != nil {
-			return materialWriteError("requirement_md", err)
-		}
+		// The requirement is optional at create time: an empty body means the
+		// project lands in requirement_draft with no pointer, and the first
+		// version can be uploaded later through WriteRequirement.
+		if strings.TrimSpace(normalized.RequirementMD) != "" {
+			written, err = s.materials.Write(ctx, tx, material.WriteInput{
+				Kind:       domain.MaterialKindRequirement,
+				Title:      normalized.Title,
+				Body:       []byte(normalized.RequirementMD),
+				UploadedBy: normalized.UploadedBy,
+			})
+			if err != nil {
+				return materialWriteError("requirement_md", err)
+			}
 
-		if err := store.AttachRequirementPointer(ctx, tx, id, written.Material.ID); err != nil {
-			return err
+			if err := store.AttachRequirementPointer(ctx, tx, id, written.Material.ID); err != nil {
+				return err
+			}
 		}
 
 		out, err = s.detail(ctx, tx, id)
@@ -441,8 +446,13 @@ func (s *ProjectService) validateCreateProject(in CreateProjectInput) (CreatePro
 		})
 	}
 
-	if _, bodyFields := s.validateRequirementBody("requirement_md", in.RequirementMD); len(bodyFields) > 0 {
-		fields = append(fields, bodyFields...)
+	// requirement_md is optional: a missing or blank body creates the project
+	// in requirement_draft with requirement_material_id = NULL. A supplied body
+	// is still validated like any other requirement write.
+	if strings.TrimSpace(in.RequirementMD) != "" {
+		if _, bodyFields := s.validateRequirementBody("requirement_md", in.RequirementMD); len(bodyFields) > 0 {
+			fields = append(fields, bodyFields...)
+		}
 	}
 	in.UploadedBy = actorOrDefault(in.UploadedBy)
 
