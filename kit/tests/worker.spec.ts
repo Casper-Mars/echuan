@@ -704,8 +704,8 @@ describe('开关与卸载', () => {
 // ---------------------------------------------------------------------------
 
 describe('客户端与源码约束', () => {
-  it('worker 心跳走独立客户端，TOOL_METHODS 仍是恰好 14 个', () => {
-    expect(TOOL_METHODS).toHaveLength(14)
+  it('worker 心跳走独立客户端，TOOL_METHODS 恰好 20 个', () => {
+    expect(TOOL_METHODS).toHaveLength(20)
     const config = resolveConfig({ worker: { poll: { enable: true } } })
     const client = createWorkerClient(config, {
       fetchImpl: async () => okResponse(heartbeatPayload(WORKER_ID)),

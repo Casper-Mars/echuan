@@ -38,7 +38,7 @@ interface FakeContext {
 /**
  * 构造只提供 effect / logger / agents / tools / skills 的假上下文。
  *
- * `tools` 记录工具注册（16 个：9 写 + 7 读）；`skills` 记录技能注册（1 个）；
+ * `tools` 记录工具注册（22 个：15 写 + 7 读）；`skills` 记录技能注册（1 个）；
  * `agents` 记录访问次数，用于断言 poll=false 时连 agent 列表都不读。
  */
 function createFakeContext(): FakeContext {
@@ -115,10 +115,10 @@ function createFakeContext(): FakeContext {
   }
 }
 
-/** 等惰性 import 完成、16 个工具注册就绪（避免异步日志干扰后续断言）。 */
+/** 等惰性 import 完成、22 个工具注册就绪（避免异步日志干扰后续断言）。 */
 async function settleTools(fake: FakeContext): Promise<void> {
   await vi.waitFor(() => {
-    expect(fake.registrations).toHaveLength(16)
+    expect(fake.registrations).toHaveLength(22)
   })
 }
 
@@ -206,7 +206,7 @@ describe('apply：加载与生命周期', () => {
       .some(line => line.includes('已注销技能 echuan-task-execution'))).toBe(true)
   })
 
-  it('惰性注册 16 个工具（9 写 + 7 读）并打印注册日志', async () => {
+  it('惰性注册 22 个工具（15 写 + 7 读）并打印注册日志', async () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const fake = createFakeContext()
 
@@ -223,6 +223,12 @@ describe('apply：加载与生命周期', () => {
       'echuan_spec_create',
       'echuan_spec_revise',
       'echuan_plan_submit',
+      'echuan_task_create',
+      'echuan_task_update',
+      'echuan_task_delete',
+      'echuan_project_update',
+      'echuan_product_create',
+      'echuan_project_package',
       'echuan_inbox',
       'echuan_product_list',
       'echuan_project_list',
@@ -232,8 +238,8 @@ describe('apply：加载与生命周期', () => {
       'echuan_material_get',
     ])
     const lines = spy.mock.calls.map(call => String(call[0]))
-    expect(lines.some(line => line.includes('已注册 16 个工具'))).toBe(true)
-    expect(lines.some(line => line.includes('9 写 + 7 读'))).toBe(true)
+    expect(lines.some(line => line.includes('已注册 22 个工具'))).toBe(true)
+    expect(lines.some(line => line.includes('15 写 + 7 读'))).toBe(true)
 
     fake.disposeAll()
     expect(fake.registrations).toEqual([])

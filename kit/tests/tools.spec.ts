@@ -7,8 +7,8 @@
  * 3. 请求体 worker_id 与心跳循环内存 id 一致；未注册时该键完全不出现；
  * 4. report 空/全空白 summary_md → 本地拒绝、零请求、三段式提示；
  * 5. lease_lost / worker_busy / worker_unknown / material_required 的下一步文案；
- * 6. 工具名集合恰好 9 个，且没有门禁动作；
- * 7. TOOL_METHODS 仍恰好 14 个（工具层不污染客户端方法集）。
+ * 6. 工具名集合恰好 15 个，且没有门禁动作；
+ * 7. TOOL_METHODS 恰好 20 个（工具层不污染客户端方法集）。
  */
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
@@ -409,7 +409,7 @@ describe('echuan_task_renew：续租成功', () => {
 // 7. 工具集合与边界
 // ---------------------------------------------------------------------------
 
-describe('工具集合：恰好 9 个写工具，无审批类动作', () => {
+describe('工具集合：恰好 15 个写工具，无审批类动作', () => {
   const tools = () => {
     const client = createClient(resolveConfig({ baseUrl: 'http://platform.test' }), {
       fetchImpl: createPlatform(() => jsonResponse({})).fetchImpl,
@@ -419,7 +419,7 @@ describe('工具集合：恰好 9 个写工具，无审批类动作', () => {
 
   it('名字集合与 WRITE_TOOL_NAMES 完全一致', () => {
     expect(tools().map(tool => tool.name)).toEqual([...WRITE_TOOL_NAMES])
-    expect(WRITE_TOOL_NAMES).toHaveLength(9)
+    expect(WRITE_TOOL_NAMES).toHaveLength(15)
   })
 
   it('工具定义与 src/tools 源码里都没有 accept / decide / cancel / rework', () => {
@@ -439,7 +439,7 @@ describe('工具集合：恰好 9 个写工具，无审批类动作', () => {
     }
   })
 
-  it('TOOL_METHODS 仍恰好 14 个（工具层没有污染客户端方法集）', () => {
-    expect(TOOL_METHODS).toHaveLength(14)
+  it('TOOL_METHODS 恰好 20 个（工具层没有污染客户端方法集）', () => {
+    expect(TOOL_METHODS).toHaveLength(20)
   })
 })
