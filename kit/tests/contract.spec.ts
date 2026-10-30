@@ -6,18 +6,18 @@
  * 多加/少加一个动作），这里必须立刻变红。
  *
  * 覆盖：
- * 1. `TOOL_OPERATIONS` 恰好 8 条，字段与白名单逐项一致（顺序也固定）；
+ * 1. `TOOL_OPERATIONS` 恰好 14 条，字段与白名单逐项一致（顺序也固定）；
  * 2. 每条 `METHOD /path` 在 yaml `paths` 段中真实存在且唯一；
  * 3. 每条 `operationId` 与 yaml 中该 method 的实际值一致；
- * 4. `TOOL_METHODS` 恰好 8 条且与 `TOOL_OPERATIONS` 顺序一一对应；
- * 5. 注册工具数 = 10（3 写 + 7 读）、名字唯一；
+ * 4. `TOOL_METHODS` 恰好 14 条且与 `TOOL_OPERATIONS` 顺序一一对应；
+ * 5. 注册工具数 = 16（9 写 + 7 读）、名字唯一；
  * 6. worker 心跳端点 `POST /v1/workers/heartbeat`（heartbeatWorker）也在契约里；
  * 7. 物料读取返回**原始正文**：`content-type` 非 JSON 时不做 JSON 解析。
  *
  * 解析器说明（保持手写，不新增 `yaml` 依赖）
  * ------------------------------------------------
  * 本文件用「按缩进切段」的极简解析器读取 `api/openapi.yaml`，只服务于上面的
- * 8 条 operation 校验。它**假设**契约始终是下面这套固定结构：
+ * 14 条 operation 校验。它**假设**契约始终是下面这套固定结构：
  *
  * 1. 顶层键 `paths:` 独立成行（行首无缩进，冒号后为空）；
  * 2. 二级是 path 键：2 空格缩进 + `/v1/...:`（冒号后为空，不跟其他键值）；
@@ -126,7 +126,7 @@ function findYamlOperation(method: string, requestPath: string): YamlOperation |
 // ---------------------------------------------------------------------------
 
 /**
- * 客户端被允许使用的 8 个 operation，**顺序即 `TOOL_OPERATIONS` 顺序**。
+ * 客户端被允许使用的 14 个 operation，**顺序即 `TOOL_OPERATIONS` 顺序**。
  *
  * 序号/内容与 `api/openapi.yaml` 的 `operationId` 完全一致；多一个、少一个、
  * 换顺序、换路径都会让下面的用例变红。
@@ -135,6 +135,12 @@ const EXPECTED_OPERATIONS = [
   { tool: 'claimTask', method: 'POST', path: '/v1/tasks/claim', operationId: 'claimTask' },
   { tool: 'renewLease', method: 'POST', path: '/v1/tasks/heartbeat', operationId: 'heartbeatTask' },
   { tool: 'reportTask', method: 'POST', path: '/v1/tasks/report', operationId: 'reportTask' },
+  { tool: 'createProject', method: 'POST', path: '/v1/projects', operationId: 'createProject' },
+  { tool: 'writeRequirement', method: 'POST', path: '/v1/projects/requirement', operationId: 'writeProjectRequirement' },
+  { tool: 'submitProject', method: 'POST', path: '/v1/projects/submit', operationId: 'submitProject' },
+  { tool: 'createSpec', method: 'POST', path: '/v1/specs', operationId: 'createSpecDocument' },
+  { tool: 'reviseSpec', method: 'PATCH', path: '/v1/specs', operationId: 'reviseSpecDocument' },
+  { tool: 'submitPlan', method: 'POST', path: '/v1/projects/plans', operationId: 'submitProjectPlan' },
   { tool: 'getInbox', method: 'GET', path: '/v1/inbox', operationId: 'listInbox' },
   { tool: 'listProducts', method: 'GET', path: '/v1/products', operationId: 'listOrGetProducts' },
   { tool: 'listProjects', method: 'GET', path: '/v1/projects', operationId: 'listOrGetProjects' },
@@ -170,17 +176,23 @@ const config = resolveConfig({ baseUrl: 'http://platform.test' })
 // 1. 客户端声明的 8 个 operation
 // ---------------------------------------------------------------------------
 
-describe('契约闸门：客户端声明的 operation 恰好 8 个', () => {
+describe('契约闸门：客户端声明的 operation 恰好 14 个', () => {
   it('TOOL_OPERATIONS 与白名单逐字段一致（含顺序）', () => {
-    expect(TOOL_OPERATIONS).toHaveLength(8)
+    expect(TOOL_OPERATIONS).toHaveLength(14)
     expect(TOOL_OPERATIONS).toEqual(EXPECTED_OPERATIONS)
   })
 
-  it('operationId 序列稳定，正好是契约里的 8 个动作', () => {
+  it('operationId 序列稳定，正好是契约里的 14 个动作', () => {
     expect(TOOL_OPERATIONS.map(entry => entry.operationId)).toEqual([
       'claimTask',
       'heartbeatTask',
       'reportTask',
+      'createProject',
+      'writeProjectRequirement',
+      'submitProject',
+      'createSpecDocument',
+      'reviseSpecDocument',
+      'submitProjectPlan',
       'listInbox',
       'listOrGetProducts',
       'listOrGetProjects',
@@ -214,8 +226,8 @@ describe('契约闸门：客户端声明的 operation 恰好 8 个', () => {
     }
   })
 
-  it('TOOL_METHODS 恰好 8 条，且与 TOOL_OPERATIONS 顺序一一对应', () => {
-    expect(TOOL_METHODS).toHaveLength(8)
+  it('TOOL_METHODS 恰好 14 条，且与 TOOL_OPERATIONS 顺序一一对应', () => {
+    expect(TOOL_METHODS).toHaveLength(14)
     expect([...TOOL_METHODS]).toEqual(EXPECTED_OPERATIONS.map(entry => entry.tool))
   })
 })
@@ -224,19 +236,19 @@ describe('契约闸门：客户端声明的 operation 恰好 8 个', () => {
 // 2. 注册的工具数
 // ---------------------------------------------------------------------------
 
-describe('契约闸门：注册工具数 = 10', () => {
-  it('createAllEchuanTools 产出 10 个定义，名字唯一且与 TOOL_NAMES 一致', () => {
+describe('契约闸门：注册工具数 = 16', () => {
+  it('createAllEchuanTools 产出 16 个定义，名字唯一且与 TOOL_NAMES 一致', () => {
     const anyClient = createClient(config, { fetchImpl: async () => new Response('{}') })
     const tools = createAllEchuanTools({ client: anyClient, identity: { workerId: undefined } })
 
-    expect(tools).toHaveLength(10)
+    expect(tools).toHaveLength(16)
     expect(tools.map(tool => tool.name)).toEqual([...TOOL_NAMES])
-    expect(new Set(TOOL_NAMES).size).toBe(10)
+    expect(new Set(TOOL_NAMES).size).toBe(16)
   })
 
-  it('3 写 + 7 读的分组没变（写工具不会混进只读集合）', async () => {
+  it('9 写 + 7 读的分组没变（写工具不会混进只读集合）', async () => {
     const { READ_TOOL_NAMES, WRITE_TOOL_NAMES } = await import('../src/tools/index.js')
-    expect([...WRITE_TOOL_NAMES]).toHaveLength(3)
+    expect([...WRITE_TOOL_NAMES]).toHaveLength(9)
     expect([...READ_TOOL_NAMES]).toHaveLength(7)
     expect([...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES]).toEqual([...TOOL_NAMES])
   })
@@ -317,13 +329,19 @@ describe('契约闸门：物料读取返回原始正文', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * 工具名 → operationId。10 个工具共用 8 个 operation：
+ * 工具名 → operationId。16 个工具共用 14 个 operation：
  * 项目/任务各由一个 GET 同时承担 list 与 get。
  */
 const TOOL_TO_OPERATION = {
   echuan_task_claim: 'claimTask',
   echuan_task_renew: 'heartbeatTask',
   echuan_task_report: 'reportTask',
+  echuan_project_create: 'createProject',
+  echuan_project_requirement_write: 'writeProjectRequirement',
+  echuan_project_submit: 'submitProject',
+  echuan_spec_create: 'createSpecDocument',
+  echuan_spec_revise: 'reviseSpecDocument',
+  echuan_plan_submit: 'submitProjectPlan',
   echuan_inbox: 'listInbox',
   echuan_product_list: 'listOrGetProducts',
   echuan_project_list: 'listOrGetProjects',
@@ -346,9 +364,9 @@ function operationIssue(yaml: string): string | undefined {
   return undefined
 }
 
-describe('契约闸门：10 个工具逐个映射到 8 个 operation', () => {
-  it('TOOL_NAMES 恰好 10 个，每个都映射到白名单里真实存在的 operation', () => {
-    expect([...TOOL_NAMES]).toHaveLength(10)
+describe('契约闸门：16 个工具逐个映射到 14 个 operation', () => {
+  it('TOOL_NAMES 恰好 16 个，每个都映射到白名单里真实存在的 operation', () => {
+    expect([...TOOL_NAMES]).toHaveLength(16)
 
     const known = new Set(EXPECTED_OPERATIONS.map(entry => entry.operationId))
     for (const tool of TOOL_NAMES) {
@@ -362,12 +380,12 @@ describe('契约闸门：10 个工具逐个映射到 8 个 operation', () => {
     }
   })
 
-  it('list 与 get 共用同一个 operation；8 个 operation 全部被用到', () => {
+  it('list 与 get 共用同一个 operation；14 个 operation 全部被用到', () => {
     expect(TOOL_TO_OPERATION.echuan_project_list).toBe(TOOL_TO_OPERATION.echuan_project_get)
     expect(TOOL_TO_OPERATION.echuan_task_list).toBe(TOOL_TO_OPERATION.echuan_task_get)
 
     const used = new Set(Object.values(TOOL_TO_OPERATION))
-    expect(used.size).toBe(8)
+    expect(used.size).toBe(14)
     expect([...used].sort()).toEqual(
       EXPECTED_OPERATIONS.map(entry => entry.operationId).sort(),
     )
