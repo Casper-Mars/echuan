@@ -145,8 +145,8 @@ func TestSubmitProjectRequiresRequirement(t *testing.T) {
 
 	_, err := env.service.SubmitProject(context.Background(), projectID, "alice")
 	expectInvalidState(t, err)
-	if !strings.Contains(err.Error(), "requirement") {
-		t.Errorf("error = %q, want it to mention the missing requirement", err)
+	if err.Error() != "请先上传需求文档" {
+		t.Errorf("error = %q, want 请先上传需求文档", err)
 	}
 
 	state := env.projectState(t, projectID)

@@ -189,8 +189,9 @@ func (s *ProjectService) validateSubmitPrecondition(ctx context.Context, tx *sql
 	switch row.Status {
 	case domain.StatusRequirementDraft:
 		if row.RequirementMaterialID == nil {
-			return &domain.InvalidStateError{Reason: fmt.Sprintf(
-				"project %q has no requirement document; submit requires requirement_material_id", row.ProjectID)}
+			// Kept as a literal shared with the web client so the pre-check
+			// and the 409 body are byte-for-byte identical.
+			return &domain.InvalidStateError{Reason: "请先上传需求文档"}
 		}
 	case domain.StatusSpecDraft:
 		docs, err := store.ListSpecDocuments(ctx, tx, row.ID)

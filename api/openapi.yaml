@@ -432,6 +432,9 @@ paths:
         - `requirement_draft`(0) → `requirement_review`(1)：要求需求文档已存在；
         - `spec_draft`(2) → `spec_review`(3)：要求至少存在一份方案文档。
         提交会清空 `reason`。
+
+        `requirement_draft` 缺少需求文档时返回 409 `invalid_state`，message 固定为
+        `请先上传需求文档`；前端在提交前会先读取项目详情并做同样的拦截。
       tags: [projects]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -1698,7 +1701,7 @@ components:
     ProjectCreateRequest:
       type: object
       additionalProperties: false
-      required: [product_id, title, requirement_md]
+      required: [product_id, title]
       properties:
         product_id:
           type: string
@@ -1706,6 +1709,10 @@ components:
           type: string
         requirement_md:
           type: string
+          description: |
+            需求正文（可选）。缺失或空白时项目直接创建为 `requirement_draft`(0) / 需求待提交，
+            `requirement` 为 null，`requirement_material_id` 为空；之后可通过 `POST /v1/projects/requirement`
+            上传首版。提供时按 Markdown 原样保存，大小受 `material_max_bytes` 限制（默认 20 MiB）。
     ProjectPatchRequest:
       type: object
       additionalProperties: false
