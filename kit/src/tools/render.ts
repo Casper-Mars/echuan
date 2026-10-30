@@ -67,7 +67,7 @@ export function renderNoWork(): TextContent[] {
   return [textBlock(NO_WORK_TEXT)]
 }
 
-/** 渲染领到的任务卡：任务编号 / 标题 / 租约到期 / workdir 必须可见。 */
+/** 渲染领到的任务卡：只陈述任务事实（编号 / 标题 / 租约 / 产品 / 规格 / 正文）。 */
 export function renderClaimed(value: Extract<ClaimValue, { kind: 'claimed' }>): TextContent[] {
   return [
     textBlock(
@@ -76,15 +76,12 @@ export function renderClaimed(value: Extract<ClaimValue, { kind: 'claimed' }>): 
         `- 任务编号：${value.task_id}`,
         `- 标题：${value.title}`,
         `- 租约到期：${value.lease_until}（TTL ${value.ttl_seconds}s，lease_id=${value.lease_id}）`,
-        `- 工作目录：${value.workdir}`,
         `- 产品：${value.product_name}（${value.product_id}）`,
         `- 规格：v${value.spec_version} ${value.spec_digest}`,
         `- 尝试次数：${value.attempt}，优先级：${value.priority}`,
         '',
         '任务正文：',
         value.body_md,
-        '',
-        '下一步：长任务用 `echuan_task_renew` 续租；做完后用 `echuan_task_report` 提交三段式报告。',
       ].join('\n'),
     ),
   ]

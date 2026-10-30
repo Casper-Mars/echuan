@@ -30,7 +30,6 @@ export interface ClaimedValue {
   lease_id: string
   lease_until: string
   ttl_seconds: number
-  workdir: string
   product_id: string
   product_name: string
   spec_version: number
@@ -97,7 +96,6 @@ const claimSchema = {
         lease_id: { type: 'string', required: true },
         lease_until: { type: 'string', required: true },
         ttl_seconds: { type: 'integer', required: true },
-        workdir: { type: 'string', required: true },
         product_id: { type: 'string', required: true },
         product_name: { type: 'string', required: true },
         spec_version: { type: 'integer', required: true },
@@ -149,7 +147,7 @@ export function createClaimTool(options: EchuanToolOptions): ToolDefinition {
     name: 'echuan_task_claim',
     description:
       '领一张驿传（echuan）任务卡。自动带上本地心跳循环当前的 worker_id（未注册时不带）。'
-      + '成功返回任务编号、标题、正文、租约与工作目录；平台返回 204 表示「当前无活」——'
+      + '成功返回任务编号、标题、正文与租约；平台返回 204 表示「当前无活」——'
       + '这是正常结果，不是错误。',
     parameters: {
       product: { type: 'string', required: true, description: '产品业务 id（必填），例如 APP' },
@@ -185,7 +183,6 @@ export function createClaimTool(options: EchuanToolOptions): ToolDefinition {
           lease_id: lease.lease_id,
           lease_until: lease.until,
           ttl_seconds: lease.ttl_seconds,
-          workdir: context.workdir,
           product_id: context.product.id,
           product_name: context.product.name,
           spec_version: context.spec_version,

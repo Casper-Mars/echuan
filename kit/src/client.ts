@@ -140,7 +140,6 @@ export interface ClaimContext {
   spec_version: number
   spec_digest: string
   product: { id: string; name: string; git_url: string }
-  workdir: string
 }
 
 export interface ClaimResponse {
