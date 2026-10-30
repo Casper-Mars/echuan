@@ -76,7 +76,8 @@ export interface ProjectList {
 export interface ProjectCreateRequest {
   product_id: string
   title: string
-  requirement_md: string
+  /** 需求正文，可选；缺失时后端创建为「需求待提交」。 */
+  requirement_md?: string
 }
 
 export interface SpecDocument {
