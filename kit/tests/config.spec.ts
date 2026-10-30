@@ -133,6 +133,31 @@ describe('resolveConfig：覆盖与归一化', () => {
   })
 })
 
+describe('resolveConfig：worker.workspaceRoot', () => {
+  it('默认未配置（undefined，不是空串）', () => {
+    expect(resolveConfig().worker.workspaceRoot).toBeUndefined()
+    expect(DEFAULT_CONFIG.worker.workspaceRoot).toBeUndefined()
+    expect('workspaceRoot' in resolveConfig().worker).toBe(false)
+  })
+
+  it('绝对路径原样保留（只去首尾空白）', () => {
+    expect(resolveConfig({ worker: { workspaceRoot: '  /Users/you/project/opc  ' } }).worker.workspaceRoot)
+      .toBe('/Users/you/project/opc')
+  })
+
+  it('相对路径抛 TypeError（中文说明）', () => {
+    expect(() => resolveConfig({ worker: { workspaceRoot: 'project/opc' } }))
+      .toThrow(TypeError)
+    expect(() => resolveConfig({ worker: { workspaceRoot: 'project/opc' } }))
+      .toThrow(/worker\.workspaceRoot 必须是绝对路径/)
+  })
+
+  it('空串 / 空白串视同未配置', () => {
+    expect(resolveConfig({ worker: { workspaceRoot: '' } }).worker.workspaceRoot).toBeUndefined()
+    expect(resolveConfig({ worker: { workspaceRoot: '   ' } }).worker.workspaceRoot).toBeUndefined()
+  })
+})
+
 describe('metadataByteLength', () => {
   it('按 UTF-8 计字节；空对象为 2 字节', () => {
     expect(metadataByteLength({})).toBe(2)

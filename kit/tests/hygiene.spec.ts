@@ -5,7 +5,9 @@
  *
  * 1. 源码级：`src` 下只有 `client.ts` 调 `fetch(`；写盘 API 只允许出现在
  *    `src/tools/package.ts`（资料包下载，唯一例外）；`node:fs` 的导入只允许只读函数
- *    （package.ts 额外允许 `writeFileSync` / `unlinkSync`）；`config.ts` 不读 `process.env`。
+ *    （package.ts 额外允许 `writeFileSync` / `unlinkSync`）；`node:fs/promises` 只允许
+ *    `src/session.ts` 导入 `mkdir`（新建会话必须建目录的显式例外）；`config.ts` 不读
+ *    `process.env`。模块导入检查同时覆盖单/双引号与 `import(...)` 动态导入形式。
  * 2. 运行时级：把 `globalThis.fetch` 换成一被调用就抛错的哨兵，再跑
  *    ① 22 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
  * 3. 运行时级：用 `vi.mock('node:fs', { spy: true })` 把 `node:fs` 的导出换成
@@ -54,6 +56,61 @@ function stripComments(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '')
+}
+
+/** 字符串字面量片段：单/双引号都接受（转义正则元字符，模块名可含 `/`）。 */
+function quoted(specifier: string): string {
+  return `['"]${specifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`
+}
+
+/**
+ * 具名导入的名字列表，覆盖两种写法：
+ *
+ * - 静态：`import { a, b as c } from 'spec'`
+ * - 动态：`const { a, b as c } = await import('spec')`（`await` 可省略）
+ */
+function namedImportNames(code: string, specifier: string): string[] {
+  const q = quoted(specifier)
+  const patterns = [
+    new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*${q}`, 'g'),
+    new RegExp(
+      `(?:const|let|var)\\s*\\{([^}]*)\\}\\s*=\\s*(?:await\\s*)?import\\s*\\(\\s*${q}\\s*\\)`,
+      'g',
+    ),
+  ]
+  const names: string[] = []
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null
+    while ((match = pattern.exec(code)) !== null) {
+      for (const part of (match[1] ?? '').split(',')) {
+        const name = part.trim().split(/\s+as\s+/)[0]?.trim() ?? ''
+        if (name !== '') names.push(name)
+      }
+    }
+  }
+  return names
+}
+
+/** 是否导入了某个模块（静态 `from` 或动态 `import()`，单/双引号均可）。 */
+function importsModule(code: string, specifier: string): boolean {
+  const q = quoted(specifier)
+  return new RegExp(`(?:from\\s*${q})|(?:import\\s*\\(\\s*${q}\\s*\\))`).test(code)
+}
+
+/** 导入语句条数（静态 + 动态），用于「整个模块只允许导入一次」的断言。 */
+function importOccurrences(code: string, specifier: string): number {
+  const q = quoted(specifier)
+  const pattern = new RegExp(`(?:from\\s*${q})|(?:import\\s*\\(\\s*${q}\\s*\\))`, 'g')
+  return (code.match(pattern) ?? []).length
+}
+
+/** 是否存在具名导入（含动态解构），否则视为默认 / 命名空间导入。 */
+function hasNamedImport(code: string, specifier: string): boolean {
+  const q = quoted(specifier)
+  return new RegExp(
+    `(?:import\\s*\\{[^}]*\\}\\s*from\\s*${q})`
+      + `|(?:(?:const|let|var)\\s*\\{[^}]*\\}\\s*=\\s*(?:await\\s*)?import\\s*\\(\\s*${q}\\s*\\))`,
+  ).test(code)
 }
 
 interface SourceFile {
@@ -123,6 +180,41 @@ const WRITE_APIS = [
 /** 唯一允许写盘的源码文件：资料包下载（且只能写 os.tmpdir()）。 */
 const WRITE_EXCEPTION_FILE = 'src/tools/package.ts'
 
+/** `node:fs` 允许的只读具名导入（非 package.ts）。 */
+const FS_READ_ALLOWED_NAMES = [
+  'readFileSync',
+  'readFile',
+  'existsSync',
+  'statSync',
+  'readdirSync',
+  'createReadStream',
+]
+/** `package.ts` 额外允许独占写与失败清理。 */
+const FS_PACKAGE_EXTRA_NAMES = ['writeFileSync', 'unlinkSync']
+
+/**
+ * 纯函数规则：`node:fs` 的具名导入只允许只读函数（package.ts 额外允许写/清理）。
+ *
+ * 覆盖静态 `import {…} from 'node:fs'` 与动态 `const {…} = await import('node:fs')`，
+ * 单/双引号都匹配。抽成纯函数便于用合成源码断言规则本身不是空转。
+ */
+function scanFsNamedImports(
+  files: ReadonlyArray<{ relative: string; code: string }>,
+): string[] {
+  const violations: string[] = []
+  for (const file of files) {
+    const allowedHere = new Set(
+      file.relative === WRITE_EXCEPTION_FILE
+        ? [...FS_READ_ALLOWED_NAMES, ...FS_PACKAGE_EXTRA_NAMES]
+        : FS_READ_ALLOWED_NAMES,
+    )
+    for (const name of namedImportNames(file.code, 'node:fs')) {
+      if (!allowedHere.has(name)) violations.push(`${file.relative}: ${name}`)
+    }
+  }
+  return violations
+}
+
 describe('源码级：不写盘（package.ts 是唯一例外）', () => {
   it('除 package.ts 外不出现任何写盘 API', () => {
     const hits: string[] = []
@@ -140,35 +232,124 @@ describe('源码级：不写盘（package.ts 是唯一例外）', () => {
   })
 
   it('node:fs 的具名导入只允许只读函数（package.ts 额外允许独占写与清理）', () => {
-    const allowed = new Set([
-      'readFileSync',
-      'readFile',
-      'existsSync',
-      'statSync',
-      'readdirSync',
-      'createReadStream',
-    ])
-    const allowedForPackage = new Set([...allowed, 'writeFileSync', 'unlinkSync'])
-
-    const violations: string[] = []
-    for (const file of sourceFiles) {
-      const pattern = /import\s*\{([^}]*)\}\s*from\s*'node:fs'/g
-      let match: RegExpExecArray | null
-      while ((match = pattern.exec(file.code)) !== null) {
-        const names = (match[1] ?? '')
-          .split(',')
-          .map(part => part.trim().split(/\s+as\s+/)[0]?.trim() ?? '')
-          .filter(name => name !== '')
-        for (const name of names) {
-          const allowedHere = file.relative === WRITE_EXCEPTION_FILE ? allowedForPackage : allowed
-          if (!allowedHere.has(name)) violations.push(`${file.relative}: ${name}`)
-        }
-      }
-    }
-
-    expect(violations).toEqual([])
+    expect(scanFsNamedImports(sourceFiles)).toEqual([])
     // skill.ts 确实用只读方式读技能正文（证明上面的白名单不是空转）。
     expect(sourceOf('src/skill.ts')).toContain('readFileSync')
+  })
+
+  it('规则不是空转：双引号 / 动态 import 的写 API 在 config.ts 都会被抓', () => {
+    // 单引号写法能抓，双引号同样不能漏（否则换个引号就绕过白名单）。
+    expect(scanFsNamedImports([
+      { relative: 'src/config.ts', code: 'import { writeFileSync } from "node:fs"' },
+    ])).toEqual(['src/config.ts: writeFileSync'])
+
+    // 动态解构导入同样按具名导入处理。
+    expect(scanFsNamedImports([
+      { relative: 'src/config.ts', code: 'const { writeFileSync } = await import("node:fs")' },
+    ])).toEqual(['src/config.ts: writeFileSync'])
+
+    // 合法只读导入（双引号）不误报。
+    expect(scanFsNamedImports([
+      { relative: 'src/config.ts', code: 'import { readFileSync } from "node:fs"' },
+    ])).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2b. 源码级：node:fs/promises 的显式例外
+// ---------------------------------------------------------------------------
+
+/** 唯一允许从 `node:fs/promises` 导入的文件。 */
+const PROMISES_EXCEPTION_FILE = 'src/session.ts'
+/** 该文件唯一允许的导入名（新建会话必须 `mkdir -p`）。 */
+const PROMISES_ALLOWED_NAMES = ['mkdir']
+
+const PROMISES_MODULE = 'node:fs/promises'
+
+/** 是否出现 `node:fs/promises` 的导入语句（静态 / 动态，单/双引号）。 */
+function importsPromises(code: string): boolean {
+  return importsModule(code, PROMISES_MODULE)
+}
+
+/** 解析 `node:fs/promises` 的具名导入（不含别名；含动态解构）。 */
+function promisesImportNames(code: string): string[] {
+  return namedImportNames(code, PROMISES_MODULE)
+}
+
+/**
+ * 纯函数规则：`node:fs/promises` 只允许 `src/session.ts` 且只允许 `mkdir`。
+ *
+ * 抽成纯函数是为了让「规则本身」也能被断言（防止它变成永远为空的空转检查）。
+ */
+function scanPromisesImports(
+  files: ReadonlyArray<{ relative: string; code: string }>,
+): string[] {
+  const violations: string[] = []
+  for (const file of files) {
+    if (!importsPromises(file.code)) continue
+    if (file.relative !== PROMISES_EXCEPTION_FILE) {
+      violations.push(`${file.relative}: 整个模块`)
+      continue
+    }
+    const occurrences = importOccurrences(file.code, PROMISES_MODULE)
+    if (occurrences !== 1) violations.push(`${file.relative}: 导入次数 ${occurrences}`)
+    // 默认 / 命名空间导入解析不出具名列表，但同样越过了例外范围。
+    if (!hasNamedImport(file.code, PROMISES_MODULE)) {
+      violations.push(`${file.relative}: 非具名导入`)
+    }
+    for (const name of promisesImportNames(file.code)) {
+      if (!PROMISES_ALLOWED_NAMES.includes(name)) violations.push(`${file.relative}: ${name}`)
+    }
+  }
+  return violations
+}
+
+describe('源码级：node:fs/promises 只允许 session.ts 的 mkdir', () => {
+  it('全量扫描：只有 src/session.ts 导入，且只导入 mkdir', () => {
+    expect(scanPromisesImports(sourceFiles)).toEqual([])
+
+    // 把例外钉死：多一个文件、多一个函数都会在这里失败（防止例外扩散）。
+    const importers = sourceFiles
+      .filter(file => importsPromises(file.code))
+      .map(file => file.relative)
+    expect(importers).toEqual([PROMISES_EXCEPTION_FILE])
+    expect(promisesImportNames(sourceOf(PROMISES_EXCEPTION_FILE))).toEqual(PROMISES_ALLOWED_NAMES)
+  })
+
+  it('规则不是空转：别的文件 / 别的函数 / 非具名导入都会被抓出来', () => {
+    expect(scanPromisesImports([
+      { relative: 'src/tools/read.ts', code: "import { mkdir } from 'node:fs/promises'" },
+    ])).toEqual(['src/tools/read.ts: 整个模块'])
+
+    expect(scanPromisesImports([
+      { relative: 'src/session.ts', code: "import { mkdir, rm } from 'node:fs/promises'" },
+    ])).toEqual(['src/session.ts: rm'])
+
+    expect(scanPromisesImports([
+      { relative: 'src/session.ts', code: "import fsp from 'node:fs/promises'" },
+    ])).toEqual(['src/session.ts: 非具名导入'])
+  })
+
+  it('规则不是空转：双引号与动态 import 同样按同一套规则处理', () => {
+    // 双引号 + 别的文件：不能被引号写法绕过。
+    expect(scanPromisesImports([
+      { relative: 'src/config.ts', code: 'import { mkdir } from "node:fs/promises"' },
+    ])).toEqual(['src/config.ts: 整个模块'])
+
+    // 动态解构导入：合法 mkdir 放行。
+    expect(scanPromisesImports([
+      { relative: 'src/session.ts', code: 'const { mkdir } = await import("node:fs/promises")' },
+    ])).toEqual([])
+
+    // 动态解构导入：别的函数照样被抓。
+    expect(scanPromisesImports([
+      { relative: 'src/session.ts', code: "const { rm } = await import('node:fs/promises')" },
+    ])).toEqual(['src/session.ts: rm'])
+
+    // 动态命名空间导入：解析不出具名列表，按「非具名导入」处理。
+    expect(scanPromisesImports([
+      { relative: 'src/session.ts', code: "const fsp = await import('node:fs/promises')" },
+    ])).toEqual(['src/session.ts: 非具名导入'])
   })
 })
 
