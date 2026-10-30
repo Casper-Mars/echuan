@@ -358,7 +358,7 @@ paths:
     post:
       operationId: submitProjectSpec
       summary: 提交规格版本
-      description: 兼容接口：修订项目第一份独立方案；返回涵盖全部当前方案的版本化方案包。单文档时沿用原资料及版本链。
+      description: 兼容接口：修订项目第一份独立方案；项目 spec 指针指向本次提交的该份文档版本，不再生成汇总方案包。
       tags: [projects]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -538,6 +538,37 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/projects/package:
+    get:
+      operationId: downloadProjectPackage
+      summary: 下载项目资料包
+      description: |
+        服务端按需组装 zip：需求当前版本 + 每份独立方案的当前版本，每份文档一个 Markdown 文件，
+        文件名带编号与版本（如 `需求-v3-登录页改版.md`、`方案-S0001-v2-接口设计.md`）。
+        不落库、不改变任何指针；无需求且无方案时返回零条目的合法 zip。
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: 项目资料包（zip 字节流，支持 HEAD）
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            Content-Disposition:
+              description: attachment 文件名（filename* 为 UTF-8 中文名）
+              schema:
+                type: string
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /v1/specs:
     get:
       operationId: listOrGetSpecDocument
@@ -578,8 +609,8 @@ paths:
           $ref: "#/components/responses/NotFound"
     post:
       operationId: createSpecDocument
-      summary: 创建独立技术方案并更新项目方案包
-      description: 仅规格评审、规划中可写。每份方案独立版本链；所有当前方案组成兼容旧接口及执行上下文的方案包。
+      summary: 创建独立技术方案
+      description: 仅规格评审、规划中可写。每份方案独立版本链；项目 spec 指针指向该方案的当前版本，完整资料包按需下载。
       tags: [projects]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -614,7 +645,7 @@ paths:
           $ref: "#/components/responses/TooLarge"
     patch:
       operationId: reviseSpecDocument
-      summary: 修订独立方案并生成新的项目方案包
+      summary: 修订独立方案
       description: If-Match 为该独立文档的版本；任何方案修订也递增项目版本，使旧项目评审请求失效。
       tags: [projects]
       parameters:
@@ -1680,6 +1711,7 @@ components:
             - $ref: "#/components/schemas/Material"
         spec:
           nullable: true
+          description: 最后提交的那一份方案版本（单份文档），不是汇总包；完整集合请下载 /v1/projects/package。
           allOf:
             - $ref: "#/components/schemas/Material"
     SpecDocument:

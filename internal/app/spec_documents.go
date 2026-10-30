@@ -98,7 +98,11 @@ func specLookupError(err error, resource, key string) error {
 	return err
 }
 
-// SaveSpec keeps independent chains and the legacy execution snapshot atomic.
+// SaveSpec keeps the independent document chains and the project spec pointer
+// atomic. The pointer always names the version written by this call: there is
+// no aggregated "spec bundle" material any more, so readers (old endpoints and
+// the Worker claim context) see one real document version, while the package
+// endpoint assembles all current versions on demand.
 func (s *ProjectService) SaveSpec(ctx context.Context, projectID, specID, actor string, title *string, body string, expected int, legacy bool) (SpecSubmission, string, error) {
 	if specID == "" && strings.TrimSpace(projectID) == "" {
 		return SpecSubmission{}, "", &domain.ValidationError{Fields: []domain.FieldError{{Field: "id", Reason: "is required"}}}
@@ -180,36 +184,6 @@ func (s *ProjectService) SaveSpec(ctx context.Context, projectID, specID, actor 
 				return err
 			}
 		}
-		docs, err = store.ListSpecDocuments(ctx, tx, p.ID)
-		if err != nil {
-			return err
-		}
-		snapshot := m
-		if len(docs) > 1 {
-			var bundle strings.Builder
-			fmt.Fprintf(&bundle, "# %s · 技术方案包\n\n", p.Title)
-			for _, d := range docs {
-				entry, err := store.GetMaterialByID(ctx, tx, d.MaterialID)
-				if err != nil {
-					return err
-				}
-				content, err := s.materials.Read(entry)
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(&bundle, "## %s · %s（第 %d 版）\n\n", d.SpecID, entry.Title, entry.Version)
-				bundle.Write(content)
-				bundle.WriteString("\n\n---\n\n")
-				if int64(bundle.Len()) > s.materials.MaxBytes() {
-					return &domain.TooLargeError{Field: "body_md", Limit: s.materials.MaxBytes(), Actual: int64(bundle.Len())}
-				}
-			}
-			snapshot, err = s.materials.Write(ctx, tx, material.WriteInput{Kind: domain.MaterialKindSpec, Title: p.Title + " · 技术方案包", Body: []byte(bundle.String()), UploadedBy: actor, PreviousMaterialID: p.SpecMaterialID})
-			if err != nil {
-				return materialWriteError("body_md", err)
-			}
-			written = append(written, snapshot)
-		}
 		previous := ""
 		if p.SpecMaterialID != nil {
 			old, err := store.GetMaterialByID(ctx, tx, *p.SpecMaterialID)
@@ -218,7 +192,7 @@ func (s *ProjectService) SaveSpec(ctx context.Context, projectID, specID, actor 
 			}
 			previous = old.MaterialID
 		}
-		if err := store.MoveSpecPointer(ctx, tx, p.ID, snapshot.Material.ID, actor, updated); err != nil {
+		if err := store.MoveSpecPointer(ctx, tx, p.ID, m.Material.ID, actor, updated); err != nil {
 			return err
 		}
 		fresh, err := store.GetProjectByID(ctx, tx, p.ID)
@@ -229,7 +203,7 @@ func (s *ProjectService) SaveSpec(ctx context.Context, projectID, specID, actor 
 		if err != nil {
 			return err
 		}
-		mapped, err := materialFromRow(snapshot.Material)
+		mapped, err := materialFromRow(m.Material)
 		if err != nil {
 			return err
 		}
