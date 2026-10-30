@@ -3,8 +3,8 @@
  *
  * 职责边界（技术方案 v0.6 §1）：
  * - 声明插件标识 `name` 与依赖服务 `inject`；
- * - 在 `apply(ctx, config)` 里解析 5 项配置、落加载日志；
- * - 注册 22 个工具：15 个写（项目创建 / 需求写入 / 提交评审 / 方案创建 /
+ * - 在 `apply(ctx, config)` 里解析 6 项配置、落加载日志；
+ * - 注册最多 22 个工具（`exclude` 可裁剪，默认全量）：15 个写（项目创建 / 需求写入 / 提交评审 / 方案创建 /
  *   方案修订 / 批量建卡 / 领卡 / 续租 / 交报告 / 单卡增改删 / 项目改标题 /
  *   建产品 / 资料包下载）+ 7 个只读
  *   （待办 / 产品 / 项目 / 任务列表 / 项目全景 / 任务详情 / 资料），
@@ -21,8 +21,10 @@
  *
  * 依赖方向：kit 只依赖平台 HTTP 契约，不 import 任何 Go 代码。
  *
- * 加载策略：入口模块只静态引入 `./config.js`（schemastery，Schema 必须同步可见）与
- * `./runtime.js`（零依赖的日志/定时器类型）。`./client.js`、`./worker.js`
+ * 加载策略：入口模块只静态引入 `./config.js`（schemastery，Schema 必须同步可见）、
+ * `./runtime.js`（零依赖的日志/定时器类型）与 `./tool-names.js`（纯常量 + 校验，
+ * 不依赖 dsh-tools）。`exclude` 在 `apply` 早期**同步**校验：工具名拼错时插件激活
+ * 直接失败，而不是等到惰性 import 后只打一条 warning。`./client.js`、`./worker.js`
  * （后者带 `@deepseek-ai/dsh-llm`）与 `./tools/index.js`（带 `@deepseek-ai/dsh-tools`）
  * 都在 `apply` 内**惰性 import**，避免拖慢 `--help` 这类快速退出场景下的插件激活。
  */
@@ -36,6 +38,7 @@ import {
 } from './config.js'
 import type { WorkerClient } from './client.js'
 import type { Logger } from './runtime.js'
+import { TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from './tool-names.js'
 import { ECHUAN_SKILL_NAME, registerEchuanSkill } from './skill.js'
 import type { WorkerLoop } from './worker.js'
 
@@ -50,6 +53,7 @@ export {
   resolveConfig,
 } from './config.js'
 export type { ConfigInput, ResolvedConfig } from './config.js'
+export { READ_TOOL_NAMES, TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from './tool-names.js'
 export { DEFAULT_POLL_INTERVAL_MS, createEchuanRuntime } from './runtime.js'
 export type { EchuanRuntime, EchuanRuntimeOptions, Logger, TimerApi } from './runtime.js'
 export type { WorkerLoop, WorkerLoopOptions } from './worker.js'
@@ -87,6 +91,23 @@ const TAG = '[dsh-echuan]'
  */
 export function apply(ctx: Context, config?: ConfigInput): void {
   const resolved = resolveConfig(config)
+
+  // `exclude` 在这里**同步**校验：未知工具名 / 空白项直接抛 TypeError，让插件激活
+  // 失败（0 工具、0 心跳），而不是等惰性 import 后只 warn 一条、把「少注册了工具」
+  // 藏到运行期。校验只依赖纯常量模块，不加载 dsh-tools。
+  const exclude = validateExclude(resolved.exclude)
+  const excludedSet = new Set(exclude)
+  const registeredNames = TOOL_NAMES.filter(name => !excludedSet.has(name))
+  const writeCount = registeredNames
+    .filter(name => (WRITE_TOOL_NAMES as readonly string[]).includes(name)).length
+  const readCount = registeredNames.length - writeCount
+  // 日志三分支：无排除保持原文案逐字不变；有排除追加排除清单；全排除也能正常激活。
+  const registrationLog = registeredNames.length === 0
+    ? `${TAG} 已注册 0 个工具（已排除 ${exclude.length} 个：${exclude.join(', ')}）`
+    : `${TAG} 已注册 ${registeredNames.length} 个工具（${writeCount} 写 + ${readCount} 读`
+      + (exclude.length === 0
+        ? `）：${registeredNames.join(', ')}`
+        : `；已排除 ${exclude.length} 个：${exclude.join(', ')}）：${registeredNames.join(', ')}`)
 
   // 日志双写：`console.log` 保证在 `--help` 等日志服务尚未接管的场景也能被观测到，
   // `ctx.logger` 用于进入宿主日志管线（结构化、可落盘）。与 dsh-cron 的做法一致。
@@ -157,10 +178,9 @@ export function apply(ctx: Context, config?: ConfigInput): void {
               return loop?.workerId
             },
           },
+          exclude,
         })
-        log(`${TAG} 已注册 ${toolsModule.TOOL_NAMES.length} 个工具`
-          + `（${toolsModule.WRITE_TOOL_NAMES.length} 写 + ${toolsModule.READ_TOOL_NAMES.length} 读）：`
-          + toolsModule.TOOL_NAMES.join(', '))
+        log(registrationLog)
       } catch (err) {
         warn(`${TAG} 工具注册失败：${messageOf(err)}`)
       }

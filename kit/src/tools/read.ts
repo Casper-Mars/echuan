@@ -527,16 +527,12 @@ export function createMaterialGetTool(options: EchuanToolOptions): ToolDefinitio
   })
 }
 
-/** 七个只读工具名（顺序即向模型暴露的顺序）。 */
-export const READ_TOOL_NAMES = [
-  'echuan_inbox',
-  'echuan_product_list',
-  'echuan_project_list',
-  'echuan_task_list',
-  'echuan_project_get',
-  'echuan_task_get',
-  'echuan_material_get',
-] as const
+/**
+ * 七个只读工具名（顺序即向模型暴露的顺序）。
+ *
+ * 定义在 `../tool-names.js`（唯一真源），这里只做再导出，避免两处名单漂移。
+ */
+export { READ_TOOL_NAMES } from '../tool-names.js'
 
 /** 构造 7 个只读工具定义。 */
 export function createEchuanReadTools(options: EchuanToolOptions): ToolDefinition[] {

@@ -1,5 +1,5 @@
 /**
- * 配置归一化单测（验收项 4：不写任何配置时 5 项均取默认值）。
+ * 配置归一化单测（验收项 4：不写任何配置时 6 项均取默认值）。
  */
 import { describe, expect, it } from 'vitest'
 import {
@@ -12,12 +12,14 @@ import {
 } from '../src/config.js'
 
 describe('resolveConfig：默认值', () => {
-  it('无配置时 5 项全部取默认值', () => {
+  it('无配置时 6 项全部取默认值', () => {
     const resolved = resolveConfig()
     expect(resolved).toEqual(DEFAULT_CONFIG)
     expect(resolved.baseUrl).toBe('http://127.0.0.1:8720')
     expect(resolved.actor).toBe('agent:echuan')
     expect(resolved.requestTimeoutMs).toBe(35_000)
+    // 默认不排除任何工具（全量 22 个）。
+    expect(resolved.exclude).toEqual([])
     // 嵌套：worker.poll.enable / worker.metadata
     expect(resolved.worker.poll.enable).toBe(false)
     expect(resolved.worker.metadata).toEqual({})
@@ -32,6 +34,45 @@ describe('resolveConfig：默认值', () => {
     expect(DEFAULT_CONFIG.baseUrl).toBe(DEFAULT_BASE_URL)
     expect(DEFAULT_CONFIG.actor).toBe(DEFAULT_ACTOR)
     expect(DEFAULT_CONFIG.requestTimeoutMs).toBe(DEFAULT_REQUEST_TIMEOUT_MS)
+    expect(DEFAULT_CONFIG.exclude).toEqual([])
+  })
+})
+
+describe('resolveConfig：exclude 归一化', () => {
+  it('null / 空数组 / 不配置三者等价', () => {
+    expect(resolveConfig({ exclude: null }).exclude).toEqual([])
+    expect(resolveConfig({ exclude: [] }).exclude).toEqual([])
+    expect(resolveConfig({}).exclude).toEqual([])
+    expect(resolveConfig({ exclude: [] })).toEqual(DEFAULT_CONFIG)
+  })
+
+  it('每项 trim，重复项去重且保留首次出现顺序', () => {
+    expect(resolveConfig({
+      exclude: ['  echuan_plan_submit ', 'echuan_task_claim', 'echuan_plan_submit'],
+    }).exclude).toEqual(['echuan_plan_submit', 'echuan_task_claim'])
+  })
+
+  it('空白项抛 TypeError，不静默丢弃', () => {
+    expect(() => resolveConfig({ exclude: ['echuan_task_claim', '  '] }))
+      .toThrow(TypeError)
+    expect(() => resolveConfig({ exclude: ['echuan_task_claim', '  '] }))
+      .toThrow(/exclude 不能包含空白工具名/)
+  })
+
+  it('非法类型按 Schema 语义抛错', () => {
+    // @ts-expect-error 故意传错类型：exclude 必须是字符串数组
+    expect(() => resolveConfig({ exclude: 'echuan_task_claim' })).toThrow(TypeError)
+    // @ts-expect-error 元素必须是字符串
+    expect(() => resolveConfig({ exclude: [1] })).toThrow(TypeError)
+  })
+
+  it('不改变其他字段的默认值', () => {
+    const resolved = resolveConfig({ exclude: ['echuan_project_create'] })
+    expect(resolved.baseUrl).toBe(DEFAULT_BASE_URL)
+    expect(resolved.actor).toBe(DEFAULT_ACTOR)
+    expect(resolved.requestTimeoutMs).toBe(DEFAULT_REQUEST_TIMEOUT_MS)
+    expect(resolved.worker.poll.enable).toBe(false)
+    expect(resolved.worker.metadata).toEqual({})
   })
 })
 

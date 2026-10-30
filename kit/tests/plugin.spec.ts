@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { apply, inject, metadataByteLength, name } from '../src/index.js'
+import { TOOL_NAMES } from '../src/tool-names.js'
 import { FIRST_HEARTBEAT_DELAY_MS } from '../src/worker.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -120,6 +121,10 @@ async function settleTools(fake: FakeContext): Promise<void> {
   await vi.waitFor(() => {
     expect(fake.registrations).toHaveLength(22)
   })
+}
+
+function logLines(spy: { mock: { calls: unknown[][] } }): string[] {
+  return spy.mock.calls.map(call => String(call[0]))
 }
 
 afterEach(() => {
@@ -240,6 +245,10 @@ describe('apply：加载与生命周期', () => {
     const lines = spy.mock.calls.map(call => String(call[0]))
     expect(lines.some(line => line.includes('已注册 22 个工具'))).toBe(true)
     expect(lines.some(line => line.includes('15 写 + 7 读'))).toBe(true)
+    // 不配 exclude 时日志与升级前逐字一致（含工具顺序）。
+    expect(lines.find(line => line.includes('已注册 22 个工具'))).toBe(
+      `[dsh-echuan] 已注册 22 个工具（15 写 + 7 读）：${TOOL_NAMES.join(', ')}`,
+    )
 
     fake.disposeAll()
     expect(fake.registrations).toEqual([])
@@ -292,6 +301,112 @@ describe('apply：加载与生命周期', () => {
 
     fake.disposeAll()
     expect(spy.mock.calls.length).toBe(afterDispose)
+  })
+})
+
+describe('apply：exclude 按 agent 裁剪工具', () => {
+  it('exclude 两项：注册 20 个（13 写 + 7 读），被排除项不在 ctx.tools', async () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fake = createFakeContext()
+    const exclude = ['echuan_project_create', 'echuan_plan_submit']
+
+    apply(fake.ctx, { exclude })
+    await vi.waitFor(() => {
+      expect(fake.registrations).toHaveLength(20)
+    })
+
+    expect(fake.registrations).not.toContain('echuan_project_create')
+    expect(fake.registrations).not.toContain('echuan_plan_submit')
+    // 其余工具保持原顺序，且一个不少。
+    expect(fake.registrations).toEqual([...TOOL_NAMES].filter(name => !exclude.includes(name)))
+
+    const registered = logLines(spy).find(line => line.includes('已注册 20 个工具'))
+    expect(registered).toBeDefined()
+    expect(registered).toContain('13 写 + 7 读')
+    expect(registered).toContain('已排除 2 个：echuan_project_create, echuan_plan_submit')
+    expect(registered).not.toContain('15 写 + 7 读')
+
+    fake.disposeAll()
+    expect(fake.registrations).toEqual([])
+  })
+
+  it('exclude: [] 与不配置完全等价（22 个、日志逐字一致）', async () => {
+    const spyDefault = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fakeDefault = createFakeContext()
+    apply(fakeDefault.ctx, undefined)
+    await settleTools(fakeDefault)
+    const defaultLog = logLines(spyDefault).find(line => line.includes('已注册 22 个工具'))
+    const defaultRegistrations = [...fakeDefault.registrations]
+    fakeDefault.disposeAll()
+    spyDefault.mockRestore()
+
+    const spyEmpty = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fakeEmpty = createFakeContext()
+    apply(fakeEmpty.ctx, { exclude: [] })
+    await settleTools(fakeEmpty)
+    const emptyLog = logLines(spyEmpty).find(line => line.includes('已注册 22 个工具'))
+
+    expect(emptyLog).toBe(defaultLog)
+    expect(emptyLog).toContain('15 写 + 7 读')
+    expect(emptyLog).not.toContain('已排除')
+    expect(fakeEmpty.registrations).toEqual(defaultRegistrations)
+
+    fakeEmpty.disposeAll()
+  })
+
+  it('未知工具名：apply 同步抛 TypeError，0 工具、0 定时器、不留加载日志', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const setSpy = vi.spyOn(globalThis, 'setTimeout')
+    const fake = createFakeContext()
+
+    expect(() => apply(fake.ctx, { exclude: ['echuan_task_claim', 'echuan_plan_submitt'] }))
+      .toThrow(TypeError)
+    expect(() => apply(fake.ctx, { exclude: ['echuan_plan_submitt'] }))
+      .toThrow(/echuan_plan_submitt/)
+    expect(() => apply(fake.ctx, { exclude: ['echuan_plan_submitt'] }))
+      .toThrow(/合法工具名（22 个）/)
+
+    // 校验发生在任何 effect/日志之前：没有注册、没有心跳、没有加载日志。
+    expect(fake.labels).toEqual([])
+    expect(fake.registrations).toEqual([])
+    expect(setSpy).not.toHaveBeenCalled()
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('空白项：apply 同步抛 TypeError', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const fake = createFakeContext()
+    expect(() => apply(fake.ctx, { exclude: ['  '] })).toThrow(/exclude 不能包含空白工具名/)
+    expect(fake.registrations).toEqual([])
+  })
+
+  it('全部排除：0 个工具、不报错，心跳仍按配置启动', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('offline')
+    }))
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const setSpy = vi.spyOn(globalThis, 'setTimeout')
+    const fake = createFakeContext()
+
+    expect(() => apply(fake.ctx, {
+      exclude: [...TOOL_NAMES],
+      worker: { poll: { enable: true } },
+    })).not.toThrow()
+
+    await vi.waitFor(() => {
+      expect(logLines(spy).some(line => line.includes('已注册 0 个工具'))).toBe(true)
+    })
+
+    expect(fake.registrations).toEqual([])
+    const zero = logLines(spy).find(line => line.includes('已注册 0 个工具'))
+    expect(zero).toBe(`[dsh-echuan] 已注册 0 个工具（已排除 ${TOOL_NAMES.length} 个：`
+      + `${TOOL_NAMES.join(', ')}）`)
+    expect(warnSpy).not.toHaveBeenCalled()
+    // 心跳不受影响：首轮 5s 定时器照常排上。
+    expect(setSpy.mock.calls.some(([, ms]) => ms === FIRST_HEARTBEAT_DELAY_MS)).toBe(true)
+
+    fake.disposeAll()
   })
 })
 

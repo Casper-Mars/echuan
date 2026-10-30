@@ -1,7 +1,7 @@
 /**
  * dsh-echuan 配置声明（技术方案 v0.6 §5）。
  *
- * 用 Cordis 原生 Schema（`@deepseek-ai/schemastery`）声明 5 项配置，宿主在插件激活前
+ * 用 Cordis 原生 Schema（`@deepseek-ai/schemastery`）声明 6 项配置，宿主在插件激活前
  * 用这份 Schema 校验 patch 行里的 `config`，并把默认值填好再传给 `apply`。
  * `resolveConfig` 是**唯一**的归一化出口：`apply` 与单测都走它，避免两套默认值。
  *
@@ -23,6 +23,7 @@ export interface ConfigInput {
   baseUrl?: string | null
   actor?: string | null
   requestTimeoutMs?: number | null
+  exclude?: string[] | null
   worker?: {
     poll?: { enable?: boolean | null } | null
     metadata?: Record<string, unknown> | null
@@ -37,6 +38,8 @@ export interface ResolvedConfig {
   actor: string
   /** 单请求超时（毫秒）。 */
   requestTimeoutMs: number
+  /** 不注册的工具名（已 trim、去重、保序）；默认 `[]` 表示全部注册。 */
+  exclude: string[]
   worker: {
     poll: {
       /** 是否启用定时心跳；默认 false。 */
@@ -65,6 +68,9 @@ export const Config: Schemastery<ConfigInput, ResolvedConfig> = Schema.object({
     .min(1)
     .default(DEFAULT_REQUEST_TIMEOUT_MS)
     .description('单请求超时（毫秒）'),
+  exclude: Schema.array(Schema.string())
+    .default([])
+    .description('不注册的工具名；默认全部注册（只影响本进程注册，不改 HTTP 契约）'),
   worker: Schema.object({
     poll: Schema.object({
       enable: Schema.boolean()
@@ -86,6 +92,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   baseUrl: DEFAULT_BASE_URL,
   actor: DEFAULT_ACTOR,
   requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+  exclude: [],
   worker: { poll: { enable: false }, metadata: {} },
 }
 
@@ -95,7 +102,9 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
  * 行为：
  * - 缺省字段回落默认值（Schema 的 `.default()` 负责）；
  * - `baseUrl` 去掉结尾斜杠，为空则回落默认值；
- * - `worker.metadata` 原样保留（不做深拷贝、不做键裁剪）。
+ * - `worker.metadata` 原样保留（不做深拷贝、不做键裁剪）；
+ * - `exclude` 每项做 `trim`、去重（保序），空白项抛 `TypeError`；工具名是否合法
+ *   由 `tool-names.ts` 的 `validateExclude` 在插件入口校验（config 不依赖 dsh-tools）。
  *
  * 输入非法（如 `requestTimeoutMs` 传字符串）时按 Schema 语义抛 `TypeError`，
  * 由宿主在激活阶段报错——配置错误不应被静默吞掉。
@@ -109,11 +118,37 @@ export function resolveConfig(input?: ConfigInput | null): ResolvedConfig {
     // S-02：actor 是写操作身份，前后空白没有语义；trim 后为空则回落默认值。
     actor: actor === '' ? DEFAULT_ACTOR : actor,
     requestTimeoutMs: resolved.requestTimeoutMs,
+    exclude: normalizeExclude(resolved.exclude),
     worker: {
       poll: { enable: resolved.worker.poll.enable },
       metadata: resolved.worker.metadata,
     },
   }
+}
+
+/**
+ * 归一化 `exclude`：trim、去重（保序）、空白项抛错。
+ *
+ * 这里只做**形态**归一化，不判断工具名是否合法（那是 `tool-names.ts` 的职责，
+ * 它在插件入口同步执行）。空白项不能静默丢弃：那会让「以为排除了某工具」变成
+ * 「其实没排除」，属于配置错误。
+ */
+function normalizeExclude(exclude?: readonly string[] | null): string[] {
+  if (exclude === undefined || exclude === null || exclude.length === 0) return []
+  const normalized: string[] = []
+  const seen = new Set<string>()
+  for (const item of exclude) {
+    const name = item.trim()
+    if (name === '') {
+      throw new TypeError(
+        'exclude 不能包含空白工具名。请填写完整工具名，或直接删掉该条目（exclude: [] 表示不排除）。',
+      )
+    }
+    if (seen.has(name)) continue
+    seen.add(name)
+    normalized.push(name)
+  }
+  return normalized
 }
 
 /**
