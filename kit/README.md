@@ -130,7 +130,7 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
 
 同一份 kit 可以装进多个 profile：用 `exclude` 让不同 agent 只看到自己该用的工具。过滤只发生在**注册层**——工具定义、参数校验与平台 HTTP 契约都不变，心跳/派单也不受影响。
 
-**builder（全量）**：不写 `exclude` 即可，或不显式写 `exclude: []`：
+**builder（全量）**：不写 `exclude` 即可，也可显式写 `exclude: []`：
 
 ```yaml
 - id: echuan
