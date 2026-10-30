@@ -268,7 +268,7 @@ describe('ensureSession：cwd 优先链', () => {
       || message.includes('回落到进程目录'))).toBe(false)
   })
 
-  it('5) 未配置且恰好 1 个工作区 → 用它，info 记路径、不 warn', async () => {
+  it('5) 未配置且只有一个工作区 → 用它，info 记路径、不 warn', async () => {
     const h = createHarness({ list: () => [{ path: '/ws/only' }] })
 
     const result = await ensureSession(PROJECT, h.deps)

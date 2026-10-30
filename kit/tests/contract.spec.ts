@@ -10,7 +10,7 @@
  * 2. 每条 `METHOD /path` 在 yaml `paths` 段中真实存在且唯一；
  * 3. 每条 `operationId` 与 yaml 中该 method 的实际值一致；
  * 4. `TOOL_METHODS` 恰好 20 条且与 `TOOL_OPERATIONS` 顺序一一对应；
- * 5. 注册工具数 = 22（15 写 + 7 读）、名字唯一；
+ * 5. 注册工具数 = 23（15 写 + 8 读）、名字唯一；
  * 6. worker 心跳端点 `POST /v1/workers/heartbeat`（heartbeatWorker）也在契约里；
  * 7. 物料读取返回**原始正文**：`content-type` 非 JSON 时不做 JSON 解析。
  *
@@ -333,24 +333,24 @@ describe('契约闸门：客户端声明的 operation 恰好 20 个', () => {
 // 2. 注册的工具数
 // ---------------------------------------------------------------------------
 
-describe('契约闸门：注册工具数 = 22', () => {
-  it('createAllEchuanTools 产出 22 个定义，名字唯一且与 TOOL_NAMES 一致', () => {
+describe('契约闸门：注册工具数 = 23', () => {
+  it('createAllEchuanTools 产出 23 个定义，名字唯一且与 TOOL_NAMES 一致', () => {
     const anyClient = createClient(config, { fetchImpl: async () => new Response('{}') })
     const tools = createAllEchuanTools({ client: anyClient, identity: { workerId: undefined } })
 
-    expect(tools).toHaveLength(22)
+    expect(tools).toHaveLength(23)
     expect(tools.map(tool => tool.name)).toEqual([...TOOL_NAMES])
-    expect(new Set(TOOL_NAMES).size).toBe(22)
+    expect(new Set(TOOL_NAMES).size).toBe(23)
   })
 
-  it('15 写 + 7 读的分组没变（写工具不会混进只读集合）', async () => {
+  it('15 写 + 8 读的分组没变（写工具不会混进只读集合）', async () => {
     const { READ_TOOL_NAMES, WRITE_TOOL_NAMES } = await import('../src/tools/index.js')
     expect([...WRITE_TOOL_NAMES]).toHaveLength(15)
-    expect([...READ_TOOL_NAMES]).toHaveLength(7)
+    expect([...READ_TOOL_NAMES]).toHaveLength(8)
     expect([...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES]).toEqual([...TOOL_NAMES])
   })
 
-  it('exclude 只裁剪本进程注册集合，契约仍以 TOOL_NAMES 全集（22）为准', () => {
+  it('exclude 只裁剪本进程注册集合，契约仍以 TOOL_NAMES 全集（23）为准', () => {
     const anyClient = createClient(config, { fetchImpl: async () => new Response('{}') })
     const exclude = ['echuan_project_create', 'echuan_plan_submit']
     const tools = createAllEchuanTools({
@@ -359,13 +359,13 @@ describe('契约闸门：注册工具数 = 22', () => {
       exclude,
     })
 
-    // 注册数 = 22 − exclude（这里只是「注册集合」的期望值，不是契约数）。
-    expect(tools).toHaveLength(20)
+    // 注册数 = 23 − exclude（这里只是「注册集合」的期望值，不是契约数）。
+    expect(tools).toHaveLength(21)
     expect(tools.map(tool => tool.name))
       .toEqual([...TOOL_NAMES].filter(name => !exclude.includes(name)))
 
-    // 契约数不随 exclude 变化：TOOL_NAMES 仍是 22，写/读分组不变。
-    expect([...TOOL_NAMES]).toHaveLength(22)
+    // 契约数不随 exclude 变化：TOOL_NAMES 仍是 23，写/读分组不变。
+    expect([...TOOL_NAMES]).toHaveLength(23)
     for (const name of exclude) {
       expect(TOOL_NAMES).toContain(name)
     }
@@ -447,8 +447,9 @@ describe('契约闸门：物料读取返回原始正文', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * 工具名 → operationId。22 个工具共用 20 个 operation：
- * 项目/任务各由一个 GET 同时承担 list 与 get。
+ * 工具名 → operationId。23 个工具共用 20 个 operation：
+ * 项目/任务各由一个 GET 同时承担 list 与 get；`echuan_worker_info` 零 HTTP，
+ * 不映射任何 operation（值为 `undefined`）。
  */
 const TOOL_TO_OPERATION = {
   echuan_task_claim: 'claimTask',
@@ -473,6 +474,7 @@ const TOOL_TO_OPERATION = {
   echuan_task_list: 'listOrGetTasks',
   echuan_task_get: 'listOrGetTasks',
   echuan_material_get: 'downloadMaterial',
+  echuan_worker_info: undefined,
 } as const
 
 /** 找出「客户端声明的 operation 在给定 yaml 里缺失/漂移」的第一处。 */
@@ -488,14 +490,18 @@ function operationIssue(yaml: string): string | undefined {
   return undefined
 }
 
-describe('契约闸门：22 个工具逐个映射到 20 个 operation', () => {
-  it('TOOL_NAMES 恰好 22 个，每个都映射到白名单里真实存在的 operation', () => {
-    expect([...TOOL_NAMES]).toHaveLength(22)
+describe('契约闸门：23 个工具逐个映射到 20 个 operation', () => {
+  it('TOOL_NAMES 恰好 23 个，除零 HTTP 的 worker_info 外都映射到真实 operation', () => {
+    expect([...TOOL_NAMES]).toHaveLength(23)
 
     const known = new Set(EXPECTED_OPERATIONS.map(entry => entry.operationId))
     for (const tool of TOOL_NAMES) {
       const operationId = TOOL_TO_OPERATION[tool]
-      expect(operationId, `${tool} 没有 operation 映射`).toBeDefined()
+      if (tool === 'echuan_worker_info') {
+        expect(operationId).toBeUndefined()
+        continue
+      }
+      if (operationId === undefined) throw new Error(`${tool} 没有 operation 映射`)
       expect(known.has(operationId), `${tool} 映射到未声明的 operation`).toBe(true)
       expect(
         yamlOperations.some(op => op.operationId === operationId),
@@ -508,7 +514,7 @@ describe('契约闸门：22 个工具逐个映射到 20 个 operation', () => {
     expect(TOOL_TO_OPERATION.echuan_project_list).toBe(TOOL_TO_OPERATION.echuan_project_get)
     expect(TOOL_TO_OPERATION.echuan_task_list).toBe(TOOL_TO_OPERATION.echuan_task_get)
 
-    const used = new Set(Object.values(TOOL_TO_OPERATION))
+    const used = new Set(Object.values(TOOL_TO_OPERATION).filter(value => value !== undefined))
     expect(used.size).toBe(20)
     expect([...used].sort()).toEqual(
       EXPECTED_OPERATIONS.map(entry => entry.operationId).sort(),

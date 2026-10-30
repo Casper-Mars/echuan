@@ -2,7 +2,8 @@
  * 工具 → 端点逐项连线（任务-08 B）。
  *
  * 已有测试证明了「工具有什么行为」（render / 错误文案 / 缺参），这里补的是
- * **线怎么接**：22 个工具各自必须产生**恰好 1 个**请求，method / path / query 键 /
+ * **线怎么接**：23 个工具里 22 个必须各产生**恰好一条**请求（`echuan_worker_info`
+ * 零 HTTP），method / path / query 键 /
  * body 键与契约表一致；只读工具一律 GET 且无 body；写工具里除资料包下载
  * （GET 二进制）外一律不发 GET（方案修订是 PATCH，且 `If-Match` 走请求头）。
  *
@@ -70,7 +71,7 @@ const CLAIM_PAYLOAD = {
   },
 }
 
-/** 按路径回包，让 22 个工具能在同一条链路上跑完。 */
+/** 按路径回包，让 22 个会发请求的工具能在同一条链路上跑完。 */
 const respondByPath: Responder = (call) => {
   switch (call.url.pathname) {
     case '/v1/tasks/claim':
@@ -244,7 +245,7 @@ function bodyKeys(call: RecordedCall): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// 1. 逐项连线：22 个工具，每个恰好 1 个请求
+// 1. 逐项连线：22 个会发请求的工具，每个恰好一条请求
 // ---------------------------------------------------------------------------
 
 interface WiringCase {
@@ -456,7 +457,7 @@ const WIRING_CASES: WiringCase[] = [
   },
 ]
 
-describe('工具接线：逐个工具恰好 1 个请求，method/path/query/body 精确匹配', () => {
+describe('工具接线：逐个工具恰好一条请求，method/path/query/body 精确匹配', () => {
   for (const wiring of WIRING_CASES) {
     it(`${wiring.name} → ${wiring.method} ${wiring.path}`, async () => {
       const platform = createPlatform(respondByPath)
@@ -579,7 +580,11 @@ const WRITE_TOOLS = [
   'echuan_project_package',
 ]
 
-/** 把 22 个工具都调用一遍，返回全部请求（用于方向性断言）。 */
+/**
+ * 把 23 个工具都调用一遍，返回全部请求（用于方向性断言）。
+ *
+ * `echuan_worker_info` 零 HTTP，调用它不会产生请求。
+ */
 async function runWholeChain(): Promise<RecordedCall[]> {
   const platform = createPlatform(respondByPath)
   const tools = toolsFor(platform.fetchImpl, 'w_TEST01ABCDEFGHIJKLMN')
@@ -587,11 +592,12 @@ async function runWholeChain(): Promise<RecordedCall[]> {
   for (const wiring of WIRING_CASES) {
     await call(tools.get(wiring.name), wiring.args)
   }
+  await call(tools.get('echuan_worker_info'), {})
   return platform.calls
 }
 
 describe('工具接线：方向性约束', () => {
-  it('7 个只读工具全部 GET 且没有 body', async () => {
+  it('7 个会发请求的只读工具全部 GET 且没有 body', async () => {
     const platform = createPlatform(respondByPath)
     const tools = toolsFor(platform.fetchImpl)
 
@@ -634,7 +640,7 @@ describe('工具接线：方向性约束', () => {
     expect(platform.calls.filter(request => request.method === 'DELETE')).toHaveLength(1)
   })
 
-  it('22 个工具跑完一共 22 个请求，共用 20 个 HTTP operation', async () => {
+  it('23 个工具跑完一共 22 个请求（worker_info 零 HTTP），共用 20 个 operation', async () => {
     const calls = await runWholeChain()
 
     expect(calls).toHaveLength(22)

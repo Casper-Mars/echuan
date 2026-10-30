@@ -13,18 +13,22 @@
  * 4. 间隔只认回包 `heartbeat_interval_ms`，缺失/非法回落 15s；间隔会变，因此用
  *    `setTimeout` 链（每轮结束再排下一轮），不用 `setInterval`；R-03：合法值夹紧到
  *    [{@link MIN_HEARTBEAT_INTERVAL_MS}, {@link MAX_HEARTBEAT_INTERVAL_MS}]；
- * 5. 回包 `commands` 里的 `run_task` 投给唯一的根 agent；根 agent 不是恰好 1 个时
- *    只 warn 并跳过本轮投递（不清 id、不重试本轮）；S-01：按 `task.id + lease_id`
- *    在内存里记住最近投递过的派单（LRU，容量 {@link MAX_REMEMBERED_DELIVERIES}），
- *    重复下发只投一次，不落盘；
- * 6. 网络失败 / 500 / 超时只 warn，保留 id，按当前间隔继续；不做退避状态机；
- * 7. `poll.enable=false` 时零请求、零定时器；`dispose()` 后定时器立刻清空，
+ * 5. 回包 `commands` 里的 `run_task` 按 `task.project_id` 走 `ensureSession` 取到
+ *    项目会话的 agent 后投递（项目号即会话号，不再要求「根 agent 唯一」）；
+ *    ensure 失败只 warn 一条、本轮不投递、不写 inflight、不重试本轮；S-01：按
+ *    `task.id + lease_id` 在内存里记住最近投递过的派单（LRU，容量
+ *    {@link MAX_REMEMBERED_DELIVERIES}），重复下发只投一次，不落盘；
+ * 6. inflight 记录「已投递但未报告」的派单（`taskId` / `projectId` / `leaseUntil`）：
+ *    投递成功写入；`notifyReported` / 租约过期 / 同任务新 lease 覆盖时清除；
+ *    `state` 只看 inflight：无 inflight → `idle`，inflight 会话 running → `busy`；
+ * 7. 网络失败 / 500 / 超时只 warn，保留 id，按当前间隔继续；不做退避状态机；
+ * 8. `poll.enable=false` 时零请求、零定时器；`dispose()` 后定时器立刻清空，
  *    之后不再产生任何请求与日志（包括还没发出的首轮心跳）；
- * 8. worker_id 只在内存，日志里一律打码；
- * 9. R-02：`worker.metadata` 序列化后超过 {@link WORKER_METADATA_MAX_BYTES} 时
+ * 9. worker_id 只在内存，日志里一律打码；
+ * 10. R-02：`worker.metadata` 序列化后超过 {@link WORKER_METADATA_MAX_BYTES} 时
  *    **不启动循环**（一条明确 warn 后返回），避免每轮 413 永久刷屏。
  *
- * 所有外部依赖（客户端 / 定时器 / 日志 / agent 访问 / 投递）都可注入：
+ * 所有外部依赖（客户端 / 定时器 / 日志 / 会话访问 / ensure / 投递 / 时钟）都可注入：
  * 单测用假平台与假时钟，不连真实网络、不做真实 sleep。
  */
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -79,6 +83,15 @@ export const WORKER_UNKNOWN_LOG_EVERY = 10
 /** S-01：内存里最多记住多少条已投递派单（`task.id:lease_id`）。 */
 export const MAX_REMEMBERED_DELIVERIES = 200
 
+/**
+ * 单条派单 `ensureSession` 的超时（毫秒）。
+ *
+ * ensure 永不 resolve 时会把整轮心跳卡死：`runRound` 里 `await deliverCommands()`
+ * 之后才 `schedule(next)`，后续心跳、state 与 inflight 刷新全部停摆。默认 10s，
+ * 超时按「ensure 失败」处理（只 warn、不投递、不写 inflight、不记去重）。
+ */
+export const DEFAULT_ENSURE_TIMEOUT_MS = 10_000
+
 /** 插件投递消息时写入 `source.plugin` 的标识。 */
 export const WORKER_PLUGIN_SOURCE = 'echuan'
 
@@ -102,6 +115,22 @@ export type WorkerCommand = ClientWorkerCommand
 /** 心跳状态：`busy` 只表示意图，平台据此决定是否派新卡。 */
 export type WorkerState = 'idle' | 'busy'
 
+/**
+ * 已投递、尚未报告的派单（内存态，不落盘）。
+ *
+ * `projectId` 同时是会话 id（项目号即会话号），`state` 与诊断工具都据此判定。
+ */
+export interface Inflight {
+  taskId: string
+  projectId: string
+  leaseUntil: string
+}
+
+/** 按会话 id 读取活跃 agent（生产环境就是 `ctx.agents`）。 */
+export interface WorkerSessionRegistry {
+  get(id: string): Agent | undefined
+}
+
 /** 投递出口：默认用 `createUserMessage` + `agent.followup`，单测可替换。 */
 export type WorkerDeliver = (agent: Agent, text: string) => void
 
@@ -110,8 +139,13 @@ export interface WorkerLoopOptions {
   config: ResolvedConfig
   /** worker 心跳客户端（`createWorkerClient` 的返回值）。 */
   client: WorkerClient
-  /** 读取当前根 agent 列表；生产环境传 `() => ctx.agents.roots()`。 */
-  agents: () => readonly Agent[]
+  /** 按会话 id 取 agent；生产环境传 `ctx.agents`。 */
+  sessions: WorkerSessionRegistry
+  /**
+   * 确保项目会话就绪（项目号即会话号）；生产环境用任务-03 的
+   * `createSessionEnsurer`。返回 `undefined` 表示放弃本轮投递（只 warn）。
+   */
+  ensureSession: (projectId: string) => Promise<{ agent: Agent } | undefined>
   /** 日志出口。 */
   logger: Logger
   /** 定时器实现，默认 `globalThis`；单测注入假时钟。 */
@@ -120,6 +154,13 @@ export interface WorkerLoopOptions {
   deliver?: WorkerDeliver
   /** 回包间隔缺失/非法时的兜底值，默认 {@link DEFAULT_HEARTBEAT_INTERVAL_MS}。 */
   defaultIntervalMs?: number
+  /** 当前时间（毫秒），用于租约过期判定；默认 `Date.now`。 */
+  now?: () => number
+  /**
+   * 单条派单 `ensureSession` 的超时（毫秒），默认
+   * {@link DEFAULT_ENSURE_TIMEOUT_MS}；非法值回退默认。
+   */
+  ensureTimeoutMs?: number
 }
 
 export interface WorkerLoop {
@@ -133,6 +174,8 @@ export interface WorkerLoop {
   readonly intervalMs: number
   /** R-02：`worker.metadata` 是否超过平台上限（超限时永不启动循环）。 */
   readonly metadataOverLimit: boolean
+  /** 已投递、尚未报告的派单快照（只读，诊断工具用）。 */
+  readonly inflight: readonly Inflight[]
   /**
    * 启动：{@link FIRST_HEARTBEAT_DELAY_MS} 后发出首轮心跳，之后按回包间隔用
    * setTimeout 链重排。
@@ -140,6 +183,8 @@ export interface WorkerLoop {
   start(): void
   /** 幂等卸载：清定时器，之后不再产生请求与日志。 */
   dispose(reason?: string): void
+  /** 报告成功回调：清除该任务的 inflight（不存在的 taskId 静默忽略）。 */
+  notifyReported(taskId: string): void
 }
 
 const consoleLogger: Logger = {
@@ -163,11 +208,17 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
   const logger = options.logger ?? consoleLogger
   const timer = options.timer ?? defaultTimer
   const deliver = options.deliver ?? defaultDeliver
+  const now = options.now ?? Date.now
   const fallbackIntervalMs =
     options.defaultIntervalMs !== undefined && Number.isFinite(options.defaultIntervalMs)
       && options.defaultIntervalMs > 0
       ? options.defaultIntervalMs
       : DEFAULT_HEARTBEAT_INTERVAL_MS
+  const ensureTimeoutMs =
+    options.ensureTimeoutMs !== undefined && Number.isFinite(options.ensureTimeoutMs)
+      && options.ensureTimeoutMs > 0
+      ? options.ensureTimeoutMs
+      : DEFAULT_ENSURE_TIMEOUT_MS
 
   let workerId: string | undefined
   let intervalMs = clampInterval(fallbackIntervalMs)
@@ -181,6 +232,8 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
   /** S-01：最近投递过的 `task.id:lease_id`（内存 LRU，不落盘）。 */
   const deliveredKeys = new Set<string>()
   const deliveredQueue: string[] = []
+  /** 已投递未报告的派单（按 taskId 唯一）。 */
+  const inflight: Inflight[] = []
   /** R-02：metadata 序列化后的字节数；不可序列化时为 `undefined`。 */
   const metadataBytes = readMetadataBytes()
   const metadataOverLimit =
@@ -201,6 +254,9 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
     },
     get metadataOverLimit() {
       return metadataOverLimit
+    },
+    get inflight() {
+      return inflight.map(item => ({ ...item }))
     },
 
     start() {
@@ -238,9 +294,17 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
       disposed = true
       started = false
       clearTimer()
+      inflight.length = 0
       logger.info(
         `[dsh-echuan] worker 心跳已停止（${reason}）：定时器已清除，不再产生请求与日志`,
       )
+    },
+
+    notifyReported(taskId: string) {
+      const index = inflight.findIndex(item => item.taskId === taskId)
+      if (index < 0) return
+      inflight.splice(index, 1)
+      logger.info(`[dsh-echuan] 任务 ${taskId} 报告已提交，已从 inflight 清除`)
     },
   }
 
@@ -248,13 +312,13 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
   // 内部实现
   // -------------------------------------------------------------------------
 
-  /** 一轮心跳：读 agent 状态 → 发心跳 → 处理派单 → 排下一轮。 */
+  /** 一轮心跳：清过期 inflight → 算 state → 发心跳 → 处理派单 → 排下一轮。 */
   async function runRound(): Promise<void> {
     if (disposed || !started) return
 
-    const roots = readRoots()
-    const state: WorkerState =
-      roots.length === 1 && roots[0]?.status === 'running' ? 'busy' : 'idle'
+    // 先清过期再算 state：保证上报的 state 与 inflight 快照一致。
+    expireInflight()
+    const state = computeState()
 
     const sentWorkerId = workerId
     const input = {
@@ -281,7 +345,8 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
         }
         nextDelayMs = applyHeartbeat(result.data)
         const commands = Array.isArray(result.data.commands) ? result.data.commands : []
-        deliverCommands(roots, commands)
+        await deliverCommands(commands)
+        if (disposed) return
       }
     } catch (err) {
       if (disposed) return
@@ -357,21 +422,15 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
     return intervalMs
   }
 
-  /** 把本轮的 `run_task` 指令投给唯一的根 agent。 */
-  function deliverCommands(roots: readonly Agent[], commands: readonly WorkerCommand[]): void {
+  /**
+   * 把本轮的 `run_task` 指令投给对应项目会话的 agent。
+   *
+   * 每条派单：去重（`task.id:lease_id`）→ `ensureSession(task.project_id)` →
+   * `deliver`；ensure 返回空或抛错只 warn 一条，不投递、不写 inflight、不重试本轮。
+   */
+  async function deliverCommands(commands: readonly WorkerCommand[]): Promise<void> {
     const runTasks = commands.filter(isRunTaskCommand)
     if (runTasks.length === 0) return
-
-    if (roots.length !== 1) {
-      logger.warn(
-        `[dsh-echuan] 收到 ${runTasks.length} 条派单，但当前根 agent 数量为 ${roots.length}`
-          + '（需恰好 1 个），本轮跳过投递；worker id 保持不变，不重试本轮',
-      )
-      return
-    }
-
-    const agent = roots[0]
-    if (agent === undefined) return
 
     for (const command of runTasks) {
       const key = deliveryKey(command)
@@ -382,20 +441,116 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
         )
         continue
       }
+
+      const task = command.task
+      const projectId = task.project_id
+      let ensured: { agent: Agent } | undefined
+      const outcome = await settleWithTimeout(
+        options.ensureSession(projectId),
+        ensureTimeoutMs,
+        timer,
+      )
+      if (outcome.status === 'timeout') {
+        // ensure 挂起不能拖死整轮心跳：按 ensure 失败处理，继续下一条。
+        logger.warn(
+          `[dsh-echuan] 任务 ${task.id} 的项目会话 ${projectId} ensure 超时`
+            + `（${ensureTimeoutMs}ms），本轮跳过投递；worker id 保持不变`,
+        )
+        continue
+      }
+      if (outcome.status === 'error') {
+        logger.warn(
+          `[dsh-echuan] 任务 ${task.id} 的项目会话 ${projectId} ensure 失败`
+            + `（${describeError(outcome.error)}），本轮跳过投递；worker id 保持不变`,
+        )
+        continue
+      }
+      ensured = outcome.value
+      if (disposed) return
+      if (ensured === undefined || ensured === null || ensured.agent === undefined
+        || ensured.agent === null) {
+        logger.warn(
+          `[dsh-echuan] 任务 ${task.id} 的项目会话 ${projectId} 未能就绪`
+            + '（ensureSession 返回空），本轮跳过投递；worker id 保持不变',
+        )
+        continue
+      }
+
+      const agent = ensured.agent
       try {
         deliver(agent, renderTaskMessage(command))
         rememberDelivery(key)
+        setInflight(command)
         logger.info(
-          `[dsh-echuan] 已投递任务 ${command.task.id} 给根 agent`
+          `[dsh-echuan] 已投递任务 ${task.id} 给会话 ${projectId} 的 agent`
             + `${agent.id === undefined ? '' : ` ${agent.id}`}`,
         )
       } catch (err) {
         logger.warn(
-          `[dsh-echuan] 任务 ${command.task.id} 投递失败（${describeError(err)}）；`
+          `[dsh-echuan] 任务 ${task.id} 投递失败（${describeError(err)}）；`
             + '本轮不再重试，等下一轮心跳',
         )
       }
     }
+  }
+
+  /** 投递成功：同一 taskId 的新 lease 覆盖旧记录，其余任务保留。 */
+  function setInflight(command: RunTaskCommand): void {
+    const entry: Inflight = {
+      taskId: command.task.id,
+      projectId: command.task.project_id,
+      leaseUntil: command.lease.until,
+    }
+    const index = inflight.findIndex(item => item.taskId === entry.taskId)
+    if (index >= 0) {
+      inflight[index] = entry
+    } else {
+      inflight.push(entry)
+    }
+  }
+
+  /**
+   * 清除租约已过期的 inflight（发送心跳前执行，保证 `state` 与 `inflight` 一致）。
+   *
+   * `leaseUntil` 无法解析时不做清理（不把契约异常当成过期，避免误清）。
+   */
+  function expireInflight(): void {
+    if (inflight.length === 0) return
+    let current: number
+    try {
+      current = now()
+    } catch {
+      return
+    }
+    for (let index = inflight.length - 1; index >= 0; index -= 1) {
+      const item = inflight[index]
+      if (item === undefined) continue
+      const until = Date.parse(item.leaseUntil)
+      if (Number.isNaN(until) || until > current) continue
+      inflight.splice(index, 1)
+      logger.info(
+        `[dsh-echuan] 任务 ${item.taskId} 的租约已过期（${item.leaseUntil}），`
+          + '已从 inflight 清除',
+      )
+    }
+  }
+
+  /** `state` 只看 inflight：无 inflight → idle；inflight 会话 running → busy。 */
+  function computeState(): WorkerState {
+    for (const item of inflight) {
+      let agent: Agent | undefined
+      try {
+        agent = options.sessions.get(item.projectId)
+      } catch (err) {
+        logger.warn(
+          `[dsh-echuan] 读取会话 ${item.projectId} 状态失败（${describeError(err)}），`
+            + '本轮按该条 idle 处理',
+        )
+        continue
+      }
+      if (agent?.status === 'running') return 'busy'
+    }
+    return 'idle'
   }
 
   /** R-02：装载期只算一次 metadata 字节数；不可序列化时交给客户端逐轮报错。 */
@@ -415,18 +570,6 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
     while (deliveredQueue.length > MAX_REMEMBERED_DELIVERIES) {
       const evicted = deliveredQueue.shift()
       if (evicted !== undefined) deliveredKeys.delete(evicted)
-    }
-  }
-
-  /** 读取根 agent；读不到时按 0 个处理，保证循环不因单轮异常中断。 */
-  function readRoots(): Agent[] {
-    try {
-      return [...options.agents()]
-    } catch (err) {
-      logger.warn(
-        `[dsh-echuan] 读取根 agent 失败（${describeError(err)}），本轮按 idle / 不投递处理`,
-      )
-      return []
     }
   }
 
@@ -528,4 +671,38 @@ function describeError(err: unknown): string {
     return `code=${err.code}：${err.message}`
   }
   return err instanceof Error ? err.message : String(err)
+}
+
+type SettledWithTimeout<T> =
+  | { status: 'ok'; value: T }
+  | { status: 'error'; error: unknown }
+  | { status: 'timeout' }
+
+/**
+ * 给一段 Promise 套超时：超时后立即 settle 为 `timeout`，并清掉定时器。
+ *
+ * 超时后底层 Promise 仍可能 later resolve/reject：`then` 的两个回调在创建时就
+ * 已挂上，late reject 会被吞掉（不产生 unhandledRejection），也不会再触发投递。
+ */
+function settleWithTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  timer: WorkerTimerApi,
+): Promise<SettledWithTimeout<T>> {
+  return new Promise<SettledWithTimeout<T>>(resolve => {
+    let settled = false
+    let handle: unknown
+    const finish = (result: SettledWithTimeout<T>): void => {
+      if (settled) return
+      settled = true
+      timer.clearTimeout(handle)
+      handle = undefined
+      resolve(result)
+    }
+    handle = timer.setTimeout(() => finish({ status: 'timeout' }), ms)
+    promise.then(
+      value => finish({ status: 'ok', value }),
+      error => finish({ status: 'error', error: error as unknown }),
+    )
+  })
 }

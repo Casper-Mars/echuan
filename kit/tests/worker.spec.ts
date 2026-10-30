@@ -5,7 +5,7 @@
  * 不连真实平台、不做真实 sleep。
  *
  * 覆盖验收标准的 1–10 条：首轮心跳延迟 5s（而非启动即发）、首次注册字段、
- * 间隔重排、派单投递文案、根 agent 数量异常、busy/idle、409 worker_unknown、
+ * 间隔重排、派单投递文案（多会话 / ensure 路由）、state 与 inflight、409 worker_unknown、
  * 网络失败、poll=false、dispose（含「延迟内 dispose 连首轮也不发」）、
  * 以及「源码不写盘」。
  */
@@ -167,13 +167,13 @@ async function startAndBeat(
   await scheduler.advance(FIRST_HEARTBEAT_DELAY_MS)
 }
 
-function buildAgent(status: 'idle' | 'running' = 'idle'): {
+function buildAgent(status: 'idle' | 'running' = 'idle', id = 'APP-1'): {
   agent: Agent
   followup: ReturnType<typeof vi.fn>
   setStatus(next: 'idle' | 'running'): void
 } {
   const followup = vi.fn()
-  const agent = { id: 'root-agent', status, followup } as unknown as Agent
+  const agent = { id, status, followup } as unknown as Agent
   return {
     agent,
     followup,
@@ -196,8 +196,13 @@ function setup(
   options: {
     enable?: boolean
     metadata?: Record<string, unknown>
-    agents?: () => readonly Agent[]
+    /** 活跃会话（按 `agent.id` 建索引，`id` 就是项目号）。 */
+    sessions?: readonly Agent[]
+    /** 覆盖默认 ensure：默认按 project_id 直接从 `sessions` 里取。 */
+    ensureSession?: WorkerLoopOptions['ensureSession']
+    now?: () => number
     deliver?: WorkerLoopOptions['deliver']
+    ensureTimeoutMs?: number
   } = {},
 ): LoopHarness {
   const metadata = options.metadata ?? { host: 'build-01', os: 'linux' }
@@ -209,13 +214,23 @@ function setup(
   const scheduler = createScheduler()
   const lines: string[] = []
   const logger: Logger = { info: message => lines.push(message), warn: message => lines.push(message) }
+  const agentsById = new Map<string, Agent>()
+  for (const agent of options.sessions ?? []) agentsById.set(agent.id, agent)
+  const ensureSession: WorkerLoopOptions['ensureSession'] = options.ensureSession
+    ?? (async (projectId: string) => {
+      const agent = agentsById.get(projectId)
+      return agent === undefined ? undefined : { agent }
+    })
   const loop = createWorkerLoop({
     config,
     client,
-    agents: options.agents ?? (() => []),
+    sessions: { get: (id: string) => agentsById.get(id) },
+    ensureSession,
     logger,
     timer: scheduler.api,
+    ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.deliver === undefined ? {} : { deliver: options.deliver }),
+    ...(options.ensureTimeoutMs === undefined ? {} : { ensureTimeoutMs: options.ensureTimeoutMs }),
   })
   return { config, platform, scheduler, lines, loop }
 }
@@ -312,20 +327,6 @@ describe('首次注册与后续心跳', () => {
     expect(platform.calls[0]?.body.metadata).toEqual(metadata)
   })
 
-  it('state 随投递目标根 agent 的状态变化：running → busy，idle → idle', async () => {
-    const { agent, setStatus } = buildAgent('running')
-    const { loop, platform, scheduler } = setup(
-      () => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)),
-      { agents: () => [agent] },
-    )
-
-    await startAndBeat(loop, scheduler)
-    expect(platform.calls[0]?.body.state).toBe('busy')
-
-    setStatus('idle')
-    await scheduler.advance(5_000)
-    expect(platform.calls[1]?.body.state).toBe('idle')
-  })
 
   it('日志里的 worker id 打码，不出现明文', async () => {
     const { loop, scheduler, lines } = setup(
@@ -391,11 +392,11 @@ describe('心跳间隔', () => {
 // ---------------------------------------------------------------------------
 
 describe('run_task 投递', () => {
-  it('唯一根 agent 收到一条消息，文案只含任务事实（编号/标题/租约/项目/产品/仓库），不含操作指示', async () => {
+  it('派单投递文案只含任务事实（编号/标题/租约/项目/产品/仓库），不含操作指示', async () => {
     const { agent, followup } = buildAgent('idle')
     const { loop, scheduler } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
-      { agents: () => [agent] },
+      { sessions: [agent] },
     )
 
     await startAndBeat(loop, scheduler)
@@ -437,78 +438,341 @@ describe('run_task 投递', () => {
     expect(text).not.toContain('工作目录：')
   })
 
-  it('根 agent 为 0 个：warn + 不投递，id 保持不变', async () => {
+  it('多会话（6 个 root）：sessions.get 只命中 APP-1，run_task(APP-1) 仍 ensure + 投递 1 次', async () => {
+    const agents = ['APP-1', 'APP-2', 'APP-3', 'APP-4', 'APP-5', 'APP-6']
+      .map(id => buildAgent('idle', id))
+    const ensure = vi.fn(async (projectId: string) => {
+      const hit = agents.find(item => item.agent.id === projectId)
+      return hit === undefined ? undefined : { agent: hit.agent }
+    })
+    const { loop, scheduler, platform } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      { sessions: agents.map(item => item.agent), ensureSession: ensure },
+    )
+
+    await startAndBeat(loop, scheduler)
+
+    expect(ensure).toHaveBeenCalledTimes(1)
+    expect(ensure).toHaveBeenCalledWith('APP-1')
+    const targeted = agents.find(item => item.agent.id === 'APP-1')
+    expect(targeted?.followup).toHaveBeenCalledTimes(1)
+    for (const other of agents.filter(item => item.agent.id !== 'APP-1')) {
+      expect(other.followup).not.toHaveBeenCalled()
+    }
+    expect(platform.calls[0]?.body.worker_id).toBeUndefined()
+    expect(loop.inflight).toEqual([
+      { taskId: 'APP-1-T0001', projectId: 'APP-1', leaseUntil: RUN_TASK.lease.until },
+    ])
+  })
+
+  it('ensure 返回 undefined：warn + 不投递 + 无 inflight，心跳继续', async () => {
     const deliver = vi.fn()
     const { loop, platform, scheduler, lines } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
-      { agents: () => [], deliver },
+      { sessions: [], deliver, ensureSession: async () => undefined },
     )
 
     await startAndBeat(loop, scheduler)
 
     expect(deliver).not.toHaveBeenCalled()
-    expect(lines.join('\n')).toContain('根 agent 数量为 0')
+    expect(loop.inflight).toEqual([])
+    const joined = lines.join('\n')
+    expect(joined).toContain('APP-1-T0001')
+    expect(joined).toContain('APP-1')
+    expect(joined).toContain('未能就绪')
+    expect(loop.workerId).toBe(WORKER_ID)
+
+    // 心跳不中断：下一轮照常带同一个 id。
+    await scheduler.advance(5_000)
+    expect(platform.calls[1]?.body.worker_id).toBe(WORKER_ID)
+  })
+
+  it('ensure 抛错：warn + 不投递 + 无 inflight，心跳继续', async () => {
+    const deliver = vi.fn()
+    const { loop, platform, scheduler, lines } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      {
+        sessions: [],
+        deliver,
+        ensureSession: async () => {
+          throw new Error('resume boom')
+        },
+      },
+    )
+
+    await startAndBeat(loop, scheduler)
+
+    expect(deliver).not.toHaveBeenCalled()
+    expect(loop.inflight).toEqual([])
+    expect(lines.join('\n')).toContain('resume boom')
     expect(loop.workerId).toBe(WORKER_ID)
 
     await scheduler.advance(5_000)
     expect(platform.calls[1]?.body.worker_id).toBe(WORKER_ID)
   })
 
-  it('根 agent 多于 1 个：warn + 不投递，id 保持不变', async () => {
-    const first = buildAgent('idle')
-    const second = buildAgent('idle')
+  it('ensure 永不 resolve：超时后 warn 1 条、0 投递、0 inflight，下一轮心跳照常发出', async () => {
     const deliver = vi.fn()
+    const never = new Promise<{ agent: Agent }>(() => {})
     const { loop, platform, scheduler, lines } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
-      { agents: () => [first.agent, second.agent], deliver },
+      { sessions: [], deliver, ensureSession: () => never, ensureTimeoutMs: 300 },
+    )
+
+    await startAndBeat(loop, scheduler)
+    expect(platform.calls).toHaveLength(1)
+    expect(deliver).not.toHaveBeenCalled()
+    expect(loop.inflight).toEqual([])
+
+    // ensure 挂起中：本轮尚未排下一轮心跳，只剩 ensure 超时定时器。
+    expect(scheduler.pending.map(task => task.at)).toEqual([FIRST_HEARTBEAT_DELAY_MS + 300])
+
+    await scheduler.advance(300)
+    expect(deliver).not.toHaveBeenCalled()
+    expect(loop.inflight).toEqual([])
+    const timeoutWarns = lines.filter(line => line.includes('ensure 超时'))
+    expect(timeoutWarns).toHaveLength(1)
+    expect(timeoutWarns[0]).toContain('APP-1-T0001')
+    expect(timeoutWarns[0]).toContain('300ms')
+
+    // 超时后本轮继续并重排：下一轮心跳按 interval 计划（不再被 ensure 拖死）。
+    expect(scheduler.pending.map(task => task.at)).toEqual([
+      FIRST_HEARTBEAT_DELAY_MS + 300 + 5_000,
+    ])
+
+    await scheduler.advance(5_000)
+    expect(platform.calls).toHaveLength(2)
+  })
+
+  it('ensure 超时后原 Promise 再 resolve：仍不投递、不写 inflight', async () => {
+    const { agent } = buildAgent('idle')
+    const deliver = vi.fn()
+    let resolveEnsure: ((value: { agent: Agent } | undefined) => void) | undefined
+    const pending = new Promise<{ agent: Agent } | undefined>(resolve => {
+      resolveEnsure = resolve
+    })
+    const { loop, platform, scheduler } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      { sessions: [agent], deliver, ensureSession: () => pending, ensureTimeoutMs: 300 },
+    )
+
+    await startAndBeat(loop, scheduler)
+    await scheduler.advance(300)
+    expect(deliver).not.toHaveBeenCalled()
+    expect(loop.inflight).toEqual([])
+
+    // 超时后底层 Promise 才 resolve：不得补投递、不得补写 inflight。
+    resolveEnsure?.({ agent })
+    await drain(6)
+    expect(deliver).not.toHaveBeenCalled()
+    expect(loop.inflight).toEqual([])
+    expect(platform.calls).toHaveLength(1)
+  })
+
+  it('ensure 超时后原 Promise 再 reject：不产生 unhandledRejection', async () => {
+    const deliver = vi.fn()
+    let rejectEnsure: ((reason: unknown) => void) | undefined
+    const pending = new Promise<{ agent: Agent } | undefined>((_, reject) => {
+      rejectEnsure = reject
+    })
+    const { loop, platform, scheduler } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      { sessions: [], deliver, ensureSession: () => pending, ensureTimeoutMs: 300 },
+    )
+
+    const rejections: unknown[] = []
+    const onUnhandled = (reason: unknown): void => {
+      rejections.push(reason)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      await startAndBeat(loop, scheduler)
+      await scheduler.advance(300)
+      rejectEnsure?.(new Error('late ensure boom'))
+      await drain(6)
+      expect(rejections).toEqual([])
+      expect(deliver).not.toHaveBeenCalled()
+      expect(loop.inflight).toEqual([])
+      expect(platform.calls).toHaveLength(1)
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('投递失败（deliver 抛错）：warn + 不写 inflight + 不记去重（下一轮重投）', async () => {
+    const { agent } = buildAgent('idle')
+    let attempts = 0
+    const deliver = vi.fn(() => {
+      attempts += 1
+      if (attempts === 1) throw new Error('followup boom')
+      agent.followup('ok' as never)
+    })
+    const { loop, scheduler, lines } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      { sessions: [agent], deliver },
     )
 
     await startAndBeat(loop, scheduler)
 
-    expect(first.followup).not.toHaveBeenCalled()
-    expect(second.followup).not.toHaveBeenCalled()
-    expect(deliver).not.toHaveBeenCalled()
-    expect(lines.join('\n')).toContain('根 agent 数量为 2')
-    expect(loop.workerId).toBe(WORKER_ID)
+    expect(deliver).toHaveBeenCalledTimes(1)
+    expect(loop.inflight).toEqual([])
+    expect(lines.join('\n')).toContain('followup boom')
 
     await scheduler.advance(5_000)
-    expect(platform.calls[1]?.body.worker_id).toBe(WORKER_ID)
+    expect(deliver).toHaveBeenCalledTimes(2)
   })
 })
 
 // ---------------------------------------------------------------------------
-// 4. busy / idle 平台语义
+// 4. state 只看 inflight
 // ---------------------------------------------------------------------------
 
-describe('busy 状态不领新卡', () => {
-  it('agent running → 上报 busy，平台回 commands=[] 时不投递；转 idle 后下一轮收到 run_task', async () => {
-    const { agent, followup, setStatus } = buildAgent('running')
-    let call = 0
+describe('state 只看 inflight', () => {
+  it('无 inflight → idle（即使存在 running 会话）', async () => {
+    const { agent } = buildAgent('running')
     const { loop, platform, scheduler } = setup(
-      (body) => {
-        const current = call
-        call += 1
-        if (current === 0) {
-          expect(body.state).toBe('busy')
-          // 平台对 busy worker 不派卡。
-          return okResponse(heartbeatPayload(WORKER_ID, [], 5_000))
-        }
-        expect(body.state).toBe('idle')
-        return okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000))
-      },
-      { agents: () => [agent] },
+      () => okResponse(heartbeatPayload(WORKER_ID, [], 5_000)),
+      { sessions: [agent] },
     )
 
     await startAndBeat(loop, scheduler)
+    expect(platform.calls[0]?.body.state).toBe('idle')
 
-    expect(platform.calls[0]?.body.state).toBe('busy')
-    expect(followup).not.toHaveBeenCalled()
-
-    setStatus('idle')
     await scheduler.advance(5_000)
-
     expect(platform.calls[1]?.body.state).toBe('idle')
+  })
+
+  it('投递后 inflight 会话 running → 下一轮 busy；平台不再派卡', async () => {
+    const until = Date.parse(RUN_TASK.lease.until)
+    const { agent, followup } = buildAgent('running')
+    const { loop, platform, scheduler } = setup(
+      (body, call) => {
+        if (call === 0) {
+          expect(body.state).toBe('idle')
+          return okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000))
+        }
+        expect(body.state).toBe('busy')
+        return okResponse(heartbeatPayload(WORKER_ID, [], 5_000))
+      },
+      { sessions: [agent], now: () => until - 60_000 },
+    )
+
+    await startAndBeat(loop, scheduler)
     expect(followup).toHaveBeenCalledTimes(1)
+    expect(loop.inflight).toHaveLength(1)
+
+    await scheduler.advance(5_000)
+    expect(platform.calls[1]?.body.state).toBe('busy')
+    expect(followup).toHaveBeenCalledTimes(1)
+  })
+
+  it('投递后 inflight 会话 idle → 下一轮 idle', async () => {
+    const until = Date.parse(RUN_TASK.lease.until)
+    const { agent } = buildAgent('idle')
+    const { loop, platform, scheduler } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      { sessions: [agent], now: () => until - 60_000 },
+    )
+
+    await startAndBeat(loop, scheduler)
+    expect(platform.calls[0]?.body.state).toBe('idle')
+
+    await scheduler.advance(5_000)
+    expect(platform.calls[1]?.body.state).toBe('idle')
+  })
+
+  it('notifyReported 之后回到 idle（即使会话仍 running）', async () => {
+    const until = Date.parse(RUN_TASK.lease.until)
+    const { agent } = buildAgent('running')
+    const { loop, platform, scheduler } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      { sessions: [agent], now: () => until - 60_000 },
+    )
+
+    await startAndBeat(loop, scheduler)
+    await scheduler.advance(5_000)
+    expect(platform.calls[1]?.body.state).toBe('busy')
+
+    loop.notifyReported('APP-1-T0001')
+    await scheduler.advance(5_000)
+    expect(platform.calls[2]?.body.state).toBe('idle')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 4b. inflight 生命周期
+// ---------------------------------------------------------------------------
+
+describe('inflight 生命周期', () => {
+  it('投递成功写入 taskId / projectId / leaseUntil', async () => {
+    const { agent } = buildAgent('idle')
+    const { loop, scheduler } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      { sessions: [agent] },
+    )
+
+    expect(loop.inflight).toEqual([])
+    await startAndBeat(loop, scheduler)
+    expect(loop.inflight).toEqual([
+      { taskId: RUN_TASK.task.id, projectId: 'APP-1', leaseUntil: RUN_TASK.lease.until },
+    ])
+  })
+
+  it('notifyReported 清除对应任务；未知 taskId 静默忽略', async () => {
+    const { agent } = buildAgent('idle')
+    const { loop, scheduler, lines } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      { sessions: [agent] },
+    )
+
+    await startAndBeat(loop, scheduler)
+    loop.notifyReported('not-a-task')
+    expect(loop.inflight).toHaveLength(1)
+
+    loop.notifyReported(RUN_TASK.task.id)
+    expect(loop.inflight).toEqual([])
+    expect(lines.join('\n')).toContain('已从 inflight 清除')
+  })
+
+  it('租约过期：下一轮开始前清除并记一条日志', async () => {
+    const until = Date.parse(RUN_TASK.lease.until)
+    let clock = until - 60_000
+    const { agent } = buildAgent('idle')
+    const { loop, scheduler, lines } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      { sessions: [agent], now: () => clock },
+    )
+
+    await startAndBeat(loop, scheduler)
+    expect(loop.inflight).toHaveLength(1)
+
+    clock = until + 1
+    await scheduler.advance(5_000)
+    expect(loop.inflight).toEqual([])
+    expect(lines.join('\n')).toContain('租约已过期')
+  })
+
+  it('同 task 新 lease：覆盖旧 leaseUntil，不重复计数', async () => {
+    const until = Date.parse(RUN_TASK.lease.until)
+    const renewed = {
+      ...RUN_TASK,
+      lease: { ...RUN_TASK.lease, lease_id: 'l_renewed', until: '2026-10-27T17:00:00.000Z' },
+    }
+    const { agent } = buildAgent('idle')
+    const { loop, scheduler } = setup(
+      (body, call) => okResponse(
+        heartbeatPayload(WORKER_ID, [call === 0 ? RUN_TASK : renewed], 5_000),
+      ),
+      { sessions: [agent], now: () => until - 60_000 },
+    )
+
+    await startAndBeat(loop, scheduler)
+    expect(loop.inflight[0]?.leaseUntil).toBe(RUN_TASK.lease.until)
+
+    await scheduler.advance(5_000)
+    expect(loop.inflight).toEqual([
+      { taskId: RUN_TASK.task.id, projectId: 'APP-1', leaseUntil: '2026-10-27T17:00:00.000Z' },
+    ])
   })
 })
 
@@ -611,10 +875,11 @@ describe('单轮失败不崩溃', () => {
 // ---------------------------------------------------------------------------
 
 describe('开关与卸载', () => {
-  it('poll.enable=false：零请求、零定时器（构造也不建）', async () => {
+  it('poll.enable=false：零请求、零定时器、零 ensure（构造也不建）', async () => {
+    const ensure = vi.fn(async () => undefined)
     const { loop, platform, scheduler, lines } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID)),
-      { enable: false },
+      { enable: false, ensureSession: ensure },
     )
 
     expect(scheduler.count).toBe(0)
@@ -622,6 +887,8 @@ describe('开关与卸载', () => {
 
     expect(platform.calls).toHaveLength(0)
     expect(scheduler.count).toBe(0)
+    expect(ensure).not.toHaveBeenCalled()
+    expect(loop.inflight).toEqual([])
     expect(loop.started).toBe(false)
     expect(lines.join('\n')).toContain('worker.poll.enable=false')
 
@@ -992,7 +1259,7 @@ describe('S-01 重复派单去重', () => {
     const { agent, followup } = buildAgent('idle')
     const { loop, scheduler, lines } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
-      { agents: () => [agent] },
+      { sessions: [agent] },
     )
 
     await startAndBeat(loop, scheduler)
@@ -1010,7 +1277,7 @@ describe('S-01 重复派单去重', () => {
     const deliver = vi.fn((target: Agent, text: string) => { target.followup(text as never) })
     const { loop, scheduler } = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK, RUN_TASK], 5_000)),
-      { agents: () => [agent], deliver },
+      { sessions: [agent], deliver },
     )
 
     await startAndBeat(loop, scheduler)
@@ -1025,7 +1292,7 @@ describe('S-01 重复派单去重', () => {
     const second = { ...RUN_TASK, lease: { ...RUN_TASK.lease, lease_id: 'l_other_lease' } }
     const { loop, scheduler } = setup(
       (body, call) => okResponse(heartbeatPayload(WORKER_ID, [call === 0 ? first : second], 5_000)),
-      { agents: () => [agent] },
+      { sessions: [agent] },
     )
 
     await startAndBeat(loop, scheduler)
@@ -1049,7 +1316,7 @@ describe('S-01 重复派单去重', () => {
           heartbeatPayload(WORKER_ID, round === 1 ? many : [many[0]], 5_000),
         )
       },
-      { agents: () => [agent] },
+      { sessions: [agent] },
     )
 
     await startAndBeat(loop, scheduler)

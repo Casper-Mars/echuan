@@ -4,10 +4,10 @@
  * 职责边界（技术方案 v0.6 §1）：
  * - 声明插件标识 `name` 与依赖服务 `inject`；
  * - 在 `apply(ctx, config)` 里解析配置（baseUrl / actor / 超时 / exclude / worker）、落加载日志；
- * - 注册最多 22 个工具（`exclude` 可裁剪，默认全量）：15 个写（项目创建 / 需求写入 / 提交评审 / 方案创建 /
+ * - 注册最多 23 个工具（`exclude` 可裁剪，默认全量）：15 个写（项目创建 / 需求写入 / 提交评审 / 方案创建 /
  *   方案修订 / 批量建卡 / 领卡 / 续租 / 交报告 / 单卡增改删 / 项目改标题 /
- *   建产品 / 资料包下载）+ 7 个只读
- *   （待办 / 产品 / 项目 / 任务列表 / 项目全景 / 任务详情 / 资料），
+ *   建产品 / 资料包下载）+ 8 个只读
+ *   （待办 / 产品 / 项目 / 任务列表 / 项目全景 / 任务详情 / 资料 / worker 诊断），
  *   只调平台契约、不提供审批/驳回/取消动作；
  * - 静态注册 1 个技能 `echuan-task-execution`（派单开工 / 读上下文 / 汇报 / 续租 / 门禁禁区），
  *   随插件 fiber 一并注销；
@@ -29,6 +29,7 @@
  * 都在 `apply` 内**惰性 import**，避免拖慢 `--help` 这类快速退出场景下的插件激活。
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import {
   Config,
   WORKER_METADATA_MAX_BYTES,
@@ -40,6 +41,8 @@ import type { WorkerClient } from './client.js'
 import type { Logger } from './runtime.js'
 import { TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from './tool-names.js'
 import { ECHUAN_SKILL_NAME, registerEchuanSkill } from './skill.js'
+import { createSessionEnsurer } from './session.js'
+import type { WorkerInfoDeps } from './tools/worker-info.js'
 import type { WorkerLoop } from './worker.js'
 
 export {
@@ -96,8 +99,8 @@ export const name = 'echuan'
  * 依赖服务。
  *
  * - `tools` / `skills`：后续阶段注册工具与技能指南；
- * - `agents`：**只**用于读取根 agent 状态（`idle` / `running`）与投递任务消息，
- *   不创建会话、不选模型。
+ * - `agents`：按会话 id 读取 agent 状态（`idle` / `running`）、投递任务消息，并交给
+ *   `createSessionEnsurer` 复用 / 恢复 / 新建项目会话（项目号即会话号）。
  *
  * 三者由 `@deepseek-ai/dsh-base` 提供；缺任一则本插件保持未激活，而不是抛错。
  */
@@ -180,6 +183,48 @@ export function apply(ctx: Context, config?: ConfigInput): void {
   // 不自留副本、不读磁盘；循环尚未创建时（poll=false）自然是 undefined。
   let loop: WorkerLoop | undefined
 
+  /**
+   * 惰性读取宿主服务（`ctx.get('…')`）：插件加载早期服务可能还没就绪，
+   * 诊断工具每次调用都会重新取一次；缺失只降级展示，不抛错。
+   */
+  const readService = <T>(serviceName: string): T | undefined => {
+    const getter = (ctx as unknown as { get?: (name: string) => unknown }).get
+    if (typeof getter !== 'function') return undefined
+    try {
+      return (getter.call(ctx, serviceName) ?? undefined) as T | undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  // `echuan_worker_info` 的只读依赖：全部惰性（`loop` 与宿主服务都在调用时读），
+  // 工具本身零 HTTP，不参与心跳与派单。
+  const workerInfo: WorkerInfoDeps = {
+    pollEnabled: resolved.worker.poll.enable,
+    ...(resolved.worker.workspaceRoot === undefined
+      ? {}
+      : { workspaceRoot: resolved.worker.workspaceRoot }),
+    workerId: () => loop?.workerId,
+    inflight: () => loop?.inflight ?? [],
+    get agents() {
+      const agents = (ctx as unknown as {
+        agents?: { get(id: string): { status?: string } | undefined }
+      }).agents
+      return agents === undefined
+        ? undefined
+        : { get: (id: string) => agents.get(id) }
+    },
+    get sessionPersistence() {
+      return readService<NonNullable<WorkerInfoDeps['sessionPersistence']>>('sessionPersistence')
+    },
+    get agentPresets() {
+      return readService<NonNullable<WorkerInfoDeps['agentPresets']>>('agentPresets')
+    },
+    get workspaceRegistry() {
+      return readService<NonNullable<WorkerInfoDeps['workspaceRegistry']>>('workspaceRegistry')
+    },
+  }
+
   // 工具注册：与心跳开关无关（poll=false 也能手动领卡/续租/交报告）。
   // 惰性 import 保证 `--help` 快路径不加载 `@deepseek-ai/dsh-tools`。
   ctx.effect(() => {
@@ -200,7 +245,11 @@ export function apply(ctx: Context, config?: ConfigInput): void {
             get workerId() {
               return loop?.workerId
             },
+            notifyReported(taskId: string) {
+              loop?.notifyReported(taskId)
+            },
           },
+          workerInfo,
           exclude,
         })
         log(registrationLog)
@@ -267,10 +316,24 @@ export function apply(ctx: Context, config?: ConfigInput): void {
         if (disposed) return
 
         const client: WorkerClient = clientModule.createWorkerClient(resolved)
+        // 派单按 `task.project_id` → `ensureSession` → 投给返回的 agent；
+        // 不再要求根 agent 唯一。
+        // ensure 返回的是结构替身 `EnsureAgent`（只有 `id` / `session`），运行时就是
+        // 真实 Agent；投递需要 `followup`，在这里收窄一次类型。
+        const ensure = createSessionEnsurer(ctx, resolved, { info: log, warn })
+        const ensureSession = async (
+          projectId: string,
+        ): Promise<{ agent: Agent } | undefined> => {
+          const result = await ensure(projectId)
+          return result === undefined ? undefined : { agent: result.agent as Agent }
+        }
         const nextLoop = workerModule.createWorkerLoop({
           config: resolved,
           client,
-          agents: () => ctx.agents.roots(),
+          // 惰性读取：`ctx.agents` 只在真正心跳/投递时访问。
+          // 项目号即会话号；dsh 的会话 id 是品牌类型，这里按字符串收窄一次。
+          sessions: { get: (id: string) => ctx.agents.get(id as never) },
+          ensureSession,
           logger: toRuntimeLogger(log, warn),
         })
         loop = nextLoop
