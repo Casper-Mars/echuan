@@ -590,7 +590,7 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<string[]> {
   const calls: Array<[string, Record<string, unknown>]> = [
     ['echuan_task_claim', { product: 'APP' }],
     ['echuan_task_renew', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b' }],
-    ['echuan_task_report', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b', summary_md: '三段式报告' }],
+    ['echuan_task_report', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b', summary_md: '四段式报告' }],
     ['echuan_project_create', { product_id: 'APP', title: '新项目' }],
     ['echuan_project_requirement_write', { project_id: 'APP-2', body_md: '# 需求正文' }],
     ['echuan_project_submit', { project_id: 'APP-2' }],

@@ -8,7 +8,7 @@
 #   S3  pnpm pack → 装进临时 dsh profile → profile 自身能 --help 退出
 #   S4  dsh 后台启动（ACP 长驻）→ 平台注册出 w_ 前缀 worker
 #   S5  平台派单 → 插件把任务投递给根 agent（日志证据）
-#   S6  用 lib/tools 里真实的 echuan_task_report 交三段式报告 → pending_acceptance
+#   S6  用 lib/tools 里真实的 echuan_task_report 交四段式报告（含 git 交付）→ pending_acceptance
 #   S7  下一次心跳领到第二张卡（且不是刚报告的那张）
 #   S8  平台重启 → 同一 worker id 心跳 200、不重复领卡
 #   S9  插件重启 → 新 w_ id，旧记录仍在且不领同一张卡
@@ -567,7 +567,7 @@ pass "5/11 平台派单成功（卡一 in_progress @ $WORKER_ID），插件已�
 # --- 6. 干活与交报告 --------------------------------------------------------
 STEP="6/11 交报告"
 say ""
-say "== 6/11 用 lib/tools 的 echuan_task_report 交三段式报告 =="
+say "== 6/11 用 lib/tools 的 echuan_task_report 交四段式报告 =="
 
 http_get "/v1/tasks?id=$TASK1"
 require_code 200 "读取卡一租约"
@@ -618,7 +618,12 @@ const summary_md = [
   '- 端到端脚本轮询任务状态并断言 pending_acceptance；',
   '- 断言报告正文非空、worker 指针与租约已清理。',
   '',
-  '## ③遗留风险',
+  '## ③git 交付',
+  '',
+  '- 分支 task/<task_id>、commit、远程校验与 PR/compare 链接为占位说明；',
+  '- 真实交付需附 ls-remote 与 rev-parse HEAD 一致的校验结果。',
+  '',
+  '## ④遗留风险',
   '',
   '- 报告内容为验收脚本生成，不代表真实业务交付物；',
   '- 默认模式不经过 LLM，agent 侧工具调用由 E2E_REAL_LLM=1 单独覆盖。',
@@ -833,7 +838,7 @@ done
 say "卡二租约：$T2_LEASE"
 
 http_post "/v1/tasks/report?id=$TASK2" "$(jq -nc --arg lease "$T2_LEASE" \
-  '{lease_id:$lease,summary_md:"## ①改了什么\n\n- kit/scripts/e2e.sh 结清最后一张卡；\n- 仅调用 POST /v1/tasks/report。\n\n## ②怎么自检\n\n- 断言卡二进入 pending_acceptance；\n- 验收后断言项目进入 completed。\n\n## ③遗留风险\n\n- 报告正文由验收脚本生成。"}')"
+  '{lease_id:$lease,summary_md:"## ①改了什么\n\n- kit/scripts/e2e.sh 结清最后一张卡；\n- 仅调用 POST /v1/tasks/report。\n\n## ②怎么自检\n\n- 断言卡二进入 pending_acceptance；\n- 验收后断言项目进入 completed。\n\n## ③git 交付\n\n- 分支 task/<task_id>、commit、远程校验与 PR 链接为占位说明。\n\n## ④遗留风险\n\n- 报告正文由验收脚本生成。"}')"
 require_code 200 "提交卡二报告"
 [ "$(jqr '.status_name')" = "pending_acceptance" ] || fail "报告后卡二应为 pending_acceptance，实际 $(jqr '.status_name')"
 T2_VERSION="$(jqr '.version')"

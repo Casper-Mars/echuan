@@ -244,11 +244,13 @@ export function createRenewTool(options: EchuanToolOptions): ToolDefinition {
   })
 }
 
-/** 报告三段式的固定提示（本地校验用，也用于模型提示）。 */
+/** 报告四段式的固定提示（本地校验用，也用于模型提示）。 */
 export const REPORT_STRUCTURE_HINT =
-  '必须按三段写：①改了什么（改动清单与关键决策）'
+  '必须按四段写：①改了什么（改动清单与关键决策）'
   + '②怎么自检（跑了什么命令/用例，结果如何）'
-  + '③遗留风险（未覆盖的边界、已知问题、需要人工确认的点）。'
+  + '③git 交付（分支 task/<id>、commit、远程分支与 ls-remote 校验结果、PR/compare 链接）'
+  + '④遗留风险（未覆盖的边界、已知问题、需要人工确认的点）。'
+  + '未 push 不得报完成。'
 
 /**
  * `echuan_task_report`：交报告。
@@ -261,8 +263,9 @@ export function createReportTool(options: EchuanToolOptions): ToolDefinition {
   return defineTool({
     name: 'echuan_task_report',
     description:
-      '提交任务卡的三段式报告并把任务转待验收（POST /v1/tasks/report?id=）。'
-      + 'summary_md 必填且不能为空白；内容必须覆盖「改了什么 / 怎么自检 / 遗留风险」。',
+      '提交任务卡的四段式报告并把任务转待验收（POST /v1/tasks/report?id=）。'
+      + 'summary_md 必填且不能为空白；内容必须覆盖「改了什么 / 怎么自检 / git 交付 / 遗留风险」四项，'
+      + '未 push 不得报完成。',
     parameters: {
       task_id: { type: 'string', required: true, description: '任务编号（必填，走 query `?id=`）' },
       lease_id: { type: 'string', required: true, description: '当前有效的租约 id（必填）' },

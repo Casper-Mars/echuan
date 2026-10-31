@@ -207,7 +207,7 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 | `echuan_task_claim` 报 `409 worker_busy` | 该 worker 已持有卡 | 先 `echuan_task_report` 交掉当前卡，不要并发抢卡 |
 | 续租/报告报 `409 lease_lost` | 租约过期或被回收 | 立即停止该卡，旧结果不可再提交，重新 `echuan_task_claim` |
 | `/v1/workers` 显示 `presence=offline` | 插件停了 / 心跳关了 / 超过 45s 没心跳 | 确认 `worker.poll.enable=true`、进程在跑、网络通 |
-| 报告被拒 `422 material_required` | `summary_md` 为空 | 按「改了什么 / 怎么自检 / 遗留风险」三段重写 |
+| 报告被拒 `422 material_required` | `summary_md` 为空 | 按「改了什么 / 怎么自检 / git 交付 / 遗留风险」四段重写 |
 
 ## 已知行为（实测）
 

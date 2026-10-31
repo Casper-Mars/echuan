@@ -286,7 +286,7 @@ const WIRING_CASES: WiringCase[] = [
     args: {
       task_id: 'APP-1-T0001',
       lease_id: 'l_9f8b',
-      summary_md: '①改了什么 …\n②怎么自检 …\n③遗留风险 …',
+      summary_md: '①改了什么 …\n②怎么自检 …\n③git 交付 …\n④遗留风险 …',
     },
     method: 'POST',
     path: '/v1/tasks/report',

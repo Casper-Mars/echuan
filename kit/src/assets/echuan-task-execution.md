@@ -20,15 +20,16 @@ git rev-parse --show-toplevel
 # 2) 同步远程：每张卡开工前必做，禁止跳过
 git fetch --prune origin
 
-# 3) 确认 base（默认 origin/HEAD，取不到就 main）
-git symbolic-ref refs/remotes/origin/HEAD --short
+# 3) 确认 base（取不到 origin/HEAD 就回落到 origin/main）
+BASE=$(git symbolic-ref refs/remotes/origin/HEAD --short 2>/dev/null || echo origin/main)
 
 # 4) 从远程最新 base 建 worktree + 任务分支
-git worktree add ../wt-<task_id> -b task/<task_id> origin/main
+git worktree add ../wt-<task_id> -b task/<task_id> "$BASE"
 ```
 
 - 分支名固定 `task/<task_id>`，task_id 里的非法字符换成 `-`。
-- base 必须用 `origin/<base>` 引用，**不得用本地 `main`/`master`**，否则会基于过期提交，白改。默认分支不是 main 时，把命令里的 `origin/main` 换成 `origin/<base>`。
+- base 必须用 `origin/<base>` 引用，**不得用本地 `main`/`master`**，否则会基于过期提交，白改。默认分支不是 main 时，`BASE` 的回落值换成 `origin/<base>` 即可。
+- `-b ... "$BASE"` 会把新分支的上游暂时设为 base（如 `origin/main`），`git status` 会显示相对 base 的 ahead；首次 `git push -u origin task/<task_id>` 后上游即改为 `origin/task/<task_id>`，属正常现象，不要因此重推或 force。
 - 一张卡一个 worktree，不复用上一张卡的。上一张已合并就先 `git worktree remove ../wt-<旧task_id>`；未合并则保留供 review，新卡仍从最新 `origin/<base>` 起。
 - `fetch` 失败（网络/权限）就停下，按第 5 节汇报卡在哪，不要凭本地状态开工。
 - 建好后 `cd ../wt-<task_id>`，后续所有命令都在这里执行。
