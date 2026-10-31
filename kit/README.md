@@ -115,7 +115,7 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
     requestTimeoutMs: 35000               # 单请求超时
     exclude: []                           # 不注册的工具名；默认 [] = 全量 23 个
     worker:
-      workspaceRoot: /Users/you/project/opc  # 可选；绝对路径，只在新建会话时生效
+      workspaceRoot: /Users/you/project/opc  # 可选；绝对路径，直接作为新建会话的 cwd
       poll:
         enable: false                     # 默认关闭；打开才会定时心跳
       metadata:                           # 原样上报，序列化后 ≤8KiB
@@ -124,7 +124,7 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
         agent_version: 0.1.0
 ```
 
-- `worker.workspaceRoot`（可选，**绝对路径**）：新建项目会话时用它作根目录，会话 cwd 为 `<workspaceRoot>/<projectId>`。只在**新建会话**生效：已存在会话走 resume / live 复用时完全不看它，也不改已有会话的 cwd。留空（不写或写空串）时走优先链：唯一工作区 → 最近有新会话的工作区 → `process.cwd()`。相对路径非法，插件**激活时直接报错**（`worker.workspaceRoot 必须是绝对路径`），不会静默忽略。
+- `worker.workspaceRoot`（可选，**绝对路径**）：**直接作为新建会话的 cwd**——项目号只用来构造 session id（项目号即会话号），**不再拼 `<workspaceRoot>/<projectId>`，也不会为会话建子目录**。只在**新建会话**生效：已存在会话走 resume / live 复用时完全不看它，也不改已有会话的 cwd。留空（不写或写空串）时走优先链：唯一工作区 → 最近有新会话的工作区 → `process.cwd()`，命中的那个目录同样**原样**作为 cwd。目录必须已存在：不存在时插件只 warn 并跳过本次投递，**不会自动创建**。相对路径非法，插件**激活时直接报错**（`worker.workspaceRoot 必须是绝对路径`），不会静默忽略。
 - `worker.poll.enable=false` 是默认值：不建定时器、零请求；**手动领卡照常可用**（工具与心跳开关无关）。
 - `metadata` 序列化后超过 8KiB 时插件**不启动心跳循环**并 warn 一条（不是截断），避免每轮都被平台拒。
 - `exclude` 默认 `[]`（不排除，全量 23 个）；工具名写错或含空白项时**插件激活直接失败**（`TypeError`，错误里列出未知项与合法名单），不会静默少注册。

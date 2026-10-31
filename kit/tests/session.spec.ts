@@ -1,10 +1,15 @@
 /**
- * ensureSession 单测：三条路径 + 优先链五个分支 + 降级与幂等 + 修复回归（21 条）。
+ * ensureSession 单测：三条路径 + 优先链五个分支 + 降级与幂等 + 修复回归。
  *
- * 全部依赖注入，测试里不碰真实文件系统（`mkdir` / `cwd` 都是替身），
+ * 全部依赖注入，测试里不碰真实文件系统（`isDirectory` / `cwd` 都是替身），
  * 断言同时覆盖 warn 文案里的项目号与选中路径。
+ *
+ * P0 回归：新建会话的 cwd **就是工作区根目录**（项目号只用于 sessionId），既不拼
+ * `<root>/<projectId>`、也不建子目录；根目录不存在时只 warn 放弃。
  */
-import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   ensureSession,
@@ -24,7 +29,7 @@ const AGENT_SESSION = { id: PROJECT }
 const AGENT: EnsureAgent = { id: PROJECT, session: AGENT_SESSION }
 const FALLBACK_CWD = '/proc-cwd'
 const CONFIGURED_ROOT = '/configured-root'
-const PROJECT_CWD = join(CONFIGURED_ROOT, PROJECT)
+const OTHER_ROOT = '/ws/other'
 
 /** 每个测试可改的注入点（在 deps 闭包里按调用时读取）。 */
 interface HarnessParams {
@@ -37,6 +42,8 @@ interface HarnessParams {
   selection?: () => EnsureAgentOptions | undefined
   supportsWorkspaceCreate?: boolean
   workspaceCreateError?: Error
+  /** 视为「不存在 / 不是目录」的路径（默认所有路径都存在且是目录）。 */
+  missing?: readonly string[]
 }
 
 interface Calls {
@@ -46,7 +53,7 @@ interface Calls {
   stat: string[]
   resolve: Array<string | undefined>
   mount: Array<{ ctx: unknown; id: string }>
-  mkdir: string[]
+  probe: string[]
   attach: string[]
   workspaceCreate: string[]
   rename: Array<{ session: unknown; title: string }>
@@ -73,7 +80,7 @@ function createHarness(
     stat: [],
     resolve: [],
     mount: [],
-    mkdir: [],
+    probe: [],
     attach: [],
     workspaceCreate: [],
     rename: [],
@@ -160,8 +167,9 @@ function createHarness(
     info: (message) => {
       infos.push(message)
     },
-    mkdir: async (path) => {
-      calls.mkdir.push(path)
+    isDirectory: (target) => {
+      calls.probe.push(target)
+      return !(params.missing ?? []).includes(target)
     },
     cwd: () => FALLBACK_CWD,
     ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
@@ -197,7 +205,7 @@ describe('ensureSession：三条路径', () => {
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('resumed')
-    expect(h.calls.mkdir).toEqual([])
+    expect(h.calls.probe).toEqual([])
     expect(h.calls.create).toEqual([])
     expect(h.calls.resume).toHaveLength(1)
 
@@ -215,10 +223,10 @@ describe('ensureSession：三条路径', () => {
     expect(h.infos.some(message => message.includes('/old-checkout/APP-1'))).toBe(true)
   })
 
-  it('3) 不存在 → create：mkdir、meta、agentOptions、attach/rename/permission 各 1 次', async () => {
+  it('3) 不存在 → create：cwd 就是根目录、无子目录，attach/rename/permission 各 1 次', async () => {
     const h = createHarness({
       list: () => [{
-        path: PROJECT_CWD,
+        path: CONFIGURED_ROOT,
         sessionIds: [],
         attachSession: async (sessionId) => {
           h.calls.attach.push(sessionId)
@@ -229,12 +237,16 @@ describe('ensureSession：三条路径', () => {
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.mkdir).toEqual([PROJECT_CWD])
+    // 探测的是根目录本身；没有任何地方会去创建 <root>/<projectId>。
+    expect(h.calls.probe).toEqual([CONFIGURED_ROOT])
+    expect(h.calls.workspaceCreate).toEqual([])
     expect(h.calls.create).toHaveLength(1)
 
     const created = h.calls.create[0]!
     expect(created.sessionId).toBe(PROJECT)
-    expect(created.meta).toEqual({ cwd: PROJECT_CWD, agentPreset: 'default-preset' })
+    expect(created.meta?.cwd).toBe(CONFIGURED_ROOT)
+    expect(created.meta?.cwd).not.toBe(`${CONFIGURED_ROOT}/${PROJECT}`)
+    expect(created.meta).toEqual({ cwd: CONFIGURED_ROOT, agentPreset: 'default-preset' })
     expect(created.agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
     expect(h.calls.resolve).toEqual([undefined])
 
@@ -262,7 +274,7 @@ describe('ensureSession：cwd 优先链', () => {
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.create[0]!.meta?.cwd).toBe(PROJECT_CWD)
+    expect(h.calls.create[0]!.meta?.cwd).toBe(CONFIGURED_ROOT)
     expect(h.warns.some(message =>
       message.includes('唯一工作区')
       || message.includes('最近有会话')
@@ -275,7 +287,7 @@ describe('ensureSession：cwd 优先链', () => {
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.create[0]!.meta?.cwd).toBe('/ws/only/APP-1')
+    expect(h.calls.create[0]!.meta?.cwd).toBe('/ws/only')
     expect(h.infos.some(message =>
       message.includes('唯一工作区') && message.includes('/ws/only'))).toBe(true)
     // §4.1：单工作区是正常情况，不该产生 warn。
@@ -301,7 +313,7 @@ describe('ensureSession：cwd 优先链', () => {
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.create[0]!.meta?.cwd).toBe('/ws/b/APP-1')
+    expect(h.calls.create[0]!.meta?.cwd).toBe('/ws/b')
     expect(h.warns.some(message =>
       message.includes('最近有会话') && message.includes('/ws/b'))).toBe(true)
     // 空 sessionIds 的工作区不参与 stat。
@@ -314,7 +326,7 @@ describe('ensureSession：cwd 优先链', () => {
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.create[0]!.meta?.cwd).toBe(join(FALLBACK_CWD, PROJECT))
+    expect(h.calls.create[0]!.meta?.cwd).toBe(FALLBACK_CWD)
     expect(h.warns.some(message =>
       message.includes('回落到进程目录') && message.includes(FALLBACK_CWD))).toBe(true)
   })
@@ -335,7 +347,7 @@ describe('ensureSession：cwd 优先链', () => {
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.create[0]!.meta?.cwd).toBe(join(FALLBACK_CWD, PROJECT))
+    expect(h.calls.create[0]!.meta?.cwd).toBe(FALLBACK_CWD)
     expect(h.warns.some(message =>
       message.includes('没有可用的会话记录') && message.includes(FALLBACK_CWD))).toBe(true)
     expect(h.calls.stat).toEqual([PROJECT, 's-a', 's-b'])
@@ -358,7 +370,7 @@ describe('ensureSession：降级与幂等', () => {
     expect(first?.outcome).toBe('created')
     expect(second?.outcome).toBe('reuse')
     expect(h.calls.create).toHaveLength(1)
-    expect(h.calls.mkdir).toHaveLength(1)
+    expect(h.calls.probe).toEqual([FALLBACK_CWD])
   })
 
   it('10) create 抛错 → undefined + warn，不抛错、不做收尾', async () => {
@@ -399,7 +411,7 @@ describe('ensureSession：降级与幂等', () => {
 
     expect(result).toBeUndefined()
     expect(h.calls.create).toEqual([])
-    expect(h.calls.mkdir).toEqual([])
+    expect(h.calls.probe).toEqual([])
     expect(h.warns.some(message =>
       message.includes('agentPresets 服务缺失') && message.includes(PROJECT))).toBe(true)
   })
@@ -414,7 +426,8 @@ describe('ensureSession：降级与幂等', () => {
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.mkdir).toEqual([join(FALLBACK_CWD, PROJECT)])
+    expect(h.calls.probe).toEqual([FALLBACK_CWD])
+    expect(h.calls.create[0]!.meta?.cwd).toBe(FALLBACK_CWD)
     expect('agentOptions' in h.calls.create[0]!).toBe(false)
     expect(h.calls.rename).toEqual([])
     expect(h.calls.permission).toEqual([])
@@ -425,7 +438,7 @@ describe('ensureSession：降级与幂等', () => {
   it('14) attachSession 抛错 → create 仍成功，只 warn', async () => {
     const h = createHarness({
       list: () => [{
-        path: PROJECT_CWD,
+        path: CONFIGURED_ROOT,
         sessionIds: [],
         attachSession: async () => {
           throw new Error('attach boom')
@@ -448,26 +461,46 @@ describe('ensureSession：降级与幂等', () => {
 // ---------------------------------------------------------------------------
 
 describe('ensureSession：修复回归', () => {
-  it('15) registry 只有 <root> 且支持 create → create(cwd) 与 attach 各 1 次', async () => {
+  it('15) registry 已有同路径根目录 → 直接 attach，不 create 工作区', async () => {
     const h = createHarness({
-      list: () => [{ path: CONFIGURED_ROOT, sessionIds: [] }],
+      list: () => [{
+        path: `${CONFIGURED_ROOT}/`,
+        sessionIds: [],
+        attachSession: async (sessionId) => {
+          h.calls.attach.push(sessionId)
+        },
+      }],
       supportsWorkspaceCreate: true,
-    })
+    }, { workspaceRoot: CONFIGURED_ROOT })
 
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.create[0]!.meta?.cwd).toBe(PROJECT_CWD)
-    expect(h.calls.workspaceCreate).toEqual([PROJECT_CWD])
+    expect(h.calls.create[0]!.meta?.cwd).toBe(CONFIGURED_ROOT)
+    expect(h.calls.workspaceCreate).toEqual([])
+    expect(h.calls.attach).toEqual([PROJECT])
+  })
+
+  it('15b) registry 里没有同路径目录且支持 create → 兜底 create(根目录) 并 attach', async () => {
+    const h = createHarness({
+      list: () => [{ path: OTHER_ROOT, sessionIds: [] }],
+      supportsWorkspaceCreate: true,
+    }, { workspaceRoot: CONFIGURED_ROOT })
+
+    const result = await ensureSession(PROJECT, h.deps)
+
+    expect(result?.outcome).toBe('created')
+    expect(h.calls.create[0]!.meta?.cwd).toBe(CONFIGURED_ROOT)
+    expect(h.calls.workspaceCreate).toEqual([CONFIGURED_ROOT])
     expect(h.calls.attach).toEqual([PROJECT])
   })
 
   it('16) 创建工作区抛错 → 会话仍 created，只 warn、不 attach', async () => {
     const h = createHarness({
-      list: () => [{ path: CONFIGURED_ROOT, sessionIds: [] }],
+      list: () => [{ path: OTHER_ROOT, sessionIds: [] }],
       supportsWorkspaceCreate: true,
       workspaceCreateError: new Error('registry boom'),
-    })
+    }, { workspaceRoot: CONFIGURED_ROOT })
 
     const result = await ensureSession(PROJECT, h.deps)
 
@@ -557,8 +590,59 @@ describe('ensureSession：修复回归', () => {
       model: 'deepseek-reasoner',
       reasoningEffort: 'high',
     })
-    expect(h.calls.mkdir).toEqual([])
+    expect(h.calls.probe).toEqual([])
     expect(h.calls.create).toEqual([])
+  })
+
+  it('22) 两个不同 projectId 在同一 root 下：cwd 相同、sessionId 不同', async () => {
+    const h = createHarness({ list: () => [] }, { workspaceRoot: CONFIGURED_ROOT })
+
+    const first = await ensureSession('APP-1', h.deps)
+    const second = await ensureSession('APP-2', h.deps)
+
+    expect(first?.outcome).toBe('created')
+    expect(second?.outcome).toBe('created')
+    expect(h.calls.create).toHaveLength(2)
+    expect(h.calls.create.map(options => options.sessionId)).toEqual(['APP-1', 'APP-2'])
+    // 项目号只决定 sessionId；工作目录永远是同一个 root。
+    expect(h.calls.create.map(options => options.meta?.cwd)).toEqual([
+      CONFIGURED_ROOT,
+      CONFIGURED_ROOT,
+    ])
+    expect(h.calls.probe).toEqual([CONFIGURED_ROOT, CONFIGURED_ROOT])
+  })
+
+  it('23) 根目录不存在 → 放弃 create，只 warn（不自动建目录）', async () => {
+    const h = createHarness({
+      list: () => [],
+      missing: [CONFIGURED_ROOT],
+    }, { workspaceRoot: CONFIGURED_ROOT })
+
+    const result = await ensureSession(PROJECT, h.deps)
+
+    expect(result).toBeUndefined()
+    expect(h.calls.create).toEqual([])
+    expect(h.calls.workspaceCreate).toEqual([])
+    expect(h.calls.attach).toEqual([])
+    expect(h.warns.some(message =>
+      message.includes(CONFIGURED_ROOT)
+      && message.includes(PROJECT)
+      && message.includes('不存在'))).toBe(true)
+    // 明确告诉用户「插件不会创建目录」，避免以为会自动 mkdir -p。
+    expect(h.warns.join('\n')).toContain('不会创建目录')
+  })
+
+  it('24) 源码不再拼接 cwd、不再 mkdir 子目录', () => {
+    const source = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../src/session.ts'),
+      'utf8',
+    )
+    expect(source).not.toMatch(/\bmkdir\s*\(/)
+    expect(source).not.toContain("from 'node:fs/promises'")
+    expect(source).not.toContain("from 'node:path'")
+    expect(source).not.toMatch(/join\(\s*root/)
+    // 反向自证：create 分支确实把 root 直接当 cwd 用。
+    expect(source).toContain('const cwd = await resolveWorkspaceRoot(')
   })
 
   it('21) agentDefaultModel 缺失 → resume 仍调用且不带 agentOptions', async () => {
