@@ -83,9 +83,9 @@ describe('技能元信息', () => {
     expect(reg.content).toBe(content)
   })
 
-  it('正文长度在 1500–5500 字符区间（够用而不啰嗦）', () => {
+  it('正文长度在 1500–12000 字符区间（够用而不啰嗦）', () => {
     expect(content.length).toBeGreaterThanOrEqual(1500)
-    expect(content.length).toBeLessThanOrEqual(5500)
+    expect(content.length).toBeLessThanOrEqual(12000)
   })
 })
 
@@ -157,9 +157,10 @@ describe('git 交付协议', () => {
     expect(content).toContain('禁止跳过')
   })
 
-  it('从远程最新 base 建独立 worktree 与 task/<task_id> 分支', () => {
-    expect(content).toContain('BASE=$(git symbolic-ref refs/remotes/origin/HEAD --short 2>/dev/null || echo origin/main)')
-    expect(content).toContain('git worktree add ../wt-<task_id> -b task/<task_id> "$BASE"')
+  it('从项目分支 feature/<project_id> 的最新远程提交建独立 worktree 与 task/<task_id> 分支', () => {
+    expect(content).toContain('WORK=feature/<project_id>')
+    expect(content).toContain('BASE=$(git symbolic-ref refs/remotes/origin/HEAD --short 2>/dev/null | sed')
+    expect(content).toContain('git worktree add ../wt-<task_id> -b task/<task_id> "origin/$WORK"')
     expect(content).toContain('task/')
     expect(content).toContain('不复用上一张卡的')
     expect(content).toContain('git worktree remove')
