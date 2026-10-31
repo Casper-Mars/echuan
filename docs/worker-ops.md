@@ -84,12 +84,13 @@ curl -sS -X POST http://127.0.0.1:8720/v1/workers/heartbeat \
 | 未持有任务 | `idle` | 若队列有可领取卡，`commands` 返回一条 `kind=run_task`，同时绑定指针与租约；否则 `commands=[]` |
 | 未持有任务 | `busy` | 不派新卡（`commands=[]`），等待 Worker 自己声明 idle |
 | 已持有任务 | `busy` | 续租：`lease_until = now + lease_ttl`，不回传新 command |
-| 已持有任务 | `idle` | 不续租，租约自然到期；到期后卡回到 ready，指针由回收器清理 |
+| 已持有任务 | `idle` | 同样续租，不回传新 command（`idle` 只表示“别再给我新卡”，不等于放弃续租） |
 
 注意：
 
 - `state` 是**声明值**，不代表占用事实；占用与否只看 `current_task_id`。
-- 如果 Worker 声明 `idle` 但还持有卡，它不会拿到第二张卡；同时租约不再续期。
+- 如果 Worker 声明 `idle` 但还持有卡，它不会拿到第二张卡，租约也照常续期。
+- 只有当 Worker 不再心跳（进程退出 / 心跳链路断开）时租约才会过期；**本轮心跳顺手回收了自己刚丢的卡时，本轮不派新卡**，下一轮才可领——避免“刚丢掉旧卡就立刻接新卡”的双持。响应里 `current_task_id` 为 `null`、`commands` 为空，客户端据此知道要等下一轮。
 - 一个 Worker 最多持有一张卡（`ux_workers_current_task` 唯一索引保证）。
 - `POST /v1/tasks/claim` 带 `worker_id` 也能领卡；与心跳派卡共用同一套指针/租约规则。
 

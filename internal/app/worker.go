@@ -31,6 +31,17 @@ import (
 // one statement, store.BindTask re-checks the worker pointer under the same
 // write lock, and both roll back together with everything else if anything in
 // the eight steps fails.
+//
+// Occupancy is decided by the pointer pair (workers.current_task_id and
+// workers.current_lease_id) and never by the declared state:
+//
+//   - a worker that still holds a card keeps renewing the lease no matter what
+//     state it declares — idle means "do not hand me a new card", not "drop the
+//     card I am working on";
+//   - a heartbeat that loses its own pointer (the lease was reclaimed or could
+//     no longer be renewed) never dispatches in that same round. The client is
+//     told about the loss and only the next heartbeat may take a new card,
+//     which is what stops one worker from holding two cards at once.
 
 // CommandRunTask is the only command a heartbeat can carry: execute the task
 // attached to it (tech design v0.6 §4.3).
@@ -138,11 +149,12 @@ type HeartbeatInput struct {
 // WorkerSnapshot is the worker part of a heartbeat response.
 //
 // CurrentTaskID is the business task id the worker holds, nil when idle. State
-// is the persisted value, i.e. the client's last declaration: a worker that
-// declares idle while a card is still bound keeps the pointer (§4.1 step 5
-// renews only a busy one) and the card is reclaimed once the lease expires.
-// The pointer, not State, is what makes a worker occupied. Presence is derived
-// from last_seen and the configured TTL and is never stored.
+// is the persisted value, i.e. the client's last declaration. A worker that
+// declares idle while a card is still bound keeps both the pointer and a live
+// lease (§4.1 step 5 renews any held card); only a lost lease or a report
+// releases it. The pointer, not State, is what makes a worker occupied.
+// Presence is derived from last_seen and the configured TTL and is never
+// stored.
 type WorkerSnapshot struct {
 	WorkerID      string
 	Metadata      json.RawMessage
@@ -178,9 +190,11 @@ type HeartbeatResult struct {
 //  2. mint a worker id or reject an unknown one (worker_unknown);
 //  3. upsert metadata/state/last_seen (first_seen on the insert);
 //  4. reclaim expired leases and release their worker pointers;
-//  5. keep or release the held card and renew its lease when still busy;
+//  5. keep or release the held card and renew its lease whenever it is held;
 //  6. a busy worker gets no new card;
-//  7. an idle free worker gets the next claimable card;
+//  7. an idle free worker gets the next claimable card — unless it just lost
+//     its own pointer in this round (reclaim or failed renewal), in which case
+//     the dispatch waits for the next heartbeat;
 //  8. read the worker back and return the snapshot plus the commands.
 func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (HeartbeatResult, error) {
 	now := s.clock.Now().UTC()
@@ -191,6 +205,11 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 		reclaimed  []store.ReclaimedTask
 		workerID   string
 		registered bool
+
+		// leaseLost is set when this heartbeat released the pointer because the
+		// lease was gone (reclaimed in step 4, or no longer renewable in step 5).
+		// It gates step 7 for this round only.
+		leaseLost bool
 
 		cleared       bool
 		clearedTaskID string
@@ -241,6 +260,14 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 			return err
 		}
 
+		// The sweep below releases the pointer of every worker whose card it
+		// reclaimed, so read the pointer first: this heartbeat has to know that
+		// it lost a card, not just that it currently owns none.
+		beforeReclaim, err := store.GetWorker(ctx, tx, workerID)
+		if err != nil {
+			return err
+		}
+
 		// 4. Reclaim expired leases. reclaimExpired also releases the pointer of
 		// each worker that held a reclaimed card, so this step and the claim /
 		// background sweeps share one implementation.
@@ -250,13 +277,24 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 		}
 
 		// Step 4 may have cleared this very worker's pointer, so the row read
-		// by the upsert is stale: re-read before deciding what it holds.
+		// above is stale: re-read before deciding what it holds.
 		worker, err := store.GetWorker(ctx, tx, workerID)
 		if err != nil {
 			return err
 		}
+		if beforeReclaim.CurrentTaskID != nil && worker.CurrentTaskID == nil {
+			// The card this worker was holding was reclaimed in step 4. It is
+			// free again, but not in this round: step 7 waits for the next
+			// heartbeat, otherwise a worker whose lease just lapsed would take a
+			// second card while the agent is still working on the first.
+			leaseLost = true
+		}
 
-		// 5. Keep or release the held card.
+		// 5. Keep or release the held card. Occupancy is the pointer pair, never
+		// the declared state: a worker that still holds a card keeps renewing
+		// the lease even when it says idle — idle only means "do not hand me a
+		// new card". A release without a report means the lease is gone, and
+		// step 7 must not dispatch in that same round.
 		var heldTaskID *string
 		if worker.CurrentTaskID != nil {
 			task, taskErr := store.GetTaskByID(ctx, tx, *worker.CurrentTaskID)
@@ -264,11 +302,11 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 				return taskErr
 			}
 			held := taskErr == nil && workerHoldsTask(worker, task)
-			switch {
-			case !held:
+			if !held {
 				// The card was reported, reclaimed or re-leased elsewhere: the
-				// pointer is stale. Clearing is what lets the next step dispatch
-				// a fresh card in this same heartbeat.
+				// pointer is stale. Clearing frees the slot; a reported card may
+				// hand over to the next one in this same heartbeat, a lost lease
+				// may not (leaseLost is already set in that case).
 				if taskErr == nil {
 					clearedTaskID = task.TaskID
 				}
@@ -276,7 +314,7 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 					return err
 				}
 				cleared = true
-			case state == domain.WorkerStateBusy:
+			} else {
 				until, ok, err := store.HeartbeatLease(ctx, tx, store.HeartbeatRequest{
 					TaskID:     task.TaskID,
 					LeaseID:    *worker.CurrentLeaseID,
@@ -290,33 +328,34 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 				if !ok {
 					// Defensive: step 4 already swept expired leases, so a live
 					// binding should renew. Treat a miss as a lost lease rather
-					// than keep a pointer we cannot prove.
+					// than keep a pointer we cannot prove; the next heartbeat may
+					// take a new card.
 					clearedTaskID = task.TaskID
 					if _, err := store.ClearTaskByTaskID(ctx, tx, *worker.CurrentTaskID, updateTime); err != nil {
 						return err
 					}
 					cleared = true
-					break
+					leaseLost = true
+				} else {
+					parsed, err := parseTimestamp(until)
+					if err != nil {
+						return err
+					}
+					renewedTaskID = task.TaskID
+					renewedLeaseID = *worker.CurrentLeaseID
+					renewedUntil = parsed
+					heldTaskID = &task.TaskID
 				}
-				parsed, err := parseTimestamp(until)
-				if err != nil {
-					return err
-				}
-				renewedTaskID = task.TaskID
-				renewedLeaseID = *worker.CurrentLeaseID
-				renewedUntil = parsed
-				heldTaskID = &task.TaskID
-			default:
-				// idle while still holding: the worker is declaring it has
-				// nothing to renew, so the lease is left to expire.
-				heldTaskID = &task.TaskID
 			}
 		}
 
 		// 6./7. Dispatch. A busy worker never receives a second card; an idle
-		// worker without a card takes the next claimable one.
+		// worker without a card takes the next claimable one — unless it just
+		// lost its own pointer (reclaim or failed renewal), in which case the
+		// next card waits for the following heartbeat so that one worker can
+		// never hold two cards.
 		commands := make([]WorkerCommand, 0, 1)
-		if heldTaskID == nil && state == domain.WorkerStateIdle {
+		if heldTaskID == nil && state == domain.WorkerStateIdle && !leaseLost {
 			claim, err := s.dispatch(ctx, tx, workerID, actor, now)
 			if err != nil {
 				return err
@@ -378,6 +417,11 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 		s.logger.Info("worker pointer cleared",
 			"worker_id", workerID,
 			"task_id", clearedTaskID,
+		)
+	}
+	if leaseLost {
+		s.logger.Info("worker lost its lease; dispatch deferred to the next heartbeat",
+			"worker_id", workerID,
 		)
 	}
 	if !renewedUntil.IsZero() {

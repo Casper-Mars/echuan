@@ -5,8 +5,8 @@
  *
  * 1. 源码级：`src` 下只有 `client.ts` 调 `fetch(`；写盘 API 只允许出现在
  *    `src/tools/package.ts`（资料包下载，唯一例外）；`node:fs` 的导入只允许只读函数
- *    （package.ts 额外允许 `writeFileSync` / `unlinkSync`）；`node:fs/promises` 只允许
- *    `src/session.ts` 导入 `mkdir`（新建会话必须建目录的显式例外）；`config.ts` 不读
+ *    （package.ts 额外允许 `writeFileSync` / `unlinkSync`）；`node:fs/promises`（纯写侧）
+ *    一个文件都不允许导入 —— 会话 cwd 就是工作区根目录，不再 create 目录；`config.ts` 不读
  *    `process.env`。模块导入检查同时覆盖单/双引号与 `import(...)` 动态导入形式。
  * 2. 运行时级：把 `globalThis.fetch` 换成一被调用就抛错的哨兵，再跑
  *    ① 23 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
@@ -256,13 +256,8 @@ describe('源码级：不写盘（package.ts 是唯一例外）', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 2b. 源码级：node:fs/promises 的显式例外
+// 2b. 源码级：node:fs/promises 一律不导入
 // ---------------------------------------------------------------------------
-
-/** 唯一允许从 `node:fs/promises` 导入的文件。 */
-const PROMISES_EXCEPTION_FILE = 'src/session.ts'
-/** 该文件唯一允许的导入名（新建会话必须 `mkdir -p`）。 */
-const PROMISES_ALLOWED_NAMES = ['mkdir']
 
 const PROMISES_MODULE = 'node:fs/promises'
 
@@ -277,7 +272,8 @@ function promisesImportNames(code: string): string[] {
 }
 
 /**
- * 纯函数规则：`node:fs/promises` 只允许 `src/session.ts` 且只允许 `mkdir`。
+ * 纯函数规则：`node:fs/promises` 是**纯写侧**模块（mkdir / rm / writeFile…），
+ * 插件源码一个都不允许导入 —— 会话 cwd 就是工作区根目录，不再创建任何目录。
  *
  * 抽成纯函数是为了让「规则本身」也能被断言（防止它变成永远为空的空转检查）。
  */
@@ -287,43 +283,39 @@ function scanPromisesImports(
   const violations: string[] = []
   for (const file of files) {
     if (!importsPromises(file.code)) continue
-    if (file.relative !== PROMISES_EXCEPTION_FILE) {
-      violations.push(`${file.relative}: 整个模块`)
-      continue
-    }
-    const occurrences = importOccurrences(file.code, PROMISES_MODULE)
-    if (occurrences !== 1) violations.push(`${file.relative}: 导入次数 ${occurrences}`)
-    // 默认 / 命名空间导入解析不出具名列表，但同样越过了例外范围。
     if (!hasNamedImport(file.code, PROMISES_MODULE)) {
       violations.push(`${file.relative}: 非具名导入`)
+      continue
     }
-    for (const name of promisesImportNames(file.code)) {
-      if (!PROMISES_ALLOWED_NAMES.includes(name)) violations.push(`${file.relative}: ${name}`)
-    }
+    const names = promisesImportNames(file.code)
+    violations.push(
+      ...(names.length === 0 ? [`${file.relative}: 整个模块`] : names.map(name => `${file.relative}: ${name}`)),
+    )
   }
   return violations
 }
 
-describe('源码级：node:fs/promises 只允许 session.ts 的 mkdir', () => {
-  it('全量扫描：只有 src/session.ts 导入，且只导入 mkdir', () => {
+describe('源码级：node:fs/promises 一律不导入', () => {
+  it('全量扫描：没有任何文件导入 node:fs/promises（含 session.ts）', () => {
     expect(scanPromisesImports(sourceFiles)).toEqual([])
-
-    // 把例外钉死：多一个文件、多一个函数都会在这里失败（防止例外扩散）。
-    const importers = sourceFiles
-      .filter(file => importsPromises(file.code))
-      .map(file => file.relative)
-    expect(importers).toEqual([PROMISES_EXCEPTION_FILE])
-    expect(promisesImportNames(sourceOf(PROMISES_EXCEPTION_FILE))).toEqual(PROMISES_ALLOWED_NAMES)
+    expect(sourceFiles.filter(file => importsPromises(file.code))).toEqual([])
+    // 反向自证：session.ts 现在只用只读的 `stat` 探测目录存在性。
+    expect(sourceOf('src/session.ts')).toContain('statSync')
   })
 
-  it('规则不是空转：别的文件 / 别的函数 / 非具名导入都会被抓出来', () => {
+  it('规则不是空转：任何文件、任何函数、任何写法都会被抓出来', () => {
     expect(scanPromisesImports([
       { relative: 'src/tools/read.ts', code: "import { mkdir } from 'node:fs/promises'" },
-    ])).toEqual(['src/tools/read.ts: 整个模块'])
+    ])).toEqual(['src/tools/read.ts: mkdir'])
+
+    // 会话层自己也不行：cwd 不再建目录。
+    expect(scanPromisesImports([
+      { relative: 'src/session.ts', code: "import { mkdir } from 'node:fs/promises'" },
+    ])).toEqual(['src/session.ts: mkdir'])
 
     expect(scanPromisesImports([
       { relative: 'src/session.ts', code: "import { mkdir, rm } from 'node:fs/promises'" },
-    ])).toEqual(['src/session.ts: rm'])
+    ])).toEqual(['src/session.ts: mkdir', 'src/session.ts: rm'])
 
     expect(scanPromisesImports([
       { relative: 'src/session.ts', code: "import fsp from 'node:fs/promises'" },
@@ -331,22 +323,14 @@ describe('源码级：node:fs/promises 只允许 session.ts 的 mkdir', () => {
   })
 
   it('规则不是空转：双引号与动态 import 同样按同一套规则处理', () => {
-    // 双引号 + 别的文件：不能被引号写法绕过。
     expect(scanPromisesImports([
       { relative: 'src/config.ts', code: 'import { mkdir } from "node:fs/promises"' },
-    ])).toEqual(['src/config.ts: 整个模块'])
+    ])).toEqual(['src/config.ts: mkdir'])
 
-    // 动态解构导入：合法 mkdir 放行。
     expect(scanPromisesImports([
       { relative: 'src/session.ts', code: 'const { mkdir } = await import("node:fs/promises")' },
-    ])).toEqual([])
+    ])).toEqual(['src/session.ts: mkdir'])
 
-    // 动态解构导入：别的函数照样被抓。
-    expect(scanPromisesImports([
-      { relative: 'src/session.ts', code: "const { rm } = await import('node:fs/promises')" },
-    ])).toEqual(['src/session.ts: rm'])
-
-    // 动态命名空间导入：解析不出具名列表，按「非具名导入」处理。
     expect(scanPromisesImports([
       { relative: 'src/session.ts', code: "const fsp = await import('node:fs/promises')" },
     ])).toEqual(['src/session.ts: 非具名导入'])

@@ -7,8 +7,9 @@
  *   2. `sessionPersistence.stat(id)` 命中（已持久化）→ `resume` 恢复，cwd / preset
  *      一律取会话 header，**不 mkdir、不覆盖 meta**；`agentOptions` 与 create 同源，
  *      否则恢复出的 agent 没有模型，回合发不出请求；
- *   3. 都不存在 → `create` 新建：按 §4.1 优先链选根目录，拼 `<root>/<projectId>`，
- *      `mkdir -p` 后建会话并挂 registry 默认 preset。
+ *   3. 都不存在 → `create` 新建：按 §4.1 优先链选出**工作区根目录**，直接以它作为
+ *      会话 cwd（项目号只用于 sessionId，**不拼路径、不建子目录**），建会话并挂
+ *      registry 默认 preset。根目录必须已存在：插件不替用户创建目录。
  *
  * 设计要点：
  * - **纯逻辑 + 依赖注入**：本模块不读 `ctx`，所有服务走结构化接口；`createSessionEnsurer`
@@ -21,8 +22,7 @@
  *
  * 日志前缀统一 `[dsh-echuan/session]`，不打印 token / 密钥。
  */
-import { mkdir as mkdirRecursive } from 'node:fs/promises'
-import { join } from 'node:path'
+import { statSync } from 'node:fs'
 
 /** 日志前缀（验收要求）。 */
 const TAG = '[dsh-echuan/session]'
@@ -109,7 +109,8 @@ export interface EnsureWorkspaceRegistryLike {
   /**
    * 把目录登记为工作区（真实签名 `create(path, title?)`）。
    *
-   * 新建会话的 `<root>/<projectId>` 通常尚未登记，attach 前需要先建；缺失则跳过 attach。
+   * 只用于「cwd 对应的目录还没被登记」的兜底（正常情况根目录早已在工作区列表里）；
+   * 缺失则跳过 attach。
    */
   create?(path: string): Promise<EnsureWorkspaceLike> | EnsureWorkspaceLike
 }
@@ -151,8 +152,11 @@ export interface EnsureSessionDeps {
   info?: (message: string) => void
   /** warn 日志（所有降级路径都会调用；默认 `console.warn`）。 */
   warn?: (message: string) => void
-  /** `mkdir -p` 的实现（单测注入，生产用 `node:fs/promises`）。 */
-  mkdir?: (path: string) => Promise<void>
+  /**
+   * 目录探测：路径存在且是目录返回 `true`（单测注入，生产用 `node:fs` 的
+   * `statSync`）。会话 cwd 就是工作区根目录，必须已存在，插件不会创建它。
+   */
+  isDirectory?: (path: string) => boolean
   /** 进程目录（单测注入，生产用 `process.cwd()`）。 */
   cwd?: () => string
 }
@@ -262,13 +266,27 @@ export async function ensureSession(
   const preset = await resolvePreset(deps.agentPresets, undefined, id, warn)
   if (preset === undefined) return undefined
 
-  const root = await resolveWorkspaceRoot(deps, id, info, warn)
-  const cwd = join(root, id)
-  const mkdir = deps.mkdir ?? defaultMkdir
+  // cwd 就是工作区根目录本身：项目号只用于 sessionId（项目号即会话号），
+  // 不拼 `<root>/<projectId>`，也不替会话建子目录。
+  const cwd = await resolveWorkspaceRoot(deps, id, info, warn)
+  const isDirectory = deps.isDirectory ?? defaultIsDirectory
+  let usable = false
   try {
-    await mkdir(cwd)
+    usable = isDirectory(cwd)
   } catch (err) {
-    warn(`${TAG} 警告：创建工作目录失败，放弃本次 ensure（project=${id}, cwd=${cwd}）：${messageOf(err)}`)
+    warn(
+      `${TAG} 警告：无法确认工作目录 ${cwd} 是否存在或是否为目录，`
+        + `放弃本次 ensure（project=${id}）：${messageOf(err)}`,
+    )
+    return undefined
+  }
+  if (!usable) {
+    // 根目录是「当前工作目录 / 已配置的工作区」，理应存在；插件不自动创建，
+    // 免得在用户没预期的地方落地一个空目录树。
+    warn(
+      `${TAG} 警告：工作目录 ${cwd} 不存在或不是目录，放弃本次 ensure（project=${id}）；`
+        + '请检查 worker.workspaceRoot 或启动进程的工作目录（插件不会创建目录）',
+    )
     return undefined
   }
 
@@ -366,9 +384,13 @@ export function createSessionEnsurer(
 // 内部实现
 // ---------------------------------------------------------------------------
 
-/** 默认 `mkdir -p`。 */
-async function defaultMkdir(path: string): Promise<void> {
-  await mkdirRecursive(path, { recursive: true })
+/** 默认目录探测：存在且是目录才算可用（不跟随创建、不写盘）。 */
+function defaultIsDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 type PresetResolutionMode = 'create' | 'resume'
@@ -420,9 +442,9 @@ async function resolvePreset(
 /**
  * §4.1 优先链：配置根目录 → 唯一工作区 → 最近有新会话的工作区 → `process.cwd()`。
  *
- * 只有「多工作区选中」与「零工作区回落」需要 warn 并带上路径；唯一工作区是正常
- * 情况，走 info（info 缺省为静默）。
- * 任何异常都降级到 `process.cwd()`，绝不抛错。
+ * 返回值**就是会话 cwd**（调用方不再拼接项目号）。只有「多工作区选中」与
+ * 「零工作区回落」需要 warn 并带上路径；唯一工作区是正常情况，走 info（info
+ * 缺省为静默）。任何异常都降级到 `process.cwd()`，绝不抛错。
  */
 async function resolveWorkspaceRoot(
   deps: EnsureSessionDeps,
@@ -578,9 +600,10 @@ async function resolveAgentOptions(
 /**
  * 按 `path === cwd` 找 workspace 并 attach。
  *
- * 新建会话的 cwd = `<root>/<projectId>`，registry 里通常只有 `<root>`：找不到时若 registry
- * 支持 `create`，先 `create(cwd)` 再 attachSession；create 失败只 warn，不影响已建好的会话。
- * 既找不到又不支持 create → info 跳过（正常降级）。
+ * 新建会话的 cwd 就是工作区根目录，registry 里通常已经登记过它：命中就直接
+ * attachSession，**不新建工作区**。只有确实找不到同路径工作区时才 `create(cwd)`
+ * 兜底；create 失败只 warn，不影响已建好的会话。既找不到又不支持 create → info
+ * 跳过（正常降级）。
  */
 async function attachWorkspace(
   deps: EnsureSessionDeps,
@@ -608,7 +631,7 @@ async function attachWorkspace(
   if (found !== undefined) {
     workspace = found
   } else if (typeof registry.create !== 'function') {
-    // 新建项目的 `<root>/<projectId>` 尚未注册为工作区，属正常情况，不打扰用户。
+    // cwd 指向的目录不在工作区列表里，属正常情况，不打扰用户。
     info(`${TAG} 未找到 cwd=${cwd} 对应的工作区且 registry 不支持 create，跳过 attach（project=${projectId}）`)
     return
   } else {

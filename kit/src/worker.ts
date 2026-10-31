@@ -20,7 +20,9 @@
  *    {@link MAX_REMEMBERED_DELIVERIES}），重复下发只投一次，不落盘；
  * 6. inflight 记录「已投递但未报告」的派单（`taskId` / `projectId` / `leaseUntil`）：
  *    投递成功写入；`notifyReported` / 租约过期 / 同任务新 lease 覆盖时清除；
- *    `state` 只看 inflight：无 inflight → `idle`，inflight 会话 running → `busy`；
+ *    `state` 只看「手里有没有卡」，与 `agent.status` 无关：inflight 非空 → `busy`；
+ *    inflight 为空但上一轮回包 `worker.current_task_id` 非空（手动 `echuan_task_claim`
+ *    领的卡）→ 同样 `busy`；两者都没有才是 `idle`；
  * 7. 网络失败 / 500 / 超时只 warn，保留 id，按当前间隔继续；不做退避状态机；
  * 8. `poll.enable=false` 时零请求、零定时器；`dispose()` 后定时器立刻清空，
  *    之后不再产生任何请求与日志（包括还没发出的首轮心跳）；
@@ -137,13 +139,20 @@ export interface RunTaskCommand {
 /** 心跳回包里的指令；当前只有 `run_task`，其余 kind 原样忽略。 */
 export type WorkerCommand = ClientWorkerCommand
 
-/** 心跳状态：`busy` 只表示意图，平台据此决定是否派新卡。 */
+/**
+ * 心跳状态：`busy` = 本 worker 手里有一张未报告的卡。
+ *
+ * 它是「占用」而不是「此刻 agent 是否在跑」：平台据此决定是否派新卡，所以只要
+ * 持卡就必须报 `busy`，否则回合间隙的瞬时 idle 会让同一 worker 领到第二张卡。
+ * 见 {@link WorkerLoopOptions.sessions} 与 `computeState()`。
+ */
 export type WorkerState = 'idle' | 'busy'
 
 /**
  * 已投递、尚未报告的派单（内存态，不落盘）。
  *
- * `projectId` 同时是会话 id（项目号即会话号），`state` 与诊断工具都据此判定。
+ * `projectId` 同时是会话 id（项目号即会话号）；`state` 只按「非空即持卡」判定，
+ * 诊断工具（`echuan_worker_info`）展示明细。
  */
 export interface Inflight {
   taskId: string
@@ -164,7 +173,11 @@ export interface WorkerLoopOptions {
   config: ResolvedConfig
   /** worker 心跳客户端（`createWorkerClient` 的返回值）。 */
   client: WorkerClient
-  /** 按会话 id 取 agent；生产环境传 `ctx.agents`。 */
+  /**
+   * 按会话 id 取 agent；生产环境传 `ctx.agents`。
+   *
+   * 仅供诊断工具使用（`agent.status` 这类瞬时值不参与 `state` 判定）。
+   */
   sessions: WorkerSessionRegistry
   /**
    * 确保项目会话就绪（项目号即会话号）；生产环境用任务-03 的
@@ -259,6 +272,12 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
   const deliveredQueue: string[] = []
   /** 已投递未报告的派单（按 taskId 唯一）。 */
   const inflight: Inflight[] = []
+  /**
+   * 上一轮心跳回包里的 `worker.current_task_id`（`null` = 平台认为本 worker 空闲）。
+   *
+   * 手动 `echuan_task_claim` 领的卡不会进本地 inflight，只能靠这个快照上报 busy。
+   */
+  let serverHeldTaskId: string | null = null
   /** R-02：metadata 序列化后的字节数；不可序列化时为 `undefined`。 */
   const metadataBytes = readMetadataBytes()
   const metadataOverLimit =
@@ -320,12 +339,16 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
       started = false
       clearTimer()
       inflight.length = 0
+      serverHeldTaskId = null
       logger.info(
         `[dsh-echuan] worker 心跳已停止（${reason}）：定时器已清除，不再产生请求与日志`,
       )
     },
 
     notifyReported(taskId: string) {
+      // 手动领的卡本地没有 inflight，但回包快照可能记着它：一起清掉，
+      // 下一轮就能如实上报 idle，不用多等一轮。
+      if (serverHeldTaskId === taskId) serverHeldTaskId = null
       const index = inflight.findIndex(item => item.taskId === taskId)
       if (index < 0) return
       inflight.splice(index, 1)
@@ -426,6 +449,10 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
           + '请检查平台契约',
       )
     }
+
+    // 快照里的 current_task_id 是「平台认为本 worker 持有的卡」：手动 claim 的卡
+    // 本地没有 inflight，只靠它才能在下一轮如实上报 busy。
+    serverHeldTaskId = readHeldTaskId(snapshot)
 
     const fromServer = snapshot?.heartbeat_interval_ms
     if (typeof fromServer === 'number' && Number.isFinite(fromServer) && fromServer > 0) {
@@ -560,21 +587,20 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
     }
   }
 
-  /** `state` 只看 inflight：无 inflight → idle；inflight 会话 running → busy。 */
+  /**
+   * `state` 只看「手里有没有卡」，与 `agent.status` 无关。
+   *
+   * `agent.status` 是瞬时值：回合间隙、等工具、刚投递完都会是 `idle`。用它判 busy
+   * 会让持卡中的 worker 在下一轮报 idle，平台据此再派一张卡（P0：同一 worker 同时
+   * 持有两张卡）。两个来源任一成立即 busy：
+   *
+   * 1. 本地 inflight 非空（心跳派单的常规路径）；
+   * 2. 上一轮回包 `worker.current_task_id` 非空 —— 覆盖手动 `echuan_task_claim`
+   *    领卡等本地没有 inflight 记录的持卡情况。
+   */
   function computeState(): WorkerState {
-    for (const item of inflight) {
-      let agent: Agent | undefined
-      try {
-        agent = options.sessions.get(item.projectId)
-      } catch (err) {
-        logger.warn(
-          `[dsh-echuan] 读取会话 ${item.projectId} 状态失败（${describeError(err)}），`
-            + '本轮按该条 idle 处理',
-        )
-        continue
-      }
-      if (agent?.status === 'running') return 'busy'
-    }
+    if (inflight.length > 0) return 'busy'
+    if (serverHeldTaskId !== null) return 'busy'
     return 'idle'
   }
 
@@ -655,6 +681,12 @@ function defaultDeliver(agent: Agent, text: string): void {
     source: { kind: WORKER_PLUGIN_SOURCE_KIND },
   })
   agent.followup(message)
+}
+
+/** 回包快照里的 `current_task_id` → `string | null`（空串同样视为未持卡）。 */
+function readHeldTaskId(snapshot: WorkerHeartbeatPayload['worker'] | undefined): string | null {
+  const value = snapshot?.current_task_id
+  return typeof value === 'string' && value !== '' ? value : null
 }
 
 /** 日志里的 worker id 打码：只保留前 4 个字符。 */
