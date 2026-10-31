@@ -7,6 +7,8 @@ export interface ModalProps {
   children: ReactNode
   footer?: ReactNode
   wide?: boolean
+  /** 超大弹窗（长文阅读等场景），宽屏约占视口 80%，窄屏回落全宽。 */
+  xlarge?: boolean
   /** 提交中禁止关闭，避免请求未完成就丢失上下文。 */
   closeDisabled?: boolean
 }
@@ -15,7 +17,15 @@ export interface ModalProps {
  * 覆盖在抽屉之上的模态弹窗（新建产品、决策、二次确认）。
  * 使用 portal 挂到 body，避免抽屉的定位/动画影响 fixed 布局。
  */
-export function Modal({ title, onClose, children, footer, wide = false, closeDisabled = false }: ModalProps) {
+export function Modal({
+  title,
+  onClose,
+  children,
+  footer,
+  wide = false,
+  xlarge = false,
+  closeDisabled = false,
+}: ModalProps) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !closeDisabled) onClose()
@@ -26,6 +36,9 @@ export function Modal({ title, onClose, children, footer, wide = false, closeDis
 
   if (typeof document === 'undefined') return null
 
+  // xlarge 优先于 wide，二者互不影响其他弹窗的默认尺寸。
+  const sizeClass = xlarge ? 'modal modal-xlarge' : wide ? 'modal modal-wide' : 'modal'
+
   return createPortal(
     <div className="modal-root" data-modal>
       <div
@@ -34,7 +47,7 @@ export function Modal({ title, onClose, children, footer, wide = false, closeDis
         role="presentation"
       />
       <section
-        className={wide ? 'modal modal-wide' : 'modal'}
+        className={sizeClass}
         role="dialog"
         aria-modal="true"
         aria-label={title}

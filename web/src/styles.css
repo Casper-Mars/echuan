@@ -1008,6 +1008,11 @@ button {
   width: min(620px, 100%);
 }
 
+/* 长文阅读弹窗：宽屏占视口 80%，沿用 .modal 的 max-height 与 body 内部滚动。 */
+.modal-xlarge {
+  width: 80vw;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -1506,6 +1511,11 @@ button {
 
   .modal-root {
     padding: 12px;
+  }
+
+  /* 窄屏下 xlarge 回落全宽，避免横向溢出。 */
+  .modal-xlarge {
+    width: 100%;
   }
 }
 
