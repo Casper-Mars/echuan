@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ApiError, getProduct, listProjects } from '../api/client'
 import type { Project } from '../api/types'
@@ -27,7 +27,46 @@ import {
   isPendingStale,
   projectStatusLabel,
 } from '../lib/format'
+import { copyText } from '../lib/clipboard'
 import { isInteractiveTarget } from '../lib/interaction'
+
+/** 列表行内复制图标（复制态与成功态共用内联 SVG，避免引入图标依赖）。 */
+function CopyIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  )
+}
+
+function CheckIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  )
+}
 
 /** 'all' 表示不加 status 参数；数字走服务端单值过滤。 */
 type ProjectStatusFilter = 'all' | number
@@ -49,6 +88,25 @@ export function ProjectsPage() {
   const [creating, setCreating] = useState(false)
   // 弹窗状态放在页面层：项目离开当前筛选时行会被卸载，但用户正在填写的弹窗必须保留。
   const [action, setAction] = useState<{ project: Project; request: ProjectActionRequest } | null>(null)
+  // 按 project_id 记录复制反馈，避免多行同时进入“已复制”状态。
+  const [copyState, setCopyState] = useState<{ id: string; ok: boolean } | null>(null)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    },
+    [],
+  )
+
+  const copyProjectId = useCallback(async (event: MouseEvent<HTMLButtonElement>, projectId: string) => {
+    // 行本身有点击导航，复制按钮不能冒泡触发行跳转。
+    event.stopPropagation()
+    const ok = await copyText(projectId)
+    setCopyState({ id: projectId, ok })
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => setCopyState(null), ok ? 1500 : 2500)
+  }, [])
 
   const { data, error, loading, refreshing, lastUpdated, refresh } = usePolling(
     (signal) =>
@@ -196,6 +254,28 @@ export function ProjectsPage() {
                 <div className="row-main">
                   <div className="row-title">
                     <span className="code">{project.project_id}</span>
+                    <button
+                      type="button"
+                      className={`copy-icon-button${
+                        copyState?.id === project.project_id && copyState.ok ? ' is-copied' : ''
+                      }${copyState?.id === project.project_id && !copyState.ok ? ' is-failed' : ''}`}
+                      aria-label={`复制项目编号 ${project.project_id}`}
+                      title={
+                        copyState?.id === project.project_id && copyState.ok
+                          ? '已复制'
+                          : `复制项目编号 ${project.project_id}`
+                      }
+                      onClick={(event) => void copyProjectId(event, project.project_id)}
+                    >
+                      {copyState?.id === project.project_id && copyState.ok ? (
+                        <CheckIcon />
+                      ) : (
+                        <CopyIcon />
+                      )}
+                    </button>
+                    {copyState?.id === project.project_id && !copyState.ok && (
+                      <span className="copy-failed">复制失败，请手动选中</span>
+                    )}
                     <h2>{project.title || '（未命名项目）'}</h2>
                   </div>
                   <div className="row-meta">
