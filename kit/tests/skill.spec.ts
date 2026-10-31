@@ -7,7 +7,8 @@
  * 3. 正文不含「反问是否开工 / 等确认」类话术；
  * 4. 正文含 `echuan_task_renew`，不含不存在的 `echuan_task_heartbeat`；
  * 5. `ctx.skills.register` 只调一次、返回注销器，注销后 `list()` 不含该技能，重注册后再次出现；
- * 6. `pnpm build` 后 `lib/assets/echuan-task-execution.md` 存在且与源码一致。
+ * 6. git 交付协议可检索：开工前 `git fetch` + `origin/<base>`、`task/<task_id>` worktree、交付 `push -u origin` + `ls-remote` 校验；
+ * 7. `pnpm build` 后 `lib/assets/echuan-task-execution.md` 存在且与源码一致。
  */
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -23,6 +24,7 @@ import {
   loadEchuanSkillGuide,
   registerEchuanSkill,
 } from '../src/skill.js'
+import { REPORT_STRUCTURE_HINT } from '../src/tools/write.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const kitRoot = path.resolve(here, '..')
@@ -81,9 +83,9 @@ describe('技能元信息', () => {
     expect(reg.content).toBe(content)
   })
 
-  it('正文长度在 1500–3000 字符区间（够用而不啰嗦）', () => {
+  it('正文长度在 1500–5500 字符区间（够用而不啰嗦）', () => {
     expect(content.length).toBeGreaterThanOrEqual(1500)
-    expect(content.length).toBeLessThanOrEqual(3000)
+    expect(content.length).toBeLessThanOrEqual(5500)
   })
 })
 
@@ -100,18 +102,21 @@ describe('正文六条规则逐条可检索', () => {
     expect(content).toContain('不要凭任务标题猜需求')
   })
 
-  it('③ 干完必须汇报：echuan_task_report + 三段式（改了什么/怎么自检/遗留风险）', () => {
+  it('③ 干完必须汇报：echuan_task_report + 四段式（改了什么/怎么自检/git 交付/遗留风险）', () => {
     expect(content).toContain('echuan_task_report')
     expect(content).toContain('改了什么')
     expect(content).toContain('怎么自检')
+    expect(content).toContain('git 交付')
     expect(content).toContain('遗留风险')
-    // 三段式必须能按顺序读出：① ② ③ 依次出现。
+    // 四段式必须能按顺序读出：①②③④ 依次出现。
     const a = content.indexOf('改了什么')
     const b = content.indexOf('怎么自检')
-    const c = content.indexOf('遗留风险')
+    const c = content.indexOf('**git 交付**')
+    const d = content.indexOf('遗留风险')
     expect(a).toBeGreaterThan(-1)
     expect(b).toBeGreaterThan(a)
     expect(c).toBeGreaterThan(b)
+    expect(d).toBeGreaterThan(c)
   })
 
   it('④ 做不下去也要汇报：写清卡在哪、缺什么、需要谁决策', () => {
@@ -140,6 +145,71 @@ describe('正文六条规则逐条可检索', () => {
   it('补充：无活不是错误，不重试风暴', () => {
     expect(content).toContain('当前无活')
     expect(content).toContain('重试风暴')
+  })
+})
+
+describe('git 交付协议', () => {
+  it('开工前必须同步远程，base 用 origin/<base> 而非本地 main', () => {
+    expect(content).toContain('git fetch --prune origin')
+    expect(content).toContain('git symbolic-ref refs/remotes/origin/HEAD --short')
+    expect(content).toContain('origin/')
+    expect(content).toContain('不得用本地 `main`')
+    expect(content).toContain('禁止跳过')
+  })
+
+  it('从远程最新 base 建独立 worktree 与 task/<task_id> 分支', () => {
+    expect(content).toContain('BASE=$(git symbolic-ref refs/remotes/origin/HEAD --short 2>/dev/null || echo origin/main)')
+    expect(content).toContain('git worktree add ../wt-<task_id> -b task/<task_id> "$BASE"')
+    expect(content).toContain('task/')
+    expect(content).toContain('不复用上一张卡的')
+    expect(content).toContain('git worktree remove')
+  })
+
+  it('新分支上游先随 base、push -u 后改为 origin/task/<id>（属正常，不重推/不 force）', () => {
+    expect(content).toContain('上游暂时设为 base')
+    expect(content).toContain('不要因此重推或 force')
+  })
+
+  it('交付必须 push 并校验远程 commit 与本地 HEAD 一致', () => {
+    expect(content).toContain('git push -u origin task/<task_id>')
+    expect(content).toContain('git ls-remote --heads origin task/<task_id>')
+    expect(content).toContain('git rev-parse HEAD')
+    expect(content).toContain('没 push 成功就等于没交付')
+  })
+
+  it('报告必须带分支 / commit / 远程分支校验 / PR 或 compare 链接', () => {
+    expect(content).toContain('**git 交付**')
+    expect(content).toContain('commit 短 hash')
+    expect(content).toContain('origin/task/<task_id>')
+    expect(content).toContain('compare 链接')
+  })
+})
+
+describe('报告结构提示与正文口径一致（四段）', () => {
+  it('REPORT_STRUCTURE_HINT 为四段、含 git 交付与 push 前不得报完成', () => {
+    expect(REPORT_STRUCTURE_HINT).toContain('四段')
+    expect(REPORT_STRUCTURE_HINT).toContain('改了什么')
+    expect(REPORT_STRUCTURE_HINT).toContain('怎么自检')
+    expect(REPORT_STRUCTURE_HINT).toContain('git 交付')
+    expect(REPORT_STRUCTURE_HINT).toContain('遗留风险')
+    expect(REPORT_STRUCTURE_HINT).toContain('未 push 不得报完成')
+  })
+
+  it('技能 description / whenToUse 与正文同为四段口径，不含旧口径表述', () => {
+    // 旧口径词拼接构造：避免本文件自身被旧口径检索命中。
+    const legacy = '三' + '段'
+    expect(ECHUAN_SKILL_DESCRIPTION).toContain('四段式（含 git 交付）')
+    expect(ECHUAN_SKILL_WHEN_TO_USE).toContain('四段式（含 git 交付）')
+    expect(ECHUAN_SKILL_DESCRIPTION).not.toContain(legacy)
+    expect(ECHUAN_SKILL_WHEN_TO_USE).not.toContain(legacy)
+    expect(REPORT_STRUCTURE_HINT).not.toContain(legacy)
+  })
+
+  it('push --force 只以禁止形式出现，且禁止直接推 main', () => {
+    const idx = content.indexOf('push --force')
+    expect(idx).toBeGreaterThan(-1)
+    expect(content.slice(Math.max(0, idx - 6), idx)).toContain('禁止')
+    expect(content).toContain('禁止直接推 `main`/`master`')
   })
 })
 

@@ -32,13 +32,13 @@ export const ECHUAN_SKILL_NAME = 'echuan-task-execution'
  */
 export const ECHUAN_SKILL_DESCRIPTION =
   '驿传（echuan）任务卡的执行流程指南：拿到 Worker 派单后如何直接开工、开工前该读哪些上下文'
-  + '（echuan_project_get / echuan_material_get）、完成后如何用 echuan_task_report 做三段式汇报、'
+  + '（echuan_project_get / echuan_material_get）、完成后如何用 echuan_task_report 做四段式（含 git 交付）汇报、'
   + '卡住时如何汇报、手动领卡何时用 echuan_task_renew 续租，以及验收/返工/取消/改状态等门禁禁区。'
   + '收到 echuan 任务派单、需要按驿传流程开工或汇报时加载。'
 
 /** 补充路由提示（模型侧/用户侧路由参考）。 */
 export const ECHUAN_SKILL_WHEN_TO_USE =
-  '收到驿传任务卡派单、准备开工时；需要按驿传流程读项目方案/资料、提交三段式报告、'
+  '收到驿传任务卡派单、准备开工时；需要按驿传流程读项目方案/资料、提交四段式（含 git 交付）报告、'
   + '处理租约续租，或不确定哪些门禁动作不能做时。'
 
 /**

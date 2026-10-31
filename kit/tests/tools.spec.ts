@@ -5,7 +5,7 @@
  * 1. 领卡成功的 render（任务编号 / 标题 / 租约到期，不含工作目录与操作指示）；
  * 2. 204 → 「当前无活」，正常返回不抛错；
  * 3. 请求体 worker_id 与心跳循环内存 id 一致；未注册时该键完全不出现；
- * 4. report 空/全空白 summary_md → 本地拒绝、零请求、三段式提示；
+ * 4. report 空/全空白 summary_md → 本地拒绝、零请求、四段式提示；
  * 5. lease_lost / worker_busy / worker_unknown / material_required 的下一步文案；
  * 6. 工具名集合恰好 15 个，且没有门禁动作；
  * 7. TOOL_METHODS 恰好 20 个（工具层不污染客户端方法集）。
@@ -275,7 +275,7 @@ describe('echuan_task_report：summary_md 本地校验', () => {
     ['空串', ''],
     ['全空白', '   \n\t  '],
   ] as const) {
-    it(`${label} → 本地拒绝、零请求、提示三段式`, async () => {
+    it(`${label} → 本地拒绝、零请求、提示四段式`, async () => {
       const platform = createPlatform(() => jsonResponse({ id: 'APP-1-T0001' }))
       const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_report')
 
@@ -293,7 +293,8 @@ describe('echuan_task_report：summary_md 本地校验', () => {
 
       expect(error.message).toContain('①改了什么')
       expect(error.message).toContain('②怎么自检')
-      expect(error.message).toContain('③遗留风险')
+      expect(error.message).toContain('③git 交付')
+      expect(error.message).toContain('④遗留风险')
       // 与描述里的固定提示同一份文案，避免两处漂移。
       expect(error.message).toContain(REPORT_STRUCTURE_HINT)
       expect(platform.calls).toHaveLength(0)
@@ -342,7 +343,7 @@ describe('echuan_task_report：成功后回调 notifyReported', () => {
     await runTool(tool!, {
       task_id: 'APP-1-T0001',
       lease_id: 'l_9f8b',
-      summary_md: '①改了什么 ②怎么自检 ③遗留风险',
+      summary_md: '①改了什么 ②怎么自检 ③git 交付 ④遗留风险',
     })
 
     expect(platform.calls).toHaveLength(1)
