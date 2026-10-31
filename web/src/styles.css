@@ -1013,6 +1013,12 @@ button {
   width: 80vw;
 }
 
+/* 阅读弹窗内正文不再单独限高，滚动统一交给 .modal-body，避免双层滚动条。 */
+.modal-xlarge .markdown {
+  max-height: none;
+  overflow-y: visible;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -1029,6 +1035,8 @@ button {
 .modal-body {
   padding: 18px 20px;
   overflow-y: auto;
+  /* 显式声明可收缩，避免后续改动让正文溢出弹窗而非内部滚动。 */
+  min-height: 0;
 }
 
 .modal-footer {
