@@ -37,8 +37,6 @@ export interface WorkerInfoSessionHeader {
 export interface WorkerInfoDeps {
   /** `worker.poll.enable`：心跳是否开启。 */
   pollEnabled: boolean
-  /** `worker.workspaceRoot`（已归一化；缺省走优先链）。 */
-  workspaceRoot?: string | undefined
   /** 当前 worker id（未注册返回 `undefined`；输出前打码）。 */
   workerId: () => string | undefined
   /** 当前 inflight 快照。 */
@@ -66,7 +64,7 @@ export function createWorkerInfoTool(options: EchuanToolOptions): ToolDefinition
     description:
       '查看本进程驿传（echuan）worker 的运行态（只读，零 HTTP、零副作用）：心跳开关、'
       + 'worker_id（打码）、inflight 里的任务与租约、各项目会话状态（live / persisted / missing）、'
-      + '默认 preset 与工作区根目录。排障「为什么没派单 / 会话在不在」时先看这里。',
+      + '默认 preset 与工作区列表。排障「为什么没派单 / 会话在不在」时先看这里。',
     parameters: {
       project_id: {
         type: 'string',
@@ -142,12 +140,10 @@ async function renderWorkerInfo(
   // 4) 默认 preset。
   lines.push('', `默认 preset：${await describeDefaultPreset(deps.agentPresets)}`)
 
-  // 5) 工作区根目录与工作区列表。
+  // 5) 工作区选择规则与工作区列表。
   lines.push(
     '',
-    deps.workspaceRoot === undefined || deps.workspaceRoot === ''
-      ? '工作区根目录：未配置（优先链：唯一工作区 / 最近有会话的工作区 / 进程目录）'
-      : `工作区根目录：${deps.workspaceRoot}（worker.workspaceRoot）`,
+    '工作区选择：新建会话取会话数最多的 workspace（无可用工作区时用进程目录）',
   )
   lines.push('工作区列表：')
   const registry = deps.workspaceRegistry

@@ -14,7 +14,7 @@
    - 辅助写：`echuan_task_create`（单卡新增）、`echuan_task_update`（改卡）、`echuan_task_delete`（删卡）、`echuan_project_update`（改项目标题）、`echuan_product_create`（建产品）、`echuan_project_package`（下载资料包）
    - 读：`echuan_inbox`（待办）、`echuan_product_list`（产品列表）、`echuan_project_list`（项目列表）、`echuan_task_list`（任务列表）、`echuan_project_get`（项目详情）、`echuan_task_get`（任务详情）、`echuan_material_get`（资料）、`echuan_worker_info`（worker 诊断，零 HTTP）
 
-`echuan_worker_info` 只读进程内状态（心跳开关、打码的 `worker_id`、inflight 任务与租约、项目会话 live/persisted/missing、默认 preset、工作区根目录），**不发任何 HTTP 请求、不写盘、不改状态**；宿主服务缺失时只降级展示。
+`echuan_worker_info` 只读进程内状态（心跳开关、打码的 `worker_id`、inflight 任务与租约、项目会话 live/persisted/missing、默认 preset、工作区选择规则与工作区列表），**不发任何 HTTP 请求、不写盘、不改状态**；宿主服务缺失时只降级展示。
 
 生命周期写工具的参数与副作用：
 
@@ -115,7 +115,6 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
     requestTimeoutMs: 35000               # 单请求超时
     exclude: []                           # 不注册的工具名；默认 [] = 全量 23 个
     worker:
-      workspaceRoot: /Users/you/project/opc  # 可选；绝对路径，直接作为新建会话的 cwd
       poll:
         enable: false                     # 默认关闭；打开才会定时心跳
       metadata:                           # 原样上报，序列化后 ≤8KiB
@@ -124,7 +123,7 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
         agent_version: 0.1.0
 ```
 
-- `worker.workspaceRoot`（可选，**绝对路径**）：**直接作为新建会话的 cwd**——项目号只用来构造 session id（项目号即会话号），**不再拼 `<workspaceRoot>/<projectId>`，也不会为会话建子目录**。只在**新建会话**生效：已存在会话走 resume / live 复用时完全不看它，也不改已有会话的 cwd。留空（不写或写空串）时走优先链：唯一工作区 → 最近有新会话的工作区 → `process.cwd()`，命中的那个目录同样**原样**作为 cwd。目录必须已存在：不存在时插件只 warn 并跳过本次投递，**不会自动创建**。相对路径非法，插件**激活时直接报错**（`worker.workspaceRoot 必须是绝对路径`），不会静默忽略。
+- **新建会话的 cwd 选择规则**：取 `workspaceRegistry` 里 **session 数量最多的 workspace**，直接以它的目录作为 cwd——项目号只用来构造 session id（项目号即会话号），**不拼子路径、不为会话建子目录**。会话数并列时选 `sessionIds[0]` 的 `header.createdAt` 最新者；仍无法判定时取列表第一个。列表为空、所有 workspace 都没有会话记录，或 `workspaceRegistry` 缺失/读取失败时，回落到 `process.cwd()`。该规则只在**新建会话**生效：已存在会话走 resume / live 复用，完全不参与选择，也不改已有会话的 cwd。目录必须已存在：不存在时插件只 warn 并跳过本次投递，**不会自动创建**。
 - `worker.poll.enable=false` 是默认值：不建定时器、零请求；**手动领卡照常可用**（工具与心跳开关无关）。
 - `metadata` 序列化后超过 8KiB 时插件**不启动心跳循环**并 warn 一条（不是截断），避免每轮都被平台拒。
 - `exclude` 默认 `[]`（不排除，全量 23 个）；工具名写错或含空白项时**插件激活直接失败**（`TypeError`，错误里列出未知项与合法名单），不会静默少注册。

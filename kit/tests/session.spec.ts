@@ -1,11 +1,11 @@
 /**
- * ensureSession 单测：三条路径 + 优先链五个分支 + 降级与幂等 + 修复回归。
+ * ensureSession 单测：三条路径 + cwd 选择六个分支 + 降级与幂等 + 修复回归。
  *
  * 全部依赖注入，测试里不碰真实文件系统（`isDirectory` / `cwd` 都是替身），
  * 断言同时覆盖 warn 文案里的项目号与选中路径。
  *
- * P0 回归：新建会话的 cwd **就是工作区根目录**（项目号只用于 sessionId），既不拼
- * `<root>/<projectId>`、也不建子目录；根目录不存在时只 warn 放弃。
+ * P0 回归：新建会话的 cwd 取**会话数最多的 workspace**（项目号只用于 sessionId），
+ * 既不拼 `<root>/<projectId>`、也不建子目录；目录不存在时只 warn 放弃。
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -64,7 +64,6 @@ interface Calls {
 
 function createHarness(
   params: HarnessParams = {},
-  options: { workspaceRoot?: string } = {},
 ): {
   params: HarnessParams
   deps: EnsureSessionDeps
@@ -172,7 +171,6 @@ function createHarness(
       return !(params.missing ?? []).includes(target)
     },
     cwd: () => FALLBACK_CWD,
-    ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
   }
 
   return { params, deps, calls, warns, infos, handle }
@@ -227,12 +225,12 @@ describe('ensureSession：三条路径', () => {
     const h = createHarness({
       list: () => [{
         path: CONFIGURED_ROOT,
-        sessionIds: [],
+        sessionIds: ['s-1'],
         attachSession: async (sessionId) => {
           h.calls.attach.push(sessionId)
         },
       }],
-    }, { workspaceRoot: CONFIGURED_ROOT })
+    })
 
     const result = await ensureSession(PROJECT, h.deps)
 
@@ -261,40 +259,41 @@ describe('ensureSession：三条路径', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 优先链五个分支
+// cwd 选择六个分支
 // ---------------------------------------------------------------------------
 
-describe('ensureSession：cwd 优先链', () => {
-  it('4) 配了 workspaceRoot → 直接用它，不参与工作区选择', async () => {
+describe('ensureSession：cwd 选择', () => {
+  it('4) 两个 workspace（2 vs 1 个会话）→ 选会话数多的', async () => {
     const h = createHarness({
-      // 列表里放一个不同路径：若优先链误用了它，cwd 断言会失败。
-      list: () => [{ path: '/some/other/ws' }],
-    }, { workspaceRoot: CONFIGURED_ROOT })
+      list: () => [
+        { path: '/ws/few', sessionIds: ['s-1'] },
+        { path: '/ws/many', sessionIds: ['s-1', 's-2'] },
+      ],
+    })
 
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.create[0]!.meta?.cwd).toBe(CONFIGURED_ROOT)
-    expect(h.warns.some(message =>
-      message.includes('唯一工作区')
-      || message.includes('最近有会话')
-      || message.includes('回落到进程目录'))).toBe(false)
+    expect(h.calls.create[0]!.meta?.cwd).toBe('/ws/many')
+    expect(h.infos.some(message =>
+      message.includes('使用会话数最多的 workspace')
+      && message.includes('/ws/many'))).toBe(true)
+    expect(h.warns).toEqual([])
   })
 
-  it('5) 未配置且只有一个工作区 → 用它，info 记路径、不 warn', async () => {
-    const h = createHarness({ list: () => [{ path: '/ws/only' }] })
+  it('5) 只有一个工作区且有会话 → 用它，info 记路径、不 warn', async () => {
+    const h = createHarness({ list: () => [{ path: '/ws/only', sessionIds: ['s-1'] }] })
 
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
     expect(h.calls.create[0]!.meta?.cwd).toBe('/ws/only')
     expect(h.infos.some(message =>
-      message.includes('唯一工作区') && message.includes('/ws/only'))).toBe(true)
-    // §4.1：单工作区是正常情况，不该产生 warn。
+      message.includes('会话数最多') && message.includes('/ws/only'))).toBe(true)
     expect(h.warns).toEqual([])
   })
 
-  it('6) 多工作区 → 取 sessionIds[0].header.createdAt 最新者，空 sessionIds 跳过', async () => {
+  it('6) 会话数并列 → 取 sessionIds[0].header.createdAt 最新者', async () => {
     const createdAt: Record<string, string> = {
       's-a': '2026-10-01T00:00:00.000Z',
       's-b': '2026-10-20T00:00:00.000Z',
@@ -314,9 +313,9 @@ describe('ensureSession：cwd 优先链', () => {
 
     expect(result?.outcome).toBe('created')
     expect(h.calls.create[0]!.meta?.cwd).toBe('/ws/b')
-    expect(h.warns.some(message =>
-      message.includes('最近有会话') && message.includes('/ws/b'))).toBe(true)
-    // 空 sessionIds 的工作区不参与 stat。
+    expect(h.infos.some(message =>
+      message.includes('会话数并列') && message.includes('/ws/b'))).toBe(true)
+    // 0 会话的 /ws/c 不参与 stat。
     expect(h.calls.stat).toEqual([PROJECT, 's-a', 's-b'])
   })
 
@@ -328,19 +327,26 @@ describe('ensureSession：cwd 优先链', () => {
     expect(result?.outcome).toBe('created')
     expect(h.calls.create[0]!.meta?.cwd).toBe(FALLBACK_CWD)
     expect(h.warns.some(message =>
-      message.includes('回落到进程目录') && message.includes(FALLBACK_CWD))).toBe(true)
+      message.includes('没有可用的工作区') && message.includes(FALLBACK_CWD))).toBe(true)
   })
 
-  it('8) 多工作区但 stat 全部失败/为空 → process.cwd() 并 warn 路径', async () => {
+  it('7b) workspaceRegistry 缺失 → process.cwd() 并 warn', async () => {
+    const h = createHarness()
+    delete h.deps.workspaceRegistry
+
+    const result = await ensureSession(PROJECT, h.deps)
+
+    expect(result?.outcome).toBe('created')
+    expect(h.calls.create[0]!.meta?.cwd).toBe(FALLBACK_CWD)
+    expect(h.warns.some(message =>
+      message.includes('workspaceRegistry 缺失') && message.includes(FALLBACK_CWD))).toBe(true)
+  })
+
+  it('8) 所有工作区都是 0 会话 → process.cwd() 并 warn 路径', async () => {
     const h = createHarness({
-      stat: async (id) => {
-        if (id === 's-a') throw new Error('stat boom')
-        return undefined
-      },
       list: () => [
-        { path: '/ws/a', sessionIds: ['s-a'] },
-        { path: '/ws/b', sessionIds: ['s-b'] },
-        { path: '/ws/c', sessionIds: [] },
+        { path: '/ws/a', sessionIds: [] },
+        { path: '/ws/b', sessionIds: [] },
       ],
     })
 
@@ -349,7 +355,30 @@ describe('ensureSession：cwd 优先链', () => {
     expect(result?.outcome).toBe('created')
     expect(h.calls.create[0]!.meta?.cwd).toBe(FALLBACK_CWD)
     expect(h.warns.some(message =>
-      message.includes('没有可用的会话记录') && message.includes(FALLBACK_CWD))).toBe(true)
+      message.includes('所有工作区都没有会话记录')
+      && message.includes(FALLBACK_CWD))).toBe(true)
+    // 0 会话时不需要任何 stat。
+    expect(h.calls.stat).toEqual([PROJECT])
+  })
+
+  it('8b) 会话数并列且 stat 全失败 → 取列表第一个', async () => {
+    const h = createHarness({
+      stat: async (id) => {
+        if (id === 's-a') throw new Error('stat boom')
+        return undefined
+      },
+      list: () => [
+        { path: '/ws/a', sessionIds: ['s-a'] },
+        { path: '/ws/b', sessionIds: ['s-b'] },
+      ],
+    })
+
+    const result = await ensureSession(PROJECT, h.deps)
+
+    expect(result?.outcome).toBe('created')
+    expect(h.calls.create[0]!.meta?.cwd).toBe('/ws/a')
+    expect(h.infos.some(message =>
+      message.includes('取列表第一个 workspace') && message.includes('/ws/a'))).toBe(true)
     expect(h.calls.stat).toEqual([PROJECT, 's-a', 's-b'])
   })
 })
@@ -376,7 +405,7 @@ describe('ensureSession：降级与幂等', () => {
   it('10) create 抛错 → undefined + warn，不抛错、不做收尾', async () => {
     const h = createHarness({
       createError: new Error('disk full'),
-    }, { workspaceRoot: CONFIGURED_ROOT })
+    })
 
     const result = await ensureSession(PROJECT, h.deps)
 
@@ -439,12 +468,12 @@ describe('ensureSession：降级与幂等', () => {
     const h = createHarness({
       list: () => [{
         path: CONFIGURED_ROOT,
-        sessionIds: [],
+        sessionIds: ['s-1'],
         attachSession: async () => {
           throw new Error('attach boom')
         },
       }],
-    }, { workspaceRoot: CONFIGURED_ROOT })
+    })
 
     const result = await ensureSession(PROJECT, h.deps)
 
@@ -465,27 +494,30 @@ describe('ensureSession：修复回归', () => {
     const h = createHarness({
       list: () => [{
         path: `${CONFIGURED_ROOT}/`,
-        sessionIds: [],
+        sessionIds: ['s-1'],
         attachSession: async (sessionId) => {
           h.calls.attach.push(sessionId)
         },
       }],
       supportsWorkspaceCreate: true,
-    }, { workspaceRoot: CONFIGURED_ROOT })
+    })
 
     const result = await ensureSession(PROJECT, h.deps)
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.create[0]!.meta?.cwd).toBe(CONFIGURED_ROOT)
+    expect(h.calls.create[0]!.meta?.cwd).toBe(`${CONFIGURED_ROOT}/`)
     expect(h.calls.workspaceCreate).toEqual([])
     expect(h.calls.attach).toEqual([PROJECT])
   })
 
   it('15b) registry 里没有同路径目录且支持 create → 兜底 create(根目录) 并 attach', async () => {
     const h = createHarness({
-      list: () => [{ path: OTHER_ROOT, sessionIds: [] }],
+      // 第一次 list 用于选择 cwd；第二次（attach）时该目录已不在列表里。
+      list: () => (h.calls.list === 1
+        ? [{ path: CONFIGURED_ROOT, sessionIds: ['s-1'] }]
+        : [{ path: OTHER_ROOT, sessionIds: [] }]),
       supportsWorkspaceCreate: true,
-    }, { workspaceRoot: CONFIGURED_ROOT })
+    })
 
     const result = await ensureSession(PROJECT, h.deps)
 
@@ -497,10 +529,12 @@ describe('ensureSession：修复回归', () => {
 
   it('16) 创建工作区抛错 → 会话仍 created，只 warn、不 attach', async () => {
     const h = createHarness({
-      list: () => [{ path: OTHER_ROOT, sessionIds: [] }],
+      list: () => (h.calls.list === 1
+        ? [{ path: CONFIGURED_ROOT, sessionIds: ['s-1'] }]
+        : [{ path: OTHER_ROOT, sessionIds: [] }]),
       supportsWorkspaceCreate: true,
       workspaceCreateError: new Error('registry boom'),
-    }, { workspaceRoot: CONFIGURED_ROOT })
+    })
 
     const result = await ensureSession(PROJECT, h.deps)
 
@@ -514,7 +548,7 @@ describe('ensureSession：修复回归', () => {
 
   it('17) currentSelection 带 reasoningEffort → agentOptions 原样透传', async () => {
     const h = createHarness({
-      list: () => [{ path: CONFIGURED_ROOT }],
+      list: () => [{ path: CONFIGURED_ROOT, sessionIds: ['s-1'] }],
       selection: () => ({ provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'high' }),
     })
 
@@ -595,7 +629,9 @@ describe('ensureSession：修复回归', () => {
   })
 
   it('22) 两个不同 projectId 在同一 root 下：cwd 相同、sessionId 不同', async () => {
-    const h = createHarness({ list: () => [] }, { workspaceRoot: CONFIGURED_ROOT })
+    const h = createHarness({
+      list: () => [{ path: CONFIGURED_ROOT, sessionIds: ['s-1'] }],
+    })
 
     const first = await ensureSession('APP-1', h.deps)
     const second = await ensureSession('APP-2', h.deps)
@@ -614,9 +650,9 @@ describe('ensureSession：修复回归', () => {
 
   it('23) 根目录不存在 → 放弃 create，只 warn（不自动建目录）', async () => {
     const h = createHarness({
-      list: () => [],
+      list: () => [{ path: CONFIGURED_ROOT, sessionIds: ['s-1'] }],
       missing: [CONFIGURED_ROOT],
-    }, { workspaceRoot: CONFIGURED_ROOT })
+    })
 
     const result = await ensureSession(PROJECT, h.deps)
 

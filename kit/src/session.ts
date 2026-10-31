@@ -7,9 +7,10 @@
  *   2. `sessionPersistence.stat(id)` 命中（已持久化）→ `resume` 恢复，cwd / preset
  *      一律取会话 header，**不 mkdir、不覆盖 meta**；`agentOptions` 与 create 同源，
  *      否则恢复出的 agent 没有模型，回合发不出请求；
- *   3. 都不存在 → `create` 新建：按 §4.1 优先链选出**工作区根目录**，直接以它作为
- *      会话 cwd（项目号只用于 sessionId，**不拼路径、不建子目录**），建会话并挂
- *      registry 默认 preset。根目录必须已存在：插件不替用户创建目录。
+ *   3. 都不存在 → `create` 新建：选择**会话数最多的 workspace** 目录作为会话 cwd
+ *      （没有可用 workspace 时用 `process.cwd()`；项目号只用于 sessionId，
+ *      **不拼路径、不建子目录**），建会话并挂 registry 默认 preset。目录必须
+ *      已存在：插件不替用户创建目录。
  *
  * 设计要点：
  * - **纯逻辑 + 依赖注入**：本模块不读 `ctx`，所有服务走结构化接口；`createSessionEnsurer`
@@ -74,7 +75,7 @@ export interface EnsureAgentsLike {
   resume(options: EnsureResumeOptions): Promise<EnsureAgentHandle>
 }
 
-/** 会话 header 的投影（resume 用 `cwd` / `agentPreset`，优先链用 `createdAt`）。 */
+/** 会话 header 的投影（resume 用 `cwd` / `agentPreset`，并列判定用 `createdAt`）。 */
 export interface EnsureSessionHeader {
   cwd?: string
   agentPreset?: string
@@ -138,7 +139,7 @@ export interface EnsureSessionDeps {
   sessionPersistence?: EnsureSessionPersistenceLike
   /** preset registry（缺失 → 无法挂载 preset，降级 undefined）。 */
   agentPresets?: EnsureAgentPresetsLike
-  /** 工作区列表（缺失 → 优先链回落 `process.cwd()`）。 */
+  /** 工作区列表（缺失 → 回落 `process.cwd()`）。 */
   workspaceRegistry?: EnsureWorkspaceRegistryLike
   /** 会话标题（缺失跳过）。 */
   sessionTitle?: EnsureSessionTitleLike
@@ -146,8 +147,6 @@ export interface EnsureSessionDeps {
   permissionPresets?: EnsurePermissionPresetsLike
   /** 默认模型选择（缺失不传 `agentOptions`）。 */
   agentDefaultModel?: EnsureAgentDefaultModelLike
-  /** `worker.workspaceRoot`（已归一化的绝对路径；空/缺省走优先链）。 */
-  workspaceRoot?: string
   /** info 日志（成功路径）。 */
   info?: (message: string) => void
   /** warn 日志（所有降级路径都会调用；默认 `console.warn`）。 */
@@ -166,11 +165,6 @@ export interface EnsureSessionResult {
   readonly outcome: EnsureOutcome
   readonly agent: EnsureAgent
   readonly handle?: EnsureAgentHandle
-}
-
-/** 适配器用的配置投影（`ResolvedConfig` / `ConfigInput` 都满足）。 */
-export interface EnsureSessionConfigLike {
-  worker?: { workspaceRoot?: string } | null
 }
 
 /** 适配器日志出口（沿用插件 `apply` 的 info / warn）。 */
@@ -285,7 +279,7 @@ export async function ensureSession(
     // 免得在用户没预期的地方落地一个空目录树。
     warn(
       `${TAG} 警告：工作目录 ${cwd} 不存在或不是目录，放弃本次 ensure（project=${id}）；`
-        + '请检查 worker.workspaceRoot 或启动进程的工作目录（插件不会创建目录）',
+        + '请检查工作区目录或启动进程的工作目录（插件不会创建目录）',
     )
     return undefined
   }
@@ -328,21 +322,15 @@ export async function ensureSession(
  * 只在 `agents` 缺失时直接降级；其余服务缺失由 {@link ensureSession} 各自跳过。
  *
  * @param ctx Cordis 上下文（或任何带 `agents` + `get()` 的结构替身）。
- * @param config 配置（`ResolvedConfig` / `ConfigInput` 均可，只读 `worker.workspaceRoot`）。
  * @param logger 日志出口；缺省 warn 走 `console.warn`。
  */
 export function createSessionEnsurer(
   ctx: unknown,
-  config?: EnsureSessionConfigLike | null,
   logger?: EnsureSessionLogger,
 ): (projectId: string) => Promise<EnsureSessionResult | undefined> {
   const lookup = ctx as { agents?: EnsureAgentsLike; get?: (name: string) => unknown }
   const warn = logger?.warn ?? ((message: string): void => console.warn(message))
   const info = logger?.info
-  const rawRoot = config?.worker?.workspaceRoot
-  const workspaceRoot = typeof rawRoot === 'string' && rawRoot.trim() !== ''
-    ? rawRoot.trim()
-    : undefined
 
   const service = <T>(name: string): T | undefined => {
     if (typeof lookup.get !== 'function') return undefined
@@ -373,7 +361,6 @@ export function createSessionEnsurer(
       ...(titles === undefined ? {} : { sessionTitle: titles }),
       ...(permissions === undefined ? {} : { permissionPresets: permissions }),
       ...(models === undefined ? {} : { agentDefaultModel: models }),
-      ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
       ...(info === undefined ? {} : { info }),
       warn,
     })
@@ -440,11 +427,18 @@ async function resolvePreset(
 }
 
 /**
- * §4.1 优先链：配置根目录 → 唯一工作区 → 最近有新会话的工作区 → `process.cwd()`。
+ * 选择新建会话的 cwd：会话数最多的 workspace → `process.cwd()`。
  *
- * 返回值**就是会话 cwd**（调用方不再拼接项目号）。只有「多工作区选中」与
- * 「零工作区回落」需要 warn 并带上路径；唯一工作区是正常情况，走 info（info
- * 缺省为静默）。任何异常都降级到 `process.cwd()`，绝不抛错。
+ * 规则：
+ * 1. 候选 = `workspaceRegistry.list()` 中 `path` 非空的项；
+ * 2. 取 `sessionIds.length` 最大者；
+ * 3. 会话数并列 → 取 `sessionIds[0].header.createdAt` 最新者；
+ * 4. 仍无法判定（无持久化 / stat 失败 / 无 createdAt）→ 取列表顺序第一个；
+ * 5. registry 缺失 / list 抛错 / 无候选 / 所有 workspace 都是 0 会话 →
+ *    `process.cwd()`。
+ *
+ * 返回值**就是会话 cwd**（调用方不再拼接项目号）。任何异常都降级到
+ * `process.cwd()`，绝不抛错。
  */
 async function resolveWorkspaceRoot(
   deps: EnsureSessionDeps,
@@ -454,15 +448,11 @@ async function resolveWorkspaceRoot(
 ): Promise<string> {
   const fallback = (): string => (deps.cwd ?? process.cwd)()
 
-  if (deps.workspaceRoot !== undefined && deps.workspaceRoot !== '') {
-    return deps.workspaceRoot
-  }
-
   const registry = deps.workspaceRegistry
   if (registry === undefined) {
     const cwd = fallback()
     warn(
-      `${TAG} 警告：未配置 worker.workspaceRoot 且 workspaceRegistry 缺失，`
+      `${TAG} 警告：workspaceRegistry 缺失，`
         + `新建会话回落到进程目录 ${cwd}（project=${projectId}）`,
     )
     return cwd
@@ -489,37 +479,49 @@ async function resolveWorkspaceRoot(
   if (workspaces.length === 0) {
     const cwd = fallback()
     warn(
-      `${TAG} 警告：未配置 worker.workspaceRoot 且没有工作区，`
+      `${TAG} 警告：没有可用的工作区，`
         + `新建会话回落到进程目录 ${cwd}（project=${projectId}）`,
     )
     return cwd
   }
 
-  if (workspaces.length === 1) {
-    const only = workspaces[0]!.path
-    info(`${TAG} 未配置 worker.workspaceRoot，使用唯一工作区 ${only}（project=${projectId}）`)
+  const counts = workspaces.map(workspace => workspace.sessionIds?.length ?? 0)
+  const max = Math.max(...counts)
+  if (max === 0) {
+    const cwd = fallback()
+    warn(
+      `${TAG} 警告：所有工作区都没有会话记录，`
+        + `新建会话回落到进程目录 ${cwd}（project=${projectId}）`,
+    )
+    return cwd
+  }
+
+  const winners = workspaces.filter((_, index) => counts[index] === max)
+  if (winners.length === 1) {
+    const only = winners[0]!.path
+    info(`${TAG} 使用会话数最多的 workspace ${only}（${max} 个会话，project=${projectId}）`)
     return only
   }
 
-  const latest = await pickLatestWorkspace(deps.sessionPersistence, workspaces)
+  const latest = await pickLatestWorkspace(deps.sessionPersistence, winners)
   if (latest !== undefined) {
-    warn(
-      `${TAG} 警告：未配置 worker.workspaceRoot，在 ${workspaces.length} 个工作区中`
-        + `选用最近有会话的 ${latest}（project=${projectId}）`,
+    info(
+      `${TAG} ${winners.length} 个工作区会话数并列（${max} 个会话），`
+        + `按最近会话选用 ${latest}（project=${projectId}）`,
     )
     return latest
   }
 
-  const cwd = fallback()
-  warn(
-    `${TAG} 警告：未配置 worker.workspaceRoot，${workspaces.length} 个工作区`
-      + `都没有可用的会话记录，新建会话回落到进程目录 ${cwd}（project=${projectId}）`,
+  const first = winners[0]!.path
+  info(
+    `${TAG} 会话数并列且无法按会话时间判定，`
+      + `取列表第一个 workspace ${first}（project=${projectId}）`,
   )
-  return cwd
+  return first
 }
 
 /**
- * 多工作区时取 `sessionIds[0]` 的 `header.createdAt` 最新者。
+ * 会话数并列时取 `sessionIds[0]` 的 `header.createdAt` 最新者。
  *
  * 空 `sessionIds` / stat 失败 / 无 createdAt 的工作区一律跳过；全部不可用返回 `undefined`。
  */

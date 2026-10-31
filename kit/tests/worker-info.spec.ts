@@ -44,7 +44,6 @@ function createDeps(overrides: Partial<WorkerInfoDeps> = {}): WorkerInfoDeps {
   const now = Date.now()
   const deps: WorkerInfoDeps = {
     pollEnabled: true,
-    workspaceRoot: '/ws',
     workerId: () => WORKER_ID,
     inflight: () => [
       { taskId: 'APP-1-T0001', projectId: 'APP-1', leaseUntil: new Date(now + 65_000).toISOString() },
@@ -122,7 +121,7 @@ describe('echuan_worker_info：输出内容', () => {
 
     // preset 与工作区。
     expect(text).toContain('默认 preset：default')
-    expect(text).toContain('工作区根目录：/ws（worker.workspaceRoot）')
+    expect(text).toContain('工作区选择：新建会话取会话数最多的 workspace')
     expect(text).toContain('- /ws')
     expect(text).toContain('- /ws/APP-2')
 
@@ -131,10 +130,9 @@ describe('echuan_worker_info：输出内容', () => {
     expect((value as { text: string }).text).toBe(text)
   })
 
-  it('worker 未注册、未配置 workspaceRoot 时给出可读状态', async () => {
+  it('worker 未注册时给出可读状态', async () => {
     const { text } = await run(optionsWith(createDeps({
       pollEnabled: false,
-      workspaceRoot: undefined,
       workerId: () => undefined,
       inflight: () => [],
     })))
@@ -143,7 +141,7 @@ describe('echuan_worker_info：输出内容', () => {
     expect(text).toContain('worker_id：未注册')
     expect(text).toContain('inflight：（无）')
     expect(text).toContain('无 inflight 项目')
-    expect(text).toContain('工作区根目录：未配置（优先链')
+    expect(text).toContain('工作区选择：新建会话取会话数最多的 workspace')
   })
 
   it('传 project_id 时只去重展示，不重复 inflight 里已有的项目', async () => {

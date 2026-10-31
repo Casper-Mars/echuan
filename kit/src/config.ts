@@ -5,10 +5,8 @@
  * 用这份 Schema 校验 patch 行里的 `config`，并把默认值填好再传给 `apply`。
  * `resolveConfig` 是**唯一**的归一化出口：`apply` 与单测都走它，避免两套默认值。
  *
- * 注意 `worker` 是嵌套对象：`config.worker.poll.enable` / `config.worker.metadata` /
- * `config.worker.workspaceRoot`。
+ * 注意 `worker` 是嵌套对象：`config.worker.poll.enable` / `config.worker.metadata`。
  */
-import { isAbsolute } from 'node:path'
 import Schema from '@deepseek-ai/schemastery'
 
 /** 平台地址默认值。 */
@@ -29,7 +27,6 @@ export interface ConfigInput {
   worker?: {
     poll?: { enable?: boolean | null } | null
     metadata?: Record<string, unknown> | null
-    workspaceRoot?: string | null
   } | null
 }
 
@@ -50,11 +47,6 @@ export interface ResolvedConfig {
     }
     /** 任意 JSON 对象，原样上报。 */
     metadata: Record<string, unknown>
-    /**
-     * 新建会话的根目录（绝对路径）；`undefined` 表示未配置，走 §4.1 优先链。
-     * 只影响新建，不改已有会话的 cwd。
-     */
-    workspaceRoot?: string
   }
 }
 
@@ -90,9 +82,6 @@ export const Config: Schemastery<ConfigInput, ResolvedConfig> = Schema.object({
     metadata: Schema.dict(Schema.any())
       .default({})
       .description('任意 JSON 对象，随心跳原样上报（序列化后 ≤ 8KiB）'),
-    workspaceRoot: Schema.string()
-      .default('')
-      .description('新建会话的根目录（绝对路径，可选）；留空则按工作区列表 / 进程目录推导'),
   })
     .default({})
     .description('worker 声明与心跳配置'),
@@ -124,7 +113,6 @@ export function resolveConfig(input?: ConfigInput | null): ResolvedConfig {
   const resolved = Config(input ?? {})
   const baseUrl = normalizeBaseUrl(resolved.baseUrl)
   const actor = (resolved.actor ?? '').trim()
-  const workspaceRoot = normalizeWorkspaceRoot(resolved.worker.workspaceRoot)
   return {
     baseUrl,
     // S-02：actor 是写操作身份，前后空白没有语义；trim 后为空则回落默认值。
@@ -134,25 +122,8 @@ export function resolveConfig(input?: ConfigInput | null): ResolvedConfig {
     worker: {
       poll: { enable: resolved.worker.poll.enable },
       metadata: resolved.worker.metadata,
-      ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
     },
   }
-}
-
-/**
- * 归一化 `worker.workspaceRoot`：`trim`；空串视同未配置（`undefined`）；
- * 非绝对路径抛 `TypeError`（相对路径会随进程目录漂移，不能静默接受）。
- */
-function normalizeWorkspaceRoot(value?: string | null): string | undefined {
-  const raw = (value ?? '').trim()
-  if (raw === '') return undefined
-  if (!isAbsolute(raw)) {
-    throw new TypeError(
-      `worker.workspaceRoot 必须是绝对路径：${raw}。`
-        + '请填写如 /Users/you/project/opc 的绝对目录，或留空由插件按工作区自动推导。',
-    )
-  }
-  return raw
 }
 
 /**

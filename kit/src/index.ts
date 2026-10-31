@@ -72,7 +72,6 @@ export type {
   EnsureOutcome,
   EnsurePermissionPresetsLike,
   EnsureResumeOptions,
-  EnsureSessionConfigLike,
   EnsureSessionDeps,
   EnsureSessionHeader,
   EnsureSessionLogger,
@@ -201,9 +200,6 @@ export function apply(ctx: Context, config?: ConfigInput): void {
   // 工具本身零 HTTP，不参与心跳与派单。
   const workerInfo: WorkerInfoDeps = {
     pollEnabled: resolved.worker.poll.enable,
-    ...(resolved.worker.workspaceRoot === undefined
-      ? {}
-      : { workspaceRoot: resolved.worker.workspaceRoot }),
     workerId: () => loop?.workerId,
     inflight: () => loop?.inflight ?? [],
     get agents() {
@@ -320,7 +316,7 @@ export function apply(ctx: Context, config?: ConfigInput): void {
         // 不再要求根 agent 唯一。
         // ensure 返回的是结构替身 `EnsureAgent`（只有 `id` / `session`），运行时就是
         // 真实 Agent；投递需要 `followup`，在这里收窄一次类型。
-        const ensure = createSessionEnsurer(ctx, resolved, { info: log, warn })
+        const ensure = createSessionEnsurer(ctx, { info: log, warn })
         const ensureSession = async (
           projectId: string,
         ): Promise<{ agent: Agent } | undefined> => {
