@@ -7,7 +7,7 @@
  * 3. 正文不含「反问是否开工 / 等确认」类话术；
  * 4. 正文含 `echuan_task_renew`，不含不存在的 `echuan_task_heartbeat`；
  * 5. `ctx.skills.register` 只调一次、返回注销器，注销后 `list()` 不含该技能，重注册后再次出现；
- * 6. git 交付协议可检索：开工前 `git fetch` + `origin/<base>`、`task/<task_id>` worktree、交付 `push -u origin` + `ls-remote` 校验；
+ * 6. git 交付协议可检索：开工前 `git fetch`、项目分支 `feature/<project_id>` 与 `task/<task_id>` worktree、交付 `push -u origin` + `ls-remote` 校验，并锁定分支模型正/反向约束；
  * 7. `pnpm build` 后 `lib/assets/echuan-task-execution.md` 存在且与源码一致。
  */
 import { existsSync, readFileSync } from 'node:fs'
@@ -149,7 +149,7 @@ describe('正文六条规则逐条可检索', () => {
 })
 
 describe('git 交付协议', () => {
-  it('开工前必须同步远程，base 用 origin/<base> 而非本地 main', () => {
+  it('开工前必须同步远程，任务分支从 origin/feature/<project_id> 起而非本地 main', () => {
     expect(content).toContain('git fetch --prune origin')
     expect(content).toContain('git symbolic-ref refs/remotes/origin/HEAD --short')
     expect(content).toContain('origin/')
@@ -183,6 +183,91 @@ describe('git 交付协议', () => {
     expect(content).toContain('commit 短 hash')
     expect(content).toContain('origin/task/<task_id>')
     expect(content).toContain('compare 链接')
+  })
+})
+
+describe('分支模型正/反向断言', () => {
+  /** 分支归属判定小节（2.1），用于锚定四步表，避免全篇命中的假阳性。 */
+  const ownershipSection = content.slice(
+    content.indexOf('### 2.1 分支归属判定'),
+    content.indexOf('### 2.2 原仓库路径'),
+  )
+
+  it('工作分支名固定为 feature/<project_id>，任务分支为 task/<task_id>', () => {
+    expect(content).toContain('feature/<project_id>')
+    expect(content).toContain('task/<task_id>')
+    expect(ownershipSection).toContain('分支名固定')
+  })
+
+  it('幂等建项目分支：ls-remote --heads + grep -q . + refs/heads/$WORK，原仓库与 fork 起点各至少一处', () => {
+    expect(content).toContain('git ls-remote --heads')
+    expect(content).toContain('grep -q .')
+    expect(content).toContain('refs/heads/$WORK')
+    // 原仓库路径以 origin/$BASE 为起点，fork 路径以 upstream/$BASE 为起点。
+    expect(content).toContain('"origin/$BASE:refs/heads/$WORK"')
+    expect(content).toContain('"upstream/$BASE:refs/heads/$WORK"')
+  })
+
+  it('任务 PR 必须显式 --base "feature/<project_id>"，且正文写明不得省略', () => {
+    expect(content).toContain('--base "feature/<project_id>"')
+    expect(content).toContain('不得省略')
+    // 「不得省略」必须与省略后的后果成对出现，避免变成孤立口号。
+    expect(content).toContain('省略会落回仓库默认分支')
+  })
+
+  it('fork 路径任务 PR 用 --repo "$FORK"，收尾 PR 用 --head "$LOGIN:feature/<project_id>"', () => {
+    expect(content).toContain('--repo "$FORK"')
+    expect(content).toContain('--head "$LOGIN:feature/<project_id>"')
+  })
+
+  it('四步分支归属判定表覆盖四种情形（原仓库已有 / fork 已有 / 有权限 / 无权限）', () => {
+    expect(ownershipSection).toContain('原仓库已有')
+    expect(ownershipSection).toContain('fork 已有')
+    expect(ownershipSection).toContain('permissions.push')
+    expect(ownershipSection).toContain('无推送权限')
+    expect(content).toContain('有推送权限')
+    // 四步表的顺序编号必须齐全。
+    for (const step of ['| 1 |', '| 2 |', '| 3 |', '| 4 |']) {
+      expect(ownershipSection).toContain(step)
+    }
+  })
+
+  it('不含「base 取远程默认分支」类旧口径', () => {
+    for (const legacy of ['base = 远程默认分支', 'base 取 origin/HEAD', 'base 用远程默认分支']) {
+      expect(content).not.toContain(legacy)
+    }
+    // 正文合法的 refs/remotes/origin/HEAD 用于推导 BASE，不得被误伤。
+    expect(content).toContain('refs/remotes/origin/HEAD')
+  })
+
+  it('不含向 upstream 直推的命令写法', () => {
+    for (const banned of ['git push upstream', 'git push -u upstream', 'git push origin upstream']) {
+      expect(content).not.toContain(banned)
+    }
+    // 合法片段：refspec 里的 upstream/$BASE，以及「禁止向 upstream push」的纪律说明。
+    expect(content).toContain('git push "$PUSH_REMOTE" "upstream/$BASE:refs/heads/$WORK"')
+    expect(content).toContain('禁止向 upstream push')
+  })
+
+  it('每一处 gh pr create 都必须带 --base（含反斜杠续行）', () => {
+    const lines = content.split('\n')
+    let checked = 0
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i]
+      if (line === undefined || !line.includes('gh pr create')) continue
+      checked += 1
+      let command = line
+      let cursor = i
+      while (command.trimEnd().endsWith('\\') && cursor + 1 < lines.length) {
+        cursor += 1
+        const next = lines[cursor]
+        if (next === undefined) break
+        command += ` ${next}`
+      }
+      expect(command, `第 ${i + 1} 行 gh pr create 缺少 --base`).toContain('--base')
+    }
+    // 防止条件失效导致空跑：正文至少有两处任务 PR + 两处合并 PR。
+    expect(checked).toBeGreaterThanOrEqual(4)
   })
 })
 
