@@ -1225,6 +1225,64 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* 项目 ID 行：等宽文本 + 复制反馈 */
+.copy-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.copy-line .mono {
+  overflow-wrap: anywhere;
+}
+
+.copy-button {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  font-size: 0.74rem;
+}
+
+.copy-button.is-copied,
+.copy-icon-button.is-copied {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.copy-button.is-failed,
+.copy-icon-button.is-failed {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.copy-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.copy-icon-button:hover:not(:disabled) {
+  border-color: #c3ccdb;
+  background: #f8fafc;
+  color: var(--accent);
+}
+
+.copy-failed {
+  color: var(--danger);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
 .detail-section {
   display: flex;
   flex-direction: column;

@@ -1,7 +1,8 @@
-import { useContext, useEffect, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import { getProject, listProjectMaterials, materialDownloadUrl, projectPackageUrl } from '../api/client'
 import type { MaterialChain, MaterialVersion, ProjectDetail } from '../api/types'
 import { usePolling } from '../hooks/usePolling'
+import { copyText } from '../lib/clipboard'
 import {
   TASK_COLUMNS,
   formatBytes,
@@ -103,6 +104,8 @@ export function ProjectDetailDrawer({
 }) {
   const [editing, setEditing] = useState<'title' | 'requirement' | null>(null)
   const [readingRequirement, setReadingRequirement] = useState<string | null>(null)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const updateDrawerTitle = useContext(DrawerTitleContext)
   const { data, error, loading, refreshing, refresh } = usePolling<ProjectBundle>(
     async (signal) => {
@@ -120,6 +123,14 @@ export function ProjectDetailDrawer({
     if (data) updateDrawerTitle(`项目 ${data.detail.project_id} · ${data.detail.title || '未命名'}`)
   }, [data?.detail.project_id, data?.detail.title, updateDrawerTitle])
 
+  // 卸载时清掉反馈定时器，避免对已卸载组件 setState。
+  useEffect(
+    () => () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    },
+    [],
+  )
+
   if (!data) {
     return (
       <div className="detail">
@@ -136,6 +147,14 @@ export function ProjectDetailDrawer({
     onChanged()
   }
 
+  const copyProjectId = async () => {
+    const ok = await copyText(detail.project_id)
+    setCopyState(ok ? 'copied' : 'failed')
+    // 重复点击时重置旧定时器，避免先前的回调提前把状态复原。
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => setCopyState('idle'), ok ? 1500 : 2500)
+  }
+
   return (
     <div className="detail">
       {error && <ErrorNotice error={error} onRetry={refresh} />}
@@ -148,6 +167,30 @@ export function ProjectDetailDrawer({
       </div>
 
       <dl className="meta-grid">
+        <div>
+          <dt>项目 ID</dt>
+          <dd>
+            <span className="copy-line">
+              <span className="mono" title={detail.project_id}>
+                {detail.project_id}
+              </span>
+              <button
+                type="button"
+                className={`ghost copy-button${copyState === 'copied' ? ' is-copied' : ''}${
+                  copyState === 'failed' ? ' is-failed' : ''
+                }`}
+                onClick={() => void copyProjectId()}
+                title={copyState === 'failed' ? '复制失败，请手动选中' : '复制项目 ID'}
+              >
+                {copyState === 'copied'
+                  ? '已复制'
+                  : copyState === 'failed'
+                    ? '复制失败，请手动选中'
+                    : '复制'}
+              </button>
+            </span>
+          </dd>
+        </div>
         <div>
           <dt>最近操作人</dt>
           <dd>{detail.last_actor || '—'}</dd>

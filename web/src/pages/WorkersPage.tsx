@@ -10,6 +10,7 @@ import {
 } from '../components/States'
 import { TaskDetailDrawer } from '../components/TaskDetailDrawer'
 import { usePolling } from '../hooks/usePolling'
+import { copyText } from '../lib/clipboard'
 import { formatDateTime, formatRelative } from '../lib/format'
 
 /** 服务端单页上限 200；超过时按 next_cursor 继续翻页。 */
@@ -68,23 +69,6 @@ function renderMetadataValue(value: unknown): string {
   }
 }
 
-/** 非安全上下文 / 老浏览器下 navigator.clipboard 不可用时的兜底。 */
-function fallbackCopy(text: string): boolean {
-  const area = document.createElement('textarea')
-  area.value = text
-  area.setAttribute('readonly', '')
-  area.style.position = 'fixed'
-  area.style.top = '-1000px'
-  area.style.opacity = '0'
-  document.body.appendChild(area)
-  area.select()
-  try {
-    return document.execCommand('copy')
-  } finally {
-    document.body.removeChild(area)
-  }
-}
-
 /**
  * Worker 列表：在线状态、当前任务、自报元数据与心跳时间。
  * 5s 轮询复用 usePolling；在线/离线完全以服务端 presence 为准。
@@ -109,22 +93,7 @@ export function WorkersPage() {
   const online = workers.filter((worker) => worker.presence === 'active').length
 
   const copyWorkerId = useCallback(async (workerId: string) => {
-    let copied = false
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(workerId)
-        copied = true
-      }
-    } catch {
-      copied = false
-    }
-    if (!copied) {
-      try {
-        copied = fallbackCopy(workerId)
-      } catch {
-        copied = false
-      }
-    }
+    const copied = await copyText(workerId)
     if (!copied) return
     setCopiedId(workerId)
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
