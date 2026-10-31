@@ -1008,6 +1008,17 @@ button {
   width: min(620px, 100%);
 }
 
+/* 长文阅读弹窗：宽屏占视口 80%，沿用 .modal 的 max-height 与 body 内部滚动。 */
+.modal-xlarge {
+  width: 80vw;
+}
+
+/* 阅读弹窗内正文不再单独限高，滚动统一交给 .modal-body，避免双层滚动条。 */
+.modal-xlarge .markdown {
+  max-height: none;
+  overflow-y: visible;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -1024,6 +1035,8 @@ button {
 .modal-body {
   padding: 18px 20px;
   overflow-y: auto;
+  /* 显式声明可收缩，避免后续改动让正文溢出弹窗而非内部滚动。 */
+  min-height: 0;
 }
 
 .modal-footer {
@@ -1506,6 +1519,11 @@ button {
 
   .modal-root {
     padding: 12px;
+  }
+
+  /* 窄屏下 xlarge 回落全宽，避免横向溢出。 */
+  .modal-xlarge {
+    width: 100%;
   }
 }
 

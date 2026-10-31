@@ -87,7 +87,7 @@ export function RequirementReader({
   }, [activeSelected, bodyReloadKey])
 
   return (
-    <Modal title={current ? `需求全文 · 第 ${current.version} 版` : '需求全文'} onClose={onClose} wide>
+    <Modal title={current ? `需求全文 · 第 ${current.version} 版` : '需求全文'} onClose={onClose} xlarge>
       <ErrorNotice error={chainError} onRetry={() => setChainReloadKey((key) => key + 1)} />
       {!activeChain && !chainError && <LoadingState label="正在加载需求版本…" />}
       {activeChain && versions.length === 0 && <p className="muted">暂无需求版本</p>}
