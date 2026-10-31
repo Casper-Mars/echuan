@@ -6,7 +6,7 @@
 
 插件**只做三件事**：
 
-1. **定时心跳**：上报 agent 状态与 metadata，并带上平台下发的 `worker_id`（仅存内存）。
+1. **定时心跳**：上报 `state`（`busy` = 手里有未报告的卡，`idle` = 没有）与 metadata，并带上平台下发的 `worker_id`（仅存内存）。
 2. **投递派单**：按 `task.project_id` 确保项目会话就绪（项目号即会话号），再把 `run_task` 投给该会话的 agent。
 3. **提供 23 个工具**（默认全量；可用 `exclude` 按 agent 裁剪，见「配置」）：
    - 生命周期写：`echuan_project_create`（建项目）、`echuan_project_requirement_write`（写需求）、`echuan_project_submit`（提交评审）、`echuan_spec_create`（建方案）、`echuan_spec_revise`（修订方案）、`echuan_plan_submit`（批量建卡）
@@ -214,6 +214,7 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 
 - 首轮心跳**延迟 5 秒**发出：几秒内就退出的命令（如 `dsh --profile <name> --help`）在 `worker.poll.enable=true` 时不会产生任何请求；若进程存活超过 5s 仍会注册（`--help` 不再是「必然打一次真实 POST」的命令）。
 - 心跳间隔只认平台回包 `heartbeat_interval_ms`（默认 15s），客户端夹紧在 [500ms, 24h]。
+- `state` 是**占用声明**，不是 agent 的瞬时运行态：inflight 非空（或上一轮回包 `current_task_id` 非空，覆盖手动 `echuan_task_claim` 领的卡）期间**每一轮都上报 `busy`**，所以回合间隙不会被平台当成空闲再派一张卡；只有 `echuan_task_report` 成功（`notifyReported`）或租约过期后才会回到 `idle`。一个 worker 同一时间只持一张卡。
 - 连续 `worker_unknown` 会退避 1s→2s→5s→15s，不会打爆平台。
 
 ## 卸载

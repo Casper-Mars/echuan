@@ -274,44 +274,58 @@ func TestHeartbeatBusyRenewsLeaseOnly(t *testing.T) {
 	}
 }
 
-// TestHeartbeatIdleDoesNotRenewAndReclaimClearsPointer covers the idle-while-
-// holding case and the expiry that follows it: no renewal, then the reclaim
-// returns the card to the queue and releases the pointer.
-func TestHeartbeatIdleDoesNotRenewAndReclaimClearsPointer(t *testing.T) {
+// TestHeartbeatIdleHoldingRenewsLeaseAndReclaimDefersDispatch covers the two
+// halves of the single-card guarantee:
+//
+//   - an idle worker that still holds a card keeps the card and keeps renewing
+//     its lease; the queued card stays untouched (idle only means "no new card");
+//   - once the lease really lapses, the heartbeat that reclaims it does not take
+//     a new card in the same round — the hand-off waits for the next heartbeat.
+func TestHeartbeatIdleHoldingRenewsLeaseAndReclaimDefersDispatch(t *testing.T) {
 	e := newWorkerEnv(t)
-	projectID := e.newProductProject(t, "APP", "空闲不续租")
-	taskID := e.readyTask(t, projectID, "会过期", 0)
+	projectID := e.newProductProject(t, "APP", "空闲持卡续租")
+	held := e.readyTask(t, projectID, "长任务", 10)
+	queued := e.readyTask(t, projectID, "排队的下一张", 1)
 
 	dispatched := e.heartbeat(t, HeartbeatInput{})
 	workerID := dispatched.Worker.WorkerID
-	if len(dispatched.Commands) != 1 {
-		t.Fatalf("commands = %#v, want the queued card", dispatched.Commands)
+	if len(dispatched.Commands) != 1 || dispatched.Commands[0].Task.ID != held {
+		t.Fatalf("commands = %#v, want %s", dispatched.Commands, held)
 	}
-	before := *e.task(t, taskID).LeaseUntil
+	before := *e.task(t, held).LeaseUntil
 
+	// Idle while holding: the lease is renewed and the queued card is not taken.
 	e.clock.Advance(5 * time.Second)
 	idle := e.heartbeat(t, HeartbeatInput{WorkerID: workerID, State: domain.WorkerStateIdle})
 	if len(idle.Commands) != 0 {
 		t.Errorf("commands = %#v, want none while still holding a card", idle.Commands)
 	}
-	if idle.Worker.CurrentTaskID == nil || *idle.Worker.CurrentTaskID != taskID {
-		t.Errorf("current_task_id = %v, want %s", idle.Worker.CurrentTaskID, taskID)
+	if idle.Worker.CurrentTaskID == nil || *idle.Worker.CurrentTaskID != held {
+		t.Errorf("current_task_id = %v, want %s", idle.Worker.CurrentTaskID, held)
 	}
-	if after := *e.task(t, taskID).LeaseUntil; after != before {
-		t.Errorf("lease_until = %s, want %s (an idle heartbeat must not renew)", after, before)
+	if after := *e.task(t, held).LeaseUntil; after == before {
+		t.Errorf("lease_until = %s, want it renewed past %s", after, before)
+	}
+	if after, want := *e.task(t, held).LeaseUntil, formatLeaseTime(e.clock.Now().Add(90*time.Second)); after != want {
+		t.Errorf("lease_until = %s, want %s (idle must still renew)", after, want)
+	}
+	if row := e.task(t, queued); row.Status != domain.TaskReady || row.AttemptCount != 0 {
+		t.Errorf("queued task = status %d attempt %d, want it untouched", row.Status, row.AttemptCount)
 	}
 
-	// Past the TTL the lease is dead; the next heartbeat reclaims it. It asks
-	// as busy, so it must not immediately take the card again.
-	e.clock.Advance(86 * time.Second)
-	reclaimed := e.heartbeat(t, HeartbeatInput{WorkerID: workerID, State: domain.WorkerStateBusy})
+	// Past the renewed TTL (renewed at T+5s for 90s, so it dies at T+95s) the
+	// lease is dead and the next heartbeat reclaims it. It declares idle, but the
+	// card it just lost was not reported: taking the next card in this same round
+	// is exactly the double-booking bug.
+	e.clock.Advance(91 * time.Second)
+	reclaimed := e.heartbeat(t, HeartbeatInput{WorkerID: workerID, State: domain.WorkerStateIdle})
 	if len(reclaimed.Commands) != 0 {
-		t.Errorf("commands = %#v, want none for a busy worker", reclaimed.Commands)
+		t.Errorf("commands = %#v, want none in the round that lost the lease", reclaimed.Commands)
 	}
 	if reclaimed.Worker.CurrentTaskID != nil {
-		t.Errorf("current_task_id = %v, want nil after the reclaim", *reclaimed.Worker.CurrentTaskID)
+		t.Errorf("current_task_id = %v, want nil after the reclaim", reclaimed.Worker.CurrentTaskID)
 	}
-	row := e.task(t, taskID)
+	row := e.task(t, held)
 	if row.Status != domain.TaskReady {
 		t.Errorf("status = %d, want 1 (reclaimed)", row.Status)
 	}
@@ -322,13 +336,62 @@ func TestHeartbeatIdleDoesNotRenewAndReclaimClearsPointer(t *testing.T) {
 		t.Errorf("registry pointer = %v/%v, want it cleared", registry.CurrentTaskID, registry.CurrentLeaseID)
 	}
 
-	// The reclaimed card is claimable again, with its attempt history intact.
+	// The next heartbeat may take the reclaimed card again, history intact.
 	again := e.heartbeat(t, HeartbeatInput{WorkerID: workerID, State: domain.WorkerStateIdle})
-	if len(again.Commands) != 1 || again.Commands[0].Task.ID != taskID {
-		t.Fatalf("commands = %#v, want %s again", again.Commands, taskID)
+	if len(again.Commands) != 1 || again.Commands[0].Task.ID != held {
+		t.Fatalf("commands = %#v, want %s again", again.Commands, held)
 	}
 	if again.Commands[0].Task.Attempt != 2 {
 		t.Errorf("attempt = %d, want 2 (reclaim keeps the history)", again.Commands[0].Task.Attempt)
+	}
+}
+
+// TestHeartbeatReclaimedWorkerDoesNotTakeSecondCard is the user-visible shape of
+// the bug: the worker is interrupted (no heartbeat for longer than the lease),
+// so the card is reclaimed by the recovery heartbeat itself. Even though it
+// declares idle, that heartbeat must return no command; only the following one
+// may be dispatched.
+func TestHeartbeatReclaimedWorkerDoesNotTakeSecondCard(t *testing.T) {
+	e := newWorkerEnv(t)
+	projectID := e.newProductProject(t, "APP", "心跳中断后恢复")
+	first := e.readyTask(t, projectID, "第一张", 10)
+	second := e.readyTask(t, projectID, "第二张", 1)
+
+	dispatched := e.heartbeat(t, HeartbeatInput{})
+	workerID := dispatched.Worker.WorkerID
+	if len(dispatched.Commands) != 1 || dispatched.Commands[0].Task.ID != first {
+		t.Fatalf("commands = %#v, want %s", dispatched.Commands, first)
+	}
+
+	// Heartbeat chain interrupted well past the 90s lease.
+	e.clock.Advance(120 * time.Second)
+
+	recovery := e.heartbeat(t, HeartbeatInput{WorkerID: workerID, State: domain.WorkerStateIdle})
+	if len(recovery.Commands) != 0 {
+		t.Fatalf("recovery heartbeat commands = %#v, want none deferred", recovery.Commands)
+	}
+	if recovery.Worker.CurrentTaskID != nil {
+		t.Errorf("current_task_id = %v, want nil", recovery.Worker.CurrentTaskID)
+	}
+	if row := e.task(t, first); row.Status != domain.TaskReady {
+		t.Errorf("first task status = %d, want 1 (reclaimed)", row.Status)
+	}
+	if row := e.task(t, second); row.Status != domain.TaskReady || row.AttemptCount != 0 {
+		t.Errorf("second task = status %d attempt %d, want it untouched", row.Status, row.AttemptCount)
+	}
+
+	// One card at a time: only the next heartbeat gets one, and it is the
+	// reclaimed card (higher priority), not a second concurrent card.
+	next := e.heartbeat(t, HeartbeatInput{WorkerID: workerID, State: domain.WorkerStateIdle})
+	if len(next.Commands) != 1 || next.Commands[0].Task.ID != first {
+		t.Fatalf("commands = %#v, want %s", next.Commands, first)
+	}
+	if next.Commands[0].Task.Attempt != 2 {
+		t.Errorf("attempt = %d, want 2", next.Commands[0].Task.Attempt)
+	}
+	held := e.count(t, `SELECT COUNT(*) FROM tasks WHERE status = 2`)
+	if held != 1 {
+		t.Errorf("cards in progress = %d, want exactly 1", held)
 	}
 }
 

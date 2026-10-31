@@ -628,10 +628,10 @@ describe('run_task 投递', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 4. state 只看 inflight
+// 4. state 只看「手里有没有卡」
 // ---------------------------------------------------------------------------
 
-describe('state 只看 inflight', () => {
+describe('state 只看「手里有没有卡」', () => {
   it('无 inflight → idle（即使存在 running 会话）', async () => {
     const { agent } = buildAgent('running')
     const { loop, platform, scheduler } = setup(
@@ -670,7 +670,7 @@ describe('state 只看 inflight', () => {
     expect(followup).toHaveBeenCalledTimes(1)
   })
 
-  it('投递后 inflight 会话 idle → 下一轮 idle', async () => {
+  it('投递后 inflight 会话 idle → 下一轮仍是 busy（P0 回归：不再看 agent.status）', async () => {
     const until = Date.parse(RUN_TASK.lease.until)
     const { agent } = buildAgent('idle')
     const { loop, platform, scheduler } = setup(
@@ -680,9 +680,88 @@ describe('state 只看 inflight', () => {
 
     await startAndBeat(loop, scheduler)
     expect(platform.calls[0]?.body.state).toBe('idle')
+    expect(loop.inflight).toHaveLength(1)
+
+    // 回合间隙 agent 就是 idle：这一轮若报 idle，平台会再派一张卡（同一 worker 两张卡）。
+    await scheduler.advance(5_000)
+    expect(platform.calls[1]?.body.state).toBe('busy')
 
     await scheduler.advance(5_000)
-    expect(platform.calls[1]?.body.state).toBe('idle')
+    expect(platform.calls[2]?.body.state).toBe('busy')
+  })
+
+  it('agent.status 在 idle/running 间抖动：inflight 非空期间每一轮都是 busy', async () => {
+    const until = Date.parse(RUN_TASK.lease.until)
+    const { agent, setStatus } = buildAgent('idle')
+    const { loop, platform, scheduler } = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [RUN_TASK], 5_000)),
+      { sessions: [agent], now: () => until - 60_000 },
+    )
+
+    await startAndBeat(loop, scheduler)
+    expect(platform.calls[0]?.body.state).toBe('idle')
+
+    const flapping = ['running', 'idle', 'running', 'idle', 'idle'] as const
+    for (const [index, status] of flapping.entries()) {
+      setStatus(status)
+      await scheduler.advance(5_000)
+      expect(platform.calls[index + 1]?.body.state, `第 ${index + 2} 轮 status=${status}`).toBe('busy')
+    }
+    expect(loop.inflight).toHaveLength(1)
+  })
+
+  it('回包 current_task_id 非空（本地无 inflight）→ 下一轮 busy；置空后回到 idle', async () => {
+    const { agent } = buildAgent('idle')
+    const payloadWith = (currentTaskId: string | null): WorkerHeartbeatPayload => ({
+      worker: {
+        worker_id: WORKER_ID,
+        heartbeat_interval_ms: 5_000,
+        current_task_id: currentTaskId,
+      },
+      commands: [],
+    })
+    const { loop, platform, scheduler } = setup(
+      (_body, call) => okResponse(payloadWith(call === 2 ? null : 'APP-1-T0009')),
+      { sessions: [agent] },
+    )
+
+    await startAndBeat(loop, scheduler)
+    expect(platform.calls[0]?.body.state).toBe('idle')
+    // 手动 echuan_task_claim 领的卡不进本地 inflight，只能靠回包快照上报占用。
+    expect(loop.inflight).toEqual([])
+
+    await scheduler.advance(5_000)
+    expect(platform.calls[1]?.body.state).toBe('busy')
+
+    // 平台把指针清掉（例如报告被受理）之后，回包 current_task_id 变 null。
+    await scheduler.advance(5_000)
+    expect(platform.calls[2]?.body.state).toBe('busy')
+    await scheduler.advance(5_000)
+    expect(platform.calls[3]?.body.state).toBe('idle')
+  })
+
+  it('手动领卡（只有回包 current_task_id）后 notifyReported → 下一轮 idle', async () => {
+    const { agent } = buildAgent('idle')
+    const held = {
+      worker: {
+        worker_id: WORKER_ID,
+        heartbeat_interval_ms: 5_000,
+        current_task_id: 'APP-1-T0009',
+      },
+      commands: [],
+    }
+    const { loop, platform, scheduler } = setup(
+      () => okResponse(held),
+      { sessions: [agent] },
+    )
+
+    await startAndBeat(loop, scheduler)
+    await scheduler.advance(5_000)
+    expect(platform.calls[1]?.body.state).toBe('busy')
+
+    loop.notifyReported('APP-1-T0009')
+    await scheduler.advance(5_000)
+    expect(platform.calls[2]?.body.state).toBe('idle')
   })
 
   it('notifyReported 之后回到 idle（即使会话仍 running）', async () => {
