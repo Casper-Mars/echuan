@@ -7,7 +7,7 @@
  * 3. 正文不含「反问是否开工 / 等确认」类话术；
  * 4. 正文含 `echuan_task_renew`，不含不存在的 `echuan_task_heartbeat`；
  * 5. `ctx.skills.register` 只调一次、返回注销器，注销后 `list()` 不含该技能，重注册后再次出现；
- * 6. git 交付协议可检索：开工前 `git fetch` + `origin/<base>`、`task/<task_id>` worktree、交付 `push -u origin` + `ls-remote` 校验；
+ * 6. git 交付协议可检索：开工前 `git fetch`、项目分支 `feature/<project_id>` 与 `task/<task_id>` worktree、交付 `push -u origin` + `ls-remote` 校验，并锁定分支模型正/反向约束；
  * 7. `pnpm build` 后 `lib/assets/echuan-task-execution.md` 存在且与源码一致。
  */
 import { existsSync, readFileSync } from 'node:fs'
@@ -149,7 +149,7 @@ describe('正文六条规则逐条可检索', () => {
 })
 
 describe('git 交付协议', () => {
-  it('开工前必须同步远程，base 用 origin/<base> 而非本地 main', () => {
+  it('开工前必须同步远程，任务分支从 origin/feature/<project_id> 起而非本地 main', () => {
     expect(content).toContain('git fetch --prune origin')
     expect(content).toContain('git symbolic-ref refs/remotes/origin/HEAD --short')
     expect(content).toContain('origin/')
@@ -183,6 +183,132 @@ describe('git 交付协议', () => {
     expect(content).toContain('commit 短 hash')
     expect(content).toContain('origin/task/<task_id>')
     expect(content).toContain('compare 链接')
+  })
+})
+
+describe('分支模型正/反向断言', () => {
+  /** 分支归属判定小节（2.1），用于锚定四步表，避免全篇命中的假阳性。 */
+  const ownershipSection = content.slice(
+    content.indexOf('### 2.1 分支归属判定'),
+    content.indexOf('### 2.2 原仓库路径'),
+  )
+
+  it('工作分支名固定为 feature/<project_id>，任务分支为 task/<task_id>', () => {
+    expect(content).toContain('feature/<project_id>')
+    expect(content).toContain('task/<task_id>')
+    expect(ownershipSection).toContain('分支名固定')
+  })
+
+  it('幂等建项目分支：ls-remote --heads + grep -q . + refs/heads/$WORK，原仓库与 fork 起点各至少一处', () => {
+    expect(content).toContain('git ls-remote --heads')
+    expect(content).toContain('grep -q .')
+    expect(content).toContain('refs/heads/$WORK')
+
+    // 两条 refspec 不仅要存在，还必须落在各自小节的命令里（防止张冠李戴或整段搬错位置）。
+    const sectionStart22 = content.indexOf('### 2.2')
+    const sectionStart23 = content.indexOf('### 2.3')
+    const sectionStart24 = content.indexOf('### 2.4')
+    expect(sectionStart22).toBeGreaterThan(-1)
+    expect(sectionStart23).toBeGreaterThan(sectionStart22)
+    expect(sectionStart24).toBeGreaterThan(sectionStart23)
+    const originalRepoSection = content.slice(sectionStart22, sectionStart23)
+    const forkSection = content.slice(sectionStart23, sectionStart24)
+
+    // 原仓库路径以 origin/$BASE 为起点，fork 路径以 upstream/$BASE 为起点。
+    expect(originalRepoSection).toContain('"origin/$BASE:refs/heads/$WORK"')
+    expect(originalRepoSection).not.toContain('"upstream/$BASE:refs/heads/$WORK"')
+    expect(forkSection).toContain('"upstream/$BASE:refs/heads/$WORK"')
+    expect(forkSection).not.toContain('"origin/$BASE:refs/heads/$WORK"')
+  })
+
+  it('任务 PR 必须显式 --base "feature/<project_id>"，且正文写明不得省略', () => {
+    expect(content).toContain('--base "feature/<project_id>"')
+    expect(content).toContain('不得省略')
+    // 「不得省略」必须与省略后的后果成对出现，避免变成孤立口号。
+    expect(content).toContain('省略会落回仓库默认分支')
+  })
+
+  it('fork 路径任务 PR 用 --repo "$FORK"，收尾 PR 用 --head "$LOGIN:feature/<project_id>"', () => {
+    expect(content).toContain('--repo "$FORK"')
+    expect(content).toContain('--head "$LOGIN:feature/<project_id>"')
+  })
+
+  it('四步分支归属判定表覆盖四种情形（原仓库已有 / fork 已有 / 有权限 / 无权限）', () => {
+    expect(ownershipSection).toContain('原仓库已有')
+    expect(ownershipSection).toContain('fork 已有')
+    expect(ownershipSection).toContain('permissions.push')
+    expect(ownershipSection).toContain('无推送权限')
+    expect(content).toContain('有推送权限')
+    // 四步表的顺序编号必须齐全。
+    for (const step of ['| 1 |', '| 2 |', '| 3 |', '| 4 |']) {
+      expect(ownershipSection).toContain(step)
+    }
+  })
+
+  it('不含「base 取远程默认分支」类旧口径', () => {
+    for (const legacy of ['base = 远程默认分支', 'base 取 origin/HEAD', 'base 用远程默认分支']) {
+      expect(content).not.toContain(legacy)
+    }
+    // 正文合法的 refs/remotes/origin/HEAD 用于推导 BASE，不得被误伤。
+    expect(content).toContain('refs/remotes/origin/HEAD')
+  })
+
+  it('不含向 upstream 直推的命令写法', () => {
+    for (const banned of ['git push upstream', 'git push -u upstream', 'git push origin upstream']) {
+      expect(content).not.toContain(banned)
+    }
+    // 合法片段：refspec 里的 upstream/$BASE，以及「禁止向 upstream push」的纪律说明。
+    expect(content).toContain('git push "$PUSH_REMOTE" "upstream/$BASE:refs/heads/$WORK"')
+    expect(content).toContain('禁止向 upstream push')
+  })
+
+  it('每一处 gh pr create 都带 --base，且任务 PR 的 --base 取值必须是 feature/<project_id>', () => {
+    const lines = content.split('\n')
+    // 已知边界（不在本用例覆盖）：
+    //   P2-1 正文若出现 `git push -f upstream` 之类绕过写法，本用例不校验；
+    //   P2-3 命令拼接仅处理反斜杠续行，不解析 shell 变量展开。
+    const taskPrCommands: string[] = []
+    const mergePrCommands: string[] = []
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i]
+      if (line === undefined || !line.includes('gh pr create')) continue
+
+      // 拼接反斜杠续行，得到一条完整命令。
+      let command = line
+      let cursor = i
+      while (command.trimEnd().endsWith('\\') && cursor + 1 < lines.length) {
+        cursor += 1
+        const next = lines[cursor]
+        if (next === undefined) break
+        command += ` ${next}`
+      }
+
+      // 按 --head 分类：任务 PR 与收尾合并 PR 的 base 约束不同。
+      if (command.includes('--head "task/<task_id>"')) {
+        taskPrCommands.push(command)
+      } else if (
+        command.includes('--head "feature/<project_id>"')
+        || command.includes('--head "$LOGIN:feature/<project_id>"')
+      ) {
+        mergePrCommands.push(command)
+      } else {
+        throw new Error(`第 ${i + 1} 行 gh pr create 无法按 --head 归类：${command}`)
+      }
+    }
+
+    // 任务 PR：--base 必须显式且取值为项目分支（防止取值被改成 main 仍绿）。
+    for (const command of taskPrCommands) {
+      expect(command, `任务 PR 缺少取值级 --base：${command}`).toContain('--base "feature/<project_id>"')
+    }
+    // 收尾合并 PR：--base 必须存在，允许 $BASE 变量。
+    for (const command of mergePrCommands) {
+      expect(command, `合并 PR 缺少 --base：${command}`).toContain('--base')
+    }
+
+    // 防止条件失效导致空跑：正文至少有两处任务 PR + 两处合并 PR。
+    expect(taskPrCommands.length, '任务 PR 命令数不足 2').toBeGreaterThanOrEqual(2)
+    expect(mergePrCommands.length, '合并 PR 命令数不足 2').toBeGreaterThanOrEqual(2)
   })
 })
 
