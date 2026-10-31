@@ -101,6 +101,8 @@ git worktree add ../wt-<task_id> -b task/<task_id> "origin/$WORK"
 - **禁止向 upstream push**：所有推送一律走 `origin`（原仓库路径 origin 即原仓库，fork 路径 origin 即本人 fork）。这条统一了两种路径的后续命令。
 - `-b ... "origin/$WORK"` 会把任务分支的上游暂时设为 base，`git status` 会显示相对 base 的 ahead；首次 `git push -u origin task/<task_id>` 后上游即改为 `origin/task/<task_id>`，属正常现象，不要因此重推或 force。
 - 一张卡一个 worktree，不复用上一张卡的。上一张已合并就先 `git worktree remove ../wt-<旧task_id>`；未合并则保留供 review，新卡仍从最新 `origin/$WORK` 起。
+- `BASE` 取不到时回落 `main`；默认分支不是 `main` 的仓库改成实际分支名（如 `master`），不要照抄。
+- `../wt-<task_id>` 是相对当前 shell 目录的路径，先 `cd` 到仓库根目录再执行，避免建到子目录里。
 - 分支建不出来（无建分支权限、分支保护拦截、fork 被组织策略禁止）就停下，按第 5 节汇报，**不得「先按 main 做」**。
 - 工作分支已存在（他人已建）属正常：`fetch` 后直接使用，不要删了重建。
 - 建好后 `cd ../wt-<task_id>`，后续所有命令都在这里执行。
@@ -174,7 +176,7 @@ gh pr create --repo "$FORK" --base "feature/<project_id>" --head "task/<task_id>
 | 情况 | 动作 |
 | --- | --- |
 | `git fetch` 失败（网络/权限） | 停下汇报，附原始输出；不得凭本地状态开工 |
-| 直推 `feature/*` 被分支保护拒绝 | `gh api repos/{owner}/{repo}/git/refs -f ref=refs/heads/feature/<id> -f sha=$(git rev-parse "origin/$BASE")` 建引用 |
+| 直推 `feature/*` 被分支保护拒绝 | `gh api repos/{owner}/{repo}/git/refs -f ref=refs/heads/feature/<id> -f sha=$(git rev-parse "origin/$BASE")` 建引用（fork 路径把 `origin/$BASE` 换成 `upstream/$BASE`） |
 | 建引用仍失败 | 停下汇报，**不得退回默认分支开工** |
 | `gh repo fork` 失败（组织策略禁止 fork） | 停下汇报，附 gh 原始报错；不得擅自改用其他账号 |
 | fork 已存在但落后主干 | 不影响：项目分支始终从 `upstream/$BASE` 最新提交建 |
@@ -244,7 +246,7 @@ gh pr create --repo "$UPSTREAM" --base "$BASE" \
 | --- | --- |
 | 收到派单 | 直接开工，不反问能否开始 |
 | 分支归属 | 按第 2.1 节四步表判定：原仓库有分支 → 原仓库；fork 有分支 → fork；都没有看推送权限 |
-| 开工前同步 | `git fetch --prune origin`，base 用 `origin/<base>`，禁止本地 main |
+| 开工前同步 | `git fetch --prune origin`（fork 路径再 `git fetch --prune upstream`）；任务分支一律从 `origin/feature/<project_id>` 起，禁止以默认分支为基线 |
 | 建项目分支 | 不存在则从最新默认分支建 `feature/<project_id>`，推 `$PUSH_REMOTE`；禁止向 upstream push |
 | 建工作区 | `git worktree add ../wt-<task_id> -b task/<task_id> "origin/feature/<project_id>"`，一卡一个 |
 | 开工前 | `echuan_project_get` → 需要全文再 `echuan_material_get` |
