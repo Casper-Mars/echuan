@@ -203,9 +203,22 @@ describe('分支模型正/反向断言', () => {
     expect(content).toContain('git ls-remote --heads')
     expect(content).toContain('grep -q .')
     expect(content).toContain('refs/heads/$WORK')
+
+    // 两条 refspec 不仅要存在，还必须落在各自小节的命令里（防止张冠李戴或整段搬错位置）。
+    const sectionStart22 = content.indexOf('### 2.2')
+    const sectionStart23 = content.indexOf('### 2.3')
+    const sectionStart24 = content.indexOf('### 2.4')
+    expect(sectionStart22).toBeGreaterThan(-1)
+    expect(sectionStart23).toBeGreaterThan(sectionStart22)
+    expect(sectionStart24).toBeGreaterThan(sectionStart23)
+    const originalRepoSection = content.slice(sectionStart22, sectionStart23)
+    const forkSection = content.slice(sectionStart23, sectionStart24)
+
     // 原仓库路径以 origin/$BASE 为起点，fork 路径以 upstream/$BASE 为起点。
-    expect(content).toContain('"origin/$BASE:refs/heads/$WORK"')
-    expect(content).toContain('"upstream/$BASE:refs/heads/$WORK"')
+    expect(originalRepoSection).toContain('"origin/$BASE:refs/heads/$WORK"')
+    expect(originalRepoSection).not.toContain('"upstream/$BASE:refs/heads/$WORK"')
+    expect(forkSection).toContain('"upstream/$BASE:refs/heads/$WORK"')
+    expect(forkSection).not.toContain('"origin/$BASE:refs/heads/$WORK"')
   })
 
   it('任务 PR 必须显式 --base "feature/<project_id>"，且正文写明不得省略', () => {
@@ -249,13 +262,19 @@ describe('分支模型正/反向断言', () => {
     expect(content).toContain('禁止向 upstream push')
   })
 
-  it('每一处 gh pr create 都必须带 --base（含反斜杠续行）', () => {
+  it('每一处 gh pr create 都带 --base，且任务 PR 的 --base 取值必须是 feature/<project_id>', () => {
     const lines = content.split('\n')
-    let checked = 0
+    // 已知边界（不在本用例覆盖）：
+    //   P2-1 正文若出现 `git push -f upstream` 之类绕过写法，本用例不校验；
+    //   P2-3 命令拼接仅处理反斜杠续行，不解析 shell 变量展开。
+    const taskPrCommands: string[] = []
+    const mergePrCommands: string[] = []
+
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i]
       if (line === undefined || !line.includes('gh pr create')) continue
-      checked += 1
+
+      // 拼接反斜杠续行，得到一条完整命令。
       let command = line
       let cursor = i
       while (command.trimEnd().endsWith('\\') && cursor + 1 < lines.length) {
@@ -264,10 +283,32 @@ describe('分支模型正/反向断言', () => {
         if (next === undefined) break
         command += ` ${next}`
       }
-      expect(command, `第 ${i + 1} 行 gh pr create 缺少 --base`).toContain('--base')
+
+      // 按 --head 分类：任务 PR 与收尾合并 PR 的 base 约束不同。
+      if (command.includes('--head "task/<task_id>"')) {
+        taskPrCommands.push(command)
+      } else if (
+        command.includes('--head "feature/<project_id>"')
+        || command.includes('--head "$LOGIN:feature/<project_id>"')
+      ) {
+        mergePrCommands.push(command)
+      } else {
+        throw new Error(`第 ${i + 1} 行 gh pr create 无法按 --head 归类：${command}`)
+      }
     }
+
+    // 任务 PR：--base 必须显式且取值为项目分支（防止取值被改成 main 仍绿）。
+    for (const command of taskPrCommands) {
+      expect(command, `任务 PR 缺少取值级 --base：${command}`).toContain('--base "feature/<project_id>"')
+    }
+    // 收尾合并 PR：--base 必须存在，允许 $BASE 变量。
+    for (const command of mergePrCommands) {
+      expect(command, `合并 PR 缺少 --base：${command}`).toContain('--base')
+    }
+
     // 防止条件失效导致空跑：正文至少有两处任务 PR + 两处合并 PR。
-    expect(checked).toBeGreaterThanOrEqual(4)
+    expect(taskPrCommands.length, '任务 PR 命令数不足 2').toBeGreaterThanOrEqual(2)
+    expect(mergePrCommands.length, '合并 PR 命令数不足 2').toBeGreaterThanOrEqual(2)
   })
 })
 
