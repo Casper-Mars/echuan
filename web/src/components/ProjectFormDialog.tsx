@@ -10,6 +10,7 @@ import {
 import type { ProjectDetail } from '../api/types'
 import { formatBytes, PREVIEW_CHARS, previewText, stripExtension, validateMarkdownFile } from '../lib/upload'
 import { Modal } from './Modal'
+import { RequirementReader } from './RequirementReader'
 
 type ProjectFormDialogProps = {
   onClose: () => void
@@ -37,6 +38,7 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
   const [fileReading, setFileReading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [readerOpen, setReaderOpen] = useState(false)
   const heading = mode === 'create' ? '新建需求项目' : mode === 'title' ? '编辑项目标题' : '编辑需求文档'
 
   useEffect(() => {
@@ -179,7 +181,8 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
   }
 
   return (
-    <Modal title={heading} onClose={onClose} closeDisabled={submitting} wide>
+    <>
+      <Modal title={heading} onClose={onClose} closeDisabled={submitting || readerOpen} wide>
       <form className="dialog-form" onSubmit={submit}>
         <p className="muted">{mode === 'create' ? `所属产品：${props.productId}` : `项目：${project?.project_id}`}</p>
         {mode !== 'requirement' && (
@@ -205,6 +208,11 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
               </span>
             ) : (
               <span className="muted">尚无需求文档，请选择 .md 文件上传首版</span>
+            )}
+            {project?.requirement && (
+              <button type="button" className="ghost" onClick={() => setReaderOpen(true)}>
+                阅读当前版本
+              </button>
             )}
             {bodyLoading && <span className="muted">读取当前文档…</span>}
           </div>
@@ -275,5 +283,13 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
         </div>
       </form>
     </Modal>
+      {readerOpen && project?.requirement && (
+        <RequirementReader
+          projectId={project.project_id}
+          materialId={project.requirement.material_id}
+          onClose={() => setReaderOpen(false)}
+        />
+      )}
+    </>
   )
 }

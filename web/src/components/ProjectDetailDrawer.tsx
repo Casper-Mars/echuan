@@ -13,6 +13,7 @@ import { ErrorNotice, LoadingState } from './States'
 import { ProjectActions } from './ProjectActions'
 import { ProjectFormDialog } from './ProjectFormDialog'
 import { DrawerTitleContext } from './DrawerContext'
+import { RequirementReader } from './RequirementReader'
 import { SpecDocuments } from './SpecDocuments'
 
 interface ProjectBundle {
@@ -30,10 +31,12 @@ function ChainList({
   title,
   chain,
   currentMaterialId,
+  onRead,
 }: {
   title: string
   chain: MaterialChain
   currentMaterialId?: string
+  onRead?: (item: MaterialVersion) => void
 }) {
   const items = sortedVersions(chain)
   return (
@@ -56,6 +59,18 @@ function ChainList({
                 <span className="muted">{item.uploaded_by || '—'}</span>
                 <span className="muted">{formatDateTime(item.create_time)}</span>
                 <span className="muted">{formatBytes(item.size)}</span>
+                {onRead && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onRead(item)
+                    }}
+                  >
+                    阅读
+                  </button>
+                )}
                 <a
                   className="link"
                   href={materialDownloadUrl(item.material_id)}
@@ -87,6 +102,7 @@ export function ProjectDetailDrawer({
   onChanged: () => void
 }) {
   const [editing, setEditing] = useState<'title' | 'requirement' | null>(null)
+  const [readingRequirement, setReadingRequirement] = useState<string | null>(null)
   const updateDrawerTitle = useContext(DrawerTitleContext)
   const { data, error, loading, refreshing, refresh } = usePolling<ProjectBundle>(
     async (signal) => {
@@ -185,6 +201,7 @@ export function ProjectDetailDrawer({
         title="需求版本链"
         chain={requirementChain}
         currentMaterialId={detail.requirement?.material_id}
+        onRead={(item) => setReadingRequirement(item.material_id)}
       />
 
       <section className="detail-section">
@@ -195,6 +212,15 @@ export function ProjectDetailDrawer({
             <a className="link" href={projectPackageUrl(detail.project_id)} download>
               下载项目资料包
             </a>
+            {detail.requirement && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setReadingRequirement(detail.requirement?.material_id ?? '')}
+              >
+                阅读需求
+              </button>
+            )}
             <span className="muted">
               {detail.requirement ? `需求第 ${detail.requirement.version} 版` : '无需求'}
               {' · '}
@@ -206,6 +232,14 @@ export function ProjectDetailDrawer({
 
       <SpecDocuments projectId={projectId} status={detail.status} onChanged={changed} />
       <ChainList title="方案提交历史" chain={specChain} currentMaterialId={detail.spec?.material_id} />
+      {readingRequirement !== null && (
+        <RequirementReader
+          projectId={projectId}
+          materialId={readingRequirement || undefined}
+          chain={requirementChain}
+          onClose={() => setReadingRequirement(null)}
+        />
+      )}
       {editing && (
         <ProjectFormDialog mode={editing} project={detail} onClose={() => setEditing(null)} onSaved={changed} />
       )}
