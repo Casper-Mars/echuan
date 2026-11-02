@@ -157,16 +157,16 @@ func (e *TooLargeError) Error() string {
 func (e *TooLargeError) Unwrap() error { return ErrTooLarge }
 
 // LeaseLostError reports that the caller no longer holds the lease of an
-// in-progress task. Reason names which condition failed so a worker can tell
+// in-progress work item. Reason names which condition failed so a worker can tell
 // "my lease expired" from "another worker owns this card" without guessing.
 type LeaseLostError struct {
-	TaskID string
+	WorkID string
 	Reason string
 }
 
 // Error implements error.
 func (e *LeaseLostError) Error() string {
-	return fmt.Sprintf("lease for task %q is lost: %s", e.TaskID, e.Reason)
+	return fmt.Sprintf("lease for work item %q is lost: %s", e.WorkID, e.Reason)
 }
 
 // Unwrap reports ErrLeaseLost so errors.Is works for callers that only care
@@ -209,10 +209,10 @@ func (e *WorkerUnknownError) Unwrap() error { return ErrWorkerUnknown }
 
 // WorkerBusyError reports a dispatch that could not be bound: the worker is
 // already holding another card, or the chosen card is already owned by another
-// worker. TaskID may be empty when only the worker side is known.
+// worker. WorkID may be empty when only the worker side is known.
 type WorkerBusyError struct {
 	WorkerID string
-	TaskID   string
+	WorkID   string
 	Reason   string
 }
 
@@ -221,8 +221,8 @@ func (e *WorkerBusyError) Error() string {
 	switch {
 	case e.Reason != "":
 		return fmt.Sprintf("worker %q is busy: %s", e.WorkerID, e.Reason)
-	case e.TaskID != "":
-		return fmt.Sprintf("worker %q is busy with task %q", e.WorkerID, e.TaskID)
+	case e.WorkID != "":
+		return fmt.Sprintf("worker %q is busy with work item %q", e.WorkerID, e.WorkID)
 	default:
 		return fmt.Sprintf("worker %q is busy", e.WorkerID)
 	}

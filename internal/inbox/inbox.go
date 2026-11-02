@@ -10,6 +10,7 @@ package inbox
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
@@ -19,9 +20,9 @@ import (
 const (
 	// KindProject is a project waiting for a human review gate.
 	KindProject = "project"
-	// KindTask is a task waiting for acceptance or a failed task awaiting a
-	// retry/abandon verdict.
-	KindTask = "task"
+	// KindWorkItem is a work item waiting for acceptance or a failed item
+	// awaiting a verdict.
+	KindWorkItem = "work_item"
 )
 
 // Item is one pending inbox row as read from the database.
@@ -32,7 +33,7 @@ const (
 type Item struct {
 	Kind       string
 	ID         string
-	State      int
+	State      string
 	Title      string
 	UpdateTime string
 	Reason     *string
@@ -47,8 +48,7 @@ type Item struct {
 type Entry struct {
 	Kind       string
 	ID         string
-	State      int
-	StateName  string
+	State      string
 	Title      string
 	UpdateTime string
 	Age        time.Duration
@@ -90,8 +90,7 @@ func Derive(items []Item, now time.Time, staleAfter time.Duration) ([]Entry, err
 		entries = append(entries, Entry{
 			Kind:       item.Kind,
 			ID:         item.ID,
-			State:      item.State,
-			StateName:  stateName(item.Kind, item.State),
+			State:      stateName(item.Kind, item.State),
 			Title:      item.Title,
 			UpdateTime: item.UpdateTime,
 			Age:        age,
@@ -102,15 +101,20 @@ func Derive(items []Item, now time.Time, staleAfter time.Duration) ([]Entry, err
 	return entries, nil
 }
 
-// stateName picks the vocabulary that belongs to the kind. Both name tables
-// live in domain; an unknown kind yields the empty string instead of a
-// fabricated name.
-func stateName(kind string, state int) string {
+// stateName normalises the stored state for the wire. A project status is
+// stored as its number and rendered as its name; a work-item state is already
+// the name. An unknown kind yields the empty string instead of a fabricated
+// name.
+func stateName(kind, state string) string {
 	switch kind {
 	case KindProject:
-		return domain.StatusName(state)
-	case KindTask:
-		return domain.TaskStatusName(state)
+		value, err := strconv.Atoi(state)
+		if err != nil {
+			return ""
+		}
+		return domain.StatusName(value)
+	case KindWorkItem:
+		return state
 	default:
 		return ""
 	}

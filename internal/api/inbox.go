@@ -29,8 +29,7 @@ func newInboxHandler(service *app.InboxService, logger *slog.Logger) *inboxHandl
 type inboxItemResponse struct {
 	Kind       string  `json:"kind"`
 	ID         string  `json:"id"`
-	State      int     `json:"state"`
-	StateName  string  `json:"state_name"`
+	State      string  `json:"state"`
 	Title      string  `json:"title"`
 	UpdateTime string  `json:"update_time"`
 	AgeSeconds int64   `json:"age_seconds"`
@@ -86,7 +85,6 @@ func (h *inboxHandler) list(w http.ResponseWriter, r *http.Request) {
 			Kind:       entry.Kind,
 			ID:         entry.ID,
 			State:      entry.State,
-			StateName:  entry.StateName,
 			Title:      entry.Title,
 			UpdateTime: entry.UpdateTime,
 			AgeSeconds: entry.AgeSeconds(),

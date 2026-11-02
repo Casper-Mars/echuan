@@ -100,18 +100,11 @@ func (e *projectTestEnv) physicalProjectID(t *testing.T, projectID string) int64
 	return id
 }
 
-// insertTask attaches one task row so the delete guard can be exercised before
-// Task-06 ships the task endpoints.
+// insertWorkItem attaches one card so the project delete guard can be
+// exercised without the work-item endpoints.
 func (e *projectTestEnv) insertTask(t *testing.T, projectID string, seq int) {
 	t.Helper()
-	id := e.physicalProjectID(t, projectID)
-	_, err := e.store.Write().ExecContext(context.Background(), `
-		INSERT INTO tasks (task_id, project_id, seq_no, title, body_md, status, create_time, update_time)
-		VALUES (?, ?, ?, '任务', '正文', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-		projectID+"-T000"+string(rune('0'+seq)), id, seq)
-	if err != nil {
-		t.Fatalf("insert task: %v", err)
-	}
+	e.seedBlockedWorkItem(t, projectID, projectID+"-T000"+string(rune('0'+seq)), seq)
 }
 
 func countObjectFiles(t *testing.T, dataDir string) int {

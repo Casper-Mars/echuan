@@ -57,14 +57,6 @@ type decideProjectRequest struct {
 	Reason   string `json:"reason"`
 }
 
-// taskStatsResponse summarises tasks; by_status is only filled in by the
-// detail endpoint and is omitted when empty.
-type taskStatsResponse struct {
-	Total    int64            `json:"total"`
-	Done     int64            `json:"done"`
-	ByStatus map[string]int64 `json:"by_status,omitempty"`
-}
-
 // projectResponse is the wire representation of a project.
 type projectResponse struct {
 	ID         string  `json:"id"`
@@ -77,13 +69,15 @@ type projectResponse struct {
 	Reason     *string `json:"reason"`
 	LastActor  *string `json:"last_actor"`
 	Version    int     `json:"version"`
-	// TasksReviewReason and TasksReviewRejectedAt are the task-batch
+	// TasksReviewReason and TasksReviewRejectedAt are the plan-batch
 	// objection: both are null unless the last review was a reject.
-	TasksReviewReason     *string           `json:"tasks_review_reason"`
-	TasksReviewRejectedAt *string           `json:"tasks_review_rejected_at"`
-	TaskStats             taskStatsResponse `json:"task_stats"`
-	CreateTime            string            `json:"create_time"`
-	UpdateTime            string            `json:"update_time"`
+	TasksReviewReason     *string          `json:"tasks_review_reason"`
+	TasksReviewRejectedAt *string          `json:"tasks_review_rejected_at"`
+	WorkItemTotal         int64            `json:"work_item_total"`
+	WorkItemDone          int64            `json:"work_item_done"`
+	WorkItemByState       map[string]int64 `json:"work_item_by_state,omitempty"`
+	CreateTime            string           `json:"create_time"`
+	UpdateTime            string           `json:"update_time"`
 }
 
 // materialResponse is the metadata view of one material version; the bytes are
@@ -434,13 +428,11 @@ func toProjectResponse(p domain.Project) projectResponse {
 		Version:               p.Version,
 		TasksReviewReason:     nullableString(p.TasksReviewReason),
 		TasksReviewRejectedAt: nullableString(p.TasksReviewRejectedAt),
-		TaskStats: taskStatsResponse{
-			Total:    p.TaskStats.Total,
-			Done:     p.TaskStats.Done,
-			ByStatus: statusHistogramResponse(p.TaskStats.ByStatus),
-		},
-		CreateTime: p.CreateTime.UTC().Format(time.RFC3339Nano),
-		UpdateTime: p.UpdateTime.UTC().Format(time.RFC3339Nano),
+		WorkItemTotal:         p.WorkItemStats.Total,
+		WorkItemDone:          p.WorkItemStats.Done,
+		WorkItemByState:       p.WorkItemStats.ByState,
+		CreateTime:            p.CreateTime.UTC().Format(time.RFC3339Nano),
+		UpdateTime:            p.UpdateTime.UTC().Format(time.RFC3339Nano),
 	}
 }
 
@@ -480,17 +472,4 @@ func toProjectDetailResponse(detail domain.ProjectDetail) projectDetailResponse 
 		response.Spec = &spec
 	}
 	return response
-}
-
-// statusHistogramResponse renders the task histogram with string keys, the way
-// JSON object keys must be shaped.
-func statusHistogramResponse(histogram map[int]int64) map[string]int64 {
-	if len(histogram) == 0 {
-		return nil
-	}
-	out := make(map[string]int64, len(histogram))
-	for status, count := range histogram {
-		out[strconv.Itoa(status)] = count
-	}
-	return out
 }

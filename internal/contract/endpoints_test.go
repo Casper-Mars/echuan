@@ -86,8 +86,7 @@ func newEndpointEnv(t *testing.T) *endpointEnv {
 	logger := platform.NewLogger("info", logs)
 	products := app.NewProductService(st)
 	projects := app.NewProjectService(st, writer)
-	tasks := app.NewTaskService(st)
-	tasks.SetMaterialWriter(writer)
+	workItems := app.NewWorkItemService(st)
 	claims := app.NewClaimService(st, logger, 90*time.Second)
 	workers := app.NewWorkerService(st, logger, app.WorkerServiceOptions{
 		LeaseTTL:          90 * time.Second,
@@ -104,7 +103,7 @@ func newEndpointEnv(t *testing.T) *endpointEnv {
 	handler := api.Chain(
 		api.NewRouter(logger, web.Handler(),
 			[]api.HealthChecker{store.NewDBChecker(st), store.NewMigrationChecker(st)},
-			products, projects, tasks, claims, workers, materials, inbox),
+			products, projects, workItems, claims, workers, materials, inbox),
 		api.Recover(logger),
 		api.RequestID(),
 		api.UnifiedErrors(),
@@ -472,7 +471,9 @@ func TestContractEndpoints(t *testing.T) {
 		map[string]any{"title": "契约规格", "body_md": "# 规格\n"}, nil, http.StatusOK)
 	specResponse := object(t, raw)
 	specVersion := intField(t, specResponse, "project_version")
-	if id := stringField(t, objectField(t, specResponse, "spec"), "material_id"); id == "" {
+	specMaterial := stringField(t, objectField(t, specResponse, "spec"), "material_id")
+	specBody := "# 规格\n"
+	if specMaterial == "" {
 		t.Fatal("spec response has an empty material_id")
 	}
 
@@ -487,84 +488,50 @@ func TestContractEndpoints(t *testing.T) {
 	e.decideProject(mainID, intField(t, reviewGate, "version"), "approve", "")
 
 	raw, _ = e.call(http.MethodPost, "/v1/projects/plans?id="+mainID, map[string]any{
-		"tasks": []any{
+		"work_items": []any{
 			map[string]any{"title": "任务一", "body_md": "# 任务一\n", "priority": 10},
 			map[string]any{"title": "任务二", "body_md": "# 任务二\n", "priority": 5},
 		},
 	}, nil, http.StatusCreated)
 	plan := object(t, raw)
-	tasks := arrayField(t, plan, "tasks")
-	if len(tasks) != 2 {
-		t.Fatalf("plan tasks = %d, want 2", len(tasks))
+	planned := arrayField(t, plan, "work_items")
+	if len(planned) != 2 {
+		t.Fatalf("plan work_items = %d, want 2", len(planned))
 	}
-	firstID := stringField(t, tasks[0].(map[string]any), "id")
-	secondID := stringField(t, tasks[1].(map[string]any), "id")
+	firstID := stringField(t, planned[0].(map[string]any), "work_id")
+	secondID := stringField(t, planned[1].(map[string]any), "work_id")
+	for _, item := range planned {
+		entry := item.(map[string]any)
+		if state := stringField(t, entry, "state"); state != "blocked" {
+			t.Errorf("planned item state = %q, want blocked", state)
+		}
+		if kind := stringField(t, entry, "kind"); kind != "dev" {
+			t.Errorf("planned item kind = %q, want dev", kind)
+		}
+	}
 
-	raw, _ = e.call(http.MethodPost, "/v1/tasks/review?project_id="+mainID,
-		map[string]any{"decision": "approve"}, nil, http.StatusOK)
-	if name := stringField(t, object(t, raw), "status_name"); name != "pending_done" {
+	e.call(http.MethodGet, "/v1/work-items?project_id="+mainID, nil, nil, http.StatusOK)
+	e.call(http.MethodGet, "/v1/work-items?id="+firstID, nil, nil, http.StatusOK)
+	e.call(http.MethodGet, "/v1/work-items?project_id="+mainID+"&kind=dev&state=blocked&limit=2", nil, nil, http.StatusOK)
+
+	raw, _ = e.call(http.MethodPost, "/v1/work-items/review",
+		map[string]any{"project_id": mainID, "decision": "approve"}, nil, http.StatusOK)
+	review := object(t, raw)
+	if name := stringField(t, review, "status_name"); name != "pending_done" {
 		t.Fatalf("after batch approval status = %q", name)
+	}
+	if ready := intField(t, review, "ready_work_items"); ready != 2 {
+		t.Errorf("ready_work_items = %d, want 2", ready)
 	}
 
 	e.call(http.MethodGet, "/v1/projects/materials?id="+mainID+"&kind=1", nil, nil, http.StatusOK)
 	e.call(http.MethodGet, "/v1/projects/materials?id="+mainID+"&kind=2", nil, nil, http.StatusOK)
 
-	// ---- task lifecycle ---------------------------------------------------
-	raw, _ = e.call(http.MethodPost, "/v1/tasks/claim", map[string]any{"product": "APP"}, nil, http.StatusOK)
-	claim := object(t, raw)
-	claimed := objectField(t, claim, "task")
-	if got := stringField(t, claimed, "id"); got != firstID {
-		t.Fatalf("claim returned %s, want %s", got, firstID)
-	}
-	firstLease := stringField(t, objectField(t, claim, "lease"), "lease_id")
-
-	e.call(http.MethodPost, "/v1/tasks/heartbeat?id="+firstID,
-		map[string]any{"lease_id": "l_ffffffffffffffff"}, nil, http.StatusConflict)
-	raw, _ = e.call(http.MethodPost, "/v1/tasks/heartbeat?id="+firstID,
-		map[string]any{"lease_id": firstLease}, nil, http.StatusOK)
-	if stringField(t, object(t, raw), "lease_id") != firstLease {
-		t.Error("heartbeat returned a different lease")
-	}
-
-	e.call(http.MethodPost, "/v1/tasks/report?id="+firstID,
-		map[string]any{"lease_id": firstLease, "summary_md": "   "}, nil, http.StatusUnprocessableEntity)
-	summary1 := "任务一报告\n"
-	raw, _ = e.call(http.MethodPost, "/v1/tasks/report?id="+firstID,
-		map[string]any{"lease_id": firstLease, "summary_md": summary1}, nil, http.StatusOK)
-	report1 := object(t, raw)
-	reportMaterial := stringField(t, objectField(t, report1, "report"), "material_id")
-
-	raw, _ = e.call(http.MethodPost, "/v1/tasks/decide?id="+firstID,
-		map[string]any{"decision": "accept"},
-		map[string]string{"If-Match": strconv.Itoa(intField(t, report1, "version"))}, http.StatusOK)
-	if name := stringField(t, object(t, raw), "status_name"); name != "done" {
-		t.Errorf("task one status = %q, want done", name)
-	}
-
-	raw, _ = e.call(http.MethodPost, "/v1/tasks/claim", map[string]any{"product": "APP"}, nil, http.StatusOK)
-	claim2 := object(t, raw)
-	if got := stringField(t, objectField(t, claim2, "task"), "id"); got != secondID {
-		t.Fatalf("second claim returned %s, want %s", got, secondID)
-	}
-	secondLease := stringField(t, objectField(t, claim2, "lease"), "lease_id")
-	raw, _ = e.call(http.MethodPost, "/v1/tasks/report?id="+secondID,
-		map[string]any{"lease_id": secondLease, "summary_md": "任务二报告\n"}, nil, http.StatusOK)
-	report2 := object(t, raw)
-	e.call(http.MethodPost, "/v1/tasks/decide?id="+secondID,
-		map[string]any{"decision": "accept"},
-		map[string]string{"If-Match": strconv.Itoa(intField(t, report2, "version"))}, http.StatusOK)
-
-	// All work done: the queue is empty and the project completed itself.
-	e.call(http.MethodPost, "/v1/tasks/claim", map[string]any{"product": "APP"}, nil, http.StatusNoContent)
-	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
-	if name := stringField(t, object(t, raw), "status_name"); name != "completed" {
-		t.Fatalf("project status = %q, want completed after the last acceptance", name)
-	}
-
-	// ---- worker registry: heartbeat, list, detail -------------------------
-	// The queue is empty here, so a heartbeat exercises the "no work" shape:
-	// commands must be [] and the worker must come back idle.
-	raw, _ = e.call(http.MethodPost, "/v1/workers/heartbeat", map[string]any{}, nil, http.StatusOK)
+	// ---- worker registration, kinds and dispatch ---------------------------
+	// Register with design only: the queue holds dev cards, so nothing may be
+	// dispatched and the claim endpoint must answer 204.
+	raw, _ = e.call(http.MethodPost, "/v1/workers/heartbeat",
+		map[string]any{"kinds": []string{"design"}}, nil, http.StatusOK)
 	workerBody := object(t, raw)
 	worker := objectField(t, workerBody, "worker")
 	workerID := stringField(t, worker, "worker_id")
@@ -574,51 +541,163 @@ func TestContractEndpoints(t *testing.T) {
 	if presence := stringField(t, worker, "presence"); presence != "active" {
 		t.Errorf("worker presence = %q, want active", presence)
 	}
+	if got := arrayField(t, worker, "kinds"); len(got) != 1 || got[0] != "design" {
+		t.Errorf("worker kinds = %v, want [design]", got)
+	}
 	if commands := arrayField(t, workerBody, "commands"); len(commands) != 0 {
+		t.Errorf("heartbeat commands = %d, want 0 for undeclared kinds", len(commands))
+	}
+	e.call(http.MethodPost, "/v1/work-items/claim", map[string]any{"worker_id": workerID}, nil, http.StatusNoContent)
+
+	// kinds are replaced wholesale on every heartbeat, not merged. Declaring dev
+	// now makes the dispatcher hand out the highest-priority card.
+	raw, _ = e.call(http.MethodPost, "/v1/workers/heartbeat",
+		map[string]any{"worker_id": workerID, "kinds": []string{"dev"}}, nil, http.StatusOK)
+	replaced := object(t, raw)
+	if got := arrayField(t, objectField(t, replaced, "worker"), "kinds"); len(got) != 1 || got[0] != "dev" {
+		t.Fatalf("kinds after overwrite = %v, want [dev]", got)
+	}
+	commands := arrayField(t, replaced, "commands")
+	if len(commands) != 1 {
+		t.Fatalf("dispatch commands = %d, want 1", len(commands))
+	}
+	command := commands[0].(map[string]any)
+	if kind := stringField(t, command, "kind"); kind != "dispatch" {
+		t.Fatalf("command kind = %q, want dispatch", kind)
+	}
+	dispatch := objectField(t, command, "dispatch")
+	if got := stringField(t, dispatch, "work_id"); got != firstID {
+		t.Fatalf("dispatch returned %s, want %s", got, firstID)
+	}
+	if protocol := stringField(t, dispatch, "protocol"); protocol != "v2" {
+		t.Errorf("dispatch protocol = %q, want v2", protocol)
+	}
+	if kind := stringField(t, dispatch, "kind"); kind != "dev" {
+		t.Errorf("dispatch kind = %q, want dev", kind)
+	}
+	if inputs, ok := dispatch["inputs"].([]any); !ok || len(inputs) != 0 {
+		t.Errorf("dispatch inputs = %v, want []", dispatch["inputs"])
+	}
+	dispatchedItem := objectField(t, dispatch, "work_item")
+	if projectID := stringField(t, dispatchedItem, "project_id"); projectID != mainID {
+		t.Errorf("dispatch project = %q, want %q", projectID, mainID)
+	}
+	if attempt := intField(t, dispatchedItem, "attempt"); attempt != 1 {
+		t.Errorf("dispatch attempt = %d, want 1", attempt)
+	}
+	dispatchContext := objectField(t, dispatch, "context")
+	if stringField(t, objectField(t, dispatchContext, "product"), "id") != "APP" {
+		t.Errorf("dispatch context product = %v", dispatchContext["product"])
+	}
+	firstLease := stringField(t, objectField(t, dispatch, "lease"), "lease_id")
+
+	e.call(http.MethodPost, "/v1/work-items/lease",
+		map[string]any{"work_id": firstID, "lease_id": "l_ffffffffffffffff"}, nil, http.StatusConflict)
+	raw, _ = e.call(http.MethodPost, "/v1/work-items/lease",
+		map[string]any{"work_id": firstID, "lease_id": firstLease}, nil, http.StatusOK)
+	if got := stringField(t, object(t, raw), "lease_id"); got != firstLease {
+		t.Errorf("lease renewal returned %q, want %q", got, firstLease)
+	}
+
+	e.call(http.MethodPost, "/v1/work-items/report",
+		map[string]any{"work_id": firstID, "lease_id": firstLease, "material_id": ""}, nil, http.StatusBadRequest)
+	raw, _ = e.call(http.MethodPost, "/v1/work-items/report",
+		map[string]any{"work_id": firstID, "lease_id": firstLease, "material_id": specMaterial}, nil, http.StatusOK)
+	reported := object(t, raw)
+	if state := stringField(t, reported, "state"); state != "submitted" {
+		t.Fatalf("after report state = %q, want submitted", state)
+	}
+	if got := stringField(t, reported, "result_material_id"); got != specMaterial {
+		t.Errorf("result_material_id = %q, want %q", got, specMaterial)
+	}
+
+	raw, _ = e.call(http.MethodPost, "/v1/work-items/decide",
+		map[string]any{"work_id": firstID, "decision": "approve"}, nil, http.StatusOK)
+	if state := stringField(t, object(t, raw), "state"); state != "accepted" {
+		t.Errorf("work item one state = %q, want accepted", state)
+	}
+
+	// The next heartbeat dispatches the second dev card.
+	raw, _ = e.call(http.MethodPost, "/v1/workers/heartbeat",
+		map[string]any{"worker_id": workerID, "kinds": []string{"dev"}}, nil, http.StatusOK)
+	commands = arrayField(t, object(t, raw), "commands")
+	if len(commands) != 1 {
+		t.Fatalf("second dispatch commands = %d, want 1", len(commands))
+	}
+	dispatch2 := objectField(t, commands[0].(map[string]any), "dispatch")
+	if got := stringField(t, dispatch2, "work_id"); got != secondID {
+		t.Fatalf("second dispatch returned %s, want %s", got, secondID)
+	}
+	secondLease := stringField(t, objectField(t, dispatch2, "lease"), "lease_id")
+	e.call(http.MethodPost, "/v1/work-items/report",
+		map[string]any{"work_id": secondID, "lease_id": secondLease, "material_id": specMaterial}, nil, http.StatusOK)
+	e.call(http.MethodPost, "/v1/work-items/decide",
+		map[string]any{"work_id": secondID, "decision": "approve"}, nil, http.StatusOK)
+
+	// All work done: the project completed itself and the queue is empty.
+	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
+	if name := stringField(t, object(t, raw), "status_name"); name != "completed" {
+		t.Fatalf("project status = %q, want completed after the last acceptance", name)
+	}
+
+	// Heartbeat on an empty queue: commands must be [].
+	raw, _ = e.call(http.MethodPost, "/v1/workers/heartbeat",
+		map[string]any{"worker_id": workerID, "kinds": []string{"dev"}}, nil, http.StatusOK)
+	emptyHeartbeat := object(t, raw)
+	if commands := arrayField(t, emptyHeartbeat, "commands"); len(commands) != 0 {
 		t.Errorf("heartbeat commands = %d, want 0 with an empty queue", len(commands))
 	}
+	e.call(http.MethodPost, "/v1/work-items/claim", map[string]any{"worker_id": workerID}, nil, http.StatusNoContent)
 	e.call(http.MethodGet, "/v1/workers", nil, nil, http.StatusOK)
 	e.call(http.MethodGet, "/v1/workers?id="+workerID, nil, nil, http.StatusOK)
-	// An id the registry never minted is worker_unknown, not not_found: the
-	// worker must register again instead of retrying the heartbeat.
+	// An id the registry never minted is worker_unknown, not not_found.
 	e.call(http.MethodPost, "/v1/workers/heartbeat",
+		map[string]any{"worker_id": "w_00000000000000ff", "kinds": []string{"dev"}}, nil, http.StatusConflict)
+	e.call(http.MethodPost, "/v1/work-items/claim",
 		map[string]any{"worker_id": "w_00000000000000ff"}, nil, http.StatusConflict)
 
-	// The pull-mode claim carries the same worker semantics: an unknown id is
-	// 409 worker_unknown, and a registered worker with an empty queue is 204
-	// that must not leave a pointer behind (a client would otherwise read the
-	// next heartbeat as "busy").
-	e.call(http.MethodPost, "/v1/tasks/claim",
-		map[string]any{"product": "APP", "worker_id": "w_00000000000000ff"}, nil, http.StatusConflict)
-	e.call(http.MethodPost, "/v1/tasks/claim",
-		map[string]any{"product": "APP", "worker_id": workerID}, nil, http.StatusNoContent)
+	// Missing or empty kinds is always a 400, never an implicit declaration.
+	e.call(http.MethodPost, "/v1/workers/heartbeat", map[string]any{}, nil, http.StatusBadRequest)
+	e.call(http.MethodPost, "/v1/workers/heartbeat", map[string]any{"kinds": []string{}}, nil, http.StatusBadRequest)
+	e.call(http.MethodPost, "/v1/workers/heartbeat",
+		map[string]any{"kinds": []string{"merge"}}, nil, http.StatusBadRequest)
+
 	raw, _ = e.call(http.MethodGet, "/v1/workers?id="+workerID, nil, nil, http.StatusOK)
-	if pointed := object(t, raw)["current_task_id"]; pointed != nil {
-		t.Errorf("claim 204 set the worker pointer to %v, want null", pointed)
+	if pointed := object(t, raw)["current_work_item_id"]; pointed != nil {
+		t.Errorf("worker pointer = %v, want null after all work settled", pointed)
 	}
 
 	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
 	completed := object(t, raw)
+	if total := intField(t, completed, "work_item_total"); total != 2 {
+		t.Errorf("work_item_total = %d, want 2", total)
+	}
+	if done := intField(t, completed, "work_item_done"); done != 2 {
+		t.Errorf("work_item_done = %d, want 2", done)
+	}
 	e.call(http.MethodPost, "/v1/projects/decide?id="+mainID,
 		map[string]any{"decision": "approve"},
 		map[string]string{"If-Match": strconv.Itoa(intField(t, completed, "version"))},
 		http.StatusConflict)
 	e.call(http.MethodPost, "/v1/projects/submit?id="+mainID, nil, nil, http.StatusConflict)
 
-	// ---- task CRUD on a second planning project ---------------------------
+	// ---- work-item CRUD on a second planning project ----------------------
 	secondProject, _ := e.planningProject("APP", "契约任务项目")
-	raw, _ = e.call(http.MethodPost, "/v1/tasks?project_id="+secondProject, map[string]any{
+	raw, _ = e.call(http.MethodPost, "/v1/work-items", map[string]any{
+		"project_id": secondProject, "kind": "dev",
 		"title": "可修改任务", "body_md": "# 正文\n", "priority": 1,
 	}, nil, http.StatusCreated)
-	taskA := stringField(t, object(t, raw), "id")
-	e.call(http.MethodGet, "/v1/tasks?id="+taskA, nil, nil, http.StatusOK)
-	e.call(http.MethodGet, "/v1/tasks?project_id="+secondProject, nil, nil, http.StatusOK)
-	e.call(http.MethodPatch, "/v1/tasks?id="+taskA, map[string]any{"title": "可修改任务-改"}, nil, http.StatusOK)
-	raw, _ = e.call(http.MethodPost, "/v1/tasks?project_id="+secondProject, map[string]any{
+	itemA := stringField(t, object(t, raw), "work_id")
+	e.call(http.MethodGet, "/v1/work-items?work_id="+itemA, nil, nil, http.StatusOK)
+	e.call(http.MethodGet, "/v1/work-items?project_id="+secondProject, nil, nil, http.StatusOK)
+	e.call(http.MethodPatch, "/v1/work-items?work_id="+itemA,
+		map[string]any{"title": "可修改任务-改"}, nil, http.StatusOK)
+	raw, _ = e.call(http.MethodPost, "/v1/work-items", map[string]any{
+		"project_id": secondProject, "kind": "dev",
 		"title": "待删除任务", "body_md": "# 正文\n",
 	}, nil, http.StatusCreated)
-	taskB := stringField(t, object(t, raw), "id")
-	e.call(http.MethodDelete, "/v1/tasks?id="+taskB, nil, nil, http.StatusNoContent)
+	itemB := stringField(t, object(t, raw), "work_id")
+	e.call(http.MethodDelete, "/v1/work-items?work_id="+itemB, nil, nil, http.StatusNoContent)
 
 	// ---- cancel, invalid version, inbox -----------------------------------
 	cancelable := e.createDraftProject("APP", "待取消项目", "# 取消\n")
@@ -636,36 +715,36 @@ func TestContractEndpoints(t *testing.T) {
 	e.call(http.MethodGet, "/v1/inbox", nil, nil, http.StatusOK)
 
 	// ---- binary download (no JSON contract, header contract instead) -------
-	raw, binaryHeaders := e.call(http.MethodGet, "/v1/materials?id="+reportMaterial, nil, nil, http.StatusOK)
-	if got := string(raw); got != summary1 {
-		t.Errorf("material bytes = %q, want %q", got, summary1)
+	raw, binaryHeaders := e.call(http.MethodGet, "/v1/materials?id="+specMaterial, nil, nil, http.StatusOK)
+	if got := string(raw); got != specBody {
+		t.Errorf("material bytes = %q, want %q", got, specBody)
 	}
 	if ct := binaryHeaders.Get("Content-Type"); !strings.HasPrefix(ct, "text/markdown") {
 		t.Errorf("Content-Type = %q", ct)
 	}
-	if length := binaryHeaders.Get("Content-Length"); length != strconv.Itoa(len(summary1)) {
-		t.Errorf("Content-Length = %q, want %d", length, len(summary1))
+	if length := binaryHeaders.Get("Content-Length"); length != strconv.Itoa(len(specBody)) {
+		t.Errorf("Content-Length = %q, want %d", length, len(specBody))
 	}
 	if etag := binaryHeaders.Get("ETag"); !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) {
 		t.Errorf("ETag = %q", etag)
 	}
-	if id := binaryHeaders.Get("X-Material-Id"); id != reportMaterial {
-		t.Errorf("X-Material-Id = %q, want %s", id, reportMaterial)
+	if id := binaryHeaders.Get("X-Material-Id"); id != specMaterial {
+		t.Errorf("X-Material-Id = %q, want %s", id, specMaterial)
 	}
 	if version := binaryHeaders.Get("X-Material-Version"); version == "" {
 		t.Error("X-Material-Version is empty")
 	}
 
 	// HEAD and Range must keep working under the error middleware.
-	head := rawRequest(t, e, http.MethodHead, "/v1/materials?id="+reportMaterial, "")
+	head := rawRequest(t, e, http.MethodHead, "/v1/materials?id="+specMaterial, "")
 	if head.StatusCode != http.StatusOK || len(head.Body) != 0 {
 		t.Errorf("HEAD material: status=%d body=%d", head.StatusCode, len(head.Body))
 	}
-	if head.Header.Get("Content-Length") != strconv.Itoa(len(summary1)) {
+	if head.Header.Get("Content-Length") != strconv.Itoa(len(specBody)) {
 		t.Errorf("HEAD Content-Length = %q", head.Header.Get("Content-Length"))
 	}
-	rangeResp := rawRequest(t, e, http.MethodGet, "/v1/materials?id="+reportMaterial, "bytes=0-3")
-	if rangeResp.StatusCode != http.StatusPartialContent || string(rangeResp.Body) != summary1[:4] {
+	rangeResp := rawRequest(t, e, http.MethodGet, "/v1/materials?id="+specMaterial, "bytes=0-3")
+	if rangeResp.StatusCode != http.StatusPartialContent || string(rangeResp.Body) != specBody[:4] {
 		t.Errorf("Range: status=%d body=%q", rangeResp.StatusCode, rangeResp.Body)
 	}
 	if rangeResp.Header.Get(api.HeaderRequestID) == "" {
@@ -674,7 +753,7 @@ func TestContractEndpoints(t *testing.T) {
 
 	// An unsatisfiable range must keep the unified error envelope and the
 	// Content-Range header that tells the client the real size.
-	raw, rangeHeaders := e.call(http.MethodGet, "/v1/materials?id="+reportMaterial, nil,
+	raw, rangeHeaders := e.call(http.MethodGet, "/v1/materials?id="+specMaterial, nil,
 		map[string]string{"Range": "bytes=999999999-"}, http.StatusRequestedRangeNotSatisfiable)
 	if ct := rangeHeaders.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("unsatisfiable Range Content-Type = %q, want application/json", ct)
@@ -707,7 +786,10 @@ func TestContractEndpoints(t *testing.T) {
 		{"unknown nested path", http.MethodGet, "/v1/nope/deeper", http.StatusNotFound, "not_found", ""},
 		{"products wrong method", http.MethodPut, "/v1/products", http.StatusMethodNotAllowed, "method_not_allowed", "DELETE, GET, HEAD, PATCH, POST"},
 		{"plans wrong method", http.MethodGet, "/v1/projects/plans", http.StatusMethodNotAllowed, "method_not_allowed", "POST"},
-		{"claim wrong method", http.MethodGet, "/v1/tasks/claim", http.StatusMethodNotAllowed, "method_not_allowed", "POST"},
+		{"claim wrong method", http.MethodGet, "/v1/work-items/claim", http.StatusMethodNotAllowed, "method_not_allowed", "POST"},
+		{"removed task collection", http.MethodGet, "/v1/tasks", http.StatusNotFound, "not_found", ""},
+		{"removed task child", http.MethodPost, "/v1/tasks/report", http.StatusNotFound, "not_found", ""},
+		{"removed task claim", http.MethodPost, "/v1/tasks/claim", http.StatusNotFound, "not_found", ""},
 		{"healthz wrong method", http.MethodPost, "/healthz", http.StatusMethodNotAllowed, "method_not_allowed", "GET, HEAD"},
 	}
 	for _, tc := range fallbackCases {
@@ -860,7 +942,7 @@ func TestContractEndpoints(t *testing.T) {
 			t.Errorf("observed code %q (%d times) is not in Error.code enum", code, count)
 		}
 	}
-	for _, code := range []string{"invalid_argument", "not_found", "invalid_state", "invalid_version", "conflict", "lease_lost", "material_required", "too_large", "method_not_allowed", "range_not_satisfiable", "worker_unknown"} {
+	for _, code := range []string{"invalid_argument", "not_found", "invalid_state", "invalid_version", "conflict", "lease_lost", "too_large", "method_not_allowed", "range_not_satisfiable", "worker_unknown"} {
 		if e.codes[code] == 0 {
 			t.Errorf("error code %q was never exercised", code)
 		}

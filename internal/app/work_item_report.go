@@ -1,0 +1,400 @@
+package app
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/Casper-Mars/echuan/internal/domain"
+	"github.com/Casper-Mars/echuan/internal/store"
+)
+
+// Work-item report, verdict and plan review.
+
+// ReportWorkItemInput is the use-case input of POST /v1/work-items/report.
+type ReportWorkItemInput struct {
+	WorkID     string
+	MaterialID string
+	LeaseID    string
+	Actor      string
+}
+
+// WorkItemDecisionInput is the use-case input of POST /v1/work-items/decide.
+type WorkItemDecisionInput struct {
+	WorkID   string
+	Decision string
+	Reason   string
+	Actor    string
+}
+
+// ProjectAdvance reports one automatic project move triggered by work.
+type ProjectAdvance struct {
+	ProjectID  string
+	FromStatus int
+	ToStatus   int
+}
+
+// WorkItemDecisionResult is one applied verdict: the card as it looks
+// afterwards, the state edge taken and, when the verdict settled the last card,
+// the project move.
+type WorkItemDecisionResult struct {
+	Detail    WorkItemDetail
+	FromState string
+	ToState   string
+	Project   *ProjectAdvance
+}
+
+// ReportWorkItem completes one leased card with an existing material.
+//
+// The whole write is one transaction: read the card → lease guard → resolve the
+// material → conditional completion (state=leased AND lease_id=?) → release the
+// worker pointer. The conditional UPDATE is what makes a replayed report
+// impossible: the second attempt finds state=submitted (or a cleared lease) and
+// is answered with 409 lease_lost.
+func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemInput) (WorkItemDetail, error) {
+	workID := strings.TrimSpace(in.WorkID)
+	if workID == "" {
+		return WorkItemDetail{}, invalidField("work_id", "is required")
+	}
+	leaseID := strings.TrimSpace(in.LeaseID)
+	if leaseID == "" {
+		return WorkItemDetail{}, invalidField("lease_id", "is required")
+	}
+	materialID := strings.TrimSpace(in.MaterialID)
+	if materialID == "" {
+		return WorkItemDetail{}, invalidField("material_id", "is required")
+	}
+	now := s.now().UTC()
+
+	var out WorkItemDetail
+	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
+		row, err := store.GetWorkItemByWorkID(ctx, tx, workID)
+		if err != nil {
+			if store.IsNotFound(err) {
+				return &domain.NotFoundError{Resource: "work_item", Key: workID}
+			}
+			return err
+		}
+
+		if err := validateReportLease(row, leaseID, now); err != nil {
+			return err
+		}
+
+		material, err := store.GetMaterialByMaterialID(ctx, tx, materialID)
+		if err != nil {
+			if store.IsNotFound(err) {
+				return &domain.NotFoundError{Resource: "material", Key: materialID}
+			}
+			return err
+		}
+
+		updateTime := formatTimestamp(s.nextTimestamp(row.UpdateTime))
+		affected, err := store.CompleteWorkItemReport(ctx, tx, row.ID, material.ID,
+			leaseID, formatLeaseTime(now), updateTime)
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return &domain.LeaseLostError{WorkID: row.WorkID, Reason: "lease is no longer valid"}
+		}
+
+		if _, err := store.ClearWorkItemByWorkItemID(ctx, tx, row.ID, updateTime); err != nil {
+			return err
+		}
+
+		out, err = s.detail(ctx, tx, row.ID)
+		return err
+	})
+	if err != nil {
+		return WorkItemDetail{}, err
+	}
+	return out, nil
+}
+
+// validateReportLease is the report-specific lease guard.
+func validateReportLease(row store.WorkItem, leaseID string, now time.Time) error {
+	switch {
+	case row.State != store.WorkItemStateLeased:
+		return &domain.LeaseLostError{WorkID: row.WorkID, Reason: fmt.Sprintf(
+			"work item is in state %s, not leased", row.State)}
+	case row.LeaseID == nil || *row.LeaseID != leaseID:
+		return &domain.LeaseLostError{WorkID: row.WorkID, Reason: "lease_id does not match the active lease"}
+	case row.LeaseUntil == nil:
+		return &domain.LeaseLostError{WorkID: row.WorkID, Reason: "lease has no deadline"}
+	}
+
+	until, err := parseTimestamp(*row.LeaseUntil)
+	if err != nil {
+		return err
+	}
+	if !until.After(now) {
+		return &domain.LeaseLostError{WorkID: row.WorkID, Reason: "lease has expired"}
+	}
+	return nil
+}
+
+// DecideWorkItem applies one verdict to a submitted card.
+//
+// approve: submitted → accepted. reject: submitted (or failed) → queued; the
+// attempt budget is deliberately preserved, so a rejected card returns to the
+// queue as the same attempt instead of resetting to zero.
+func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisionInput) (WorkItemDecisionResult, error) {
+	workID := strings.TrimSpace(in.WorkID)
+	if workID == "" {
+		return WorkItemDecisionResult{}, invalidField("work_id", "is required")
+	}
+	decision := strings.TrimSpace(in.Decision)
+	if decision != string(domain.DecisionApprove) && decision != string(domain.DecisionReject) {
+		return WorkItemDecisionResult{}, invalidField("decision", "must be approve or reject")
+	}
+	reason := strings.TrimSpace(in.Reason)
+	actor := actorOrDefault(in.Actor)
+
+	var result WorkItemDecisionResult
+	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
+		row, err := store.GetWorkItemByWorkID(ctx, tx, workID)
+		if err != nil {
+			if store.IsNotFound(err) {
+				return &domain.NotFoundError{Resource: "work_item", Key: workID}
+			}
+			return err
+		}
+
+		var next string
+		if decision == string(domain.DecisionApprove) {
+			if row.State != store.WorkItemStateSubmitted {
+				return &domain.InvalidStateError{Reason: fmt.Sprintf(
+					"work item %q is in state %s; approve requires submitted", row.WorkID, row.State)}
+			}
+			next = store.WorkItemStateAccepted
+		} else {
+			if row.State != store.WorkItemStateSubmitted && row.State != store.WorkItemStateFailed {
+				return &domain.InvalidStateError{Reason: fmt.Sprintf(
+					"work item %q is in state %s; reject requires submitted or failed", row.WorkID, row.State)}
+			}
+			next = store.WorkItemStateQueued
+		}
+
+		var reasonPtr *string
+		if reason != "" {
+			reasonPtr = &reason
+		}
+		updateTime := formatTimestamp(s.nextTimestamp(row.UpdateTime))
+
+		affected, err := store.TransitionWorkItemDecision(ctx, tx, store.WorkItemDecisionWrite{
+			ID:            row.ID,
+			ExpectState:   row.State,
+			ExpectVersion: row.Version,
+			NextState:     next,
+			Reason:        reasonPtr,
+			ResetAttempts: false,
+			UpdateTime:    updateTime,
+		})
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			fresh, readErr := store.GetWorkItemByWorkID(ctx, tx, workID)
+			if readErr != nil {
+				return readErr
+			}
+			return &domain.InvalidVersionError{Current: fresh.Version, Expected: row.Version}
+		}
+
+		if next == store.WorkItemStateAccepted {
+			result.Project, err = s.settleProjectIfDone(ctx, tx, row.ProjectCode, actor)
+			if err != nil {
+				return err
+			}
+		}
+
+		result.Detail, err = s.detail(ctx, tx, row.ID)
+		if err != nil {
+			return err
+		}
+		result.FromState = row.State
+		result.ToState = next
+		return nil
+	})
+	if err != nil {
+		return WorkItemDecisionResult{}, err
+	}
+	return result, nil
+}
+
+// settleProjectIfDone closes a pending_done project once no item of it is left
+// in a non-terminal state (accepted and cancelled are terminal).
+func (s *WorkItemService) settleProjectIfDone(ctx context.Context, tx *sql.Tx, projectCode, actor string) (*ProjectAdvance, error) {
+	project, err := store.GetProjectByProjectID(ctx, tx, projectCode)
+	if err != nil {
+		return nil, err
+	}
+	if project.Status != domain.StatusPendingDone {
+		return nil, nil
+	}
+
+	unsettled, err := store.CountUnsettledWorkItemsByProject(ctx, tx, project.ID)
+	if err != nil {
+		return nil, err
+	}
+	if unsettled > 0 {
+		return nil, nil
+	}
+
+	next, err := domain.ProjectNextStatus(project.Status, domain.ProjectActionSettleTasks, "")
+	if err != nil {
+		return nil, err
+	}
+	updateTime := formatTimestamp(s.nextTimestamp(project.UpdateTime))
+	affected, err := store.TransitionProject(ctx, tx, project.ID,
+		project.Status, project.Version, next, nil, actor, updateTime)
+	if err != nil {
+		return nil, err
+	}
+	if affected == 0 {
+		fresh, readErr := store.GetProjectByProjectID(ctx, tx, project.ProjectID)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if fresh.Status == next {
+			return &ProjectAdvance{ProjectID: fresh.ProjectID, FromStatus: project.Status, ToStatus: fresh.Status}, nil
+		}
+		return nil, &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
+	}
+
+	return &ProjectAdvance{
+		ProjectID:  project.ProjectID,
+		FromStatus: project.Status,
+		ToStatus:   next,
+	}, nil
+}
+
+// ReviewWorkItemsInput is the use-case input of POST /v1/work-items/review.
+type ReviewWorkItemsInput struct {
+	ProjectID string
+	Decision  domain.Decision
+	Reason    string
+	Actor     string
+}
+
+// ReviewWorkItemsResult reports the outcome of one plan review.
+type ReviewWorkItemsResult struct {
+	ProjectID  string
+	FromStatus int
+	ToStatus   int
+	Version    int
+	ReadyItems int64
+	Reason     string
+	RejectedAt string
+}
+
+// ReviewWorkItems applies one human verdict to a project's plan batch.
+//
+// approve: every blocked card becomes queued and the project moves 5 → 6 (or
+// repeats 6 → 6 when cards were added after an earlier approval) in the same
+// transaction, which also clears any recorded objection. A batch with no
+// blocked card is a conflict and writes nothing.
+//
+// reject: the cards and the project status stay exactly where they are; only
+// tasks_review_reason / tasks_review_rejected_at (plus actor, version and
+// update_time) are written. The reason is mandatory.
+func (s *WorkItemService) ReviewWorkItems(ctx context.Context, in ReviewWorkItemsInput) (ReviewWorkItemsResult, error) {
+	projectID := strings.TrimSpace(in.ProjectID)
+	if projectID == "" {
+		return ReviewWorkItemsResult{}, invalidField("project_id", "is required")
+	}
+	if !in.Decision.Valid() {
+		return ReviewWorkItemsResult{}, invalidField("decision", "must be approve or reject")
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if in.Decision == domain.DecisionReject && reason == "" {
+		return ReviewWorkItemsResult{}, invalidField("reason", "is required when decision is reject")
+	}
+	actor := actorOrDefault(in.Actor)
+
+	var result ReviewWorkItemsResult
+	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
+		project, err := store.GetProjectByProjectID(ctx, tx, projectID)
+		if err != nil {
+			if store.IsNotFound(err) {
+				return &domain.NotFoundError{Resource: "project", Key: projectID}
+			}
+			return err
+		}
+
+		updateTime := formatTimestamp(s.nextTimestamp(project.UpdateTime))
+		if in.Decision == domain.DecisionReject {
+			if project.Status != domain.StatusTasksReview && project.Status != domain.StatusPendingDone {
+				return &domain.InvalidStateError{Reason: fmt.Sprintf(
+					"project %q is in status %s; only tasks_review or pending_done batches can be rejected",
+					project.ProjectID, domain.StatusName(project.Status))}
+			}
+
+			affected, err := store.SetTasksReviewRejection(ctx, tx, project.ID, project.Version,
+				reason, updateTime, actor, updateTime)
+			if err != nil {
+				return err
+			}
+			if affected == 0 {
+				fresh, readErr := store.GetProjectByProjectID(ctx, tx, project.ProjectID)
+				if readErr != nil {
+					return readErr
+				}
+				return &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
+			}
+
+			result = ReviewWorkItemsResult{
+				ProjectID:  project.ProjectID,
+				FromStatus: project.Status,
+				ToStatus:   project.Status,
+				Version:    project.Version + 1,
+				ReadyItems: 0,
+				Reason:     reason,
+				RejectedAt: updateTime,
+			}
+			return nil
+		}
+
+		next, err := domain.ProjectNextStatus(project.Status, domain.ProjectActionReviewTasks, domain.DecisionApprove)
+		if err != nil {
+			return err
+		}
+
+		ready, err := store.SetWorkItemsQueuedByProject(ctx, tx, project.ID, updateTime)
+		if err != nil {
+			return err
+		}
+		if ready == 0 {
+			return &domain.InvalidStateError{Reason: fmt.Sprintf(
+				"project %q has no blocked work item to approve", project.ProjectID)}
+		}
+
+		affected, err := store.TransitionProjectClearTasksReview(ctx, tx, project.ID,
+			project.Status, project.Version, next, nil, actor, updateTime)
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			fresh, readErr := store.GetProjectByProjectID(ctx, tx, project.ProjectID)
+			if readErr != nil {
+				return readErr
+			}
+			return &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
+		}
+
+		result = ReviewWorkItemsResult{
+			ProjectID:  project.ProjectID,
+			FromStatus: project.Status,
+			ToStatus:   next,
+			Version:    project.Version + 1,
+			ReadyItems: ready,
+		}
+		return nil
+	})
+	if err != nil {
+		return ReviewWorkItemsResult{}, err
+	}
+	return result, nil
+}

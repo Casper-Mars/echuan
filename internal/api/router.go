@@ -66,15 +66,15 @@ var routeSpecs = []routeSpec{
 	{http.MethodPost, "/v1/projects/cancel", "projects"},
 	{http.MethodGet, "/v1/projects/materials", "materials"},
 
-	{http.MethodPost, "/v1/tasks", "tasks"},
-	{http.MethodGet, "/v1/tasks", "tasks"},
-	{http.MethodPatch, "/v1/tasks", "tasks"},
-	{http.MethodDelete, "/v1/tasks", "tasks"},
-	{http.MethodPost, "/v1/tasks/report", "tasks"},
-	{http.MethodPost, "/v1/tasks/decide", "tasks"},
-	{http.MethodPost, "/v1/tasks/review", "tasks"},
-	{http.MethodPost, "/v1/tasks/claim", "claims"},
-	{http.MethodPost, "/v1/tasks/heartbeat", "claims"},
+	{http.MethodPost, "/v1/work-items", "work-items"},
+	{http.MethodGet, "/v1/work-items", "work-items"},
+	{http.MethodPatch, "/v1/work-items", "work-items"},
+	{http.MethodDelete, "/v1/work-items", "work-items"},
+	{http.MethodPost, "/v1/work-items/report", "work-items"},
+	{http.MethodPost, "/v1/work-items/decide", "work-items"},
+	{http.MethodPost, "/v1/work-items/review", "work-items"},
+	{http.MethodPost, "/v1/work-items/claim", "claims"},
+	{http.MethodPost, "/v1/work-items/lease", "claims"},
 
 	{http.MethodPost, "/v1/workers/heartbeat", "workers"},
 	{http.MethodGet, "/v1/workers", "workers"},
@@ -114,20 +114,20 @@ func Routes() []Route {
 //	POST /v1/projects/submit         draft → its review gate (?id=)
 //	POST /v1/projects/decide         approve/reject a review gate (?id=, If-Match)
 //	POST /v1/projects/cancel         cancel a non-terminal project (?id=)
-//	POST /v1/tasks                    add one task card to a tasks project (?project_id=)
-//	GET /v1/tasks                    list tasks (or fetch one with ?id=)
-//	PATCH /v1/tasks                  patch title/body_md/priority (?id=)
-//	DELETE /v1/tasks                 delete an unclaimed backlog task (?id=)
-//	POST /v1/tasks/claim             lease the next claimable task of a product
-//	POST /v1/tasks/heartbeat         renew the lease of one task (?id=)
-//	POST /v1/tasks/report            submit a report and complete the task (?id=)
-//	POST /v1/tasks/decide            accept/rework/retry/abandon a task (?id=, If-Match)
-//	POST /v1/tasks/review            approve/reject a task batch (?project_id=&decision=)
-//	POST /v1/workers/heartbeat       register a worker, refresh it and dispatch work
+//	POST /v1/work-items              add one work item {project_id, kind, ...}
+//	GET /v1/work-items               list work items (or fetch one with ?id=/?work_id=)
+//	PATCH /v1/work-items             patch title/body_md/priority (?work_id=)
+//	DELETE /v1/work-items            delete an unclaimed blocked item (?work_id=)
+//	POST /v1/work-items/claim        lease the next claimable item of a declared kind
+//	POST /v1/work-items/lease        renew the lease of one item
+//	POST /v1/work-items/report       submit a result material and move to submitted
+//	POST /v1/work-items/decide       approve/reject a submitted item
+//	POST /v1/work-items/review       approve/reject a project plan batch
+//	POST /v1/workers/heartbeat       register a worker, declare kinds and dispatch work
 //	GET /v1/workers                  list workers (or fetch one with ?id=)
 //	GET /v1/materials                download a material object (?id=)
 //	GET /v1/projects/materials       version chain of one kind (?id=&kind=)
-//	GET /v1/inbox                    pending reviews and task decisions
+//	GET /v1/inbox                    pending reviews and work-item decisions
 //	/                                fallback handler (embedded frontend), when provided
 //
 // Resource routes are only registered when their service is non-nil, which
@@ -135,7 +135,7 @@ func Routes() []Route {
 //
 // The returned handler is meant to be wrapped by Chain with the standard
 // middleware stack.
-func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, tasks *app.TaskService, claims *app.ClaimService, workers *app.WorkerService, materials *app.MaterialService, inbox *app.InboxService) http.Handler {
+func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecker, products *app.ProductService, projects *app.ProjectService, workItems *app.WorkItemService, claims *app.ClaimService, workers *app.WorkerService, materials *app.MaterialService, inbox *app.InboxService) http.Handler {
 	h := NewHandler(logger, checks)
 
 	// Handlers are collected per method+path; routeSpecs decides which of them
@@ -174,22 +174,22 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		handlers["POST /v1/projects/decide"] = projectsHandler.decideProject
 		handlers["POST /v1/projects/cancel"] = projectsHandler.cancelProject
 	}
-	if tasks != nil {
-		enabled["tasks"] = true
-		tasksHandler := newTasksHandler(tasks, logger)
-		handlers["POST /v1/tasks"] = tasksHandler.createTask
-		handlers["GET /v1/tasks"] = tasksHandler.listOrGetTask
-		handlers["PATCH /v1/tasks"] = tasksHandler.updateTask
-		handlers["DELETE /v1/tasks"] = tasksHandler.deleteTask
-		handlers["POST /v1/tasks/report"] = tasksHandler.reportTask
-		handlers["POST /v1/tasks/decide"] = tasksHandler.decideTask
-		handlers["POST /v1/tasks/review"] = tasksHandler.reviewTasks
+	if workItems != nil {
+		enabled["work-items"] = true
+		workItemsHandler := newWorkItemsHandler(workItems, logger)
+		handlers["POST /v1/work-items"] = workItemsHandler.createWorkItem
+		handlers["GET /v1/work-items"] = workItemsHandler.listOrGetWorkItem
+		handlers["PATCH /v1/work-items"] = workItemsHandler.updateWorkItem
+		handlers["DELETE /v1/work-items"] = workItemsHandler.deleteWorkItem
+		handlers["POST /v1/work-items/report"] = workItemsHandler.reportWorkItem
+		handlers["POST /v1/work-items/decide"] = workItemsHandler.decideWorkItem
+		handlers["POST /v1/work-items/review"] = workItemsHandler.reviewWorkItems
 	}
 	if claims != nil {
 		enabled["claims"] = true
 		claimsHandler := newClaimHandler(claims, logger)
-		handlers["POST /v1/tasks/claim"] = claimsHandler.claim
-		handlers["POST /v1/tasks/heartbeat"] = claimsHandler.heartbeat
+		handlers["POST /v1/work-items/claim"] = claimsHandler.claim
+		handlers["POST /v1/work-items/lease"] = claimsHandler.renewLease
 	}
 	if workers != nil {
 		enabled["workers"] = true

@@ -9,91 +9,52 @@ import (
 	"unicode/utf8"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
+	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
 )
 
+// Plan batches (tech design §4.5).
+//
+// A plan is a batch of dev work items added to a project. Cards land blocked and
+// the first batch opens the tasks review gate; approval queues them.
+
 const (
-	// MaxPlanTasks bounds one POST /v1/projects/plans batch. The upper limit is
-	// a request-size guard, not a business rule: a plan larger than this must be
-	// split by the CTO.
-	MaxPlanTasks = 200
-
-	// MaxTaskTitleLen bounds a task title in characters (same bound as a
-	// project title, so the two read consistently in the UI).
-	MaxTaskTitleLen = 200
-
-	// MaxTaskBodyBytes bounds one task body_md. Task bodies are working notes,
-	// not material uploads, so they do not share material_max_bytes.
-	MaxTaskBodyBytes = 64 * 1024
-
-	// MinTaskPriority / MaxTaskPriority bound the optional scheduling hint.
-	MinTaskPriority = -1000
-	MaxTaskPriority = 1000
-
-	// defaultTaskMaxAttempts mirrors the tasks.max_attempts column default and
-	// is used when the service is built without an explicit config value.
-	defaultTaskMaxAttempts = 3
+	// MaxPlanItems bounds one POST /v1/projects/plans batch.
+	MaxPlanItems = 200
 )
 
-// PlanTask is one task of a submitted breakdown. DependsOn holds 1-based
-// sequence numbers of the same batch (not task ids); SubmitPlan translates them
-// into the real ids after the rows exist.
-type PlanTask struct {
+// PlanItem is one card of a submitted batch. DependsOn holds 1-based sequence
+// numbers of the same batch.
+type PlanItem struct {
 	Title     string
 	BodyMD    string
 	Priority  int
 	DependsOn []int
 }
 
-// PlannedTask is one persisted task as reported by SubmitPlan. DependsOn is
-// the list of business task ids ("APP-1-T0001") the task depends on.
-type PlannedTask struct {
-	ID          string
-	SeqNo       int
-	Title       string
-	Priority    int
-	Status      int
-	DependsOn   []string
-	BodyMD      string
-	LastActor   string
-	MaxAttempts int
-	Version     int
+// PlannedWorkItem is one persisted card as reported by SubmitPlan.
+type PlannedWorkItem struct {
+	WorkID    string
+	SeqNo     int
+	Kind      string
+	Title     string
+	Priority  int
+	State     string
+	DependsOn []string
 }
 
-// PlanResult is the outcome of one POST /v1/projects/plans: the project as it
-// looks after the transition plus every task that was inserted, in seq order.
+// PlanResult is the outcome of one plan submission.
 type PlanResult struct {
-	Project domain.Project
-	Tasks   []PlannedTask
+	Project   domain.Project
+	WorkItems []PlannedWorkItem
 }
 
-// SetMaxAttempts overrides the attempt budget written to new task rows. Values
-// <= 0 are ignored so a misconfigured value never produces an unclaimable task.
-func (s *ProjectService) SetMaxAttempts(n int) {
-	if n > 0 {
-		s.maxAttempts = n
-	}
-}
-
-// SubmitPlan adds one batch of task cards to a project (tech design §4.5).
+// SubmitPlan adds one batch of dev cards to a project.
 //
-// Despite the historical name it no longer submits a breakdown for review: a
-// batch is plain content, inserted in backlog, legal while the project is in
-// tasks_draft, tasks_review or pending_done. When the project is still in
-// tasks_draft the batch opens its review gate in the same transaction
-// (tasks_draft → tasks_review), so the first card always makes the batch
-// reviewable.
-//
-// Validation happens before the transaction, so a bad payload has no side
-// effect at all. The transaction then reads the project, guards its status,
-// takes a contiguous seq range with NextSeqNo, inserts tasks, resolves the
-// batch sequence numbers to physical ids, inserts task_deps, and finally moves
-// the project when the gate opens. Any error rolls the whole batch back: no
-// task, no edge, no version bump.
-//
-// reason is deliberately preserved: a rejection objection stays readable while
-// the CTO edits the batch (the same policy as spec submission and rework).
-func (s *ProjectService) SubmitPlan(ctx context.Context, projectID, actor string, tasks []PlanTask) (PlanResult, error) {
+// Legal while the project is in tasks_draft, tasks_review or pending_done. When
+// the project is still in tasks_draft the batch opens its review gate in the
+// same transaction (tasks_draft → tasks_review).
+func (s *ProjectService) SubmitPlan(ctx context.Context, projectID, actor string, items []PlanItem) (PlanResult, error) {
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		return PlanResult{}, &domain.ValidationError{Fields: []domain.FieldError{
@@ -101,7 +62,7 @@ func (s *ProjectService) SubmitPlan(ctx context.Context, projectID, actor string
 		}}
 	}
 
-	normalized, verr := validatePlan(tasks)
+	normalized, verr := validatePlan(items)
 	if verr != nil {
 		return PlanResult{}, verr
 	}
@@ -117,67 +78,62 @@ func (s *ProjectService) SubmitPlan(ctx context.Context, projectID, actor string
 			}
 			return err
 		}
-		// Cards can be added while drafting, reviewing or after the batch was
-		// approved (pending_done). Terminal projects reject the batch here,
-		// before any write, so a duplicate request is a clean 409 invalid_state
-		// with zero side effects.
 		if row.Status != domain.StatusTasksDraft &&
 			row.Status != domain.StatusTasksReview &&
 			row.Status != domain.StatusPendingDone {
 			return &domain.InvalidStateError{Reason: fmt.Sprintf(
-				"project %q is in status %s; tasks can only be added in tasks_draft, tasks_review or pending_done",
+				"project %q is in status %s; work items can only be added in tasks_draft, tasks_review or pending_done",
 				projectID, domain.StatusName(row.Status))}
 		}
 
 		updateTime := formatTimestamp(s.nextTimestamp(row.UpdateTime))
 
-		// One NextSeqNo call for the whole batch: fill-in order means
-		// seq, seq+1, … and task_id derives from the same number, so the two
-		// can never drift apart or leave a hole.
-		firstSeq, err := store.NextSeqNo(ctx, tx, "tasks", "project_id", row.ID)
+		firstSeq, err := store.NextSeqNo(ctx, tx, "work_items", "project_id", row.ID)
 		if err != nil {
 			return err
 		}
 
 		created := make([]int64, len(normalized))
-		for i, task := range normalized {
+		workIDs := make([]string, len(normalized))
+		for i, item := range normalized {
+			workID, err := platform.NewWorkID(s.timestamp())
+			if err != nil {
+				return err
+			}
+			workIDs[i] = workID
 			seq := firstSeq + i
-			taskID := fmt.Sprintf("%s-T%04d", row.ProjectID, seq)
-			id, err := store.CreateTask(ctx, tx, store.NewTask{
-				TaskID:      taskID,
+			id, err := store.CreateWorkItem(ctx, tx, store.NewWorkItem{
+				WorkID:      workID,
 				ProjectID:   row.ID,
+				Kind:        "dev",
 				SeqNo:       seq,
-				Title:       task.Title,
-				BodyMD:      task.BodyMD,
-				Priority:    task.Priority,
-				Status:      domain.TaskBacklog,
+				Title:       item.Title,
+				BodyMD:      item.BodyMD,
+				Priority:    item.Priority,
+				State:       store.WorkItemStateBlocked,
 				MaxAttempts: s.maxAttempts,
-				LastActor:   actor,
 				CreateTime:  updateTime,
 				UpdateTime:  updateTime,
 			})
 			if err != nil {
 				if errors.Is(err, store.ErrUniqueViolation) {
 					return &domain.ConflictError{Reason: fmt.Sprintf(
-						"task %q already exists in project %q", taskID, projectID)}
+						"work item %q already exists in project %q", workID, projectID)}
 				}
 				return err
 			}
 			created[i] = id
 		}
 
-		for i, task := range normalized {
-			for _, dependsOn := range task.DependsOn {
-				if err := store.InsertTaskDependency(ctx, tx, created[i], created[dependsOn-1], updateTime); err != nil {
+		for i, item := range normalized {
+			for _, dependsOn := range item.DependsOn {
+				if err := store.InsertWorkDependency(ctx, tx, created[i], created[dependsOn-1]); err != nil {
 					return err
 				}
 			}
 		}
 
 		if row.Status == domain.StatusTasksDraft {
-			// The first card opens the batch review gate. reason is passed
-			// through unchanged (not cleared): the objection that produced this
-			// re-plan must stay readable.
 			next, err := domain.ProjectNextStatus(row.Status, domain.ProjectActionAddFirstTask, "")
 			if err != nil {
 				return err
@@ -205,11 +161,7 @@ func (s *ProjectService) SubmitPlan(ctx context.Context, projectID, actor string
 	return result, nil
 }
 
-// planResult reads the committed batch back inside the transaction, so the
-// response reports rows (and dependency edges) that really exist rather than
-// echoing the request. created narrows the result to this submission: a project
-// can legitimately hold older rows (a rework task, for example) and they must
-// not leak into the response.
+// planResult reads the committed batch back inside the transaction.
 func (s *ProjectService) planResult(ctx context.Context, q store.Querier, projectPhysicalID int64, created []int64) (PlanResult, error) {
 	fresh, err := store.GetProjectByID(ctx, q, projectPhysicalID)
 	if err != nil {
@@ -220,11 +172,11 @@ func (s *ProjectService) planResult(ctx context.Context, q store.Querier, projec
 		return PlanResult{}, err
 	}
 
-	rows, err := store.ListTasksByProject(ctx, q, projectPhysicalID)
+	rows, err := store.ListWorkItemsByProject(ctx, q, projectPhysicalID)
 	if err != nil {
 		return PlanResult{}, err
 	}
-	deps, err := store.ListTaskDependencies(ctx, q, projectPhysicalID)
+	deps, err := store.ListWorkDependencies(ctx, q, projectPhysicalID)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -236,185 +188,164 @@ func (s *ProjectService) planResult(ctx context.Context, q store.Querier, projec
 
 	codeByID := make(map[int64]string, len(rows))
 	for _, row := range rows {
-		codeByID[row.ID] = row.TaskID
+		codeByID[row.ID] = row.WorkID
 	}
-	depsByTask := make(map[int64][]string, len(created))
+	depsByItem := make(map[int64][]string, len(created))
 	for _, dep := range deps {
-		if _, ok := inBatch[dep.TaskID]; !ok {
+		if _, ok := inBatch[dep.WorkItemID]; !ok {
 			continue
 		}
 		code, ok := codeByID[dep.DependsOn]
 		if !ok {
-			// A dangling edge would be a foreign-key violation; report it
-			// instead of emitting an empty string to the client.
-			return PlanResult{}, fmt.Errorf("store: task_deps %d -> %d references a task outside project %d",
-				dep.TaskID, dep.DependsOn, projectPhysicalID)
+			return PlanResult{}, fmt.Errorf("store: work_deps %d -> %d references an item outside project %d",
+				dep.WorkItemID, dep.DependsOn, projectPhysicalID)
 		}
-		depsByTask[dep.TaskID] = append(depsByTask[dep.TaskID], code)
+		depsByItem[dep.WorkItemID] = append(depsByItem[dep.WorkItemID], code)
 	}
 
-	planned := make([]PlannedTask, 0, len(created))
+	planned := make([]PlannedWorkItem, 0, len(created))
 	for _, row := range rows {
 		if _, ok := inBatch[row.ID]; !ok {
 			continue
 		}
-		dependsOn := depsByTask[row.ID]
+		dependsOn := depsByItem[row.ID]
 		if dependsOn == nil {
 			dependsOn = []string{}
 		}
-		planned = append(planned, PlannedTask{
-			ID:          row.TaskID,
-			SeqNo:       row.SeqNo,
-			Title:       row.Title,
-			Priority:    row.Priority,
-			Status:      row.Status,
-			DependsOn:   dependsOn,
-			BodyMD:      row.BodyMD,
-			LastActor:   stringValue(row.LastActor),
-			MaxAttempts: row.MaxAttempts,
-			Version:     row.Version,
+		planned = append(planned, PlannedWorkItem{
+			WorkID:    row.WorkID,
+			SeqNo:     row.SeqNo,
+			Kind:      row.Kind,
+			Title:     row.Title,
+			Priority:  row.Priority,
+			State:     row.State,
+			DependsOn: dependsOn,
 		})
 	}
-	return PlanResult{Project: project, Tasks: planned}, nil
+	return PlanResult{Project: project, WorkItems: planned}, nil
 }
 
 // validatePlan normalises the batch and returns every field-level failure.
-//
-// Structural checks (count, title, body, priority, depends_on shape) run first;
-// the graph check only runs when the shape is valid, because a cycle message
-// that names a sequence number is meaningless while some numbers are out of
-// range.
-func validatePlan(tasks []PlanTask) ([]PlanTask, *domain.ValidationError) {
+func validatePlan(items []PlanItem) ([]PlanItem, *domain.ValidationError) {
 	var fields []domain.FieldError
 
 	switch {
-	case len(tasks) == 0:
-		fields = append(fields, domain.FieldError{Field: "tasks", Reason: "must contain at least 1 task"})
-	case len(tasks) > MaxPlanTasks:
+	case len(items) == 0:
+		fields = append(fields, domain.FieldError{Field: "work_items", Reason: "must contain at least 1 item"})
+	case len(items) > MaxPlanItems:
 		fields = append(fields, domain.FieldError{
-			Field:  "tasks",
-			Reason: fmt.Sprintf("must contain at most %d tasks", MaxPlanTasks),
+			Field:  "work_items",
+			Reason: fmt.Sprintf("must contain at most %d items", MaxPlanItems),
 		})
 		return nil, &domain.ValidationError{Fields: fields}
 	}
 
-	normalized := make([]PlanTask, len(tasks))
-	for i, task := range tasks {
-		prefix := fmt.Sprintf("tasks[%d]", i)
-		normalized[i] = task
+	normalized := make([]PlanItem, len(items))
+	for i, item := range items {
+		prefix := fmt.Sprintf("work_items[%d]", i)
+		normalized[i] = item
 
-		normalized[i].Title = strings.TrimSpace(task.Title)
+		normalized[i].Title = strings.TrimSpace(item.Title)
 		switch {
 		case normalized[i].Title == "":
 			fields = append(fields, domain.FieldError{Field: prefix + ".title", Reason: "is required"})
-		case utf8.RuneCountInString(normalized[i].Title) > MaxTaskTitleLen:
+		case utf8.RuneCountInString(normalized[i].Title) > MaxWorkItemTitleLen:
 			fields = append(fields, domain.FieldError{
 				Field:  prefix + ".title",
-				Reason: fmt.Sprintf("must be at most %d characters", MaxTaskTitleLen),
+				Reason: fmt.Sprintf("must be at most %d characters", MaxWorkItemTitleLen),
 			})
 		}
 
-		if strings.TrimSpace(task.BodyMD) == "" {
+		if strings.TrimSpace(item.BodyMD) == "" {
 			fields = append(fields, domain.FieldError{Field: prefix + ".body_md", Reason: "is required"})
-		} else if len(task.BodyMD) > MaxTaskBodyBytes {
+		} else if len(item.BodyMD) > MaxWorkItemBodyBytes {
 			fields = append(fields, domain.FieldError{
 				Field:  prefix + ".body_md",
-				Reason: fmt.Sprintf("must be at most %d bytes", MaxTaskBodyBytes),
+				Reason: fmt.Sprintf("must be at most %d bytes", MaxWorkItemBodyBytes),
 			})
 		}
 
-		if task.Priority < MinTaskPriority || task.Priority > MaxTaskPriority {
+		if item.Priority < MinWorkItemPriority || item.Priority > MaxWorkItemPriority {
 			fields = append(fields, domain.FieldError{
 				Field:  prefix + ".priority",
-				Reason: fmt.Sprintf("must be between %d and %d", MinTaskPriority, MaxTaskPriority),
+				Reason: fmt.Sprintf("must be between %d and %d", MinWorkItemPriority, MaxWorkItemPriority),
 			})
 		}
 
-		fields = append(fields, validateDependsOn(prefix, i, task.DependsOn, len(tasks))...)
+		seen := make(map[int]struct{}, len(item.DependsOn))
+		dependsOn := make([]int, 0, len(item.DependsOn))
+		for _, dep := range item.DependsOn {
+			if dep < 1 || dep > len(items) {
+				fields = append(fields, domain.FieldError{
+					Field:  prefix + ".depends_on",
+					Reason: fmt.Sprintf("must be between 1 and %d", len(items)),
+				})
+				continue
+			}
+			if dep == i+1 {
+				fields = append(fields, domain.FieldError{
+					Field:  prefix + ".depends_on",
+					Reason: "must not contain the item itself",
+				})
+				continue
+			}
+			if _, dup := seen[dep]; dup {
+				fields = append(fields, domain.FieldError{
+					Field:  prefix + ".depends_on",
+					Reason: fmt.Sprintf("must not contain duplicate %d", dep),
+				})
+				continue
+			}
+			seen[dep] = struct{}{}
+			dependsOn = append(dependsOn, dep)
+		}
+		normalized[i].DependsOn = dependsOn
 	}
 	if len(fields) > 0 {
 		return nil, &domain.ValidationError{Fields: fields}
 	}
 
-	if cycle := findDependencyCycle(normalized); len(cycle) > 0 {
-		message := formatDependencyCycle(cycle)
+	if cycle := findPlanCycle(normalized); len(cycle) > 0 {
+		message := "dependency cycle: " + strings.Join(cycle, " → ")
 		return nil, &domain.ValidationError{
 			Message: message,
-			Fields: []domain.FieldError{{
-				Field:  fmt.Sprintf("tasks[%d].depends_on", cycle[0]-1),
-				Reason: message,
-			}},
+			Fields:  []domain.FieldError{{Field: "work_items", Reason: message}},
 		}
 	}
 	return normalized, nil
 }
 
-// validateDependsOn checks one depends_on array: range, self-reference and
-// duplicates. Forward references are explicitly allowed (the graph check deals
-// with the resulting cycles).
-func validateDependsOn(prefix string, index int, dependsOn []int, total int) []domain.FieldError {
-	field := prefix + ".depends_on"
-	seen := make(map[int]struct{}, len(dependsOn))
-	fields := make([]domain.FieldError, 0)
-
-	for _, dep := range dependsOn {
-		switch {
-		case dep < 1 || dep > total:
-			fields = append(fields, domain.FieldError{
-				Field:  field,
-				Reason: fmt.Sprintf("must be a batch sequence number between 1 and %d", total),
-			})
-			continue
-		case dep == index+1:
-			fields = append(fields, domain.FieldError{Field: field, Reason: "must not depend on itself"})
-			continue
-		}
-		if _, dup := seen[dep]; dup {
-			fields = append(fields, domain.FieldError{
-				Field:  field,
-				Reason: fmt.Sprintf("must not contain duplicate sequence number %d", dep),
-			})
-			continue
-		}
-		seen[dep] = struct{}{}
-	}
-	return fields
-}
-
-// findDependencyCycle runs a DFS over the batch graph (node = 1-based batch
-// sequence number, edge = "depends on") and returns the cycle as a closed path
-// such as [1 2 3 1], or nil when the graph is acyclic.
-//
-// Colour marks: white = unvisited, grey = on the current DFS stack, black =
-// fully explored. An edge to a grey node closes a cycle; the nodes from that
-// node's position in the stack form the path.
-func findDependencyCycle(tasks []PlanTask) []int {
+// findPlanCycle detects a cycle in the batch graph (sequence numbers are nodes).
+func findPlanCycle(items []PlanItem) []string {
 	const (
 		white = 0
 		grey  = 1
 		black = 2
 	)
 
-	color := make([]int, len(tasks)+1)
-	stack := make([]int, 0, len(tasks))
+	color := make([]int, len(items)+1)
+	stack := make([]int, 0, len(items))
 
-	var visit func(node int) []int
-	visit = func(node int) []int {
+	var visit func(node int) []string
+	visit = func(node int) []string {
 		color[node] = grey
 		stack = append(stack, node)
 
-		for _, dep := range tasks[node-1].DependsOn {
+		for _, dep := range items[node-1].DependsOn {
 			switch color[dep] {
 			case grey:
-				start := 0
+				from := 0
 				for i, stacked := range stack {
 					if stacked == dep {
-						start = i
+						from = i
 						break
 					}
 				}
-				cycle := append([]int(nil), stack[start:]...)
-				return append(cycle, dep)
+				cycle := make([]string, 0, len(stack)-from+1)
+				for _, n := range stack[from:] {
+					cycle = append(cycle, fmt.Sprintf("%d", n))
+				}
+				return append(cycle, fmt.Sprintf("%d", dep))
 			case white:
 				if cycle := visit(dep); len(cycle) > 0 {
 					return cycle
@@ -427,23 +358,12 @@ func findDependencyCycle(tasks []PlanTask) []int {
 		return nil
 	}
 
-	for node := 1; node <= len(tasks); node++ {
-		if color[node] != white {
-			continue
-		}
-		if cycle := visit(node); len(cycle) > 0 {
-			return cycle
+	for node := 1; node <= len(items); node++ {
+		if color[node] == white {
+			if cycle := visit(node); len(cycle) > 0 {
+				return cycle
+			}
 		}
 	}
 	return nil
-}
-
-// formatDependencyCycle renders the cycle path the way the API reports it:
-// "dependency cycle: 1 → 2 → 3 → 1".
-func formatDependencyCycle(cycle []int) string {
-	parts := make([]string, len(cycle))
-	for i, node := range cycle {
-		parts[i] = fmt.Sprintf("%d", node)
-	}
-	return "dependency cycle: " + strings.Join(parts, " → ")
 }

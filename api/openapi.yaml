@@ -680,24 +680,19 @@ paths:
           $ref: "#/components/responses/Conflict"
         "413":
           $ref: "#/components/responses/TooLarge"
-  /v1/tasks:
+  /v1/work-items:
     post:
-      operationId: createTask
-      summary: 在规划中的项目里新增任务
-      tags: [tasks]
+      operationId: createWorkItem
+      summary: 在规划中的项目里新增一个 work item
+      tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
-        - name: project_id
-          in: query
-          required: true
-          schema:
-            type: string
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TaskCreateRequest"
+              $ref: "#/components/schemas/WorkItemCreateRequest"
       responses:
         "201":
           description: 已创建
@@ -707,20 +702,27 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskDetail"
+                $ref: "#/components/schemas/WorkItemDetail"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "413":
           $ref: "#/components/responses/TooLarge"
     get:
-      operationId: listOrGetTasks
-      summary: 列出任务，或按 ?id= 取详情
-      tags: [tasks]
+      operationId: listOrGetWorkItems
+      summary: 列出 work item，或按 ?id=/?work_id= 取详情
+      tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
         - name: id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: work_id
           in: query
           required: false
           schema:
@@ -730,7 +732,7 @@ paths:
           required: false
           schema:
             type: string
-        - name: status
+        - name: kind
           in: query
           required: false
           style: form
@@ -738,7 +740,18 @@ paths:
           schema:
             type: array
             items:
-              type: integer
+              type: string
+              enum: [requirement, design, breakdown, dev]
+        - name: state
+          in: query
+          required: false
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [blocked, queued, leased, submitted, accepted, failed, cancelled]
         - name: limit
           in: query
           required: false
@@ -753,7 +766,7 @@ paths:
             type: string
       responses:
         "200":
-          description: 详情（?id=）或分页列表
+          description: 详情（?id=/?work_id=）或分页列表
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -761,25 +774,30 @@ paths:
             application/json:
               schema:
                 oneOf:
-                  - $ref: "#/components/schemas/TaskDetail"
-                  - $ref: "#/components/schemas/TaskList"
+                  - $ref: "#/components/schemas/WorkItemDetail"
+                  - $ref: "#/components/schemas/WorkItemList"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
     patch:
-      operationId: updateTask
-      summary: 修改任务标题、正文或优先级
-      tags: [tasks]
+      operationId: updateWorkItem
+      summary: 修改 work item 标题、正文或优先级
+      tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
         - $ref: "#/components/parameters/ResourceID"
+        - name: work_id
+          in: query
+          required: false
+          schema:
+            type: string
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TaskPatchRequest"
+              $ref: "#/components/schemas/WorkItemPatchRequest"
       responses:
         "200":
           description: 已修改
@@ -789,18 +807,23 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskDetail"
+                $ref: "#/components/schemas/WorkItemDetail"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
     delete:
-      operationId: deleteTask
-      summary: 删除未领取的待办任务
-      tags: [tasks]
+      operationId: deleteWorkItem
+      summary: 删除从未被领取的 blocked work item
+      tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
         - $ref: "#/components/parameters/ResourceID"
+        - name: work_id
+          in: query
+          required: false
+          schema:
+            type: string
       responses:
         "204":
           description: 已删除
@@ -813,11 +836,11 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-  /v1/tasks/claim:
+  /v1/work-items/claim:
     post:
-      operationId: claimTask
-      summary: 领取下一张可执行任务
-      tags: [tasks]
+      operationId: claimWorkItem
+      summary: 按 worker 声明的 kind 领取下一张可执行 work item
+      tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
       requestBody:
@@ -828,7 +851,7 @@ paths:
               $ref: "#/components/schemas/ClaimRequest"
       responses:
         "200":
-          description: 已领取
+          description: 已领取，返回同一条 dispatch 指令
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -837,48 +860,27 @@ paths:
               schema:
                 $ref: "#/components/schemas/ClaimResponse"
         "204":
-          description: |
-            没有可领取的任务（空响应体，不写任务租约，也不动 worker 指针）。
-            带 `worker_id` 时同样返回 204：队列为空，或该卡在同一事务里已被另一个
-            worker 抢走。**不同 worker 并发抢同一张卡时，失败方一律按"无任务可领"
-            返回 204**（不是 409），这是并发抢卡失败的唯一口径。客户端应按退避
-            轮询，不应把 204 当错误重试。
+          description: 无可领取的 work item（空响应体）
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
         "400":
           $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
         "409":
-          description: |
-            仅在请求体带 `worker_id` 时出现，两个码都由 worker 注册表决定：
-            - `worker_unknown`：id 不在注册表中（未注册或已被保留期回收），
-              worker 应先调 `POST /v1/workers/heartbeat` 重新注册拿新 id；
-            - `worker_busy`：该 worker 已持有任务卡（`current_task_id` 非空）。
-              并发抢卡失败不属于本码，见 204。
-            与 200 同属一次事务：返回 409 时任务、租约、指针均未被修改。
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-  /v1/tasks/heartbeat:
+          $ref: "#/components/responses/Conflict"
+  /v1/work-items/lease:
     post:
-      operationId: heartbeatTask
-      summary: 续租任务
-      tags: [tasks]
+      operationId: renewWorkItemLease
+      summary: 续租一张已领取的 work item
+      tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
-        - $ref: "#/components/parameters/ResourceID"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/HeartbeatRequest"
+              $ref: "#/components/schemas/LeaseRequest"
       responses:
         "200":
           description: 已续租
@@ -888,21 +890,20 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HeartbeatResponse"
+                $ref: "#/components/schemas/LeaseRenewalResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-  /v1/tasks/report:
+  /v1/work-items/report:
     post:
-      operationId: reportTask
-      summary: 提交报告并转入待验收
-      tags: [tasks]
+      operationId: reportWorkItem
+      summary: 用已有 material 交付一张租约中的 work item
+      tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
-        - $ref: "#/components/parameters/ResourceID"
       requestBody:
         required: true
         content:
@@ -911,109 +912,72 @@ paths:
               $ref: "#/components/schemas/ReportRequest"
       responses:
         "200":
-          description: 报告已提交
+          description: 已提交，state=submitted
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskDetail"
+                $ref: "#/components/schemas/WorkItemDetail"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-        "413":
-          $ref: "#/components/responses/TooLarge"
-        "422":
-          description: 报告内容为空
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-  /v1/tasks/review:
+  /v1/work-items/decide:
     post:
-      operationId: reviewTasks
-      summary: 审批任务批次
-      description: |
-        `approve`：把项目的全部 `backlog` 卡置为 `ready`，在同一事务里清空项目
-        的驳回字段并推进项目：
-        - `tasks_review`(5) → `pending_done`(6)：首次批次审批。
-        - `pending_done`(6) → `pending_done`(6)：待完成阶段加卡后再次审批，
-          新卡变 `ready` 而项目停在 6；等全部卡片结清后项目才到 7。
-        没有 `backlog` 卡时返回 409 `invalid_state`，且不产生写入。
-        `reject`：`reason` 必填（缺失/空白返回 400），只写入
-        `tasks_review_reason` / `tasks_review_rejected_at`、版本与操作人；
-        卡片与项目状态都不变（5 仍 5、6 仍 6），重复驳回覆盖旧值。
-        项目不在 5/6 时返回 409 `invalid_state`。
-      tags: [tasks]
+      operationId: decideWorkItem
+      summary: 验收或驳回一张 submitted work item
+      tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
-        - name: project_id
-          in: query
-          required: true
-          description: 项目业务编号（APP-1）
-          schema:
-            type: string
-        - name: decision
-          in: query
-          required: true
-          description: 评审结论（也兼容请求体中的同名字段）
-          schema:
-            type: string
-            enum: [approve, reject]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ReviewTasksRequest"
+              $ref: "#/components/schemas/WorkItemDecideRequest"
       responses:
         "200":
-          description: 批次已通过
+          description: 已裁决
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ReviewTasksResponse"
+                $ref: "#/components/schemas/WorkItemDetail"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-  /v1/tasks/decide:
+  /v1/work-items/review:
     post:
-      operationId: decideTask
-      summary: 验收、返工、重试或放弃任务
-      tags: [tasks]
+      operationId: reviewWorkItems
+      summary: 审批或驳回一个项目的计划批次
+      tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
-        - $ref: "#/components/parameters/ResourceID"
-        - $ref: "#/components/parameters/IfMatch"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TaskDecideRequest"
+              $ref: "#/components/schemas/WorkItemReviewRequest"
       responses:
         "200":
-          description: 已处理
+          description: 已审批
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TaskDetail"
+                $ref: "#/components/schemas/WorkItemReviewResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -1032,16 +996,17 @@ paths:
         - 带未知 `worker_id` 返回 409 `worker_unknown`：该行已被保留期回收，
           worker 应丢弃旧 id 重新注册，而不是原样重试。
         - `state` 缺省为 `idle`。三个概念相互独立，不要混为一谈：
-          - **占用判定**：只看注册表指针 `current_task_id`，与 `state` 无关；
+          - **占用判定**：只看注册表指针 `current_work_item_id`，与 `state` 无关；
             `state=idle` 但仍持卡仍算占用。
           - **派单条件**：`state=idle` **且** 指针为空才会被派单；
             `state=busy` 即使无卡也不会被派单。
           - **续租条件**：指针非空 **且** `state=busy` 才会续租；
             持卡却发 `state=idle` 时只保留指针、不续租，卡在租约到期后
             由回收流程释放。
-        - 空闲且未持卡的 worker 拿到下一张可领卡：`commands` 出现一条 `kind=run_task`，
-          其 `task`/`lease`/`context` 与 `POST /v1/tasks/claim` 的 200 响应同构
-          （复用 `ClaimedTask` / `ClaimLease` / `ClaimContext`）。
+        - `kinds` 必填、非空，取值 `requirement/design/breakdown/dev`；每次心跳
+          覆盖该 worker 已存的 kind 声明，平台只按声明的 kind 派单。
+        - 空闲且未持卡的 worker 拿到下一张可领卡：`commands` 出现一条 `kind=dispatch`，
+          其 `dispatch` 与 `POST /v1/work-items/claim` 的 200 响应同构。
         - 无任务可派时 `commands` 为 `[]`，不是 null。
       tags: [workers]
       parameters:
@@ -1074,7 +1039,8 @@ paths:
                       worker_id: w_01M5Z45MXYVDV3FAHG543RZ5JQ
                       presence: active
                       state: idle
-                      current_task_id: null
+                      kinds: [design, dev]
+                      current_work_item_id: null
                       metadata:
                         host: build-01
                         os: linux
@@ -1084,42 +1050,50 @@ paths:
                       heartbeat_interval_ms: 15000
                       lease_ttl_seconds: 90
                     commands: []
-                dispatchRunTask:
-                  summary: 空闲 worker 被派单（队列有可领取任务）
+                dispatchWorkItem:
+                  summary: 空闲 worker 被派单（队列有可领取工作项）
                   value:
                     worker:
                       worker_id: w_01M5Z45MXYVDV3FAHG543RZ5JQ
                       presence: active
                       state: busy
-                      current_task_id: APP-1-T0001
+                      kinds: [dev]
+                      current_work_item_id: w_01M5Z46Q7T9K3C8N2V5X1B4D6F
                       metadata:
                         host: build-01
                         os: linux
-                        agent_version: 0.6.0
+                        agent_version: 0.8.0
                       first_seen: "2026-10-27T16:47:51.23Z"
                       last_seen: "2026-10-27T16:47:55.157Z"
                       heartbeat_interval_ms: 15000
                       lease_ttl_seconds: 90
                     commands:
-                      - kind: run_task
-                        task:
-                          id: APP-1-T0001
-                          project_id: APP-1
-                          title: 实现登录接口
-                          body_md: "# 任务正文\n"
-                          attempt: 1
-                          priority: 10
-                        lease:
-                          lease_id: l_9f8b7b09ff971dd1
-                          until: "2026-10-27T16:49:25.157Z"
-                          ttl_seconds: 90
-                        context:
-                          spec_version: 1
-                          spec_digest: "sha256:bb23da360a3b21e827138bad027ef3f30a29699e84014bc520e4f40131ea2d76"
-                          product:
-                            id: APP
-                            name: 驿传示例产品
-                            git_url: git@example.com:APP.git
+                      - kind: dispatch
+                        dispatch:
+                          protocol: v2
+                          work_id: w_01M5Z46Q7T9K3C8N2V5X1B4D6F
+                          kind: dev
+                          inputs:
+                            - material_id: MAT-01M5Z45N8Q2R4S6T8V0W2X4Y6Z
+                              kind: 3
+                              version: 1
+                          work_item:
+                            project_id: APP-1
+                            title: 实现登录接口
+                            body_md: "# 工作项正文\n"
+                            priority: 10
+                            attempt: 1
+                          lease:
+                            lease_id: l_9f8b7b09ff971dd1
+                            until: "2026-10-27T16:49:25.157Z"
+                            ttl_seconds: 90
+                          context:
+                            spec_version: 1
+                            spec_digest: "sha256:bb23da360a3b21e827138bad027ef3f30a29699e84014bc520e4f40131ea2d76"
+                            product:
+                              id: APP
+                              name: 驿传示例产品
+                              git_url: git@example.com:APP.git
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
@@ -1194,7 +1168,8 @@ paths:
                     worker_id: w_01M5Z45MXYVDV3FAHG543RZ5JQ
                     presence: active
                     state: busy
-                    current_task_id: APP-1-T0001
+                    kinds: [dev]
+                    current_work_item_id: w_01M5Z46Q7T9K3C8N2V5X1B4D6F
                     metadata:
                       host: build-01
                       os: linux
@@ -1210,7 +1185,8 @@ paths:
                       - worker_id: w_01M5Z46001XPF5KM50RT9QKR48
                         presence: active
                         state: idle
-                        current_task_id: null
+                        kinds: [design, dev]
+                        current_work_item_id: null
                         metadata:
                           host: build-02
                         first_seen: "2026-10-27T16:48:02.561Z"
@@ -1220,7 +1196,8 @@ paths:
                       - worker_id: w_01M5Z45MXYVDV3FAHG543RZ5JQ
                         presence: active
                         state: busy
-                        current_task_id: APP-1-T0001
+                        kinds: [dev]
+                        current_work_item_id: w_01M5Z46Q7T9K3C8N2V5X1B4D6F
                         metadata:
                           host: build-01
                           os: linux
@@ -1538,19 +1515,6 @@ components:
             $ref: "#/components/schemas/Product"
         next_cursor:
           type: string
-    TaskStats:
-      type: object
-      additionalProperties: false
-      required: [total, done]
-      properties:
-        total:
-          type: integer
-        done:
-          type: integer
-        by_status:
-          type: object
-          additionalProperties:
-            type: integer
     Material:
       type: object
       additionalProperties: false
@@ -1614,7 +1578,7 @@ components:
     Project:
       type: object
       additionalProperties: false
-      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, task_stats, create_time, update_time]
+      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, work_item_total, work_item_done, create_time, update_time]
       properties:
         id:
           type: string
@@ -1649,8 +1613,14 @@ components:
           format: date-time
           nullable: true
           description: 最近一次任务批次驳回的时间；与原因同时清空
-        task_stats:
-          $ref: "#/components/schemas/TaskStats"
+        work_item_total:
+          type: integer
+        work_item_done:
+          type: integer
+        work_item_by_state:
+          type: object
+          additionalProperties:
+            type: integer
         create_time:
           type: string
           format: date-time
@@ -1661,7 +1631,7 @@ components:
       type: object
       description: 项目详情。requirement/spec 仅返回材料元数据（含 material_id），正文请通过 GET /v1/materials?id=<material_id> 单独获取；详情响应不内嵌正文。
       additionalProperties: false
-      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, task_stats, create_time, update_time, requirement, spec]
+      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, work_item_total, work_item_done, create_time, update_time, requirement, spec]
       properties:
         id:
           type: string
@@ -1696,8 +1666,14 @@ components:
           format: date-time
           nullable: true
           description: 最近一次任务批次驳回的时间；与原因同时清空
-        task_stats:
-          $ref: "#/components/schemas/TaskStats"
+        work_item_total:
+          type: integer
+        work_item_done:
+          type: integer
+        work_item_by_state:
+          type: object
+          additionalProperties:
+            type: integer
         create_time:
           type: string
           format: date-time
@@ -1801,7 +1777,7 @@ components:
             $ref: "#/components/schemas/Project"
         next_cursor:
           type: string
-    PlanTaskRequest:
+    PlanItemRequest:
       type: object
       additionalProperties: false
       required: [title, body_md]
@@ -1821,29 +1797,29 @@ components:
     PlanRequest:
       type: object
       additionalProperties: false
-      required: [tasks]
+      required: [work_items]
       properties:
-        tasks:
+        work_items:
           type: array
           minItems: 1
           items:
-            $ref: "#/components/schemas/PlanTaskRequest"
-    PlanTaskResponse:
+            $ref: "#/components/schemas/PlanItemRequest"
+    PlanItemResponse:
       type: object
       additionalProperties: false
-      required: [id, seq_no, title, priority, status, status_name, depends_on]
+      required: [work_id, seq_no, kind, title, priority, state, depends_on]
       properties:
-        id:
+        work_id:
           type: string
         seq_no:
           type: integer
+        kind:
+          type: string
         title:
           type: string
         priority:
           type: integer
-        status:
-          type: integer
-        status_name:
+        state:
           type: string
         depends_on:
           type: array
@@ -1852,7 +1828,7 @@ components:
     PlanResponse:
       type: object
       additionalProperties: false
-      required: [project_id, status, status_name, project_version, tasks]
+      required: [project_id, status, status_name, project_version, work_items]
       properties:
         project_id:
           type: string
@@ -1864,49 +1840,10 @@ components:
           type: string
         project_version:
           type: integer
-        tasks:
+        work_items:
           type: array
           items:
-            $ref: "#/components/schemas/PlanTaskResponse"
-    ReviewTasksRequest:
-      type: object
-      additionalProperties: false
-      properties:
-        decision:
-          type: string
-          enum: [approve, reject]
-          description: 兼容字段；推荐放在 query 参数里
-        reason:
-          type: string
-          description: reject 时必填，approve 时忽略
-    ReviewTasksResponse:
-      type: object
-      additionalProperties: false
-      required: [project_id, from_status, status, status_name, version, ready_tasks, reason, rejected_at]
-      properties:
-        project_id:
-          type: string
-        from_status:
-          type: integer
-          description: 审批前的项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
-          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
-        status:
-          type: integer
-          description: 审批后的项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
-          enum: [0, 1, 2, 3, 4, 5, 6, 7, 8]
-        status_name:
-          type: string
-        version:
-          type: integer
-        ready_tasks:
-          type: integer
-        reason:
-          type: string
-          nullable: true
-        rejected_at:
-          type: string
-          format: date-time
-          nullable: true
+            $ref: "#/components/schemas/PlanItemResponse"
     ProjectDecideRequest:
       type: object
       additionalProperties: false
@@ -1917,17 +1854,22 @@ components:
           enum: [approve, reject]
         reason:
           type: string
-    Task:
+    WorkItem:
       type: object
       additionalProperties: false
-      required: [id, task_id, project_id, seq_no, title, body_md, priority, status, status_name, worker_id, attempt_count, max_attempts, reason, last_actor, version, depends_on, create_time, update_time]
+      required: [work_id, project_id, parent_id, kind, seq_no, title, body_md, priority, state, worker_id, attempt, max_attempts, reason, version, depends_on, result_material_id, create_time, update_time, lease]
       properties:
-        id:
+        work_id:
           type: string
-        task_id:
-          type: string
+          description: 平台生成的 `w_` 前缀业务 id。
         project_id:
           type: string
+        parent_id:
+          type: string
+          nullable: true
+        kind:
+          type: string
+          enum: [requirement, design, breakdown, dev]
         seq_no:
           type: integer
         title:
@@ -1936,27 +1878,18 @@ components:
           type: string
         priority:
           type: integer
-        status:
-          type: integer
-        status_name:
+        state:
           type: string
+          enum: [blocked, queued, leased, submitted, accepted, failed, cancelled]
         worker_id:
           type: string
           nullable: true
-          description: |
-            当前持有该卡的 worker 业务 id；仅 `status=2`（in_progress，已派单/已领取）
-            且领取时绑定了 worker 时才有值，其余状态（含 report/decide 后）一律为 `null`。
-            任务-06 之前领取的 in_progress 卡没有 worker 指针（旧式 claim，只发租约），
-            此时 `status=2` 但该字段同样为 `null`。
-            与 `status` 同源：指针在领取/派单时写入，在报告、回收或重新派单时清空。
-        attempt_count:
+          description: 仅 leased 且有执行者时非 null。
+        attempt:
           type: integer
         max_attempts:
           type: integer
         reason:
-          type: string
-          nullable: true
-        last_actor:
           type: string
           nullable: true
         version:
@@ -1965,13 +1898,20 @@ components:
           type: array
           items:
             type: string
+        result_material_id:
+          type: string
+          nullable: true
         create_time:
           type: string
           format: date-time
         update_time:
           type: string
           format: date-time
-    TaskLease:
+        lease:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/WorkItemLease"
+    WorkItemLease:
       type: object
       additionalProperties: false
       required: [lease_id, until]
@@ -1981,17 +1921,21 @@ components:
         until:
           type: string
           format: date-time
-    TaskDetail:
+    WorkItemDetail:
       type: object
       additionalProperties: false
-      required: [id, task_id, project_id, seq_no, title, body_md, priority, status, status_name, worker_id, attempt_count, max_attempts, reason, last_actor, version, depends_on, create_time, update_time, report, lease]
+      required: [work_id, project_id, parent_id, kind, seq_no, title, body_md, priority, state, worker_id, attempt, max_attempts, reason, version, depends_on, result_material_id, create_time, update_time, lease, result]
       properties:
-        id:
-          type: string
-        task_id:
+        work_id:
           type: string
         project_id:
           type: string
+        parent_id:
+          type: string
+          nullable: true
+        kind:
+          type: string
+          enum: [requirement, design, breakdown, dev]
         seq_no:
           type: integer
         title:
@@ -2000,26 +1944,17 @@ components:
           type: string
         priority:
           type: integer
-        status:
-          type: integer
-        status_name:
+        state:
           type: string
+          enum: [blocked, queued, leased, submitted, accepted, failed, cancelled]
         worker_id:
           type: string
           nullable: true
-          description: |
-            当前持有该卡的 worker 业务 id；仅 `status=2`（in_progress）且领取时
-            绑定了 worker 时才有值，其余状态一律为 `null`。
-            任务-06 之前领取的 in_progress 卡没有 worker 指针（旧式 claim），
-            此时 `status=2` 但该字段同样为 `null`。与列表里的同名字段一致。
-        attempt_count:
+        attempt:
           type: integer
         max_attempts:
           type: integer
         reason:
-          type: string
-          nullable: true
-        last_actor:
           type: string
           nullable: true
         version:
@@ -2028,25 +1963,35 @@ components:
           type: array
           items:
             type: string
+        result_material_id:
+          type: string
+          nullable: true
         create_time:
           type: string
           format: date-time
         update_time:
           type: string
           format: date-time
-        report:
-          nullable: true
-          allOf:
-            - $ref: "#/components/schemas/Material"
         lease:
           nullable: true
           allOf:
-            - $ref: "#/components/schemas/TaskLease"
-    TaskCreateRequest:
+            - $ref: "#/components/schemas/WorkItemLease"
+        result:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Material"
+    WorkItemCreateRequest:
       type: object
       additionalProperties: false
-      required: [title, body_md]
+      required: [project_id, kind, title, body_md]
       properties:
+        project_id:
+          type: string
+        parent_id:
+          type: string
+        kind:
+          type: string
+          enum: [requirement, design, breakdown, dev]
         title:
           type: string
         body_md:
@@ -2059,7 +2004,7 @@ components:
           type: array
           items:
             type: string
-    TaskPatchRequest:
+    WorkItemPatchRequest:
       type: object
       additionalProperties: false
       properties:
@@ -2071,7 +2016,7 @@ components:
           type: integer
           minimum: -1000
           maximum: 1000
-    TaskList:
+    WorkItemList:
       type: object
       additionalProperties: false
       required: [items]
@@ -2079,51 +2024,47 @@ components:
         items:
           type: array
           items:
-            $ref: "#/components/schemas/Task"
+            $ref: "#/components/schemas/WorkItem"
         next_cursor:
           type: string
     ClaimRequest:
       type: object
       additionalProperties: false
-      required: [product]
+      required: [worker_id]
       properties:
-        product:
-          type: string
-          description: 产品业务 id；不存在返回 404 not_found。
-        task_id:
-          type: string
-          description: 只领这一张卡（可选）；不可领取时按"无可领任务"返回 204。
         worker_id:
           type: string
-          description: |
-            可选的 worker 业务 id（`w_` 前缀）。省略时保持无注册表的旧行为：
-            只发租约、不写 worker 指针。
-            提供时在同一事务内校验并绑定指针：
-            - 未知 worker → 409 `worker_unknown`；
-            - worker 已持卡（`current_task_id` 非空）→ 409 `worker_busy`；
-            - 无可领任务 → 204，且**不写指针、不发租约**；
-            - 不同 worker 并发抢同一张卡时，失败方按"无可领任务"返回 204
-              （写连接串行 + 唯一索引决定，失败方看到的是已被领走，而不是 409）。
-            worker_busy 只描述"这个 worker 已经有卡"，不用于表达"队列空了"，
-            也不用于并发抢卡失败（后者一律为 204）。
-    ClaimedTask:
+          description: 已注册的 `w_` worker id；其 kinds 声明决定可领的卡。
+        work_id:
+          type: string
+          description: 只领这一张卡（可选）；不可领取时返回 204。
+    WorkItemInput:
       type: object
       additionalProperties: false
-      required: [id, project_id, title, body_md, attempt, priority]
+      required: [material_id, kind, version]
       properties:
-        id:
+        material_id:
           type: string
+        kind:
+          type: integer
+        version:
+          type: integer
+    DispatchWorkItem:
+      type: object
+      additionalProperties: false
+      required: [project_id, title, body_md, priority, attempt]
+      properties:
         project_id:
           type: string
         title:
           type: string
         body_md:
           type: string
-        attempt:
-          type: integer
         priority:
           type: integer
-    ClaimLease:
+        attempt:
+          type: integer
+    DispatchLease:
       type: object
       additionalProperties: false
       required: [lease_id, until, ttl_seconds]
@@ -2135,7 +2076,7 @@ components:
           format: date-time
         ttl_seconds:
           type: integer
-    ClaimProduct:
+    DispatchProduct:
       type: object
       additionalProperties: false
       required: [id, name, git_url]
@@ -2146,7 +2087,7 @@ components:
           type: string
         git_url:
           type: string
-    ClaimContext:
+    DispatchContext:
       type: object
       additionalProperties: false
       required: [spec_version, spec_digest, product]
@@ -2156,26 +2097,47 @@ components:
         spec_digest:
           type: string
         product:
-          $ref: "#/components/schemas/ClaimProduct"
+          $ref: "#/components/schemas/DispatchProduct"
+    Dispatch:
+      type: object
+      additionalProperties: false
+      required: [protocol, work_id, kind, inputs, work_item, lease, context]
+      properties:
+        protocol:
+          type: string
+          enum: [v2]
+        work_id:
+          type: string
+        kind:
+          type: string
+          enum: [requirement, design, breakdown, dev]
+        inputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkItemInput"
+        work_item:
+          $ref: "#/components/schemas/DispatchWorkItem"
+        lease:
+          $ref: "#/components/schemas/DispatchLease"
+        context:
+          $ref: "#/components/schemas/DispatchContext"
     ClaimResponse:
       type: object
       additionalProperties: false
-      required: [task, lease, context]
+      required: [dispatch]
       properties:
-        task:
-          $ref: "#/components/schemas/ClaimedTask"
-        lease:
-          $ref: "#/components/schemas/ClaimLease"
-        context:
-          $ref: "#/components/schemas/ClaimContext"
-    HeartbeatRequest:
+        dispatch:
+          $ref: "#/components/schemas/Dispatch"
+    LeaseRequest:
       type: object
       additionalProperties: false
-      required: [lease_id]
+      required: [work_id, lease_id]
       properties:
+        work_id:
+          type: string
         lease_id:
           type: string
-    HeartbeatResponse:
+    LeaseRenewalResponse:
       type: object
       additionalProperties: false
       required: [lease_id, until, ttl_seconds]
@@ -2187,14 +2149,67 @@ components:
           format: date-time
         ttl_seconds:
           type: integer
+    ReportRequest:
+      type: object
+      additionalProperties: false
+      required: [work_id, material_id, lease_id]
+      properties:
+        work_id:
+          type: string
+        material_id:
+          type: string
+        lease_id:
+          type: string
+    WorkItemDecideRequest:
+      type: object
+      additionalProperties: false
+      required: [work_id, decision]
+      properties:
+        work_id:
+          type: string
+        decision:
+          type: string
+          enum: [approve, reject]
+        reason:
+          type: string
+    WorkItemReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [project_id, decision]
+      properties:
+        project_id:
+          type: string
+        decision:
+          type: string
+          enum: [approve, reject]
+        reason:
+          type: string
+    WorkItemReviewResponse:
+      type: object
+      additionalProperties: false
+      required: [project_id, status, status_name, version, ready_work_items]
+      properties:
+        project_id:
+          type: string
+        status:
+          type: integer
+        status_name:
+          type: string
+        version:
+          type: integer
+        ready_work_items:
+          type: integer
+        reason:
+          type: string
+        rejected_at:
+          type: string
     Worker:
       type: object
       additionalProperties: false
-      required: [worker_id, presence, state, current_task_id, metadata, first_seen, last_seen, heartbeat_interval_ms, lease_ttl_seconds]
+      required: [worker_id, presence, state, kinds, current_work_item_id, metadata, first_seen, last_seen, heartbeat_interval_ms, lease_ttl_seconds]
       description: |
-        注册表里一个 worker 的读模型。九个字段在每条响应（心跳、列表、详情）里
-        恒定出现：`current_task_id` 空闲时为 `null`，`metadata` 未提供时为 `{}`，
-        所以 `required` 覆盖全部字段——缺键即违约，而不是"可选字段未出现"。
+        注册表里一个 worker 的读模型。十个字段在每条响应（心跳、列表、详情）里
+        恒定出现：`current_work_item_id` 空闲时为 `null`，`metadata` 未提供时为 `{}`。
       properties:
         worker_id:
           type: string
@@ -2202,86 +2217,69 @@ components:
         presence:
           type: string
           enum: [active, offline]
-          description: 由 last_seen 与 worker_ttl 推导的在线状态（不落库）。
         state:
           type: string
           enum: [idle, busy]
-          description: |
-            worker 最近一次心跳声明的状态，是"声明值"而非占用事实：
-            声明 idle 但 current_task_id 非空仍算占用。占用只以指针为准。
-        current_task_id:
+          description: worker 最近一次心跳声明的状态；占用只看 current_work_item_id。
+        kinds:
+          type: array
+          items:
+            type: string
+            enum: [requirement, design, breakdown, dev]
+          description: 最近一次心跳声明的可执行 kind；每次覆盖。
+        current_work_item_id:
           type: string
           nullable: true
-          description: 当前持有的任务业务 id（`APP-1-T0001` 形态）；空闲为 null。
         metadata:
           type: object
           additionalProperties: true
-          description: |
-            worker 自报的自由格式对象（列默认 `{}`，非对象在心跳时被 400 拒绝）。
         first_seen:
           type: string
           format: date-time
-          description: 首次注册时间（RFC3339，UTC）。
         last_seen:
           type: string
           format: date-time
-          description: 最近一次成功心跳时间（RFC3339，UTC）。
         heartbeat_interval_ms:
           type: integer
-          description: 服务端期望的心跳间隔（毫秒），来自配置。
         lease_ttl_seconds:
           type: integer
-          description: 服务端发放的租约时长（秒），来自配置，与 claim 的 ttl_seconds 同源。
     WorkerHeartbeatRequest:
       type: object
       additionalProperties: false
+      required: [kinds]
       description: |
-        三个字段都可省略。worker_id 缺省表示首次注册；state 缺省为 idle；
-        metadata 缺省表示不修改已存文档。
+        worker_id 缺省表示首次注册；state 缺省为 idle；kinds 必填且非空，
+        每次心跳覆盖已存声明；metadata 缺省表示不修改已存文档。
       properties:
         worker_id:
           type: string
-          description: |
-            首次注册留空（服务端生成并返回）；之后每次心跳必须回填响应里的
-            `worker.worker_id`。未知 id 返回 409 worker_unknown。
         state:
           type: string
           enum: [idle, busy]
-          description: 缺省 idle。busy 时续租已持有的卡；不等于"占用"，占用看指针。
+        kinds:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [requirement, design, breakdown, dev]
         metadata:
           type: object
           additionalProperties: true
-          description: |
-            自由格式对象，必须为 JSON object（数组/字符串/null 返回 400），
-            序列化后超过 worker_metadata_max_bytes 返回 413。
-            提供即整体替换已存文档。
     WorkerCommand:
       type: object
       additionalProperties: false
-      required: [kind, task, lease, context]
-      description: |
-        心跳返回给 worker 的一条指令。当前 kind 枚举只有 `run_task`，故
-        `kind`/`task`/`lease`/`context` 四者恒定同时出现（后三者非 null）。
-        注意：OpenAPI 3.0 无法表达条件必填，将来新增 kind（如不携带任务的指令）
-        时，必须改为按 kind 分支的 schema，不能沿用这份 required。
+      required: [kind, dispatch]
       properties:
         kind:
           type: string
-          enum: [run_task]
-        task:
-          allOf:
-            - $ref: "#/components/schemas/ClaimedTask"
-        lease:
-          allOf:
-            - $ref: "#/components/schemas/ClaimLease"
-        context:
-          allOf:
-            - $ref: "#/components/schemas/ClaimContext"
+          enum: [dispatch]
+        dispatch:
+          $ref: "#/components/schemas/Dispatch"
     WorkerHeartbeatResponse:
       type: object
       additionalProperties: false
       required: [worker, commands]
-      description: 心跳 200 响应；`commands` 恒为数组（无任务时 `[]`，不会省略或为 null）。
+      description: 心跳 200 响应；`commands` 恒为数组（无任务时 `[]`）。
       properties:
         worker:
           $ref: "#/components/schemas/Worker"
@@ -2300,37 +2298,16 @@ components:
             $ref: "#/components/schemas/Worker"
         next_cursor:
           type: string
-    ReportRequest:
-      type: object
-      additionalProperties: false
-      required: [lease_id, summary_md]
-      properties:
-        lease_id:
-          type: string
-        summary_md:
-          type: string
-    TaskDecideRequest:
-      type: object
-      additionalProperties: false
-      required: [decision]
-      properties:
-        decision:
-          type: string
-          enum: [accept, rework, retry, abandon]
-        reason:
-          type: string
     InboxItem:
       type: object
       additionalProperties: false
-      required: [kind, id, state, state_name, title, update_time, age_seconds, stale, reason]
+      required: [kind, id, state, title, update_time, age_seconds, stale, reason]
       properties:
         kind:
           type: string
         id:
           type: string
         state:
-          type: integer
-        state_name:
           type: string
         title:
           type: string

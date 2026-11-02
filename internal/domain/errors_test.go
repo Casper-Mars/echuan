@@ -65,9 +65,9 @@ func TestTypedErrorsUnwrapToSentinels(t *testing.T) {
 		},
 		{
 			name:     "lease lost",
-			err:      &LeaseLostError{TaskID: "APP-1-T0001", Reason: "lease expired"},
+			err:      &LeaseLostError{WorkID: "APP-1-T0001", Reason: "lease expired"},
 			sentinel: ErrLeaseLost,
-			want:     `lease for task "APP-1-T0001" is lost: lease expired`,
+			want:     `lease for work item "APP-1-T0001" is lost: lease expired`,
 		},
 		{
 			name:     "material required with field",
@@ -88,10 +88,10 @@ func TestTypedErrorsUnwrapToSentinels(t *testing.T) {
 			want:     `worker "w_01JBC9Z3K4QW8V0M2X7Y5N6P8R" is unknown`,
 		},
 		{
-			name:     "worker busy with task",
-			err:      &WorkerBusyError{WorkerID: "w_1", TaskID: "APP-1-T0001"},
+			name:     "worker busy with work item",
+			err:      &WorkerBusyError{WorkerID: "w_1", WorkID: "APP-1-T0001"},
 			sentinel: ErrWorkerBusy,
-			want:     `worker "w_1" is busy with task "APP-1-T0001"`,
+			want:     `worker "w_1" is busy with work item "APP-1-T0001"`,
 		},
 		{
 			name:     "worker busy with reason",

@@ -197,7 +197,7 @@ func TransitionProject(ctx context.Context, tx *sql.Tx, id int64, expectStatus, 
 //
 // An approved batch must both move the gate and drop the objection that
 // produced it, in one statement so the project version advances only once. It
-// is the approve branch of POST /v1/tasks/review; reject uses
+// is the approve branch of POST /v1/work-items/review; reject uses
 // SetTasksReviewRejection instead and never moves the status.
 func TransitionProjectClearTasksReview(ctx context.Context, tx *sql.Tx, id int64, expectStatus, expectVersion, nextStatus int, reason *string, lastActor, updateTime string) (int64, error) {
 	res, err := tx.ExecContext(ctx, `

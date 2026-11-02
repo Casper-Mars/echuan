@@ -14,32 +14,32 @@ import (
 	"github.com/Casper-Mars/echuan/internal/domain"
 )
 
-// planTaskRequest is one element of POST /v1/projects/plans. Priority and
+// planItemRequest is one element of POST /v1/projects/plans. Priority and
 // DependsOn are optional; their zero values match the documented defaults.
-type planTaskRequest struct {
+type planItemRequest struct {
 	Title     string `json:"title"`
 	BodyMD    string `json:"body_md"`
 	Priority  int    `json:"priority"`
 	DependsOn []int  `json:"depends_on"`
 }
 
-// submitPlanRequest keeps tasks undecoded so every element can be strictly
+// submitPlanRequest keeps items undecoded so every element can be strictly
 // decoded on its own. That is what lets an unknown or mistyped member inside
-// tasks[i] be reported as "tasks[i].field" instead of the bare JSON field name.
+// work_items[i] be reported as "work_items[i].field".
 type submitPlanRequest struct {
-	Tasks []json.RawMessage `json:"tasks"`
+	WorkItems []json.RawMessage `json:"work_items"`
 }
 
-// planTaskResponse is one inserted task in the submit response. depends_on
-// carries business ids (APP-1-T0001), never batch sequence numbers.
-type planTaskResponse struct {
-	ID         string   `json:"id"`
-	SeqNo      int      `json:"seq_no"`
-	Title      string   `json:"title"`
-	Priority   int      `json:"priority"`
-	Status     int      `json:"status"`
-	StatusName string   `json:"status_name"`
-	DependsOn  []string `json:"depends_on"`
+// planItemResponse is one inserted card in the submit response. depends_on
+// carries business ids (w_xxx), never batch sequence numbers.
+type planItemResponse struct {
+	WorkID    string   `json:"work_id"`
+	SeqNo     int      `json:"seq_no"`
+	Kind      string   `json:"kind"`
+	Title     string   `json:"title"`
+	Priority  int      `json:"priority"`
+	State     string   `json:"state"`
+	DependsOn []string `json:"depends_on"`
 }
 
 // submitPlanResponse is the 201 body of POST /v1/projects/plans.
@@ -48,7 +48,7 @@ type submitPlanResponse struct {
 	Status         int                `json:"status"`
 	StatusName     string             `json:"status_name"`
 	ProjectVersion int                `json:"project_version"`
-	Tasks          []planTaskResponse `json:"tasks"`
+	WorkItems      []planItemResponse `json:"work_items"`
 }
 
 // submitPlan handles POST /v1/projects/plans?id=APP-1.
@@ -60,13 +60,13 @@ func (h *projectsHandler) submitPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	WithSubject(r.Context(), projectID)
 
-	tasks, verr := decodeSubmitPlanRequest(w, r, planBodyLimit())
+	items, verr := decodeSubmitPlanRequest(w, r, planBodyLimit())
 	if verr != nil {
 		writeDomainError(w, r, h.logger, verr)
 		return
 	}
 
-	result, err := h.service.SubmitPlan(r.Context(), projectID, ActorFromContext(r.Context()), tasks)
+	result, err := h.service.SubmitPlan(r.Context(), projectID, ActorFromContext(r.Context()), items)
 	if err != nil {
 		writeDomainError(w, r, h.logger, err)
 		return
@@ -77,34 +77,29 @@ func (h *projectsHandler) submitPlan(w http.ResponseWriter, r *http.Request) {
 		Status:         result.Project.Status,
 		StatusName:     domain.StatusName(result.Project.Status),
 		ProjectVersion: result.Project.Version,
-		Tasks:          make([]planTaskResponse, 0, len(result.Tasks)),
+		WorkItems:      make([]planItemResponse, 0, len(result.WorkItems)),
 	}
-	for _, task := range result.Tasks {
-		dependsOn := task.DependsOn
+	for _, item := range result.WorkItems {
+		dependsOn := item.DependsOn
 		if dependsOn == nil {
 			dependsOn = []string{}
 		}
-		response.Tasks = append(response.Tasks, planTaskResponse{
-			ID:         task.ID,
-			SeqNo:      task.SeqNo,
-			Title:      task.Title,
-			Priority:   task.Priority,
-			Status:     task.Status,
-			StatusName: domain.TaskStatusName(task.Status),
-			DependsOn:  dependsOn,
+		response.WorkItems = append(response.WorkItems, planItemResponse{
+			WorkID:    item.WorkID,
+			SeqNo:     item.SeqNo,
+			Kind:      item.Kind,
+			Title:     item.Title,
+			Priority:  item.Priority,
+			State:     item.State,
+			DependsOn: dependsOn,
 		})
 	}
 
-	firstTaskID := ""
-	if len(response.Tasks) > 0 {
-		firstTaskID = response.Tasks[0].ID
-	}
 	h.logger.Info("plan submitted",
 		"request_id", RequestIDFromContext(r.Context()),
 		"actor", actorOrUnknown(r),
 		"subject", result.Project.ProjectID,
-		"task_count", len(response.Tasks),
-		"first_task_id", firstTaskID,
+		"work_item_count", len(response.WorkItems),
 		"project_version", result.Project.Version,
 	)
 
@@ -112,16 +107,14 @@ func (h *projectsHandler) submitPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, response)
 }
 
-// planBodyLimit sizes the body reader for the largest legal batch: every task
-// body at its cap plus room for JSON syntax and titles. A body above this is
-// 413; an individual body_md above its cap is still the service's 400.
+// planBodyLimit sizes the body reader for the largest legal batch.
 func planBodyLimit() int64 {
-	return int64(app.MaxPlanTasks)*int64(app.MaxTaskBodyBytes) + extraBodyBytes
+	return int64(app.MaxPlanItems)*int64(app.MaxWorkItemBodyBytes) + extraBodyBytes
 }
 
-// decodeSubmitPlanRequest decodes the plan body strictly, including every task
-// element, and maps nested failures to tasks[i].field.
-func decodeSubmitPlanRequest(w http.ResponseWriter, r *http.Request, limit int64) ([]app.PlanTask, error) {
+// decodeSubmitPlanRequest decodes the plan body strictly, including every item
+// element, and maps nested failures to work_items[i].field.
+func decodeSubmitPlanRequest(w http.ResponseWriter, r *http.Request, limit int64) ([]app.PlanItem, error) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	decoder.DisallowUnknownFields()
 
@@ -132,31 +125,31 @@ func decodeSubmitPlanRequest(w http.ResponseWriter, r *http.Request, limit int64
 	if err := decoder.Decode(&json.RawMessage{}); !errors.Is(err, io.EOF) {
 		return nil, invalidField("body", "unexpected trailing data")
 	}
-	if envelope.Tasks == nil {
-		return nil, invalidField("tasks", "is required")
+	if envelope.WorkItems == nil {
+		return nil, invalidField("work_items", "is required")
 	}
 
-	tasks := make([]app.PlanTask, 0, len(envelope.Tasks))
-	for i, raw := range envelope.Tasks {
-		item, err := decodePlanTask(i, raw)
+	items := make([]app.PlanItem, 0, len(envelope.WorkItems))
+	for i, raw := range envelope.WorkItems {
+		item, err := decodePlanItem(i, raw)
 		if err != nil {
 			return nil, err
 		}
-		tasks = append(tasks, item)
+		items = append(items, item)
 	}
-	return tasks, nil
+	return items, nil
 }
 
-// decodePlanTask decodes one tasks[i] object strictly and prefixes any failure
-// with its position in the batch.
-func decodePlanTask(index int, raw json.RawMessage) (app.PlanTask, error) {
-	var item planTaskRequest
+// decodePlanItem decodes one work_items[i] object strictly and prefixes any
+// failure with its position in the batch.
+func decodePlanItem(index int, raw json.RawMessage) (app.PlanItem, error) {
+	var item planItemRequest
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&item); err != nil {
-		return app.PlanTask{}, planTaskDecodeError(index, err)
+		return app.PlanItem{}, planItemDecodeError(index, err)
 	}
-	return app.PlanTask{
+	return app.PlanItem{
 		Title:     item.Title,
 		BodyMD:    item.BodyMD,
 		Priority:  item.Priority,
@@ -164,9 +157,10 @@ func decodePlanTask(index int, raw json.RawMessage) (app.PlanTask, error) {
 	}, nil
 }
 
-// planTaskDecodeError maps a per-element decode failure onto tasks[i].field.
-func planTaskDecodeError(index int, err error) error {
-	prefix := "tasks[" + strconv.Itoa(index) + "]"
+// planItemDecodeError maps a per-element decode failure onto
+// work_items[i].field.
+func planItemDecodeError(index int, err error) error {
+	prefix := "work_items[" + strconv.Itoa(index) + "]"
 
 	var typeErr *json.UnmarshalTypeError
 	if errors.As(err, &typeErr) {

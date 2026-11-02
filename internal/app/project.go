@@ -69,13 +69,22 @@ func NewProjectService(st *store.Store, materials *material.Writer) *ProjectServ
 		store:       st,
 		materials:   materials,
 		now:         func() time.Time { return time.Now().UTC() },
-		maxAttempts: defaultTaskMaxAttempts,
+		maxAttempts: defaultWorkItemMaxAttempts,
 	}
 }
 
 // MaxMaterialBytes returns the configured material_max_bytes, so the HTTP layer
 // can size its request body limit.
 func (s *ProjectService) MaxMaterialBytes() int64 { return s.materials.MaxBytes() }
+
+// SetMaxAttempts overrides the attempt budget written to new work items added
+// through the plan path. Values <= 0 are ignored so a misconfigured value never
+// produces an unclaimable card.
+func (s *ProjectService) SetMaxAttempts(n int) {
+	if n > 0 {
+		s.maxAttempts = n
+	}
+}
 
 // CreateProject inserts a project and stores its requirement in one
 // transaction: project row → kind=1 material → requirement_material_id
@@ -169,7 +178,7 @@ func (s *ProjectService) CreateProject(ctx context.Context, in CreateProjectInpu
 }
 
 // GetProject returns one project with its requirement body, current spec (if
-// any) and task statistics.
+// any) and work-item statistics.
 func (s *ProjectService) GetProject(ctx context.Context, projectID string) (domain.ProjectDetail, error) {
 	if strings.TrimSpace(projectID) == "" {
 		return domain.ProjectDetail{}, &domain.ValidationError{Fields: []domain.FieldError{
@@ -301,13 +310,13 @@ func (s *ProjectService) DeleteProject(ctx context.Context, projectID string) er
 			return &domain.ConflictError{Reason: fmt.Sprintf(
 				"project %q already has a spec", projectID)}
 		}
-		tasks, err := store.CountTasksByProject(ctx, tx, row.ID)
+		items, err := store.CountWorkItemsByProject(ctx, tx, row.ID)
 		if err != nil {
 			return err
 		}
-		if tasks > 0 {
+		if items > 0 {
 			return &domain.ConflictError{Reason: fmt.Sprintf(
-				"project %q still has %d task(s)", projectID, tasks)}
+				"project %q still has %d work item(s)", projectID, items)}
 		}
 		return store.DeleteProject(ctx, tx, row.ID)
 	})
@@ -378,7 +387,7 @@ func (s *ProjectService) WriteRequirement(ctx context.Context, projectID string,
 }
 
 // detail loads everything the detail response needs: the project row, the
-// requirement/spec metadata rows and the task histogram. It never reads the
+// requirement/spec metadata rows and the work-item state histogram. It never reads the
 // object store, so the response stays constant-size regardless of document
 // length. It works inside a write transaction (q = tx) and outside it.
 func (s *ProjectService) detail(ctx context.Context, q store.Querier, projectPhysicalID int64) (domain.ProjectDetail, error) {
@@ -391,11 +400,11 @@ func (s *ProjectService) detail(ctx context.Context, q store.Querier, projectPhy
 		return domain.ProjectDetail{}, err
 	}
 
-	histogram, err := store.TaskStatusHistogram(ctx, q, row.ID)
+	histogram, err := store.WorkItemStateHistogram(ctx, q, row.ID)
 	if err != nil {
 		return domain.ProjectDetail{}, err
 	}
-	project.TaskStats.ByStatus = histogram
+	project.WorkItemStats.ByState = histogram
 
 	detail := domain.ProjectDetail{Project: project}
 
@@ -537,9 +546,9 @@ func projectFromRow(row store.Project) (domain.Project, error) {
 		TasksReviewRejectedAt: stringValue(row.TasksReviewRejectedAt),
 		RequirementMaterialID: int64Value(row.RequirementMaterialID),
 		SpecMaterialID:        int64Value(row.SpecMaterialID),
-		TaskStats: domain.TaskStats{
-			Total: row.TaskTotal,
-			Done:  row.TaskDone,
+		WorkItemStats: domain.WorkItemStats{
+			Total: row.WorkItemTotal,
+			Done:  row.WorkItemDone,
 		},
 		CreateTime: createTime,
 		UpdateTime: updateTime,
