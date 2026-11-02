@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
+	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
 )
 
@@ -18,7 +20,10 @@ type ReportWorkItemInput struct {
 	WorkID     string
 	MaterialID string
 	LeaseID    string
-	Actor      string
+	// Plan is required for breakdown cards and rejected for every other kind.
+	// Its items become dev cards in the same transaction as the report.
+	Plan  *BreakdownPlan
+	Actor string
 }
 
 // WorkItemDecisionInput is the use-case input of POST /v1/work-items/decide.
@@ -53,6 +58,12 @@ type WorkItemDecisionResult struct {
 // worker pointer. The conditional UPDATE is what makes a replayed report
 // impossible: the second attempt finds state=submitted (or a cleared lease) and
 // is answered with 409 lease_lost.
+//
+// A breakdown card is the exception in two ways: its report must carry a plan
+// instead of (or in addition to) a material, and the plan's dev cards are
+// created inside this same transaction, blocked until the plan gate approves
+// them. Any validation or write failure rolls the whole report back, so the
+// card stays leased and the plan can be corrected and resubmitted.
 func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemInput) (WorkItemDetail, error) {
 	workID := strings.TrimSpace(in.WorkID)
 	if workID == "" {
@@ -62,11 +73,8 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 	if leaseID == "" {
 		return WorkItemDetail{}, invalidField("lease_id", "is required")
 	}
-	materialID := strings.TrimSpace(in.MaterialID)
-	if materialID == "" {
-		return WorkItemDetail{}, invalidField("material_id", "is required")
-	}
 	now := s.now().UTC()
+	actor := actorOrDefault(in.Actor)
 
 	var out WorkItemDetail
 	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
@@ -78,20 +86,53 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 			return err
 		}
 
+		var planItems []BreakdownPlanItem
+		if row.Kind == phaseKindBreakdown {
+			if in.Plan == nil {
+				return invalidField("plan", "is required for breakdown work items")
+			}
+			// The duplicate guard runs before the lease guard so a replayed
+			// success is answered with the stable conflict instead of a
+			// lease_lost that hides what actually happened.
+			children, err := store.CountWorkItemsByParent(ctx, tx, row.ID)
+			if err != nil {
+				return err
+			}
+			if children > 0 {
+				return &domain.ConflictError{Reason: "plan already submitted for breakdown item"}
+			}
+		} else if in.Plan != nil {
+			return invalidField("plan", fmt.Sprintf("is not allowed for %s work items", row.Kind))
+		}
+
 		if err := validateReportLease(row, leaseID, now); err != nil {
 			return err
 		}
 
-		material, err := store.GetMaterialByMaterialID(ctx, tx, materialID)
-		if err != nil {
-			if store.IsNotFound(err) {
-				return &domain.NotFoundError{Resource: "material", Key: materialID}
+		if row.Kind == phaseKindBreakdown {
+			items, verr := validateBreakdownPlan(in.Plan, row.ProjectCode)
+			if verr != nil {
+				return verr
 			}
-			return err
+			planItems = items
+		} else if strings.TrimSpace(in.MaterialID) == "" {
+			return invalidField("material_id", "is required")
+		}
+
+		var materialID *int64
+		if value := strings.TrimSpace(in.MaterialID); value != "" {
+			material, err := store.GetMaterialByMaterialID(ctx, tx, value)
+			if err != nil {
+				if store.IsNotFound(err) {
+					return &domain.NotFoundError{Resource: "material", Key: value}
+				}
+				return err
+			}
+			materialID = &material.ID
 		}
 
 		updateTime := formatTimestamp(s.nextTimestamp(row.UpdateTime))
-		affected, err := store.CompleteWorkItemReport(ctx, tx, row.ID, material.ID,
+		affected, err := store.CompleteWorkItemReportOptionalMaterial(ctx, tx, row.ID, materialID,
 			leaseID, formatLeaseTime(now), updateTime)
 		if err != nil {
 			return err
@@ -104,11 +145,21 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 			return err
 		}
 
+		// The plan's children land blocked: they are real work, but the plan
+		// gate has not approved them yet. The dependency edges use the new
+		// physical ids so the plan's 1..N references never leak into work_deps.
+		if len(planItems) > 0 {
+			if err := s.createBreakdownChildren(ctx, tx, row, planItems, updateTime); err != nil {
+				return err
+			}
+		}
+
 		// Phase cards drive the project: a reported requirement/design/
 		// breakdown moves 0→1, 2→3 or 4→5 in this same transaction. A missing
-		// prerequisite aborts here and rolls the completion back, so the card
-		// stays leased and the actor can supply the material and report again.
-		if _, err := s.advanceProjectOnPhaseReport(ctx, tx, row, actorOrDefault(in.Actor)); err != nil {
+		// prerequisite aborts here and rolls the completion (and the children)
+		// back, so the card stays leased and the actor can supply the material
+		// and report again.
+		if _, err := s.advanceProjectOnPhaseReport(ctx, tx, row, actor); err != nil {
 			return err
 		}
 
@@ -119,6 +170,67 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 		return WorkItemDetail{}, err
 	}
 	return out, nil
+}
+
+// createBreakdownChildren inserts the planned dev cards and their dependency
+// edges inside the caller's report transaction.
+//
+// Plan seq_no is only a reference inside the plan; the persisted seq_no comes
+// from the project-wide NextSeqNo so a breakdown batch slots into the same
+// numbering space as every other card of the project.
+func (s *WorkItemService) createBreakdownChildren(ctx context.Context, tx *sql.Tx, parent store.WorkItem, items []BreakdownPlanItem, updateTime string) error {
+	project, err := store.GetProjectByProjectID(ctx, tx, parent.ProjectCode)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return &domain.NotFoundError{Resource: "project", Key: parent.ProjectCode}
+		}
+		return err
+	}
+
+	firstSeq, err := store.NextSeqNo(ctx, tx, "work_items", "project_id", project.ID)
+	if err != nil {
+		return err
+	}
+
+	created := make([]int64, len(items))
+	parentID := parent.ID
+	for i, item := range items {
+		workID, err := platform.NewWorkID(s.timestamp())
+		if err != nil {
+			return err
+		}
+		id, err := store.CreateWorkItem(ctx, tx, store.NewWorkItem{
+			WorkID:      workID,
+			ProjectID:   project.ID,
+			ParentID:    &parentID,
+			Kind:        "dev",
+			SeqNo:       firstSeq + i,
+			Title:       item.Title,
+			BodyMD:      item.BodyMD,
+			Priority:    item.Priority,
+			State:       store.WorkItemStateBlocked,
+			MaxAttempts: s.maxAttempts,
+			CreateTime:  updateTime,
+			UpdateTime:  updateTime,
+		})
+		if err != nil {
+			if errors.Is(err, store.ErrUniqueViolation) {
+				return &domain.ConflictError{Reason: fmt.Sprintf(
+					"work item %q already exists in project %q", workID, parent.ProjectCode)}
+			}
+			return err
+		}
+		created[i] = id
+	}
+
+	for i, item := range items {
+		for _, dependsOn := range item.DependsOn {
+			if err := store.InsertWorkDependency(ctx, tx, created[i], created[dependsOn-1]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // validateReportLease is the report-specific lease guard.

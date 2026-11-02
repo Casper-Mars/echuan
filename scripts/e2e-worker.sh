@@ -480,17 +480,28 @@ dispatch_next "心跳派发拆解卡"
 [[ "$NEXT_WORK" == "$BREAKDOWN_WORK_ID" ]] || fail "应派发拆解阶段项 $BREAKDOWN_WORK_ID，实际 $NEXT_WORK"
 [[ "$NEXT_KIND" == "breakdown" ]] || fail "dispatch.kind 应为 breakdown，实际 $NEXT_KIND"
 BREAKDOWN_LEASE="$NEXT_LEASE"
+# 拆解报告按新契约携带 plan（可省略 material_id）：平台上同一事务生成
+# 1 条 blocked dev 子项，项目 4 → 5。
 http_post "/v1/work-items/report" "$(jq -nc \
-  --arg wid "$BREAKDOWN_WORK_ID" --arg mid "$SPEC_MATERIAL_ID" --arg lease "$BREAKDOWN_LEASE" \
-  '{work_id:$wid,material_id:$mid,lease_id:$lease}')"
+  --arg wid "$BREAKDOWN_WORK_ID" --arg pid "$PROJECT_ID" --arg lease "$BREAKDOWN_LEASE" \
+  '{work_id:$wid,lease_id:$lease,plan:{items:[{seq_no:1,project_id:$pid,title:"E2E 拆分卡",body_md:"# 执行\n\n由拆解计划生成。\n",priority:5}]}}')"
 require_code 200 "提交拆解报告"
+[[ "$(jqr '.state')" == "submitted" ]] || fail "拆解报告后应为 submitted，实际 $(jqr '.state')"
+[[ "$(jqr '.result_material_id')" == "null" ]] || fail "未提供 material_id 时结果资料应为 null，实际 $(jqr '.result_material_id')"
 http_get "/v1/projects?id=$PROJECT_ID"
 require_code 200 "拆解报告后读取项目"
 [[ "$(jqr '.status_name')" == "tasks_review" ]] || fail "拆解报告后项目应为 tasks_review，实际 $(jqr '.status_name')"
 PROJECT_VERSION="$(jqr '.version')"
 
-# 6.6 拆解产物（本任务不解析）仍可由 SubmitPlan 手工批量建卡：dev 卡在
-# tasks_review 落为 blocked，与阶段工作项并存。
+# 计划生成的 dev 子项在批准前为 blocked，parent_id 指向拆解卡。
+http_get "/v1/work-items?project_id=$PROJECT_ID&kind=dev"
+require_code 200 "列出拆解生成的 dev 子项"
+[[ "$(jqr '.items|length')" == "1" ]] || fail "拆解计划应生成 1 条 dev，实际 $(jqr '.items|length')"
+[[ "$(jqr '.items[0].state')" == "blocked" ]] || fail "批准前 dev 子项应为 blocked，实际 $(jqr '.items[0].state')"
+[[ "$(jqr '.items[0].parent_id')" == "$BREAKDOWN_WORK_ID" ]] || fail "dev 子项 parent_id 应指向拆解卡，实际 $(jqr '.items[0].parent_id')"
+
+# 6.6 /v1/projects/plans 手工批量建卡入口保留：dev 卡在 tasks_review 落为
+# blocked，与拆解计划生成的子项并存，且同样只能经受计划门批准后 claim。
 http_post "/v1/projects/plans?id=$PROJECT_ID" \
   '{"work_items":[{"title":"E2E 执行卡","body_md":"# 执行\n\n由 e2e-worker.sh 创建。\n","priority":10}]}'
 require_code 201 "批量添加工作项"
@@ -515,7 +526,7 @@ http_post "/v1/work-items/review" \
   "$(jq -nc --arg pid "$PROJECT_ID" '{project_id:$pid,decision:"approve"}')"
 require_code 200 "批次审批通过"
 [[ "$(jqr '.status_name')" == "pending_done" ]] || fail "批次通过后应为 pending_done，实际 $(jqr '.status_name')"
-[[ "$(jqr '.ready_work_items')" == "1" ]] || fail "批次通过后应有 1 张卡转 queued，实际 $(jqr '.ready_work_items')"
+[[ "$(jqr '.ready_work_items')" == "2" ]] || fail "批次通过后应有 2 张卡转 queued，实际 $(jqr '.ready_work_items')"
 [[ "$(jqr '.reason // ""')" == "" ]] || fail "审批通过后驳回原因应被清空"
 
 # 6.7 开发卡：报告 → submitted，验收 → accepted，项目自动 completed。
@@ -541,6 +552,20 @@ http_post "/v1/work-items/decide" \
   "$(jq -nc --arg wid "$DEV_WORK_ID" '{work_id:$wid,decision:"approve"}')"
 require_code 200 "验收工作项"
 [[ "$(jqr '.state')" == "accepted" ]] || fail "验收后工作项应为 accepted，实际 $(jqr '.state')"
+
+# 拆解计划生成的 dev 子项同样可被 claim / 报告 / 验收；结清后项目 completed。
+dispatch_next "心跳派发拆解生成的 dev 子项"
+[[ "$NEXT_KIND" == "dev" ]] || fail "dispatch.kind 应为 dev，实际 $NEXT_KIND"
+[[ "$NEXT_WORK" != "$DEV_WORK_ID" ]] || fail "第二张 dev 不应是已验收的 $DEV_WORK_ID"
+PLAN_DEV_LEASE="$NEXT_LEASE"
+http_post "/v1/work-items/report" "$(jq -nc \
+  --arg wid "$NEXT_WORK" --arg mid "$SPEC_MATERIAL_ID" --arg lease "$PLAN_DEV_LEASE" \
+  '{work_id:$wid,material_id:$mid,lease_id:$lease}')"
+require_code 200 "提交拆解生成的 dev 报告"
+http_post "/v1/work-items/decide" \
+  "$(jq -nc --arg wid "$NEXT_WORK" '{work_id:$wid,decision:"approve"}')"
+require_code 200 "验收拆解生成的 dev"
+[[ "$(jqr '.state')" == "accepted" ]] || fail "验收后 dev 应为 accepted，实际 $(jqr '.state')"
 
 http_get "/v1/projects?id=$PROJECT_ID"
 require_code 200 "读取项目"

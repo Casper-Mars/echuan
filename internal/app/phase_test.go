@@ -95,6 +95,15 @@ func (f *phaseFixture) report(t *testing.T, dispatch *Dispatch, materialID strin
 	})
 }
 
+// oneItemPlan is the smallest legal breakdown plan: one dev card that names
+// the target project explicitly.
+func oneItemPlan(projectID, title string) *BreakdownPlan {
+	return &BreakdownPlan{Items: []BreakdownPlanItem{{
+		SeqNo: 1, ProjectID: projectID, Title: title,
+		BodyMD: "# " + title + "\n", Priority: 10,
+	}}}
+}
+
 func (f *phaseFixture) approve(t *testing.T, projectID string) *domain.Project {
 	t.Helper()
 	state := f.env.projectState(t, projectID)
@@ -324,7 +333,12 @@ func TestDesignAndBreakdownReportsAdvance(t *testing.T) {
 	if breakdownDispatch.Kind != phaseKindBreakdown {
 		t.Fatalf("claimed kind = %q, want breakdown", breakdownDispatch.Kind)
 	}
-	if _, err := f.report(t, breakdownDispatch, spec.Spec.MaterialID); err != nil {
+	if _, err := f.work.ReportWorkItem(context.Background(), ReportWorkItemInput{
+		WorkID:  breakdownDispatch.WorkID,
+		LeaseID: breakdownDispatch.Lease.LeaseID,
+		Plan:    oneItemPlan(projectID, "实现卡"),
+		Actor:   "agent:w",
+	}); err != nil {
 		t.Fatalf("report breakdown: %v", err)
 	}
 	if state := f.env.projectState(t, projectID); state.Status != domain.StatusTasksReview {

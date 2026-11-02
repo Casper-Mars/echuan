@@ -910,6 +910,12 @@ paths:
         报告完成后工作项进入 `submitted`。若该卡是阶段工作项，同一事务内还会
         推进项目：requirement 0→1（需需求指针）、design 2→3（需至少一份方案）、
         breakdown 4→5；前置不足返回 409 `invalid_state` 并整体回滚，租约保留。
+
+        `kind=breakdown` 的报告必须携带 `plan`（可省略 `material_id`）：计划通过
+        结构校验后，同一事务内生成 N 条 `kind=dev`、`state=blocked`、
+        `parent_id` 指向该 breakdown 的子项，并写入依赖边。计划门批准前子项不可
+        claim，批准后统一转 `queued`。同一 breakdown 重复报告返回 409
+        `conflict`；任何校验或写入失败都回滚整个报告（租约、项目、子项均不变）。
       tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -2161,14 +2167,57 @@ components:
     ReportRequest:
       type: object
       additionalProperties: false
-      required: [work_id, material_id, lease_id]
+      required: [work_id, lease_id]
       properties:
         work_id:
           type: string
         material_id:
           type: string
+          description: 结果资料。`kind=breakdown` 时可省略（结果为空，由 plan 承担交付）。
         lease_id:
           type: string
+        plan:
+          $ref: "#/components/schemas/BreakdownPlan"
+    BreakdownPlan:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          description: 计划子项；`seq_no` 必须恰为 1..N 连续，供 `depends_on` 引用。
+          items:
+            $ref: "#/components/schemas/BreakdownPlanItem"
+    BreakdownPlanItem:
+      type: object
+      additionalProperties: false
+      required: [seq_no, title, body_md]
+      properties:
+        seq_no:
+          type: integer
+          minimum: 1
+          description: 计划内序号，必须为 1..N 且与数组顺序一致。
+        project_id:
+          type: string
+          description: 可选；出现时必须等于目标项目编号。
+        title:
+          type: string
+          description: 非空，最长 200 字符。
+        body_md:
+          type: string
+          description: 非空，最长 64 KiB。
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 99
+          description: 排程提示，默认 0。
+        depends_on:
+          type: array
+          description: 依赖的计划序号（1..N）；不得自依赖、重复或成环。
+          items:
+            type: integer
+            minimum: 1
     WorkItemDecideRequest:
       type: object
       additionalProperties: false

@@ -304,6 +304,17 @@ func TransitionWorkItemDecision(ctx context.Context, tx *sql.Tx, w WorkItemDecis
 // caller turns that into 409 lease_lost and rolls the transaction back.
 // now uses the fixed-width lease layout (see work_item_claim.go).
 func CompleteWorkItemReport(ctx context.Context, tx *sql.Tx, id, materialID int64, leaseID, now, updateTime string) (int64, error) {
+	return CompleteWorkItemReportOptionalMaterial(ctx, tx, id, &materialID, leaseID, now, updateTime)
+}
+
+// CompleteWorkItemReportOptionalMaterial is CompleteWorkItemReport with a
+// nullable result material.
+//
+// A breakdown card is the one report that may be answered with a plan instead
+// of an artifact: its result_material_id stays NULL while the generated child
+// cards carry the actual work. Every other kind still passes a material, so
+// this variant is additive and the material-id signature above is preserved.
+func CompleteWorkItemReportOptionalMaterial(ctx context.Context, tx *sql.Tx, id int64, materialID *int64, leaseID, now, updateTime string) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE work_items
 		   SET result_material_id = ?,
@@ -324,6 +335,22 @@ func CompleteWorkItemReport(ctx context.Context, tx *sql.Tx, id, materialID int6
 		return 0, fmt.Errorf("store: complete report of work item %d: rows affected: %w", id, err)
 	}
 	return n, nil
+}
+
+// CountWorkItemsByParent returns how many items point their parent_id at
+// parentID. It is the duplicate-submission guard of a breakdown plan: the
+// second report of the same card must not create a second batch of children.
+func CountWorkItemsByParent(ctx context.Context, q Querier, parentID int64) (int64, error) {
+	row, err := One[struct {
+		Count int64 `db:"count"`
+	}](ctx, q, `
+		SELECT COUNT(*) AS count
+		  FROM work_items
+		 WHERE parent_id = ?`, parentID)
+	if err != nil {
+		return 0, fmt.Errorf("store: count work items of parent %d: %w", parentID, err)
+	}
+	return row.Count, nil
 }
 
 // CountUnsettledWorkItemsByProject counts the items of one project that are
