@@ -189,21 +189,23 @@ func toWorkerResponse(snapshot app.WorkerSnapshot) workerResponse {
 }
 
 // toWorkerViewResponse maps a registry row to the wire DTO. The two timing
-// fields come from the service configuration.
+// fields carry the same service configuration the heartbeat payload reports.
 func toWorkerViewResponse(view app.WorkerView) workerResponse {
 	metadata := view.Metadata
 	if len(metadata) == 0 {
 		metadata = json.RawMessage("{}")
 	}
 	return workerResponse{
-		WorkerID:          view.WorkerID,
-		Presence:          view.Presence,
-		State:             view.State,
-		Kinds:             view.Kinds,
-		CurrentWorkItemID: view.CurrentWorkItemID,
-		Metadata:          metadata,
-		FirstSeen:         view.FirstSeen.UTC().Format(time.RFC3339Nano),
-		LastSeen:          view.LastSeen.UTC().Format(time.RFC3339Nano),
+		WorkerID:            view.WorkerID,
+		Presence:            view.Presence,
+		State:               view.State,
+		Kinds:               view.Kinds,
+		CurrentWorkItemID:   view.CurrentWorkItemID,
+		Metadata:            metadata,
+		FirstSeen:           view.FirstSeen.UTC().Format(time.RFC3339Nano),
+		LastSeen:            view.LastSeen.UTC().Format(time.RFC3339Nano),
+		HeartbeatIntervalMS: view.HeartbeatIntervalMS,
+		LeaseTTLSeconds:     view.LeaseTTLSeconds,
 	}
 }
 

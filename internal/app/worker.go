@@ -95,6 +95,12 @@ func (s *WorkerService) WorkerTTL() time.Duration { return s.workerTTL }
 // HeartbeatInterval returns the heartbeat cadence reported to workers.
 func (s *WorkerService) HeartbeatInterval() time.Duration { return s.heartbeatInterval }
 
+// heartbeatIntervalMS renders the heartbeat cadence for the wire.
+func (s *WorkerService) heartbeatIntervalMS() int64 { return s.heartbeatInterval.Milliseconds() }
+
+// leaseTTLSeconds renders the lease duration for the wire.
+func (s *WorkerService) leaseTTLSeconds() int64 { return int64(s.leaseTTL / time.Second) }
+
 // HeartbeatInput is the body of POST /v1/workers/heartbeat.
 //
 // WorkerID is empty on the very first call; the server mints a w_-prefixed id.
@@ -313,8 +319,8 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 				CurrentWorkItemID:   heldWorkID,
 				FirstSeen:           firstSeen,
 				LastSeen:            lastSeen,
-				HeartbeatIntervalMS: s.heartbeatInterval.Milliseconds(),
-				LeaseTTLSeconds:     int64(s.leaseTTL / time.Second),
+				HeartbeatIntervalMS: s.heartbeatIntervalMS(),
+				LeaseTTLSeconds:     s.leaseTTLSeconds(),
 			},
 			Commands: commands,
 		}
@@ -536,6 +542,10 @@ type WorkerView struct {
 	CurrentWorkItemID *string
 	FirstSeen         time.Time
 	LastSeen          time.Time
+	// HeartbeatIntervalMS and LeaseTTLSeconds mirror the heartbeat payload so
+	// registry reads expose the same server configuration.
+	HeartbeatIntervalMS int64
+	LeaseTTLSeconds     int64
 }
 
 func (s *WorkerService) workerView(ctx context.Context, row store.Worker, now time.Time) (WorkerView, error) {
@@ -562,13 +572,15 @@ func (s *WorkerService) workerView(ctx context.Context, row store.Worker, now ti
 		}
 	}
 	return WorkerView{
-		WorkerID:          row.WorkerID,
-		Metadata:          json.RawMessage(row.MetadataJSON),
-		State:             row.State,
-		Kinds:             kinds,
-		Presence:          domain.Presence(lastSeen, now, s.workerTTL),
-		CurrentWorkItemID: current,
-		FirstSeen:         firstSeen,
-		LastSeen:          lastSeen,
+		WorkerID:            row.WorkerID,
+		Metadata:            json.RawMessage(row.MetadataJSON),
+		State:               row.State,
+		Kinds:               kinds,
+		Presence:            domain.Presence(lastSeen, now, s.workerTTL),
+		CurrentWorkItemID:   current,
+		FirstSeen:           firstSeen,
+		LastSeen:            lastSeen,
+		HeartbeatIntervalMS: s.heartbeatIntervalMS(),
+		LeaseTTLSeconds:     s.leaseTTLSeconds(),
 	}, nil
 }
