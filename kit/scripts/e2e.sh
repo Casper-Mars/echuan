@@ -4,16 +4,17 @@
 #
 # 覆盖链路：
 #   S1  独立 docker compose 栈起平台（固定端口 18720，数据落临时目录）
-#   S2  播种产品 / 项目 / 两张任务卡（需求评审 → 方案评审 → 任务评审全链路）
+#   S1  独立 docker compose 栈起平台（固定端口 18720，数据落临时目录）
+#   S2  播种产品 / 项目 / 两张工作项（需求评审 → 方案评审 → 计划评审全链路）
 #   S3  pnpm pack → 装进临时 dsh profile → profile 自身能 --help 退出
-#   S4  dsh 后台启动（ACP 长驻）→ 平台注册出 w_ 前缀 worker
-#   S5  平台派单 → 插件把任务投递给根 agent（日志证据）
-#   S6  用 lib/tools 里真实的 echuan_task_report 交四段式报告（含 git 交付）→ pending_acceptance
-#   S7  下一次心跳领到第二张卡（且不是刚报告的那张）
+#   S4  dsh 后台启动（ACP 长驻）→ 平台注册出 w_ 前缀 worker（kinds=dev）
+#   S5  平台 dispatch → 插件把工作项投递给根 agent（日志证据）
+#   S6  用 lib/tools 里真实的 echuan_work_report 交四段式报告 → submitted
+#   S7  下一次心跳领到第二张工作项（且不是刚报告的那张）
 #   S8  平台重启 → 同一 worker id 心跳 200、不重复领卡
 #   S9  插件重启 → 新 w_ id，旧记录仍在且不领同一张卡
 #   S10 停用插件 → worker 在 worker_ttl(45s) 窗口内转 offline
-#   S10b/S10c 验收卡一后项目停在 pending_done，结清卡二后项目进入 completed
+#   S10b/S10c 验收工作项一后项目停在 pending_done，结清工作项二后项目进入 completed
 #   S11 收尾：容器 / profile / 临时目录全清，~/echuan-v2-data 指纹不变
 #
 # 隔离性（与 scripts/e2e-worker.sh 同一套策略）：
@@ -42,7 +43,7 @@ CONTAINER="echuan-e2e"
 PORT=18720
 BASE="http://127.0.0.1:$PORT"
 PROFILE="echuan-e2e-$$"
-IMAGE="echuan-v2:local"
+IMAGE="${E2E_IMAGE:-echuan-v2:local}"
 
 TMP=""
 DSH_HOME_DIR=""
@@ -308,16 +309,17 @@ STEP="1/11 起平台"
 say ""
 say "== 1/11 docker compose 起独立平台栈（$CONTAINER @ $PORT）=="
 
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  say "镜像 $IMAGE 不存在，先 build（首次约 1-3 分钟）"
-  ( cd "$ROOT" && docker compose -p "$PROJ" build ) || fail "docker compose build 失败"
-fi
+# 总是从当前 worktree 重建：同名 tag 可能指向别的分支/旧提交（本次回归就踩到
+# 过期的 echuan-v2:local 导致 plan 400）。BuildKit 层缓存命中时只需数秒。
+say "构建镜像 $IMAGE（从当前 worktree，命中缓存时很快）"
+( cd "$ROOT" && ECHUAN_IMAGE="$IMAGE" docker compose -p "$PROJ" build ) || fail "docker compose build 失败"
 
 STACK_STARTED=1
 ( cd "$ROOT" && \
   COMPOSE_PROJECT_NAME="$PROJ" \
   ECHUAN_CONTAINER_NAME="$CONTAINER" \
   ECHUAN_PORT="$PORT" \
+  ECHUAN_IMAGE="$IMAGE" \
   ECHUAN_DATA_DIR="$TMP/data" \
   ECHUAN_UID="$(id -u)" \
   ECHUAN_GID="$(id -g)" \
@@ -362,6 +364,8 @@ http_post "/v1/projects/specs?id=$PROJECT_ID" \
   '{"body_md":"# 技术方案\n\n- 插件注册\n- 心跳派单\n- 报告\n"}'
 require_code 200 "提交规格"
 PROJECT_VERSION="$(jqr '.project_version')"
+SPEC_MATERIAL_ID="$(jqr '.spec.material_id')"
+[ -n "$SPEC_MATERIAL_ID" ] && [ "$SPEC_MATERIAL_ID" != "null" ] || fail "方案响应缺少 material_id"
 
 http_post "/v1/projects/submit?id=$PROJECT_ID" '{}'
 require_code 200 "提交方案评审"
@@ -374,16 +378,18 @@ require_code 200 "方案评审通过"
 PROJECT_VERSION="$(jqr '.version')"
 
 http_post "/v1/projects/plans?id=$PROJECT_ID" \
-  '{"tasks":[{"title":"E2E 卡一","body_md":"# 卡一\n\n由 kit/scripts/e2e.sh 创建。\n","priority":10},{"title":"E2E 卡二","body_md":"# 卡二\n\n用于验证下一次心跳领新卡。\n","priority":9}]}'
-require_code 201 "提交任务拆解"
-TASK1="$(jqr '.tasks[0].id')"
-TASK2="$(jqr '.tasks[1].id')"
-[ -n "$TASK1" ] && [ "$TASK1" != "null" ] || fail "拆解响应缺少第一张卡 id"
-[ -n "$TASK2" ] && [ "$TASK2" != "null" ] || fail "拆解响应缺少第二张卡 id"
+  '{"work_items":[{"title":"E2E 卡一","body_md":"# 卡一\n\n由 kit/scripts/e2e.sh 创建。\n","priority":10},{"title":"E2E 卡二","body_md":"# 卡二\n\n用于验证下一次心跳领新卡。\n","priority":9}]}'
+require_code 201 "提交计划拆解"
+TASK1="$(jqr '.work_items[0].work_id')"
+TASK2="$(jqr '.work_items[1].work_id')"
+[ -n "$TASK1" ] && [ "$TASK1" != "null" ] || fail "拆解响应缺少第一张工作项 id"
+[ -n "$TASK2" ] && [ "$TASK2" != "null" ] || fail "拆解响应缺少第二张工作项 id"
+[ "$(jqr '.work_items[0].state')" = "blocked" ] || fail "计划卡一应为 blocked，实际 $(jqr '.work_items[0].state')"
+[ "$(jqr '.work_items[0].kind')" = "dev" ] || fail "计划卡一 kind 应为 dev"
 PROJECT_VERSION="$(jqr '.project_version')"
 [ "$(jqr '.status_name')" = "tasks_review" ] || fail "批量添加第一张卡后应进入 tasks_review，实际 $(jqr '.status_name')"
 say "卡一=$TASK1  卡二=$TASK2（tasks_review，待 S5 审批）"
-pass "2/11 产品/项目/两张卡已入库（$TASK1, $TASK2）"
+pass "2/11 产品/项目/两张工作项已入库（$TASK1, $TASK2）"
 
 # --- 3. 装插件到临时 profile ------------------------------------------------
 STEP="3/11 安装插件"
@@ -443,6 +449,7 @@ cat > "$PROFILE_DIR/cordis.patch.yml" <<EOF
     worker:
       poll:
         enable: true
+      kinds: [dev]
       metadata:
         host: echuan-kit-e2e
         os: darwin
@@ -468,6 +475,17 @@ if [ "$help_ok" != "1" ]; then
   fail "临时 profile 无法正常 --help 退出（bundle 配置不完整）"
 fi
 pass "3/11 插件已装进临时 profile（$PROFILE，bundle=$APP_BUNDLE + $PKG_NAME@$PKG_VERSION，--help 正常退出）"
+
+# 旧 v1 工具名必须全部不存在（R1 只换实体名，不保留兼容别名）。
+TOOL_COUNT="$(node --input-type=module -e "
+import { TOOL_NAMES } from '$KIT/lib/tool-names.js'
+const stale = ['echuan_task_claim','echuan_task_renew','echuan_task_report','echuan_task_create','echuan_task_update','echuan_task_delete','echuan_task_list','echuan_task_get']
+const bad = TOOL_NAMES.filter((name) => stale.includes(name))
+if (bad.length > 0) { console.error(bad.join(',')); process.exit(1) }
+console.log(TOOL_NAMES.length)
+" 2>&1)" || fail "仍存在旧工具名：$TOOL_COUNT"
+[ "$TOOL_COUNT" = "23" ] || fail "工具总数应为 23，实际 $TOOL_COUNT"
+pass "3b/11 旧工具名已全部移除（8 个 v1 task_* 名称均不存在，共 $TOOL_COUNT 个工具）"
 
 # --- 4. 启动 dsh 并验证注册 -------------------------------------------------
 STEP="4/11 启动 dsh 并注册"
@@ -501,13 +519,14 @@ require_code 200 "读取 worker 详情"
 [ "$(jqr '.presence')" = "active" ] || fail "注册后 presence 应为 active，实际 $(jqr '.presence')"
 [ "$(jqr '.state')" = "idle" ] || fail "无根 agent 时应为 idle，实际 $(jqr '.state')"
 [ "$(jqr '.heartbeat_interval_ms')" = "15000" ] || fail "heartbeat_interval_ms 应为 15000"
+[ "$(jqr -c '.kinds')" = '["dev"]' ] || fail "worker.kinds 应为 dev，实际 $(jqr -c '.kinds')"
 EXPECT_META="$(jq -nc --arg v "e2e-$PKG_VERSION" \
   '{host:"echuan-kit-e2e",os:"darwin",agent_version:$v}')"
 [ "$(jqr --argjson m "$EXPECT_META" '.metadata == $m')" = "true" ] \
   || fail "worker.metadata 与配置不一致：$(jqr -c '.metadata')"
-[ "$(jqr '.current_task_id')" = "null" ] || fail "此时还没有卡，current_task_id 应为 null"
+[ "$(jqr '.current_work_item_id')" = "null" ] || fail "此时还没有卡，current_work_item_id 应为 null"
 say "worker_id: $WORKER_ID"
-pass "4/11 dsh 启动并注册成功（$WORKER_ID，presence=active state=idle metadata 与配置一致）"
+pass "4/11 dsh 启动并注册成功（$WORKER_ID，presence=active state=idle kinds=dev metadata 与配置一致）"
 
 # --- 5. 派单与消息投递 ------------------------------------------------------
 STEP="5/11 派单与投递"
@@ -530,58 +549,58 @@ while :; do
 done
 say "ACP session: $SID"
 
-http_post "/v1/tasks/review?project_id=$PROJECT_ID" '{"decision":"approve"}'
-require_code 200 "任务批次审批通过"
+http_post "/v1/work-items/review" "$(jq -nc --arg pid "$PROJECT_ID" '{project_id:$pid,decision:"approve"}')"
+require_code 200 "工作项批次审批通过"
 [ "$(jqr '.status_name')" = "pending_done" ] || fail "批次通过后项目应为 pending_done，实际 $(jqr '.status_name')"
-[ "$(jqr '.ready_tasks')" = "2" ] || fail "批次通过后应有 2 张卡转 ready，实际 $(jqr '.ready_tasks')"
+[ "$(jqr '.ready_work_items')" = "2" ] || fail "批次通过后应有 2 张卡转 queued，实际 $(jqr '.ready_work_items')"
 
-http_get "/v1/tasks?id=$TASK1"
+http_get "/v1/work-items?id=$TASK1"
 require_code 200 "读取卡一"
-[ "$(jqr '.status_name')" = "ready" ] || fail "批次通过后卡一应为 ready，实际 $(jqr '.status_name')"
+[ "$(jqr '.state')" = "queued" ] || fail "批次通过后卡一应为 queued，实际 $(jqr '.state')"
 
-# 下一次心跳（≤15s）应拿到 run_task；插件随后投递给根 agent。
+# 下一次心跳（≤15s）应拿到 dispatch；插件随后投递给根 agent。
 deadline=$(( $(date +%s) + 70 ))
 DISPATCHED=""
 while :; do
-  http_get "/v1/tasks?id=$TASK1"
+  http_get "/v1/work-items?id=$TASK1"
   require_code 200 "轮询卡一"
-  if [ "$(jqr '.status_name')" = "in_progress" ]; then
+  if [ "$(jqr '.state')" = "leased" ]; then
     DISPATCHED="$(jqr '.worker_id')"
     break
   fi
   if [ "$(date +%s)" -ge "$deadline" ]; then
-    fail "70s 内平台没有把卡一派出去（仍为 $(jqr '.status_name')）"
+    fail "70s 内平台没有把卡一派出去（仍为 $(jqr '.state')）"
   fi
   sleep 2
 done
 [ "$DISPATCHED" = "$WORKER_ID" ] || fail "卡一应派给 $WORKER_ID，实际 $DISPATCHED"
 
 DELIVER_LINE=""
-if ! DELIVER_LINE=$(wait_log "[dsh-echuan] 已投递任务 $TASK1 给根 agent" 40); then
+if ! DELIVER_LINE=$(wait_log "[dsh-echuan] 已投递工作项 $TASK1" 40); then
   tail -30 "$DSH_LOG" >&2 || true
   fail "40s 内日志里没有卡一的投递记录"
 fi
 say "证据行：$DELIVER_LINE"
-pass "5/11 平台派单成功（卡一 in_progress @ $WORKER_ID），插件已投递给根 agent"
+pass "5/11 平台派单成功（卡一 leased @ $WORKER_ID），插件已投递给根 agent"
 
 # --- 6. 干活与交报告 --------------------------------------------------------
 STEP="6/11 交报告"
 say ""
-say "== 6/11 用 lib/tools 的 echuan_task_report 交四段式报告 =="
+say "== 6/11 用 lib/tools 的 echuan_work_report 交四段式报告 =="
 
-http_get "/v1/tasks?id=$TASK1"
+http_get "/v1/work-items?id=$TASK1"
 require_code 200 "读取卡一租约"
 LEASE_ID="$(jqr '.lease.lease_id')"
 [ -n "$LEASE_ID" ] && [ "$LEASE_ID" != "null" ] || fail "卡一应带 lease_id，实际 $LEASE_ID"
 
 REPORT_OK=0
 if [ "${E2E_REAL_LLM:-0}" = "1" ]; then
-  say "E2E_REAL_LLM=1：等待 dsh agent 自己调 echuan_task_report（最多 180s）"
+  say "E2E_REAL_LLM=1：等待 dsh agent 自己调 echuan_work_report（最多 180s）"
   deadline=$(( $(date +%s) + 180 ))
   while :; do
-    http_get "/v1/tasks?id=$TASK1"
+    http_get "/v1/work-items?id=$TASK1"
     require_code 200 "轮询卡一"
-    if [ "$(jqr '.status_name')" = "pending_acceptance" ]; then REPORT_OK=1; break; fi
+    if [ "$(jqr '.state')" = "submitted" ]; then REPORT_OK=1; break; fi
     if [ "$(date +%s)" -ge "$deadline" ]; then break; fi
     sleep 5
   done
@@ -593,103 +612,107 @@ if [ "$REPORT_OK" != "1" ]; then
 import { createClient } from '$KIT/lib/client.js'
 import { createAllEchuanTools } from '$KIT/lib/tools/index.js'
 
-const [baseUrl, taskId, leaseId] = process.argv.slice(2)
+const [baseUrl, workId, leaseId, materialId] = process.argv.slice(2)
 const config = {
   baseUrl,
   actor: 'kit-e2e-report-driver',
   requestTimeoutMs: 15000,
-  worker: { poll: { enable: false }, metadata: {} },
+  worker: { poll: { enable: false }, kinds: [], metadata: {} },
 }
 const client = createClient(config)
 const tools = createAllEchuanTools({ client, identity: { workerId: process.env.ECHUAN_WORKER_ID } })
-const tool = tools.find(t => t.name === 'echuan_task_report')
+const tool = tools.find(t => t.name === 'echuan_work_report')
 if (!tool) {
-  console.error('echuan_task_report 未注册')
+  console.error('echuan_work_report 未注册')
   process.exit(2)
 }
-const summary_md = [
+const body = [
   '## ①改了什么',
   '',
-  '- 由 kit/scripts/e2e.sh 通过 lib/tools 的真实 echuan_task_report 提交；',
-  '- 未改动平台代码，仅调用 POST /v1/tasks/report。',
+  '- 由 kit/scripts/e2e.sh 通过 lib/tools 的真实 echuan_work_report 提交；',
+  '- 未改动平台代码，仅调用 POST /v1/work-items/report。',
   '',
   '## ②怎么自检',
   '',
-  '- 端到端脚本轮询任务状态并断言 pending_acceptance；',
-  '- 断言报告正文非空、worker 指针与租约已清理。',
+  '- 端到端脚本轮询工作项状态并断言 submitted；',
+  '- 断言工作者指针与租约已清理、结果物料非空。',
   '',
   '## ③git 交付',
   '',
-  '- 分支 task/<task_id>（base feature/<project_id>）、commit、远程校验与 PR/compare 链接为占位说明；',
+  '- 分支 task/<work_id>（base feature/<project_id>）、commit、远程校验与 PR/compare 链接为占位说明；',
   '- 真实交付需附 ls-remote 与 rev-parse HEAD 一致的校验结果。',
   '',
   '## ④遗留风险',
   '',
   '- 报告内容为验收脚本生成，不代表真实业务交付物；',
+  '- 报告物料复用方案物料（R1 尚无 kind=3 物料写接口）；',
   '- 默认模式不经过 LLM，agent 侧工具调用由 E2E_REAL_LLM=1 单独覆盖。',
 ].join('\n')
-const value = await tool.execute({ task_id: taskId, lease_id: leaseId, summary_md })
-console.log(JSON.stringify({ kind: value.kind, status_name: value.status_name, task_id: value.task_id }))
+const value = await tool.execute({ work_id: workId, lease_id: leaseId, material_id: materialId })
+console.log(JSON.stringify({ kind: value.kind, state: value.state, work_id: value.work_id }))
 process.exit(value.kind === 'reported' ? 0 : 1)
 EOF
-  ECHUAN_WORKER_ID="$WORKER_ID" node "$TMP/report.mjs" "$BASE" "$TASK1" "$LEASE_ID" \
+  ECHUAN_WORKER_ID="$WORKER_ID" node "$TMP/report.mjs" "$BASE" "$TASK1" "$LEASE_ID" "$SPEC_MATERIAL_ID" \
     > "$TMP/report.out" 2> "$TMP/report.err" || {
       cat "$TMP/report.out" >&2 || true
       cat "$TMP/report.err" >&2 || true
-      fail "echuan_task_report 执行失败"
+      fail "echuan_work_report 执行失败"
     }
   say "工具返回：$(cat "$TMP/report.out")"
 fi
 
-http_get "/v1/tasks?id=$TASK1"
+http_get "/v1/work-items?id=$TASK1"
 require_code 200 "复核卡一"
-[ "$(jqr '.status_name')" = "pending_acceptance" ] || fail "报告后卡一应为 pending_acceptance，实际 $(jqr '.status_name')"
+[ "$(jqr '.state')" = "submitted" ] || fail "报告后卡一应为 submitted，实际 $(jqr '.state')"
 [ "$(jqr '.worker_id')" = "null" ] || fail "报告后卡一 worker_id 应为 null"
 [ "$(jqr '.lease')" = "null" ] || fail "报告后卡一 lease 应为 null"
-REPORT_SIZE=$(jqr '.report.size')
-REPORT_MATERIAL=$(jqr '.report.material_id')
-REPORT_SHA=$(jqr '.report.sha256')
-[ -n "$REPORT_SIZE" ] && [ "$REPORT_SIZE" != "null" ] || fail "任务报告为空（report.size 缺失）"
-[ "$REPORT_SIZE" -gt 0 ] || fail "任务报告正文为空（report.size=$REPORT_SIZE）"
-[ -n "$REPORT_MATERIAL" ] && [ "$REPORT_MATERIAL" != "null" ] || fail "任务报告缺少 material_id"
-pass "6/11 报告已提交（卡一 pending_acceptance，report ${REPORT_SIZE}B sha256=${REPORT_SHA}，worker/lease 已清理）"
+REPORT_SIZE=$(jqr '.result.size')
+REPORT_MATERIAL=$(jqr '.result.material_id')
+REPORT_SHA=$(jqr '.result.sha256')
+[ -n "$REPORT_SIZE" ] && [ "$REPORT_SIZE" != "null" ] || fail "工作项报告为空（result.size 缺失）"
+[ "$REPORT_SIZE" -gt 0 ] || fail "工作项报告正文为空（result.size=$REPORT_SIZE）"
+[ "$REPORT_MATERIAL" = "$SPEC_MATERIAL_ID" ] || fail "结果物料应为 $SPEC_MATERIAL_ID，实际 $REPORT_MATERIAL"
+pass "6/11 报告已提交（卡一 submitted，result ${REPORT_SIZE}B sha256=${REPORT_SHA}，worker/lease 已清理）"
 
 # --- 7. 下一次心跳领新卡 ----------------------------------------------------
 STEP="7/11 下一张卡"
 say ""
 say "== 7/11 下一次心跳应领到第二张卡 =="
 
-http_get "/v1/tasks?id=$TASK2"
+http_get "/v1/work-items?id=$TASK2"
 require_code 200 "读取卡二"
-[ "$(jqr '.status_name')" = "ready" ] || fail "报告后卡二应仍为 ready，实际 $(jqr '.status_name')"
+[ "$(jqr '.state')" = "queued" ] || fail "报告后卡二应仍为 queued，实际 $(jqr '.state')"
 
-deadline=$(( $(date +%s) + 70 ))
+# 默认模式由外部进程调 echuan_work_report，通知不到插件内存里的 inflight；
+# 插件会持续报 busy 直到首张卡租约（90s）过期。留 140s 覆盖「租约过期 →
+# 下一轮变 idle → 派第二张卡」。真实 agent 路径会调 notifyReported 立即清理。
+deadline=$(( $(date +%s) + 140 ))
 GOT2=""
 while :; do
-  http_get "/v1/tasks?id=$TASK2"
+  http_get "/v1/work-items?id=$TASK2"
   require_code 200 "轮询卡二"
-  if [ "$(jqr '.status_name')" = "in_progress" ]; then
+  if [ "$(jqr '.state')" = "leased" ]; then
     GOT2="$(jqr '.worker_id')"
     break
   fi
   if [ "$(date +%s)" -ge "$deadline" ]; then
-    fail "70s 内卡二没有被派出去（仍为 $(jqr '.status_name')）"
+    fail "140s 内卡二没有被派出去（仍为 $(jqr '.state')）"
   fi
   sleep 2
 done
 [ "$GOT2" = "$WORKER_ID" ] || fail "卡二应派给 $WORKER_ID，实际 $GOT2"
 [ "$GOT2" != "" ] || fail "卡二没有 worker 指针"
 say "卡二已派给 $WORKER_ID（与刚报告的 $TASK1 不同）"
-pass "7/11 下一次心跳领到新卡（$TASK2 in_progress @ $WORKER_ID，不是 $TASK1）"
+pass "7/11 下一次心跳领到新卡（$TASK2 leased @ $WORKER_ID，不是 $TASK1）"
 
 # --- 8. 平台重启 -----------------------------------------------------------
 STEP="8/11 平台重启"
 say ""
 say "== 8/11 重启平台容器，同一 worker id 心跳应保持可用 =="
 
-http_get "/v1/tasks?id=$TASK2"
+http_get "/v1/work-items?id=$TASK2"
 require_code 200 "重启前读卡二"
-T2_STATE_BEFORE="$(jqr '.status_name')"
+T2_STATE_BEFORE="$(jqr '.state')"
 T2_WORKER_BEFORE="$(jqr '.worker_id')"
 
 if ! ( cd "$ROOT" && docker restart "$CONTAINER" >/dev/null 2>&1 ); then
@@ -697,14 +720,14 @@ if ! ( cd "$ROOT" && docker restart "$CONTAINER" >/dev/null 2>&1 ); then
 fi
 wait_readyz 90 || fail "重启后 90s 内 /readyz 没有恢复"
 
-http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$wid,state:"idle"}')"
+http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$wid,state:"idle",kinds:["dev"]}')"
 require_code 200 "重启后原 id 心跳"
 [ "$(jqr '.worker.worker_id')" = "$WORKER_ID" ] || fail "心跳返回的 worker_id 变了：$(jqr '.worker.worker_id')"
 [ "$(jqr '.commands|length')" = "0" ] || fail "仍持有卡二，不应再派新卡"
 
-http_get "/v1/tasks?id=$TASK2"
+http_get "/v1/work-items?id=$TASK2"
 require_code 200 "重启后读卡二"
-[ "$(jqr '.status_name')" = "$T2_STATE_BEFORE" ] || fail "卡二状态发生变化：$T2_STATE_BEFORE -> $(jqr '.status_name')"
+[ "$(jqr '.state')" = "$T2_STATE_BEFORE" ] || fail "卡二状态发生变化：$T2_STATE_BEFORE -> $(jqr '.state')"
 [ "$(jqr '.worker_id')" = "$T2_WORKER_BEFORE" ] || fail "卡二 worker 指针发生变化：$T2_WORKER_BEFORE -> $(jqr '.worker_id')"
 pass "8/11 平台重启后同一 worker id 心跳 200（$WORKER_ID），未重新注册、未重复领卡"
 
@@ -751,9 +774,9 @@ fi
 http_get "/v1/workers?id=$NEW_WID"
 require_code 200 "读取新 worker"
 [ "$(jqr '.presence')" = "active" ] || fail "新 worker 应为 active，实际 $(jqr '.presence')"
-[ "$(jqr '.current_task_id')" = "null" ] || fail "新 worker 不应持有任务，实际 $(jqr '.current_task_id')"
+[ "$(jqr '.current_work_item_id')" = "null" ] || fail "新 worker 不应持有工作项，实际 $(jqr '.current_work_item_id')"
 
-http_get "/v1/tasks?id=$TASK2"
+http_get "/v1/work-items?id=$TASK2"
 require_code 200 "读卡二"
 [ "$(jqr '.worker_id')" = "$WORKER_ID" ] || fail "卡二仍应归旧 worker，实际 $(jqr '.worker_id')"
 pass "9/11 插件重启拿到新 id（$NEW_WID），旧记录仍在（presence=$OLD_PRESENCE），未接同一张卡"
@@ -791,14 +814,14 @@ pass "10/11 停用后 ${ELAPSED}s 内转为 offline（$NEW_WID，worker_ttl=45s�
 say ""
 say "== 10b/11 验收卡一：项目应停在 pending_done（卡二仍未结清）=="
 
-http_get "/v1/tasks?id=$TASK1"
+http_get "/v1/work-items?id=$TASK1"
 require_code 200 "读取卡一"
-[ "$(jqr '.status_name')" = "pending_acceptance" ] || fail "卡一应为 pending_acceptance，实际 $(jqr '.status_name')"
+[ "$(jqr '.state')" = "submitted" ] || fail "卡一应为 submitted，实际 $(jqr '.state')"
 T1_VERSION="$(jqr '.version')"
 
-http_post "/v1/tasks/decide?id=$TASK1" '{"decision":"accept"}' -H "If-Match: $T1_VERSION"
+http_post "/v1/work-items/decide" "$(jq -nc --arg wid "$TASK1" '{work_id:$wid,decision:"approve"}')"
 require_code 200 "验收卡一"
-[ "$(jqr '.status_name')" = "done" ] || fail "验收后卡一应为 done，实际 $(jqr '.status_name')"
+[ "$(jqr '.state')" = "accepted" ] || fail "验收后卡一应为 accepted，实际 $(jqr '.state')"
 
 http_get "/v1/projects?id=$PROJECT_ID"
 require_code 200 "读取项目"
@@ -816,17 +839,17 @@ T2_LEASE=""
 attempt=0
 while [ "$attempt" -lt 20 ]; do
   attempt=$((attempt + 1))
-  http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$wid,state:"idle"}')"
+  http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$wid,state:"idle",kinds:["dev"]}')"
   require_code 200 "唤醒 worker 领取卡二"
-  http_get "/v1/tasks?id=$TASK2"
+  http_get "/v1/work-items?id=$TASK2"
   require_code 200 "读取卡二"
-  if [ "$(jqr '.status_name')" = "in_progress" ]; then
+  if [ "$(jqr '.state')" = "leased" ]; then
     # busy 心跳续租，确保接下来的 report 不会撞上刚好过期的 lease。
-    http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$wid,state:"busy"}')"
+    http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$wid,state:"busy",kinds:["dev"]}')"
     require_code 200 "续租卡二"
-    http_get "/v1/tasks?id=$TASK2"
+    http_get "/v1/work-items?id=$TASK2"
     require_code 200 "复核卡二租约"
-    if [ "$(jqr '.status_name')" = "in_progress" ]; then
+    if [ "$(jqr '.state')" = "leased" ]; then
       T2_LEASE="$(jqr '.lease.lease_id')"
       [ -n "$T2_LEASE" ] && [ "$T2_LEASE" != "null" ] && break
       T2_LEASE=""
@@ -834,22 +857,24 @@ while [ "$attempt" -lt 20 ]; do
   fi
   sleep 2
 done
-[ -n "$T2_LEASE" ] || fail "卡二未能重新派给 $WORKER_ID（当前状态 $(jqr '.status_name')）"
+[ -n "$T2_LEASE" ] || fail "卡二未能重新派给 $WORKER_ID（当前状态 $(jqr '.state')）"
 say "卡二租约：$T2_LEASE"
 
-http_post "/v1/tasks/report?id=$TASK2" "$(jq -nc --arg lease "$T2_LEASE" \
-  '{lease_id:$lease,summary_md:"## ①改了什么\n\n- kit/scripts/e2e.sh 结清最后一张卡；\n- 仅调用 POST /v1/tasks/report。\n\n## ②怎么自检\n\n- 断言卡二进入 pending_acceptance；\n- 验收后断言项目进入 completed。\n\n## ③git 交付\n\n- 分支 task/<task_id>（base feature/<project_id>）、commit、远程校验与 PR 链接为占位说明。\n\n## ④遗留风险\n\n- 报告正文由验收脚本生成。"}')"
+# v2 报告接口只接受已有 material；R1 尚无 kind=3 报告物料写接口，
+# 这里复用同一项目的方案物料，验的是报告协议链路而非物料语义。
+http_post "/v1/work-items/report" "$(jq -nc --arg wid "$TASK2" --arg mid "$SPEC_MATERIAL_ID" --arg lease "$T2_LEASE" \
+  '{work_id:$wid,material_id:$mid,lease_id:$lease}')"
 require_code 200 "提交卡二报告"
-[ "$(jqr '.status_name')" = "pending_acceptance" ] || fail "报告后卡二应为 pending_acceptance，实际 $(jqr '.status_name')"
+[ "$(jqr '.state')" = "submitted" ] || fail "报告后卡二应为 submitted，实际 $(jqr '.state')"
 T2_VERSION="$(jqr '.version')"
 
 http_get "/v1/projects?id=$PROJECT_ID"
 require_code 200 "读取项目"
 [ "$(jqr '.status_name')" = "pending_done" ] || fail "卡二未验收时项目应仍为 pending_done，实际 $(jqr '.status_name')"
 
-http_post "/v1/tasks/decide?id=$TASK2" '{"decision":"accept"}' -H "If-Match: $T2_VERSION"
+http_post "/v1/work-items/decide" "$(jq -nc --arg wid "$TASK2" '{work_id:$wid,decision:"approve"}')"
 require_code 200 "验收卡二"
-[ "$(jqr '.status_name')" = "done" ] || fail "验收后卡二应为 done，实际 $(jqr '.status_name')"
+[ "$(jqr '.state')" = "accepted" ] || fail "验收后卡二应为 accepted，实际 $(jqr '.state')"
 
 http_get "/v1/projects?id=$PROJECT_ID"
 require_code 200 "读取项目"
