@@ -484,7 +484,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Project"
+                $ref: "#/components/schemas/ProjectDecision"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -539,6 +541,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MaterialChain"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/gate-decisions:
+    get:
+      operationId: listGateDecisions
+      summary: 查询项目的门禁决策历史
+      description: |
+        返回项目级（requirement / spec / plan）与该项目下所有工作项级的
+        批准/驳回记录，按 id 倒序。material_id 指向当次被审的资料物理版本；
+        资料升到 v2 后旧记录仍指向 v1。自动结清不是人工决策，不产生记录。
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - name: project_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: subject_type
+          in: query
+          schema:
+            type: string
+            enum: [project, work_item]
+        - name: subject_id
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 决策历史
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateDecisionList"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -963,7 +1014,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WorkItemDetail"
+                $ref: "#/components/schemas/WorkItemDecision"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -993,6 +1046,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkItemReviewResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -1394,6 +1449,15 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: 声明身份无权执行该操作（门禁只接受人工决策）
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
   schemas:
     Health:
       type: object
@@ -1457,6 +1521,7 @@ components:
             - range_not_satisfiable
             - worker_unknown
             - worker_busy
+            - agent_forbidden
         message:
           type: string
         details:
@@ -1926,6 +1991,69 @@ components:
           nullable: true
           allOf:
             - $ref: "#/components/schemas/WorkItemLease"
+    ProjectDecision:
+      description: 项目门禁审批响应；在 Project 之上追加本次决策绑定的资料。
+      allOf:
+        - $ref: "#/components/schemas/Project"
+        - type: object
+          properties:
+            material_id:
+              type: string
+              nullable: true
+              description: 本次批准/驳回所依据的资料版本；无资料时为 null
+    WorkItemDecision:
+      description: 工作项验收/返工响应；在 WorkItemDetail 之上追加本次决策绑定的资料。
+      allOf:
+        - $ref: "#/components/schemas/WorkItemDetail"
+        - type: object
+          properties:
+            material_id:
+              type: string
+              nullable: true
+              description: 本次批准/驳回所依据的结果资料版本；无结果为 null
+    GateDecision:
+      type: object
+      additionalProperties: false
+      required: [id, subject_type, subject_id, gate, material_id, material_version, decision, decided_by, reason, create_time]
+      properties:
+        id:
+          type: integer
+        subject_type:
+          type: string
+          enum: [project, work_item]
+        subject_id:
+          type: string
+        gate:
+          type: string
+          enum: [requirement, spec, plan, dev]
+        material_id:
+          type: string
+          nullable: true
+        material_version:
+          type: integer
+          nullable: true
+        decision:
+          type: string
+          enum: [approve, reject]
+        decided_by:
+          type: string
+        reason:
+          type: string
+          nullable: true
+        create_time:
+          type: string
+          format: date-time
+    GateDecisionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GateDecision"
+        next_cursor:
+          type: string
     WorkItemLease:
       type: object
       additionalProperties: false

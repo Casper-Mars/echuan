@@ -108,6 +108,9 @@ func (h *workItemsHandler) reportWorkItem(w http.ResponseWriter, r *http.Request
 
 // decideWorkItem handles POST /v1/work-items/decide.
 func (h *workItemsHandler) decideWorkItem(w http.ResponseWriter, r *http.Request) {
+	if forbidAgentActor(w, r) {
+		return
+	}
 	var req decideWorkItemRequest
 	if verr := decodeJSONBodyLimit(w, r, &req, maxRequestBodyBytes); verr != nil {
 		writeDomainError(w, r, h.logger, verr)
@@ -144,11 +147,17 @@ func (h *workItemsHandler) decideWorkItem(w http.ResponseWriter, r *http.Request
 		)
 	}
 
-	writeJSON(w, http.StatusOK, toWorkItemDetailResponse(result.Detail))
+	writeJSON(w, http.StatusOK, workItemDecisionResponse{
+		workItemDetailResponse: toWorkItemDetailResponse(result.Detail),
+		MaterialID:             materialRefID(result.Material),
+	})
 }
 
 // reviewWorkItems handles POST /v1/work-items/review.
 func (h *workItemsHandler) reviewWorkItems(w http.ResponseWriter, r *http.Request) {
+	if forbidAgentActor(w, r) {
+		return
+	}
 	var req reviewWorkItemsRequest
 	if verr := decodeJSONBodyLimit(w, r, &req, maxRequestBodyBytes); verr != nil {
 		writeDomainError(w, r, h.logger, verr)

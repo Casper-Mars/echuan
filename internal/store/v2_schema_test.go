@@ -57,7 +57,7 @@ func TestV2SchemaTables(t *testing.T) {
 	for _, name := range []string{
 		"products", "materials", "projects", "project_specs",
 		"work_items", "work_inputs", "work_deps", "work_item_events",
-		"workers", "worker_kinds",
+		"workers", "worker_kinds", "gate_decisions",
 	} {
 		if !tables[name] {
 			t.Errorf("table %s missing; have %v", name, tables)
@@ -74,6 +74,7 @@ func TestV2SchemaTables(t *testing.T) {
 		"ix_work_queue", "ix_work_lease", "ux_work_active_phase", "ux_work_worker",
 		"ix_work_events_item", "ux_workers_current_work_item", "ix_workers_last_seen",
 		"ix_materials_chain", "ix_projects_inbox",
+		"ix_gate_decisions_subject", "ix_gate_decisions_material",
 	} {
 		if !indexes[name] {
 			t.Errorf("index %s missing; have %v", name, indexes)
@@ -89,16 +90,16 @@ func TestV2SchemaTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("user_version = %d, want 1", version)
+	if version != 2 {
+		t.Errorf("user_version = %d, want 2", version)
 	}
 
 	latest, err := LatestMigrationVersion()
 	if err != nil {
 		t.Fatalf("LatestMigrationVersion: %v", err)
 	}
-	if latest != 1 {
-		t.Errorf("latest embedded migration = %d, want 1", latest)
+	if latest != 2 {
+		t.Errorf("latest embedded migration = %d, want 2", latest)
 	}
 
 	workerColumns := schemaColumns(t, st, "workers")
@@ -398,8 +399,8 @@ func TestV2SchemaRejectsNewerSchema(t *testing.T) {
 	if !errors.As(err, &versionErr) {
 		t.Fatalf("error = %v, want SchemaVersionError", err)
 	}
-	if versionErr.Database != 99 || versionErr.Binary != 1 {
-		t.Errorf("versions = %d/%d, want 99/1", versionErr.Database, versionErr.Binary)
+	if versionErr.Database != 99 || versionErr.Binary != 2 {
+		t.Errorf("versions = %d/%d, want 99/2", versionErr.Database, versionErr.Binary)
 	}
 
 	var tables int

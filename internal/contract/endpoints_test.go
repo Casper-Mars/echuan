@@ -355,8 +355,8 @@ func TestContractEndpoints(t *testing.T) {
 
 	// The operation set is pinned: adding or dropping one is a contract change.
 	operations := e.doc.Operations()
-	if len(operations) != 35 {
-		t.Fatalf("openapi operations = %d, want exactly 35", len(operations))
+	if len(operations) != 36 {
+		t.Fatalf("openapi operations = %d, want exactly 36", len(operations))
 	}
 
 	// ---- health & version -------------------------------------------------
@@ -919,6 +919,11 @@ func TestContractEndpoints(t *testing.T) {
 		t.Errorf("failed oversized document left %d documents, want 0", len(items))
 	}
 
+	// ---- gate decision history --------------------------------------------
+	e.call(http.MethodGet, "/v1/gate-decisions?project_id="+largeID, nil, nil, http.StatusOK)
+	e.call(http.MethodGet, "/v1/gate-decisions", nil, nil, http.StatusBadRequest)
+	e.call(http.MethodGet, "/v1/gate-decisions?project_id=NOPE", nil, nil, http.StatusNotFound)
+
 	// ---- coverage: every documented operation -----------------------------
 	want := map[string]bool{}
 	for _, op := range operations {
@@ -1001,8 +1006,8 @@ func TestRoutesMatchOpenAPI(t *testing.T) {
 	for _, route := range api.Routes() {
 		got[route.Method+" "+route.Path] = true
 	}
-	if len(want) != 35 {
-		t.Fatalf("openapi operations = %d, want 35", len(want))
+	if len(want) != 36 {
+		t.Fatalf("openapi operations = %d, want 36", len(want))
 	}
 	for key := range want {
 		if !got[key] {

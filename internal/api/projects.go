@@ -308,6 +308,9 @@ func (h *projectsHandler) submitProject(w http.ResponseWriter, r *http.Request) 
 
 // decideProject handles POST /v1/projects/decide?id=APP-1.
 func (h *projectsHandler) decideProject(w http.ResponseWriter, r *http.Request) {
+	if forbidAgentActor(w, r) {
+		return
+	}
 	projectID := strings.TrimSpace(r.URL.Query().Get("id"))
 	if projectID == "" {
 		writeDomainError(w, r, h.logger, invalidField("id", "is required"))
@@ -346,7 +349,10 @@ func (h *projectsHandler) decideProject(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	h.logProjectTransition(r, domain.ProjectActionDecide, decision, result)
-	writeJSON(w, http.StatusOK, toProjectResponse(*result.Project))
+	writeJSON(w, http.StatusOK, projectDecisionResponse{
+		projectResponse: toProjectResponse(*result.Project),
+		MaterialID:      materialRefID(result.Material),
+	})
 }
 
 // cancelProject handles POST /v1/projects/cancel?id=APP-1. Cancelling is a

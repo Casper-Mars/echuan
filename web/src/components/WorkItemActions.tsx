@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { getWorkItem } from '../api/client'
 import type { WorkItem, WorkItemDecision } from '../api/types'
 import { workItemStateLabel } from '../lib/format'
 import { DecisionDialog } from './DecisionDialog'
+import type { ReviewedMaterial } from './ReviewedMaterial'
 
 /** 卡片上的一个动作：决策值 + 展示文案 + 是否必填原因。 */
 export interface WorkItemActionRequest {
@@ -79,6 +81,44 @@ export function WorkItemActionDialogs({
   onClose,
   onChanged,
 }: WorkItemActionDialogsProps) {
+  // 列表只带 result_material_id，没有版本号；打开弹窗时补查详情拿 result.version。
+  // 先用手里的 material_id 占位，取不到版本就只显示 ID。
+  const [material, setMaterial] = useState<ReviewedMaterial | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!request) return
+    let cancelled = false
+    setLoading(true)
+    setMaterial(
+      item.result_material_id
+        ? { materialId: item.result_material_id, version: null }
+        : null,
+    )
+    getWorkItem(item.work_id)
+      .then((detail) => {
+        if (cancelled) return
+        setMaterial(
+          detail.result
+            ? {
+                materialId: detail.result.material_id,
+                version: detail.result.version,
+                title: detail.result.title,
+              }
+            : null,
+        )
+      })
+      .catch(() => {
+        // 保留 material_id 占位，审批不因详情读取失败而中断。
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [item.work_id, item.result_material_id, request])
+
   if (!request) return null
   return (
     <DecisionDialog
@@ -89,6 +129,8 @@ export function WorkItemActionDialogs({
         badgeClass: `state-${item.state}`,
         statusLabel: workItemStateLabel(item.state),
         version: item.version,
+        material,
+        materialLoading: loading,
       }}
       decision={request.decision}
       label={request.label}

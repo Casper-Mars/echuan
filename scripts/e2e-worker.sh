@@ -416,6 +416,7 @@ http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' \
   -H "If-Match: $PROJECT_VERSION"
 require_code 200 "需求评审通过"
 [[ "$(jqr '.status_name')" == "spec_draft" ]] || fail "需求通过后应为 spec_draft，实际 $(jqr '.status_name')"
+[[ "$(jqr '.material_id')" == "$REQ_MATERIAL_ID" ]] || fail "需求审批响应 material_id 应指向被审需求版本，实际 $(jqr '.material_id')"
 PROJECT_VERSION="$(jqr '.version')"
 
 http_get "/v1/work-items?project_id=$PROJECT_ID&kind=design"
@@ -465,6 +466,7 @@ http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' \
   -H "If-Match: $PROJECT_VERSION"
 require_code 200 "方案评审通过"
 [[ "$(jqr '.status_name')" == "tasks_draft" ]] || fail "方案通过后应为 tasks_draft，实际 $(jqr '.status_name')"
+[[ "$(jqr '.material_id')" == "$SPEC_MATERIAL_ID" ]] || fail "方案审批响应 material_id 应指向被审方案版本，实际 $(jqr '.material_id')"
 PROJECT_VERSION="$(jqr '.version')"
 
 http_get "/v1/work-items?project_id=$PROJECT_ID&kind=breakdown"
@@ -487,7 +489,10 @@ http_post "/v1/work-items/report" "$(jq -nc \
   '{work_id:$wid,lease_id:$lease,plan:{items:[{seq_no:1,project_id:$pid,title:"E2E 拆分卡",body_md:"# 执行\n\n由拆解计划生成。\n",priority:5}]}}')"
 require_code 200 "提交拆解报告"
 [[ "$(jqr '.state')" == "submitted" ]] || fail "拆解报告后应为 submitted，实际 $(jqr '.state')"
-[[ "$(jqr '.result_material_id')" == "null" ]] || fail "未提供 material_id 时结果资料应为 null，实际 $(jqr '.result_material_id')"
+# 平台把 plan 落成 kind=4 的计划物料（task-0010），并回填 result_material_id。
+PLAN_MATERIAL_ID="$(jqr '.result_material_id')"
+[[ -n "$PLAN_MATERIAL_ID" && "$PLAN_MATERIAL_ID" != "null" ]] || fail "拆解计划应生成 kind=4 计划物料，实际 $(jqr '.result_material_id')"
+[[ "$(jqr '.result.kind')" == "4" ]] || fail "拆解计划物料 kind 应为 4，实际 $(jqr '.result.kind')"
 http_get "/v1/projects?id=$PROJECT_ID"
 require_code 200 "拆解报告后读取项目"
 [[ "$(jqr '.status_name')" == "tasks_review" ]] || fail "拆解报告后项目应为 tasks_review，实际 $(jqr '.status_name')"
@@ -552,6 +557,7 @@ http_post "/v1/work-items/decide" \
   "$(jq -nc --arg wid "$DEV_WORK_ID" '{work_id:$wid,decision:"approve"}')"
 require_code 200 "验收工作项"
 [[ "$(jqr '.state')" == "accepted" ]] || fail "验收后工作项应为 accepted，实际 $(jqr '.state')"
+[[ "$(jqr '.material_id')" == "$SPEC_MATERIAL_ID" ]] || fail "验收响应 material_id 应指向被审结果资料，实际 $(jqr '.material_id')"
 
 # 拆解计划生成的 dev 子项同样可被 claim / 报告 / 验收；结清后项目 completed。
 dispatch_next "心跳派发拆解生成的 dev 子项"
@@ -570,6 +576,19 @@ require_code 200 "验收拆解生成的 dev"
 http_get "/v1/projects?id=$PROJECT_ID"
 require_code 200 "读取项目"
 [[ "$(jqr '.status_name')" == "completed" ]] || fail "最后一张卡结清后项目应为 completed，实际 $(jqr '.status_name')"
+
+# 6.8 门禁历史：项目级 requirement/spec/plan + 两条工作项验收，共 6 条；
+# 版本绑定不随资料升级改变，计划批次绑定 kind=4 计划物料。
+http_get "/v1/gate-decisions?project_id=$PROJECT_ID&limit=100"
+require_code 200 "查询门禁历史"
+[[ "$(jqr '.items|length')" == "6" ]] || fail "门禁历史应恰有 6 条，实际 $(jqr '.items|length')"
+[[ "$(jqr '.items[0].subject_type')" == "work_item" ]] || fail "门禁历史应按 id 倒序，首条应为工作项，实际 $(jqr '.items[0].subject_type')"
+[[ "$(jqr '[.items[] | select(.gate=="requirement")] | length')" == "1" ]] || fail "需求门禁应恰有 1 条"
+[[ "$(jqr '[.items[] | select(.gate=="spec")] | length')" == "1" ]] || fail "方案门禁应恰有 1 条"
+[[ "$(jqr '[.items[] | select(.gate=="plan")] | length')" == "2" ]] || fail "计划批次应恰有 2 条（驳回 + 通过）"
+[[ "$(jqr '[.items[] | select(.gate=="plan") | .material_id] | all(. == "'"$PLAN_MATERIAL_ID"'")')" == "true" ]] || fail "计划审批 material_id 应指向 kind=4 计划物料"
+[[ "$(jqr '[.items[] | select(.gate=="dev")] | length')" == "2" ]] || fail "工作项验收应恰有 2 条"
+say "门禁历史: 6 条（requirement/spec/plan×2/dev×2），版本绑定正确"
 
 # 阶段卡在门禁批准时已结清：requirement/design accepted，breakdown accepted，
 # 不会把项目卡在 pending_done。

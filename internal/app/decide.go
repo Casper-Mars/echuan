@@ -38,6 +38,10 @@ type DecideResult struct {
 	Project    *domain.Project
 	FromStatus int
 	ToStatus   int
+	// Material is the material version this verdict was bound to. It is nil
+	// for transitions that are not human decisions (submit/cancel) and for
+	// gates the project has not produced a material for.
+	Material *GateMaterial
 }
 
 // SubmitProject sends the current draft for review.
@@ -157,6 +161,37 @@ func (s *ProjectService) transitionProject(ctx context.Context, projectID, actio
 			return err
 		}
 
+		// One append-only record per human verdict. The record shares the
+		// transition's transaction, and the material pointer is the one the
+		// gate was reviewing (requirement or spec of the current status), so a
+		// later v2 never rewrites what an earlier verdict referred to.
+		var material *GateMaterial
+		if action == domain.ProjectActionDecide {
+			gate, ok := projectGate(row.Status)
+			if ok {
+				var materialID *int64
+				switch gate {
+				case "requirement":
+					materialID = row.RequirementMaterialID
+				case "spec":
+					materialID = row.SpecMaterialID
+				}
+				material, err = recordGateDecision(ctx, tx, gateDecisionWrite{
+					SubjectType:        store.GateSubjectProject,
+					SubjectID:          row.ProjectID,
+					Gate:               gate,
+					MaterialPhysicalID: materialID,
+					Decision:           string(decision),
+					Reason:             reason,
+					Actor:              actor,
+					CreateTime:         updateTime,
+				})
+				if err != nil {
+					return err
+				}
+			}
+		}
+
 		fresh, err := store.GetProjectByID(ctx, tx, row.ID)
 		if err != nil {
 			return err
@@ -165,7 +200,7 @@ func (s *ProjectService) transitionProject(ctx context.Context, projectID, actio
 		if err != nil {
 			return err
 		}
-		result = DecideResult{Project: &project, FromStatus: row.Status, ToStatus: next}
+		result = DecideResult{Project: &project, FromStatus: row.Status, ToStatus: next, Material: material}
 		return nil
 	})
 	if err != nil {

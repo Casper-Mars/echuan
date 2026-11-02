@@ -1,8 +1,9 @@
-import { useState, type FormEvent } from 'react'
-import { ApiError, errorMessage, reviewWorkItems } from '../api/client'
+import { useEffect, useState, type FormEvent } from 'react'
+import { ApiError, errorMessage, getWorkItem, listWorkItems, reviewWorkItems } from '../api/client'
 import type { Project } from '../api/types'
 import { Modal } from './Modal'
 import { ConfirmDialog } from './ConfirmDialog'
+import { ReviewedMaterialLine, type ReviewedMaterial } from './ReviewedMaterial'
 
 interface WorkItemReviewDialogProps {
   project: Project
@@ -26,14 +27,58 @@ export function WorkItemReviewDialog({
   onClose,
   onChanged,
 }: WorkItemReviewDialogProps) {
+  // 批次审批的对象是 breakdown 单卡报告的计划资料（kind=4）。列表没有版本号，
+  // 先按 result_material_id 占位，再用详情补 version。
+  const [material, setMaterial] = useState<ReviewedMaterial | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    listWorkItems(project.project_id)
+      .then(async (page) => {
+        if (cancelled) return
+        const breakdown = page.items.find((item) => item.kind === 'breakdown' && item.result_material_id)
+        if (!breakdown?.result_material_id) {
+          setMaterial(null)
+          return
+        }
+        const base: ReviewedMaterial = { materialId: breakdown.result_material_id, version: null }
+        setMaterial(base)
+        const detail = await getWorkItem(breakdown.work_id)
+        if (cancelled) return
+        setMaterial(
+          detail.result
+            ? {
+                materialId: detail.result.material_id,
+                version: detail.result.version,
+                title: detail.result.title,
+              }
+            : base,
+        )
+      })
+      .catch(() => {
+        if (!cancelled) setMaterial(null)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [project.project_id])
+
   if (decision === 'approve') {
     return (
       <ConfirmDialog
         title="全部通过"
         message={
           <>
-            通过 <strong>{count}</strong> 张工作项？通过后这些工作项会进入「待开发」，
-            项目流程继续推进。
+            <span>
+              通过 <strong>{count}</strong> 张工作项？通过后这些工作项会进入「待开发」，
+              项目流程继续推进。
+            </span>
+            <ReviewedMaterialLine material={material} loading={loading} />
           </>
         }
         confirmLabel="确认通过"
@@ -50,6 +95,8 @@ export function WorkItemReviewDialog({
   return (
     <RejectForm
       project={project}
+      material={material}
+      materialLoading={loading}
       onClose={onClose}
       onChanged={onChanged}
     />
@@ -58,10 +105,14 @@ export function WorkItemReviewDialog({
 
 function RejectForm({
   project,
+  material,
+  materialLoading,
   onClose,
   onChanged,
 }: {
   project: Project
+  material: ReviewedMaterial | null
+  materialLoading: boolean
   onClose: () => void
   onChanged: () => void
 }) {
@@ -105,6 +156,7 @@ function RejectForm({
           <div className="dialog-target-meta">
             <span>驳回只记录意见，不改动工作项与项目状态。</span>
           </div>
+          <ReviewedMaterialLine material={material} loading={materialLoading} />
         </div>
 
         <label className="field">

@@ -5,8 +5,10 @@ version order; each file runs inside a **single transaction** together with the
 `PRAGMA user_version` write-back.
 
 This repository is the v2 platform (`echuan_v2`): a brand-new project with a
-brand-new database and no compatibility layer. There is therefore **one initial
-schema file only** — no incremental migrations and no v1 data import.
+brand-new database and no compatibility layer. `0001_init.sql` creates the
+initial v2 schema at `user_version = 1`; `0002_gate_decisions.sql` adds the
+append-only gate-decision log and raises the version to 2. There is still no v1
+data import.
 
 `0001_init.sql` creates the v2 schema at `user_version = 1`:
 
@@ -23,6 +25,12 @@ schema file only** — no incremental migrations and no v1 data import.
 | `workers` | worker 心跳与当前占用的工作项（`current_work_item_id`） |
 | `worker_kinds` | worker 声明的能力（kind 列表），派单的唯一依据 |
 
+`0002_gate_decisions.sql` adds the gate-decision log at `user_version = 2`:
+
+| Table | Purpose |
+|-------|---------|
+| `gate_decisions` | 人工门禁决策（只追加）：项目/工作项、被审物料版本、结论、决策人、原因、时间 |
+
 v1 的 `tasks` / `task_deps` 不再创建：队列语义已收口到 `work_items`，
 `work_deps` 取代 `task_deps`。
 
@@ -36,6 +44,8 @@ v1 的 `tasks` / `task_deps` 不再创建：队列语义已收口到 `work_items
 | `ux_work_worker` | 唯一，`work_items(worker_id)`，仅 `state = 'leased'` |
 | `ix_work_events_item` | `work_item_events(work_item_id, id)` |
 | `ux_workers_current_work_item` | 唯一，`workers(current_work_item_id)`，仅非 NULL |
+| `ix_gate_decisions_subject` | `gate_decisions(subject_type, subject_id, id)` |
+| `ix_gate_decisions_material` | `gate_decisions(material_id)` |
 
 启动时还会校验 schema 版本：数据库版本高于二进制内置的最新版本时直接报
 `SchemaVersionError`，不尝试兼容。
@@ -54,8 +64,9 @@ NNNN_<description>.sql
 
 ## v2 的约定
 
-1. **不新增迁移文件**。schema 变化直接改写 `0001_init.sql`，开发库重建。
-   等二期正式发版、出现需要保留的线上数据后，才恢复按版本增量迁移的做法。
+1. **只增不改**。已发布的迁移文件不可改写；schema 变化必须新增
+   `NNNN_<description>.sql` 并把 `user_version` 加一。旧库在启动时按版本
+   自动补齐，开发库不需要重建。
 2. 只写 DDL/DML，**不要**写 `PRAGMA user_version`（由代码统一回写）。
 3. 文件内可包含多条语句，执行器会按分号拆分（能识别注释与引号）。
 4. 时间字段统一为 RFC3339 毫秒 UTC 字符串，SQL 按字典序比较。
@@ -65,3 +76,4 @@ NNNN_<description>.sql
 | 版本 | 文件 | 内容 |
 |------|------|------|
 | 1 | `0001_init.sql` | v2 完整初始 schema（领域表 + 工作项五表 + workers 外键改造） |
+| 2 | `0002_gate_decisions.sql` | 门禁决策记录表与索引（R3，task-0011） |

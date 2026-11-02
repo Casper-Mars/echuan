@@ -65,6 +65,7 @@ var routeSpecs = []routeSpec{
 	{http.MethodPost, "/v1/projects/decide", "projects"},
 	{http.MethodPost, "/v1/projects/cancel", "projects"},
 	{http.MethodGet, "/v1/projects/materials", "materials"},
+	{http.MethodGet, "/v1/gate-decisions", "projects"},
 
 	{http.MethodPost, "/v1/work-items", "work-items"},
 	{http.MethodGet, "/v1/work-items", "work-items"},
@@ -127,6 +128,7 @@ func Routes() []Route {
 //	GET /v1/workers                  list workers (or fetch one with ?id=)
 //	GET /v1/materials                download a material object (?id=)
 //	GET /v1/projects/materials       version chain of one kind (?id=&kind=)
+//	GET /v1/gate-decisions           project decision history (?project_id=)
 //	GET /v1/inbox                    pending reviews and work-item decisions
 //	/                                fallback handler (embedded frontend), when provided
 //
@@ -173,6 +175,7 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		handlers["POST /v1/projects/submit"] = projectsHandler.submitProject
 		handlers["POST /v1/projects/decide"] = projectsHandler.decideProject
 		handlers["POST /v1/projects/cancel"] = projectsHandler.cancelProject
+		handlers["GET /v1/gate-decisions"] = projectsHandler.listGateDecisions
 	}
 	if workItems != nil {
 		enabled["work-items"] = true
