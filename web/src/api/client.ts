@@ -1,5 +1,6 @@
 import type {
   ErrorBody,
+  InboxResponse,
   MaterialChain,
   Product,
   ProductCreateRequest,
@@ -17,10 +18,12 @@ import type {
   WorkItemCreateRequest,
   WorkItemDecision,
   WorkItemDetail,
+  WorkItemKind,
   WorkItemList,
   WorkItemPatchRequest,
   WorkItemReviewRequest,
   WorkItemReviewResult,
+  WorkItemState,
 } from './types'
 
 /**
@@ -256,6 +259,51 @@ export function listWorkItems(projectId: string, signal?: AbortSignal): Promise<
     query: { project_id: projectId, limit: 200 },
     signal,
   })
+}
+
+export interface WorkItemFilterOptions {
+  /** 按类型过滤，多个值以逗号拼接（后端 parseCSV 兼容）。 */
+  kinds?: WorkItemKind[]
+  /** 按状态过滤，多个值以逗号拼接（后端 parseCSV 兼容）。 */
+  states?: WorkItemState[]
+  /** 每页条数，接口上限 200。 */
+  limit?: number
+  /** 上一页最后一条的游标；不传表示第一页。 */
+  cursor?: string
+  signal?: AbortSignal
+}
+
+/**
+ * 跨项目按 kind/state 拉取工作项（不带 project_id）。
+ *
+ * 用于派单队列这类全局视图；普通项目看板仍走 listWorkItems(projectId)。
+ * 后端按 cursor 分页，返回 next_cursor 缺省表示已是最后一页。
+ */
+export function listWorkItemsByFilter({
+  kinds,
+  states,
+  limit = 200,
+  cursor,
+  signal,
+}: WorkItemFilterOptions = {}): Promise<WorkItemList> {
+  return request<WorkItemList>('/v1/work-items', {
+    query: {
+      kind: kinds && kinds.length > 0 ? kinds.join(',') : undefined,
+      state: states && states.length > 0 ? states.join(',') : undefined,
+      limit,
+      cursor,
+    },
+    signal,
+  })
+}
+
+/**
+ * 统一收件箱：所有待人工决策的评审门与工作项验收。
+ *
+ * 服务端已按等待时长排序（最久在前），limit 上限 200。
+ */
+export function getInbox(limit = 200, signal?: AbortSignal): Promise<InboxResponse> {
+  return request<InboxResponse>('/v1/inbox', { query: { limit }, signal })
 }
 
 export function getWorkItem(id: string, signal?: AbortSignal): Promise<WorkItemDetail> {

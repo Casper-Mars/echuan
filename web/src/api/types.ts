@@ -244,3 +244,33 @@ export interface ErrorBody {
 export function itemsOf<T>(value: { items?: T[] } | null | undefined): T[] {
   return Array.isArray(value?.items) ? value.items : []
 }
+
+/** 收件箱条目类型：项目评审门或工作项决策。 */
+export type InboxKind = 'project' | 'work_item'
+
+/**
+ * GET /v1/inbox 的一条待处理项。
+ *
+ * - 项目：state 为状态名（requirement_review / spec_review / tasks_review）；
+ * - 工作项：state 为 submitted / failed；
+ * - age_seconds 是服务端按 generated_at 计算好的等待秒数，stale 表示已超过
+ *   review_stale_hours（由服务端判定，前端不重复计算阈值）。
+ */
+export interface InboxItem {
+  kind: InboxKind
+  id: string
+  state: string
+  title: string
+  update_time: string
+  age_seconds: number
+  stale: boolean
+  reason: string | null
+}
+
+/** GET /v1/inbox 的响应。 */
+export interface InboxResponse {
+  items: InboxItem[]
+  count: number
+  review_stale_hours: number
+  generated_at: string
+}

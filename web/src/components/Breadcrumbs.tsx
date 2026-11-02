@@ -16,13 +16,15 @@ function decode(value: string): string {
 }
 
 /**
- * 内容区顶部面包屑：产品 → 项目 → 工作项；Worker 页单独一层。
+ * 内容区顶部面包屑：产品 → 项目 → 工作项；收件箱 / 派单队列 / Worker 页单独一层。
  * 标识从 hash 路由解析（HashRouter 下 location.pathname 即 hash 路径），
  * 产品层优先显示名称，缺失时回落产品编号。
  */
 export function Breadcrumbs() {
   const { pathname } = useLocation()
 
+  const inboxMatch = /^\/inbox\/?$/.test(pathname)
+  const queueMatch = /^\/queue\/?$/.test(pathname)
   const workersMatch = /^\/workers\/?$/.test(pathname)
   const workItemsMatch = pathname.match(/^\/products\/([^/]+)\/projects\/([^/]+)\/work-items\/?$/)
   const projectsMatch = pathname.match(/^\/products\/([^/]+)\/projects\/?$/)
@@ -32,7 +34,11 @@ export function Breadcrumbs() {
 
   let crumbs: Crumb[] = [{ label: '产品' }]
 
-  if (workersMatch) {
+  if (inboxMatch) {
+    crumbs = [{ label: '收件箱' }]
+  } else if (queueMatch) {
+    crumbs = [{ label: '派单队列' }]
+  } else if (workersMatch) {
     crumbs = [{ label: '执行节点' }]
   } else if (workItemsMatch) {
     const decodedProduct = decode(workItemsMatch[1])

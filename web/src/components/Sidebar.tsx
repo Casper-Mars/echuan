@@ -19,6 +19,23 @@ const iconProps = {
   strokeLinejoin: 'round',
 } as const
 
+/** 收件箱：托盘轮廓，对应「需要我处理的事」。 */
+const inboxIcon = (
+  <svg {...iconProps} aria-hidden="true">
+    <path d="M4 13.5V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7.5" />
+    <path d="M4 13.5h4l1.5 2.5h5l1.5-2.5h4" />
+    <path d="M4 13.5V18a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4.5" />
+  </svg>
+)
+
+/** 派单队列：三条队列 + 出队箭头。 */
+const queueIcon = (
+  <svg {...iconProps} aria-hidden="true">
+    <path d="M4 6h16M4 11h16M4 16h9" />
+    <path d="m17 14.5 4 3-4 3v-6Z" />
+  </svg>
+)
+
 /** 产品：分层堆叠，对应产品 → 项目 → 工作项的下钻结构。 */
 const productIcon = (
   <svg {...iconProps} aria-hidden="true">
@@ -37,12 +54,14 @@ const workerIcon = (
 )
 
 const items: NavItem[] = [
+  { to: '/inbox', label: '收件箱', icon: inboxIcon },
+  { to: '/queue', label: '派单队列', icon: queueIcon },
   { to: '/products', label: '产品', icon: productIcon },
   { to: '/workers', label: '执行节点', icon: workerIcon },
 ]
 
 /**
- * 左侧主导航：仅两个入口，不带徽标/计数/状态灯。
+ * 左侧主导航：四个入口（收件箱 / 派单队列 / 产品 / 执行节点），不带徽标/计数/状态灯。
  *
  * - 点击回跳：已在本入口内时指向当前路径（不会把用户拉回列表），
  *   否则指向该入口最后停留的路径；记忆失效（产品/项目被删）时

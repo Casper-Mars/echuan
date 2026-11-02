@@ -12,6 +12,7 @@ import {
 } from '../lib/format'
 import { ErrorNotice, LoadingState } from './States'
 import { ProjectActions } from './ProjectActions'
+import { ProjectStageBar } from './ProjectStageBar'
 import { ProjectFormDialog } from './ProjectFormDialog'
 import { DrawerTitleContext } from './DrawerContext'
 import { RequirementReader } from './RequirementReader'
@@ -157,6 +158,8 @@ export function ProjectDetailDrawer({
 
   return (
     <div className="detail">
+      <ProjectStageBar status={detail.status} />
+
       {error && <ErrorNotice error={error} onRetry={refresh} />}
 
       <div className="detail-summary">
