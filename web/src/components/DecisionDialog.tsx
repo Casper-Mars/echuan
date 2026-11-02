@@ -10,6 +10,7 @@ import {
 import type { Project, ProjectDecision, WorkItemDecision } from '../api/types'
 import { projectStatusLabel, workItemStateLabel } from '../lib/format'
 import { Modal } from './Modal'
+import { ReviewedMaterialLine, type ReviewedMaterial } from './ReviewedMaterial'
 
 export type DecisionValue = ProjectDecision | WorkItemDecision
 
@@ -21,6 +22,10 @@ export interface DecisionTarget {
   badgeClass: string
   statusLabel: string
   version: number
+  /** 本次审批所依据的资料；项目按当前状态取 requirement/spec，单卡取 result。 */
+  material?: ReviewedMaterial | null
+  /** 详情请求尚未返回时置 true，避免把「加载中」误显示为「未绑定」。 */
+  materialLoading?: boolean
 }
 
 const DECISION_LABEL: Record<DecisionValue, string> = {
@@ -81,6 +86,7 @@ export function DecisionDialog({
     try {
       if (current.kind === 'project') {
         const latest = await getProject(current.id)
+        const reviewed = latest.status === 3 ? latest.spec : latest.requirement
         setCurrent({
           kind: 'project',
           id: latest.project_id,
@@ -88,6 +94,9 @@ export function DecisionDialog({
           badgeClass: `status-${latest.status}`,
           statusLabel: projectStatusLabel(latest.status),
           version: latest.version,
+          material: reviewed
+            ? { materialId: reviewed.material_id, version: reviewed.version, title: reviewed.title }
+            : null,
         })
       } else {
         const latest = await getWorkItem(current.id)
@@ -98,6 +107,13 @@ export function DecisionDialog({
           badgeClass: `state-${latest.state}`,
           statusLabel: workItemStateLabel(latest.state),
           version: latest.version,
+          material: latest.result
+            ? {
+                materialId: latest.result.material_id,
+                version: latest.result.version,
+                title: latest.result.title,
+              }
+            : null,
         })
       }
     } catch {
@@ -164,6 +180,10 @@ export function DecisionDialog({
             <span className={`badge ${current.badgeClass}`}>{current.statusLabel}</span>
             <span className="mono">本次提交依据第 {current.version} 版</span>
           </div>
+          <ReviewedMaterialLine
+            material={current.material ?? target.material ?? null}
+            loading={current.materialLoading ?? target.materialLoading ?? false}
+          />
         </div>
 
         <label className="field">

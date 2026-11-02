@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+
+	"github.com/Casper-Mars/echuan/migrations"
 )
 
 // testLogger writes nothing but keeps the production log contract.
@@ -98,7 +100,7 @@ func TestMigrateCreatesSchema(t *testing.T) {
 	wantTables := []string{
 		"products", "materials", "projects", "project_specs",
 		"work_items", "work_inputs", "work_deps", "work_item_events",
-		"workers", "worker_kinds",
+		"workers", "worker_kinds", "gate_decisions",
 	}
 	tables := schemaObjects(t, st, "table")
 	for _, name := range wantTables {
@@ -128,8 +130,18 @@ func TestMigrateCreatesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("user_version = %d, want 1", version)
+	if version != 2 {
+		t.Errorf("user_version = %d, want 2", version)
+	}
+
+	decisionColumns := schemaColumns(t, st, "gate_decisions")
+	for _, name := range []string{
+		"id", "subject_type", "subject_id", "gate", "material_id",
+		"decision", "decided_by", "reason", "create_time",
+	} {
+		if !decisionColumns[name] {
+			t.Errorf("gate_decisions.%s missing; have %v", name, decisionColumns)
+		}
 	}
 
 	columns := schemaColumns(t, st, "projects")
@@ -174,8 +186,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if applied != 1 {
-		t.Errorf("first applied = %d, want 1", applied)
+	if applied != 2 {
+		t.Errorf("first applied = %d, want 2", applied)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first: %v", err)
@@ -199,8 +211,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("user_version = %d, want 1", version)
+	if version != 2 {
+		t.Errorf("user_version = %d, want 2", version)
 	}
 }
 
@@ -550,8 +562,8 @@ func TestMigrateRejectsNewerSchema(t *testing.T) {
 	if !errors.As(err, &sv) {
 		t.Fatalf("error = %v, want SchemaVersionError", err)
 	}
-	if sv.Database != 99 || sv.Binary != 1 {
-		t.Errorf("versions = %d/%d, want 99/1", sv.Database, sv.Binary)
+	if sv.Database != 99 || sv.Binary != 2 {
+		t.Errorf("versions = %d/%d, want 99/2", sv.Database, sv.Binary)
 	}
 }
 
@@ -635,4 +647,61 @@ func seedProject(t *testing.T, st *Store) int64 {
 		t.Fatalf("seed project: %v", err)
 	}
 	return projectID
+}
+
+// TestMigrateUpgradesV1Database covers the old-database path: a schema parked
+// at user_version 1 gains gate_decisions on startup, keeps its rows and ends at
+// version 2 without rebuilding.
+func TestMigrateUpgradesV1Database(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(Config{Path: filepath.Join(t.TempDir(), "state.db")})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	initial, err := migrations.FS.ReadFile("0001_init.sql")
+	if err != nil {
+		t.Fatalf("read embedded 0001: %v", err)
+	}
+	applied, err := st.MigrateFS(ctx, fstest.MapFS{
+		"0001_init.sql": {Data: initial},
+	})
+	if err != nil {
+		t.Fatalf("MigrateFS(v1): %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("applied = %d, want 1", applied)
+	}
+	if version, err := st.MigrationVersion(ctx); err != nil || version != 1 {
+		t.Fatalf("pre-upgrade version = %d (%v), want 1", version, err)
+	}
+
+	if _, err := st.Write().ExecContext(ctx, `
+		INSERT INTO products (product_id, name, git_url, create_time, update_time)
+		VALUES ('APP', '旧库产品', 'git@example.com:APP.git', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert product: %v", err)
+	}
+
+	applied, err = st.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("Migrate(upgrade): %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("upgrade applied = %d, want 1 (0002 only)", applied)
+	}
+	version, err := st.MigrationVersion(ctx)
+	if err != nil || version != 2 {
+		t.Fatalf("post-upgrade version = %d (%v), want 2", version, err)
+	}
+	if !schemaObjects(t, st, "table")["gate_decisions"] {
+		t.Error("gate_decisions missing after the v1 → v2 upgrade")
+	}
+	var products int
+	if err := st.Read().QueryRowContext(ctx, `SELECT COUNT(*) FROM products`).Scan(&products); err != nil {
+		t.Fatalf("count products: %v", err)
+	}
+	if products != 1 {
+		t.Errorf("products after upgrade = %d, want the existing row", products)
+	}
 }

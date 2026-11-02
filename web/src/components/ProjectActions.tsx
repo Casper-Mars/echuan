@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { cancelProject, getProject, submitProject } from '../api/client'
 import type { Project, ProjectDecision } from '../api/types'
 import { isPendingProjectStatus, projectStatusLabel } from '../lib/format'
 import { ConfirmDialog } from './ConfirmDialog'
 import { DecisionDialog } from './DecisionDialog'
+import type { ReviewedMaterial } from './ReviewedMaterial'
 
 export type ProjectActionRequest =
   | { type: 'submit' }
@@ -84,15 +85,6 @@ export function ProjectActionDialogs({
 }: ProjectActionDialogsProps) {
   if (!request) return null
 
-  const target = {
-    kind: 'project' as const,
-    id: project.project_id,
-    title: project.title,
-    badgeClass: `status-${project.status}`,
-    statusLabel: projectStatusLabel(project.status),
-    version: project.version,
-  }
-
   if (request.type === 'submit') {
     return (
       <ConfirmDialog
@@ -147,9 +139,75 @@ export function ProjectActionDialogs({
   }
 
   return (
-    <DecisionDialog
-      target={target}
+    <ProjectDecisionDialog
+      project={project}
       decision={request.decision}
+      onClose={onClose}
+      onChanged={onChanged}
+      onDecided={onDecided}
+    />
+  )
+}
+
+/**
+ * 项目审批弹窗：列表行不含 requirement/spec，所以先读一次详情，
+ * 把当前状态对应的资料（需求或方案）作为「被审资料」传给 DecisionDialog。
+ * 详情读取失败时仍可审批，只是不展示版本。
+ */
+function ProjectDecisionDialog({
+  project,
+  decision,
+  onClose,
+  onChanged,
+  onDecided,
+}: {
+  project: Project
+  decision: ProjectDecision
+  onClose: () => void
+  onChanged: () => void
+  onDecided?: (project: Project) => void
+}) {
+  const [material, setMaterial] = useState<ReviewedMaterial | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    getProject(project.project_id)
+      .then((detail) => {
+        if (cancelled) return
+        const reviewed =
+          project.status === 1 ? detail.requirement : project.status === 3 ? detail.spec : null
+        setMaterial(
+          reviewed
+            ? { materialId: reviewed.material_id, version: reviewed.version, title: reviewed.title }
+            : null,
+        )
+      })
+      .catch(() => {
+        if (!cancelled) setMaterial(null)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [project.project_id, project.status])
+
+  return (
+    <DecisionDialog
+      target={{
+        kind: 'project',
+        id: project.project_id,
+        title: project.title,
+        badgeClass: `status-${project.status}`,
+        statusLabel: projectStatusLabel(project.status),
+        version: project.version,
+        material,
+        materialLoading: loading,
+      }}
+      decision={decision}
       onClose={onClose}
       onChanged={onChanged}
       onDecided={onDecided}

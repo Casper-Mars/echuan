@@ -476,8 +476,35 @@ func (s *WorkItemService) ListWorkItems(ctx context.Context, in ListWorkItemsInp
 	if err != nil {
 		return WorkItemPage{}, err
 	}
+
+	// Resolve every referenced result material in one query: the list exposes
+	// result_material_id so the UI can show/refresh the reviewed version, and a
+	// per-row lookup would be an N+1 on the board.
+	physicalIDs := make([]int64, 0, len(rows))
 	for _, row := range rows {
-		view, err := s.viewFromRow(ctx, s.store.Read(), row, deps[row.ID], nil)
+		if row.ResultMaterialID != nil {
+			physicalIDs = append(physicalIDs, *row.ResultMaterialID)
+		}
+	}
+	materials, err := store.GetMaterialsByIDs(ctx, s.store.Read(), physicalIDs)
+	if err != nil {
+		return WorkItemPage{}, err
+	}
+
+	for _, row := range rows {
+		var result *domain.Material
+		if row.ResultMaterialID != nil {
+			mat, ok := materials[*row.ResultMaterialID]
+			if !ok {
+				return WorkItemPage{}, fmt.Errorf("work item %s: result material %d not found", row.WorkID, *row.ResultMaterialID)
+			}
+			mapped, err := materialFromRow(mat)
+			if err != nil {
+				return WorkItemPage{}, err
+			}
+			result = &mapped
+		}
+		view, err := s.viewFromRow(ctx, s.store.Read(), row, deps[row.ID], result)
 		if err != nil {
 			return WorkItemPage{}, err
 		}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ErrChainBroken reports a material chain that cannot be walked back to its
@@ -76,6 +77,32 @@ func InsertMaterial(ctx context.Context, tx *sql.Tx, m NewMaterial) (int64, erro
 func GetMaterialByID(ctx context.Context, q Querier, id int64) (Material, error) {
 	return One[Material](ctx, q,
 		`SELECT `+materialColumns+` FROM materials m WHERE m.id = ?`, id)
+}
+
+// GetMaterialsByIDs loads several materials in one statement, keyed by
+// physical id. Unknown ids are simply absent from the map; callers that need
+// every pointer resolved should check the length.
+func GetMaterialsByIDs(ctx context.Context, q Querier, ids []int64) (map[int64]Material, error) {
+	out := make(map[int64]Material, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := All[Material](ctx, q,
+		`SELECT `+materialColumns+` FROM materials m
+		  WHERE m.id IN (`+strings.Join(placeholders, ", ")+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list materials by ids: %w", err)
+	}
+	for _, row := range rows {
+		out[row.ID] = row
+	}
+	return out, nil
 }
 
 // GetMaterialByMaterialID returns the material with the given business id.

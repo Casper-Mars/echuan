@@ -50,6 +50,8 @@ type WorkItemDecisionResult struct {
 	FromState string
 	ToState   string
 	Project   *ProjectAdvance
+	// Material is the result material version this verdict reviewed.
+	Material *GateMaterial
 }
 
 // ReportWorkItem completes one leased card with an existing material.
@@ -362,6 +364,23 @@ func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisio
 			return &domain.InvalidVersionError{Current: fresh.Version, Expected: row.Version}
 		}
 
+		// The verdict is recorded only after the conditional state write won,
+		// in the same transaction. A reject of a failed card carries whatever
+		// result material the card still points at (often none).
+		result.Material, err = recordGateDecision(ctx, tx, gateDecisionWrite{
+			SubjectType:        store.GateSubjectWorkItem,
+			SubjectID:          row.WorkID,
+			Gate:               row.Kind,
+			MaterialPhysicalID: row.ResultMaterialID,
+			Decision:           decision,
+			Reason:             reason,
+			Actor:              actor,
+			CreateTime:         updateTime,
+		})
+		if err != nil {
+			return err
+		}
+
 		if next == store.WorkItemStateAccepted {
 			result.Project, err = s.settleProjectIfDone(ctx, tx, row.ProjectCode, actor)
 			if err != nil {
@@ -483,6 +502,13 @@ func (s *WorkItemService) ReviewWorkItems(ctx context.Context, in ReviewWorkItem
 			return err
 		}
 
+		// The plan gate is bound to the breakdown card's kind=4 material. It
+		// is read before the approve branch settles (accepts) that card.
+		planMaterialID, err := store.LatestWorkItemResultMaterialID(ctx, tx, project.ID, phaseKindBreakdown)
+		if err != nil {
+			return err
+		}
+
 		updateTime := formatTimestamp(s.nextTimestamp(project.UpdateTime))
 		if in.Decision == domain.DecisionReject {
 			if project.Status != domain.StatusTasksReview && project.Status != domain.StatusPendingDone {
@@ -502,6 +528,19 @@ func (s *WorkItemService) ReviewWorkItems(ctx context.Context, in ReviewWorkItem
 					return readErr
 				}
 				return &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
+			}
+
+			if _, err := recordGateDecision(ctx, tx, gateDecisionWrite{
+				SubjectType:        store.GateSubjectProject,
+				SubjectID:          project.ProjectID,
+				Gate:               "plan",
+				MaterialPhysicalID: planMaterialID,
+				Decision:           string(in.Decision),
+				Reason:             reason,
+				Actor:              actor,
+				CreateTime:         updateTime,
+			}); err != nil {
+				return err
 			}
 
 			result = ReviewWorkItemsResult{
@@ -541,6 +580,19 @@ func (s *WorkItemService) ReviewWorkItems(ctx context.Context, in ReviewWorkItem
 				return readErr
 			}
 			return &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
+		}
+
+		if _, err := recordGateDecision(ctx, tx, gateDecisionWrite{
+			SubjectType:        store.GateSubjectProject,
+			SubjectID:          project.ProjectID,
+			Gate:               "plan",
+			MaterialPhysicalID: planMaterialID,
+			Decision:           string(in.Decision),
+			Reason:             reason,
+			Actor:              actor,
+			CreateTime:         updateTime,
+		}); err != nil {
+			return err
 		}
 
 		// The breakdown stage is over once the batch is approved; closing its

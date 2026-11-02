@@ -60,6 +60,8 @@ export interface Project {
   work_item_done: number
   /** 按 work item 状态统计；无工作项时后端省略该字段。 */
   work_item_by_state?: Record<string, number>
+  /** POST /v1/projects/decide 的响应携带：本次决策绑定的资料版本。 */
+  material_id?: string | null
   create_time: string
   update_time: string
 }
@@ -142,6 +144,8 @@ export interface WorkItemLease {
 /** GET /v1/work-items?id= 的详情：在列表字段上追加结果资料。 */
 export interface WorkItemDetail extends WorkItem {
   result: Material | null
+  /** POST /v1/work-items/decide 的响应携带：本次决策绑定的结果资料。 */
+  material_id?: string | null
 }
 
 /** POST /v1/work-items 的请求体。 */

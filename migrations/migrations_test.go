@@ -6,29 +6,34 @@ import (
 	"testing/fstest"
 )
 
-// TestEmbeddedMigrations guards the embedded FS itself: v2 ships exactly one
-// file, the initial schema, and its version is 1.
+// TestEmbeddedMigrations guards the embedded FS itself: v2 ships the initial
+// schema plus the gate-decisions increment, at versions 1 and 2.
 func TestEmbeddedMigrations(t *testing.T) {
 	list, err := Load(FS)
 	if err != nil {
 		t.Fatalf("Load(FS): %v", err)
 	}
-	if len(list) != 1 {
-		t.Fatalf("migrations = %d, want 1", len(list))
+	if len(list) != 2 {
+		t.Fatalf("migrations = %d, want 2", len(list))
 	}
 	if list[0].Version != 1 || list[0].Name != "0001_init.sql" {
-		t.Errorf("migration = %d/%s, want 1/0001_init.sql", list[0].Version, list[0].Name)
+		t.Errorf("migration[0] = %d/%s, want 1/0001_init.sql", list[0].Version, list[0].Name)
 	}
-	if len(list[0].SQL) == 0 {
-		t.Errorf("embedded migration %s has no SQL", list[0].Name)
+	if list[1].Version != 2 || list[1].Name != "0002_gate_decisions.sql" {
+		t.Errorf("migration[1] = %d/%s, want 2/0002_gate_decisions.sql", list[1].Version, list[1].Name)
+	}
+	for _, migration := range list {
+		if len(migration.SQL) == 0 {
+			t.Errorf("embedded migration %s has no SQL", migration.Name)
+		}
 	}
 
 	latest, err := Latest(FS)
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
 	}
-	if latest != 1 {
-		t.Errorf("latest = %d, want 1", latest)
+	if latest != 2 {
+		t.Errorf("latest = %d, want 2", latest)
 	}
 }
 
