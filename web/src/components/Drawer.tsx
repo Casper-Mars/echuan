@@ -9,7 +9,7 @@ export interface DrawerProps {
 
 /**
  * 右侧详情抽屉容器：遮罩、ESC 关闭、关闭按钮。
- * 具体详情内容（含决策交互）由任务-15 填充。
+ * 具体详情内容（含决策交互）由各详情组件填充。
  */
 export function Drawer({ open, title, onClose, children }: DrawerProps) {
   useEffect(() => {

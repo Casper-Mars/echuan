@@ -132,7 +132,7 @@ export function ProjectsPage() {
 
   // 后端对不存在的 product_id 只返回空列表（200）而非 404，仅靠上面的错误判断
   // 会停在“一个不存在的产品的空项目页”。这里每次进入页面补一次产品存在性校验（不轮询），
-  // 产品已删则回产品列表，保证“任务 → 项目 → 产品”的回退链能收敛。
+  // 产品已删则回产品列表，保证“工作项 → 项目 → 产品”的回退链能收敛。
   useEffect(() => {
     const controller = new AbortController()
     getProduct(productId, controller.signal).catch((err: unknown) => {
@@ -233,10 +233,10 @@ export function ProjectsPage() {
         <div className="list">
           {projects.map((project) => {
             const stale = isPendingProjectStatus(project.status) && isPendingStale(project.update_time)
-            // 任务草稿去拆解，任务评审去评审；其余状态仍进同一张看板。
+            // 工作项草稿去拆解，工作项评审去评审；其余状态仍进同一张工作项看板。
             const boardEntry =
-              project.status === 4 ? '去拆解 →' : project.status === 5 ? '去评审 →' : '任务看板 →'
-            // 驳回字段只可能落在任务评审(5)/待完成(6)；任一存在都直接展示。
+              project.status === 4 ? '去拆解 →' : project.status === 5 ? '去评审 →' : '工作项看板 →'
+            // 驳回字段只可能落在工作项评审(5)/待完成(6)；任一存在都直接展示。
             const taskReviewReason = project.tasks_review_reason
             return (
               <article
@@ -247,7 +247,7 @@ export function ProjectsPage() {
                   navigate(
                     `/products/${encodeURIComponent(productId)}/projects/${encodeURIComponent(
                       project.project_id,
-                    )}/tasks`,
+                    )}/work-items`,
                   )
                 }}
               >
@@ -287,7 +287,7 @@ export function ProjectsPage() {
                       {stale && ' · 超 72h'}
                     </span>
                     <span>
-                      任务 {project.task_stats.done}/{project.task_stats.total}
+                      工作项 {project.work_item_done}/{project.work_item_total}
                     </span>
                     <span className="mono">第 {project.version} 版</span>
                   </div>
@@ -296,7 +296,7 @@ export function ProjectsPage() {
                   </p>
                   {taskReviewReason && (
                     <p className="row-reason row-reason-rejected">
-                      任务清单已驳回：{taskReviewReason}
+                      工作项清单已驳回：{taskReviewReason}
                       <span className="muted">
                         {' '}· {project.last_actor || '—'} ·{' '}
                         {formatDateTime(project.tasks_review_rejected_at)}

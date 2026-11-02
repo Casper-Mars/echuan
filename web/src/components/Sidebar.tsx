@@ -19,7 +19,7 @@ const iconProps = {
   strokeLinejoin: 'round',
 } as const
 
-/** 产品：分层堆叠，对应产品 → 项目 → 任务的下钻结构。 */
+/** 产品：分层堆叠，对应产品 → 项目 → 工作项的下钻结构。 */
 const productIcon = (
   <svg {...iconProps} aria-hidden="true">
     <path d="M3 7.5 12 3l9 4.5-9 4.5-9-4.5Z" />

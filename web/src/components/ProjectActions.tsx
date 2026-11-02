@@ -88,7 +88,7 @@ export function ProjectActionDialogs({
     kind: 'project' as const,
     id: project.project_id,
     title: project.title,
-    status: project.status,
+    badgeClass: `status-${project.status}`,
     statusLabel: projectStatusLabel(project.status),
     version: project.version,
   }
@@ -130,7 +130,7 @@ export function ProjectActionDialogs({
         message={
           <>
             确认取消项目 <span className="code">{project.project_id}</span>
-            「{project.title}」？未完成的任务会一并取消，此操作不可撤销。
+            「{project.title}」？未完成的工作项会一并取消，此操作不可撤销。
           </>
         }
         confirmLabel="确认取消"

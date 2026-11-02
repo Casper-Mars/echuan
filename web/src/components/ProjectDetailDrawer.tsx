@@ -4,7 +4,7 @@ import type { MaterialChain, MaterialVersion, ProjectDetail } from '../api/types
 import { usePolling } from '../hooks/usePolling'
 import { copyText } from '../lib/clipboard'
 import {
-  TASK_COLUMNS,
+  WORK_ITEM_STATE_COLUMNS,
   formatBytes,
   formatDateTime,
   formatSince,
@@ -90,7 +90,7 @@ function ChainList({
 }
 
 /**
- * 项目详情抽屉：需求/方案版本链、方案当前版元信息、任务进度、
+ * 项目详情抽屉：需求/方案版本链、方案当前版元信息、工作项进度、
  * reason / last_actor / update_time，以及立项/批准/驳回/取消动作。
  * 正文不在详情里返回，需要时按 material_id 单独下载。
  * 自身 5s 轮询；编辑中的输入不会被覆盖（usePolling 的 isUserEditing 守卫）。
@@ -141,7 +141,7 @@ export function ProjectDetailDrawer({
   }
 
   const { detail, requirementChain, specChain } = data
-  const byStatus = detail.task_stats.by_status ?? {}
+  const byState = detail.work_item_by_state ?? {}
   const changed = () => {
     refresh()
     onChanged()
@@ -223,18 +223,18 @@ export function ProjectDetailDrawer({
       </div>
 
       <section className="detail-section">
-        <h3>任务进度</h3>
+        <h3>工作项进度</h3>
         <div className="progress-grid">
           <div className="progress-total">
             <strong>
-              {detail.task_stats.done}/{detail.task_stats.total}
+              {detail.work_item_done}/{detail.work_item_total}
             </strong>
             <span className="muted">已完成</span>
           </div>
-          {TASK_COLUMNS.map((column) => (
-            <div key={column.status} className="progress-cell">
+          {WORK_ITEM_STATE_COLUMNS.map((column) => (
+            <div key={column.state} className="progress-cell">
               <span className="muted">{column.label}</span>
-              <strong>{byStatus[String(column.status)] ?? 0}</strong>
+              <strong>{byState[column.state] ?? 0}</strong>
             </div>
           ))}
         </div>

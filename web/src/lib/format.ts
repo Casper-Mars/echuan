@@ -5,64 +5,71 @@ const PROJECT_STATUS: Record<number, string> = {
   1: '需求评审',
   2: '方案草稿',
   3: '方案评审',
-  4: '任务草稿',
-  5: '任务评审',
+  4: '工作项草稿',
+  5: '工作项评审',
   6: '待完成',
   7: '已完成',
   8: '已取消',
 }
 
-const TASK_STATUS: Record<number, string> = {
-  0: '待办',
-  1: '可领取',
-  2: '进行中',
-  3: '待验收',
-  4: '已完成',
-  5: '已失败',
-  6: '阻塞',
-  7: '已取消',
+/** 工作项 kind 的中文标签。 */
+export const WORK_ITEM_KINDS = ['requirement', 'design', 'breakdown', 'dev'] as const
+
+const WORK_ITEM_KIND_LABELS: Record<(typeof WORK_ITEM_KINDS)[number], string> = {
+  requirement: '需求',
+  design: '方案',
+  breakdown: '拆分',
+  dev: '开发',
 }
 
-/** 任务看板列顺序（与 domain/task.go 的整数状态一致）。 */
-export const TASK_COLUMNS: { status: number; label: string }[] = [
-  { status: 0, label: '待办' },
-  { status: 1, label: '可领取' },
-  { status: 2, label: '进行中' },
-  { status: 3, label: '待验收' },
-  { status: 4, label: '已完成' },
-  { status: 5, label: '已失败' },
-  { status: 6, label: '阻塞' },
-  { status: 7, label: '已取消' },
-]
+/** 工作项 state 的中文标签（与 api/openapi.yaml 的文本状态一一对应）。 */
+const WORK_ITEM_STATE_LABELS: Record<string, string> = {
+  blocked: '待评审',
+  queued: '待开发',
+  leased: '开发中',
+  submitted: '待验收',
+  accepted: '已完成',
+  failed: '已失败',
+  cancelled: '已取消',
+}
+
+export type WorkItemKindValue = (typeof WORK_ITEM_KINDS)[number]
+
+export const WORK_ITEM_STATE_OPTIONS = Object.entries(WORK_ITEM_STATE_LABELS).map(
+  ([state, label]) => ({ state, label }),
+)
+
+/** 全部工作项状态（按看板列顺序）。 */
+export const WORK_ITEM_STATE_COLUMNS = WORK_ITEM_STATE_OPTIONS
 
 /**
- * 任务看板主列（状态 0-4）：0 为「待评审」且仅在非空时出现，
- * 1-4 常驻，数量为 0 也展示列头与计数。
+ * 工作项看板主列：blocked 仅在非空时出现，
+ * queued/leased/submitted/accepted 常驻（数量为 0 也展示列头与计数）。
  */
-export const TASK_BOARD_COLUMNS: { status: number; label: string }[] = [
-  { status: 0, label: '待评审' },
-  { status: 1, label: '待开发' },
-  { status: 2, label: '开发中' },
-  { status: 3, label: '待验收' },
-  { status: 4, label: '已完成' },
+export const WORK_ITEM_BOARD_COLUMNS: { state: string; label: string }[] = [
+  { state: 'blocked', label: '待评审' },
+  { state: 'queued', label: '待开发' },
+  { state: 'leased', label: '开发中' },
+  { state: 'submitted', label: '待验收' },
+  { state: 'accepted', label: '已完成' },
 ]
 
-/**
- * 附加列（已失败/阻塞/已取消）：仅非空时显示。
- * 方案未提这三列，但重排/放弃入口挂在卡片上，保留可避免入口消失。
- */
-export const TASK_BOARD_TRAILING_COLUMNS: { status: number; label: string }[] = [
-  { status: 5, label: '已失败' },
-  { status: 6, label: '阻塞' },
-  { status: 7, label: '已取消' },
+/** 附加列（已失败/已取消）：仅非空时显示。 */
+export const WORK_ITEM_TRAILING_COLUMNS: { state: string; label: string }[] = [
+  { state: 'failed', label: '已失败' },
+  { state: 'cancelled', label: '已取消' },
 ]
+
+export function workItemKindLabel(kind: string): string {
+  return WORK_ITEM_KIND_LABELS[kind as WorkItemKindValue] ?? `未知(${kind})`
+}
+
+export function workItemStateLabel(state: string): string {
+  return WORK_ITEM_STATE_LABELS[state] ?? `未知(${state})`
+}
 
 export function projectStatusLabel(status: number): string {
   return PROJECT_STATUS[status] ?? `未知(${status})`
-}
-
-export function taskStatusLabel(status: number): string {
-  return TASK_STATUS[status] ?? `未知(${status})`
 }
 
 /** 相对当前时间的“停留时长”（基于 update_time）。 */
@@ -125,7 +132,7 @@ export const PROJECT_STATUS_OPTIONS: { status: number; label: string }[] = Objec
   .sort((a, b) => a - b)
   .map((status) => ({ status, label: projectStatusLabel(status) }))
 
-/** 需要人工决策的项目状态：需求评审 / 方案评审 / 任务评审。 */
+/** 需要人工决策的项目状态：需求评审 / 方案评审 / 工作项评审。 */
 export const PROJECT_PENDING_STATUSES = [1, 3, 5] as const
 
 /** 待决策超过 72 小时视为滞留（阈值可在此统一调整）。 */

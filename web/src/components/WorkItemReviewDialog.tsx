@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from 'react'
-import { ApiError, errorMessage, reviewTasks } from '../api/client'
+import { ApiError, errorMessage, reviewWorkItems } from '../api/client'
 import type { Project } from '../api/types'
 import { Modal } from './Modal'
 import { ConfirmDialog } from './ConfirmDialog'
 
-interface TaskReviewDialogProps {
+interface WorkItemReviewDialogProps {
   project: Project
   decision: 'approve' | 'reject'
   /** 本次待评审的卡片数量（用于二次确认文案）。 */
@@ -15,31 +15,31 @@ interface TaskReviewDialogProps {
 }
 
 /**
- * 任务批次评审弹窗。
- * - approve：二次确认「通过 N 张任务卡？」；
+ * 工作项批次评审弹窗。
+ * - approve：二次确认「通过 N 张工作项？」；
  * - reject：原因必填，失败展示后端错误体（409 时同时刷新看板）。
  */
-export function TaskReviewDialog({
+export function WorkItemReviewDialog({
   project,
   decision,
   count,
   onClose,
   onChanged,
-}: TaskReviewDialogProps) {
+}: WorkItemReviewDialogProps) {
   if (decision === 'approve') {
     return (
       <ConfirmDialog
         title="全部通过"
         message={
           <>
-            通过 <strong>{count}</strong> 张任务卡？通过后这些卡片会进入「待开发」，
+            通过 <strong>{count}</strong> 张工作项？通过后这些工作项会进入「待开发」，
             项目流程继续推进。
           </>
         }
         confirmLabel="确认通过"
         onClose={onClose}
         onConfirm={async () => {
-          await reviewTasks(project.project_id, 'approve')
+          await reviewWorkItems(project.project_id, 'approve')
           onChanged()
         }}
         onStale={onChanged}
@@ -79,7 +79,7 @@ function RejectForm({
     setSubmitting(true)
     setError(null)
     try {
-      await reviewTasks(project.project_id, 'reject', reason.trim())
+      await reviewWorkItems(project.project_id, 'reject', reason.trim())
       onChanged()
       onClose()
     } catch (err) {
@@ -103,7 +103,7 @@ function RejectForm({
             <strong>{project.title || '（未命名项目）'}</strong>
           </div>
           <div className="dialog-target-meta">
-            <span>驳回只记录意见，不改动卡片与项目状态。</span>
+            <span>驳回只记录意见，不改动工作项与项目状态。</span>
           </div>
         </div>
 
@@ -115,7 +115,7 @@ function RejectForm({
             rows={4}
             value={reason}
             onChange={(event) => setReason(event.target.value)}
-            placeholder="请说明任务清单需要修改的地方"
+            placeholder="请说明工作项清单需要修改的地方"
             autoFocus
             disabled={submitting}
           />

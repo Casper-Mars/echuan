@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ApiError, deleteTask, getProject, listTasks } from '../api/client'
-import type { Task, TaskDecision } from '../api/types'
+import { ApiError, deleteWorkItem, getProject, listWorkItems } from '../api/client'
+import type { WorkItem, WorkItemKind, WorkItemState } from '../api/types'
 import { itemsOf } from '../api/types'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useDrawer } from '../components/DrawerContext'
-import { TaskActionButtons, TaskActionDialogs } from '../components/TaskActions'
-import { TaskDetailDrawer } from '../components/TaskDetailDrawer'
-import { TaskFormDialog } from '../components/TaskFormDialog'
-import { TaskReviewDialog } from '../components/TaskReviewDialog'
+import { WorkItemActionButtons, WorkItemActionDialogs } from '../components/WorkItemActions'
+import { WorkItemDetailDrawer } from '../components/WorkItemDetailDrawer'
+import { WorkItemFormDialog } from '../components/WorkItemFormDialog'
+import { WorkItemReviewDialog } from '../components/WorkItemReviewDialog'
 import {
   EmptyState,
   ErrorNotice,
@@ -18,44 +18,53 @@ import {
 import { usePolling } from '../hooks/usePolling'
 import { useWorkerPresence } from '../hooks/useWorkerPresence'
 import {
-  TASK_BOARD_COLUMNS,
-  TASK_BOARD_TRAILING_COLUMNS,
+  WORK_ITEM_BOARD_COLUMNS,
+  WORK_ITEM_KINDS,
+  WORK_ITEM_STATE_COLUMNS,
+  WORK_ITEM_TRAILING_COLUMNS,
   formatDateTime,
   formatSince,
   projectStatusLabel,
+  workItemKindLabel,
 } from '../lib/format'
+import type { WorkItemActionRequest } from '../components/WorkItemActions'
 
-/** 只有任务草稿(4)/任务评审(5)/待完成(6) 允许加卡。 */
-const ADD_TASK_STATUSES = new Set([4, 5, 6])
+/** 只有草稿(4)/评审(5)/待完成(6) 允许加卡。 */
+const ADD_WORK_ITEM_STATUSES = new Set([4, 5, 6])
+
+const ALL_KINDS: WorkItemKind[] = [...WORK_ITEM_KINDS]
 
 /**
- * 任务看板：待评审(0) 非空时单独成列并带整批评审；
- * 待开发/开发中/待验收/已完成四列常驻；已失败/阻塞/已取消仅非空显示。
- * 卡片按状态提供验收/返工与重排/放弃入口。
+ * 工作项看板：blocked（待评审）非空时单独成列并带整批评审；
+ * 待开发/开发中/待验收/已完成四列常驻；已失败/已取消仅非空显示。
+ * 页头提供 kind 四类多选与 state 下拉筛选，筛选只作用于已拉取的列表，
+ * 列计数随筛选结果变化。卡片显式展示 kind 徽标。
  */
-export function TasksPage() {
+export function WorkItemsPage() {
   const navigate = useNavigate()
   const openDrawer = useDrawer()
   const { productId = '', projectId = '' } = useParams()
   // 卡片会在列间移动；弹窗提升到页面层，避免决策过程中被卸载而丢失 reason。
-  const [action, setAction] = useState<{ task: Task; decision: TaskDecision } | null>(null)
+  const [action, setAction] = useState<{ item: WorkItem; request: WorkItemActionRequest } | null>(null)
   const [creating, setCreating] = useState(false)
-  const [editing, setEditing] = useState<Task | null>(null)
-  const [deleting, setDeleting] = useState<Task | null>(null)
+  const [editing, setEditing] = useState<WorkItem | null>(null)
+  const [deleting, setDeleting] = useState<WorkItem | null>(null)
   const [review, setReview] = useState<'approve' | 'reject' | null>(null)
+  const [kinds, setKinds] = useState<WorkItemKind[]>(ALL_KINDS)
+  const [stateFilter, setStateFilter] = useState<'all' | WorkItemState>('all')
 
   const { data, error, loading, refreshing, lastUpdated, refresh } = usePolling(
     async (signal) => {
-      const [tasks, project] = await Promise.all([
-        listTasks(projectId, signal),
+      const [items, project] = await Promise.all([
+        listWorkItems(projectId, signal),
         getProject(projectId, signal),
       ])
-      return { tasks, project }
+      return { items, project }
     },
     [projectId],
   )
 
-  const tasks = itemsOf(data?.tasks)
+  const items = itemsOf(data?.items)
   const project = data?.project
 
   // 记忆里的项目（或它所属的产品）已被删除时后端返回 404：回项目列表。
@@ -66,39 +75,55 @@ export function TasksPage() {
     }
   }, [error, navigate, productId])
 
+  const filteredItems = useMemo(
+    () =>
+      items.filter(
+        (item) =>
+          kinds.includes(item.kind) &&
+          (stateFilter === 'all' || item.state === stateFilter),
+      ),
+    [items, kinds, stateFilter],
+  )
+
   // 执行者在线状态单独轮询：worker 拉取失败不影响看板本身。
-  // 只查本页任务涉及的 worker；首页 200 条未命中的再逐个补查（见 useWorkerPresence）。
   const executorIds = useMemo(
-    () => tasks.map((task) => task.worker_id).filter((id): id is string => id !== null),
-    [tasks],
+    () => filteredItems.map((item) => item.worker_id).filter((id): id is string => id !== null),
+    [filteredItems],
   )
   const { presenceOf, known: workersKnown } = useWorkerPresence(executorIds)
 
-  const done = tasks.filter((task) => task.status === 4).length
-  const backlog = tasks.filter((task) => task.status === 0)
+  const done = filteredItems.filter((item) => item.state === 'accepted').length
+  const backlog = items.filter((item) => item.state === 'blocked')
   const reviewReason = project?.tasks_review_reason ?? null
   const rejectedAt = project?.tasks_review_rejected_at ?? null
-  const canAddTask = project ? ADD_TASK_STATUSES.has(project.status) : false
+  const canAddWorkItem = project ? ADD_WORK_ITEM_STATUSES.has(project.status) : false
 
-  // 待评审列：有卡才出现；四列常驻；附加三列非空才出现。
+  // 待评审列：有卡才出现；四列常驻；附加两列非空才出现。
   const columns = [
-    ...TASK_BOARD_COLUMNS.filter(
-      (column) => column.status !== 0 || backlog.length > 0,
+    ...WORK_ITEM_BOARD_COLUMNS.filter(
+      (column) => column.state !== 'blocked' || filteredItems.some((item) => item.state === 'blocked'),
     ),
-    ...TASK_BOARD_TRAILING_COLUMNS.filter((column) =>
-      tasks.some((task) => task.status === column.status),
+    ...WORK_ITEM_TRAILING_COLUMNS.filter((column) =>
+      filteredItems.some((item) => item.state === column.state),
     ),
   ]
+
+  const toggleKind = (kind: WorkItemKind) => {
+    setKinds((current) =>
+      current.includes(kind) ? current.filter((value) => value !== kind) : [...current, kind],
+    )
+  }
 
   return (
     <section className="page">
       <header className="page-head">
         <div>
-          <h1>任务看板</h1>
+          <h1>工作项看板</h1>
           <p className="muted">
             产品 <span className="code">{productId}</span> · 项目{' '}
             <span className="code">{projectId}</span>
-            {project ? ` · ${project.title}` : ''} · 共 {tasks.length} 个任务，已完成 {done} 个
+            {project ? ` · ${project.title}` : ''} · 共 {filteredItems.length} 个工作项，已完成{' '}
+            {done} 个
           </p>
           {project && (
             <p className="board-context">
@@ -120,38 +145,81 @@ export function TasksPage() {
             type="button"
             className="action action-primary"
             onClick={() => setCreating(true)}
-            disabled={!canAddTask}
+            disabled={!canAddWorkItem}
             title={
-              canAddTask
+              canAddWorkItem
                 ? undefined
-                : '仅任务草稿、任务评审、待完成阶段可以添加任务'
+                : '仅草稿、评审、待完成阶段可以添加工作项'
             }
           >
-            添加任务
+            添加工作项
           </button>
         </div>
       </header>
 
       <ErrorNotice error={error} onRetry={refresh} />
 
-      {!data && loading && <LoadingState label="正在加载任务…" />}
+      <div className="filter-bar">
+        <span className="filter-label muted">类型</span>
+        <div className="kind-filter" role="group" aria-label="工作项类型筛选">
+          <button
+            type="button"
+            className={kinds.length === ALL_KINDS.length ? 'filter-chip is-active' : 'filter-chip'}
+            aria-pressed={kinds.length === ALL_KINDS.length}
+            onClick={() => setKinds(ALL_KINDS)}
+          >
+            全部
+          </button>
+          {WORK_ITEM_KINDS.map((kind) => {
+            const active = kinds.includes(kind)
+            return (
+              <button
+                key={kind}
+                type="button"
+                className={`filter-chip kind-${kind}${active ? ' is-active' : ''}`}
+                aria-pressed={active}
+                onClick={() => toggleKind(kind)}
+              >
+                {workItemKindLabel(kind)}
+              </button>
+            )
+          })}
+        </div>
+        <label className="filter-select">
+          <span className="muted">状态</span>
+          <select
+            aria-label="工作项状态筛选"
+            value={stateFilter}
+            onChange={(event) => setStateFilter(event.target.value as 'all' | WorkItemState)}
+          >
+            <option value="all">全部</option>
+            {WORK_ITEM_STATE_COLUMNS.map((option) => (
+              <option key={option.state} value={option.state}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {!data && loading && <LoadingState label="正在加载工作项…" />}
       {!data && !loading && error && (
-        <EmptyState title="任务加载失败" hint="页面会自动重试；也可以点击上方“重试”。" />
+        <EmptyState title="工作项加载失败" hint="页面会自动重试；也可以点击上方“重试”。" />
       )}
 
       {data && (
         <div className="board">
           {columns.map((column) => {
-            const columnTasks = tasks.filter((task) => task.status === column.status)
-            const isReview = column.status === 0
+            const columnItems = filteredItems.filter((item) => item.state === column.state)
+            const isReview = column.state === 'blocked'
             return (
               <section
                 className={isReview ? 'board-column board-column-review' : 'board-column'}
-                key={column.status}
+                key={column.state}
               >
                 <header className="board-column-head">
                   <span>{column.label}</span>
-                  <span className="count">{columnTasks.length}</span>
+                  <span className="count">{columnItems.length}</span>
                 </header>
 
                 {isReview && (
@@ -161,7 +229,7 @@ export function TasksPage() {
                         type="button"
                         className="action action-primary action-compact"
                         onClick={() => setReview('approve')}
-                        disabled={columnTasks.length === 0}
+                        disabled={columnItems.length === 0}
                       >
                         全部通过
                       </button>
@@ -182,7 +250,7 @@ export function TasksPage() {
 
                     {reviewReason && (
                       <div className="review-banner" role="status">
-                        <strong>任务清单已驳回：</strong>
+                        <strong>工作项清单已驳回：</strong>
                         <span className="review-banner-reason">{reviewReason}</span>
                         <span className="review-banner-meta">
                           操作人 {project?.last_actor || '—'} · {formatDateTime(rejectedAt)}
@@ -193,17 +261,17 @@ export function TasksPage() {
                 )}
 
                 <div className="board-cards">
-                  {columnTasks.map((task) => {
+                  {columnItems.map((item) => {
                     // 只有「拿到过 worker 数据」且「明确查到 offline」才告警；
                     // 未命中首页且补查失败时状态未知，不能误判为离线。
-                    const executorPresence = task.worker_id
-                      ? presenceOf(task.worker_id)
+                    const executorPresence = item.worker_id
+                      ? presenceOf(item.worker_id)
                       : null
                     const executorOffline =
                       workersKnown && executorPresence === 'offline'
                     return (
                       <article
-                        key={task.task_id}
+                        key={item.work_id}
                         className={
                           executorOffline
                             ? 'board-card board-card-executor-offline'
@@ -211,19 +279,25 @@ export function TasksPage() {
                         }
                         onClick={() =>
                           openDrawer({
-                            title: `任务 ${task.task_id} · ${task.title}`,
+                            title: `工作项 ${item.work_id} · ${item.title}`,
                             body: (
-                              <TaskDetailDrawer taskId={task.task_id} onChanged={refresh} />
+                              <WorkItemDetailDrawer workId={item.work_id} onChanged={refresh} />
                             ),
                           })
                         }
                       >
                         <div className="card-head">
-                          <span className="code">{task.task_id}</span>
-                          <span className="muted">#{task.seq_no}</span>
+                          <span className="code">{item.work_id}</span>
+                          <span className="muted">#{item.seq_no}</span>
                         </div>
-                        <h3 className="board-card-title">{task.title}</h3>
-                        {task.worker_id && (
+                        <p className="board-card-kind">
+                          <span className="muted">类型：</span>
+                          <span className={`badge kind-${item.kind}`}>
+                            {workItemKindLabel(item.kind)}
+                          </span>
+                        </p>
+                        <h3 className="board-card-title">{item.title}</h3>
+                        {item.worker_id && (
                           <p
                             className={
                               executorOffline
@@ -231,8 +305,8 @@ export function TasksPage() {
                                 : 'board-card-worker'
                             }
                           >
-                            <span className="mono" title={task.worker_id}>
-                              ⚙ {task.worker_id}
+                            <span className="mono" title={item.worker_id}>
+                              ⚙ {item.worker_id}
                             </span>
                             {executorOffline && (
                               <span className="worker-offline-flag">⚠ 执行者已离线</span>
@@ -241,17 +315,17 @@ export function TasksPage() {
                         )}
                         <p
                           className={
-                            task.reason ? 'board-card-reason' : 'board-card-reason muted'
+                            item.reason ? 'board-card-reason' : 'board-card-reason muted'
                           }
-                          title={task.reason ?? undefined}
+                          title={item.reason ?? undefined}
                         >
-                          原因：{task.reason || '—'}
+                          原因：{item.reason || '—'}
                         </p>
                         <footer className="board-card-foot">
                           <span>
-                            尝试 {task.attempt_count}/{task.max_attempts}
+                            尝试 {item.attempt}/{item.max_attempts}
                           </span>
-                          <span>停留 {formatSince(task.update_time)}</span>
+                          <span>停留 {formatSince(item.update_time)}</span>
                         </footer>
 
                         {isReview && (
@@ -263,29 +337,29 @@ export function TasksPage() {
                             <button
                               type="button"
                               className="ghost ghost-mini"
-                              onClick={() => setEditing(task)}
+                              onClick={() => setEditing(item)}
                             >
                               编辑
                             </button>
                             <button
                               type="button"
                               className="ghost ghost-mini"
-                              onClick={() => setDeleting(task)}
+                              onClick={() => setDeleting(item)}
                             >
                               删除
                             </button>
                           </div>
                         )}
 
-                        <TaskActionButtons
-                          task={task}
-                          onAction={(decision) => setAction({ task, decision })}
+                        <WorkItemActionButtons
+                          item={item}
+                          onAction={(request) => setAction({ item, request })}
                           className="board-card-actions"
                         />
                       </article>
                     )
                   })}
-                  {columnTasks.length === 0 && <p className="board-empty">暂无</p>}
+                  {columnItems.length === 0 && <p className="board-empty">暂无</p>}
                 </div>
               </section>
             )
@@ -294,16 +368,16 @@ export function TasksPage() {
       )}
 
       {action && (
-        <TaskActionDialogs
-          task={action.task}
-          decision={action.decision}
+        <WorkItemActionDialogs
+          item={action.item}
+          request={action.request}
           onClose={() => setAction(null)}
           onChanged={refresh}
         />
       )}
 
       {creating && (
-        <TaskFormDialog
+        <WorkItemFormDialog
           mode="create"
           projectId={projectId}
           onClose={() => setCreating(false)}
@@ -312,10 +386,10 @@ export function TasksPage() {
       )}
 
       {editing && (
-        <TaskFormDialog
+        <WorkItemFormDialog
           mode="edit"
           projectId={projectId}
-          task={editing}
+          item={editing}
           onClose={() => setEditing(null)}
           onSaved={refresh}
         />
@@ -323,10 +397,10 @@ export function TasksPage() {
 
       {deleting && (
         <ConfirmDialog
-          title="删除任务"
+          title="删除工作项"
           message={
             <>
-              确认删除任务 <span className="code">{deleting.task_id}</span>「{deleting.title}」？
+              确认删除工作项 <span className="code">{deleting.work_id}</span>「{deleting.title}」？
               删除后不可恢复。
             </>
           }
@@ -334,7 +408,7 @@ export function TasksPage() {
           danger
           onClose={() => setDeleting(null)}
           onConfirm={async () => {
-            await deleteTask(deleting.task_id)
+            await deleteWorkItem(deleting.work_id)
             refresh()
           }}
           onStale={refresh}
@@ -342,7 +416,7 @@ export function TasksPage() {
       )}
 
       {review && project && (
-        <TaskReviewDialog
+        <WorkItemReviewDialog
           project={project}
           decision={review}
           count={backlog.length}

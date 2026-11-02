@@ -2,22 +2,23 @@ import { useState, type FormEvent } from 'react'
 import {
   ApiError,
   decideProject,
-  decideTask,
+  decideWorkItem,
   errorMessage,
   getProject,
-  getTask,
+  getWorkItem,
 } from '../api/client'
-import type { Project, ProjectDecision, TaskDecision } from '../api/types'
-import { projectStatusLabel, taskStatusLabel } from '../lib/format'
+import type { Project, ProjectDecision, WorkItemDecision } from '../api/types'
+import { projectStatusLabel, workItemStateLabel } from '../lib/format'
 import { Modal } from './Modal'
 
-export type DecisionValue = ProjectDecision | TaskDecision
+export type DecisionValue = ProjectDecision | WorkItemDecision
 
 export interface DecisionTarget {
-  kind: 'project' | 'task'
+  kind: 'project' | 'work_item'
   id: string
   title: string
-  status: number
+  /** 徽标样式类：项目用 status-N，工作项用 state-<state>。 */
+  badgeClass: string
   statusLabel: string
   version: number
 }
@@ -25,20 +26,22 @@ export interface DecisionTarget {
 const DECISION_LABEL: Record<DecisionValue, string> = {
   approve: '批准',
   reject: '驳回',
-  accept: '验收',
-  rework: '返工',
-  retry: '重排',
-  abandon: '放弃',
 }
 
-/** 后端同样要求 reason 的三种裁决；前端先做必填拦截。 */
+/** 后端同样要求 reason 的项目驳回；前端先做必填拦截。 */
 export function decisionRequiresReason(decision: DecisionValue): boolean {
-  return decision === 'reject' || decision === 'rework' || decision === 'abandon'
+  return decision === 'reject'
 }
 
 interface DecisionDialogProps {
   target: DecisionTarget
   decision: DecisionValue
+  /** 动作文案（批准/驳回/验收/返工/重排）；缺省按决策值推导。 */
+  label?: string
+  /** 是否强制填写原因；缺省时 reject 必填、approve 可选。 */
+  requiresReason?: boolean
+  /** 提交按钮是否使用危险样式；缺省时 reject 为危险色。 */
+  danger?: boolean
   onClose: () => void
   /** 提交成功或数据冲突后通知父级立即重拉列表。 */
   onChanged: () => void
@@ -48,7 +51,7 @@ interface DecisionDialogProps {
 
 /**
  * 决策弹窗：展示对象编号/标题、当前状态与本次 If-Match 版本；
- * 驳回/返工/放弃必须填 reason；提交中禁用按钮防止重复点击。
+ * 验收/返工/重排/驳回等动作复用同一套提交与 409 处理。
  *
  * 409 处理：
  * - invalid_version → 提示“数据已变化”，自动重拉最新版本，保留已填 reason；
@@ -57,6 +60,9 @@ interface DecisionDialogProps {
 export function DecisionDialog({
   target,
   decision,
+  label: labelProp,
+  requiresReason: requiresReasonProp,
+  danger: dangerProp,
   onClose,
   onChanged,
   onDecided,
@@ -67,8 +73,9 @@ export function DecisionDialog({
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const label = DECISION_LABEL[decision]
-  const requiresReason = decisionRequiresReason(decision)
+  const label = labelProp ?? DECISION_LABEL[decision]
+  const requiresReason = requiresReasonProp ?? decisionRequiresReason(decision)
+  const danger = dangerProp ?? decision === 'reject'
 
   async function reloadLatest() {
     try {
@@ -78,18 +85,18 @@ export function DecisionDialog({
           kind: 'project',
           id: latest.project_id,
           title: latest.title,
-          status: latest.status,
+          badgeClass: `status-${latest.status}`,
           statusLabel: projectStatusLabel(latest.status),
           version: latest.version,
         })
       } else {
-        const latest = await getTask(current.id)
+        const latest = await getWorkItem(current.id)
         setCurrent({
-          kind: 'task',
-          id: latest.task_id,
+          kind: 'work_item',
+          id: latest.work_id,
           title: latest.title,
-          status: latest.status,
-          statusLabel: taskStatusLabel(latest.status),
+          badgeClass: `state-${latest.state}`,
+          statusLabel: workItemStateLabel(latest.state),
           version: latest.version,
         })
       }
@@ -118,7 +125,7 @@ export function DecisionDialog({
         )
         onDecided?.(updated)
       } else {
-        await decideTask(current.id, decision as TaskDecision, reason.trim(), current.version)
+        await decideWorkItem(current.id, decision as WorkItemDecision, reason.trim())
       }
       onChanged()
       onClose()
@@ -143,8 +150,10 @@ export function DecisionDialog({
     }
   }
 
+  const targetName = current.kind === 'project' ? '项目' : '工作项'
+
   return (
-    <Modal title={`${label}${current.kind === 'project' ? '项目' : '任务'}`} onClose={onClose} closeDisabled={submitting}>
+    <Modal title={`${label}${targetName}`} onClose={onClose} closeDisabled={submitting}>
       <form className="dialog-form" onSubmit={submit}>
         <div className="dialog-target">
           <div className="dialog-target-title">
@@ -152,7 +161,7 @@ export function DecisionDialog({
             <strong>{current.title || '（未命名）'}</strong>
           </div>
           <div className="dialog-target-meta">
-            <span className={`badge status-${current.status}`}>{current.statusLabel}</span>
+            <span className={`badge ${current.badgeClass}`}>{current.statusLabel}</span>
             <span className="mono">本次提交依据第 {current.version} 版</span>
           </div>
         </div>
@@ -193,7 +202,7 @@ export function DecisionDialog({
           </button>
           <button
             type="submit"
-            className={`action ${decision === 'reject' || decision === 'rework' || decision === 'abandon' ? 'action-danger' : 'action-primary'}`}
+            className={`action ${danger ? 'action-danger' : 'action-primary'}`}
             disabled={submitting}
           >
             {submitting ? '提交中…' : `确定${label}`}
