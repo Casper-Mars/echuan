@@ -203,13 +203,34 @@ func (s *ProjectService) validateSubmitPrecondition(ctx context.Context, tx *sql
 
 // applyProjectSideEffects performs the writes that accompany one transition.
 //
-// The review gates (requirement/spec) need no side effect: the artifacts are
-// already stored and the task-batch review lives in the task service. Cancel
-// is the only transition that touches other rows.
+// Cancel cancels every unfinished card. An approved review gate does two
+// things: it closes the stage card that produced the approved artifact (a
+// reported card becomes accepted, a bypassed one is cancelled) and enqueues the
+// next stage's card, both in the same transaction as the status write. The
+// task-batch review (5→6) lives in the work-item service because it is driven by
+// the batch endpoint, not by a project decision.
 func (s *ProjectService) applyProjectSideEffects(ctx context.Context, tx *sql.Tx, row store.Project, action string, decision domain.Decision, reason, actor, updateTime string) error {
 	if action == domain.ProjectActionCancel {
 		_, err := store.CancelUnfinishedWorkItems(ctx, tx, row.ID, updateTime)
 		return err
 	}
-	return nil
+	if action != domain.ProjectActionDecide || decision != domain.DecisionApprove {
+		return nil
+	}
+
+	var settledKind, nextKind string
+	switch row.Status {
+	case domain.StatusRequirementReview:
+		settledKind, nextKind = phaseKindRequirement, phaseKindDesign
+	case domain.StatusSpecReview:
+		settledKind, nextKind = phaseKindDesign, phaseKindBreakdown
+	default:
+		return nil
+	}
+
+	if err := settlePhaseWorkItem(ctx, tx, row.ID, settledKind, s.now()); err != nil {
+		return err
+	}
+	enqueuer := phaseEnqueuer{now: s.now, maxAttempts: s.maxAttempts}
+	return enqueuer.ensure(ctx, tx, row.ID, row.ProjectID, row.Title, nextKind)
 }

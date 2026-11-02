@@ -147,8 +147,10 @@ func TestCreateProjectHTTP(t *testing.T) {
 	if detail.Spec != nil {
 		t.Errorf("spec = %+v, want null", *detail.Spec)
 	}
-	if detail.WorkItemTotal != 0 || detail.WorkItemDone != 0 {
-		t.Errorf("work_item stats = %d/%d, want zeros", detail.WorkItemTotal, detail.WorkItemDone)
+	// A fresh project owns exactly one card: the queued "requirement writing"
+	// stage item the state machine enqueues with the row. Nothing is done yet.
+	if detail.WorkItemTotal != 1 || detail.WorkItemDone != 0 {
+		t.Errorf("work_item stats = %d/%d, want 1/0", detail.WorkItemTotal, detail.WorkItemDone)
 	}
 }
 

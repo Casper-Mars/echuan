@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ApiError, deleteWorkItem, getProject, listWorkItems } from '../api/client'
+import {
+  ApiError,
+  deleteWorkItem,
+  getProject,
+  listWorkItems,
+  listWorkers,
+} from '../api/client'
 import type { WorkItem, WorkItemKind, WorkItemState } from '../api/types'
 import { itemsOf } from '../api/types'
 import { ConfirmDialog } from '../components/ConfirmDialog'
@@ -33,6 +39,9 @@ import type { WorkItemActionRequest } from '../components/WorkItemActions'
 const ADD_WORK_ITEM_STATUSES = new Set([4, 5, 6])
 
 const ALL_KINDS: WorkItemKind[] = [...WORK_ITEM_KINDS]
+
+/** 阶段工作项：项目停在 0/2/4 时，必须存在声明该 kind 的在线 worker 才能继续。 */
+const PHASE_KINDS: WorkItemKind[] = ['requirement', 'design', 'breakdown']
 
 /**
  * 工作项看板：blocked（待评审）非空时单独成列并带整批评审；
@@ -91,6 +100,33 @@ export function WorkItemsPage() {
     [filteredItems],
   )
   const { presenceOf, known: workersKnown } = useWorkerPresence(executorIds)
+
+  // 阶段 worker 覆盖检查：只拉 worker 列表首屏（200 条）判断是否存在声明了
+  // requirement/design/breakdown 且在线（presence=active）的 worker。拉取失败时
+  // data 保持 null，告警静默降级，不影响看板本身。
+  const { data: workersPage } = usePolling(
+    (signal) => listWorkers({ limit: 200, signal }),
+    [],
+  )
+
+  const missingPhaseKinds = useMemo(() => {
+    if (!workersPage || !project) return [] as WorkItemKind[]
+    const onlineKinds = new Set<WorkItemKind>()
+    for (const worker of workersPage.items) {
+      if (worker.presence !== 'active') continue
+      for (const kind of worker.kinds) onlineKinds.add(kind)
+    }
+    const waiting = new Set<WorkItemKind>()
+    for (const item of items) {
+      if (
+        (item.state === 'blocked' || item.state === 'queued') &&
+        PHASE_KINDS.includes(item.kind)
+      ) {
+        waiting.add(item.kind)
+      }
+    }
+    return PHASE_KINDS.filter((kind) => waiting.has(kind) && !onlineKinds.has(kind))
+  }, [items, project, workersPage])
 
   const done = filteredItems.filter((item) => item.state === 'accepted').length
   const backlog = items.filter((item) => item.state === 'blocked')
@@ -158,6 +194,14 @@ export function WorkItemsPage() {
       </header>
 
       <ErrorNotice error={error} onRetry={refresh} />
+
+      {missingPhaseKinds.length > 0 && project && (
+        <div className="phase-worker-banner" role="status">
+          <strong>暂无在线阶段 worker：</strong>
+          {missingPhaseKinds.map((kind) => workItemKindLabel(kind)).join('、')}
+          {`；项目停在 ${projectStatusLabel(project.status)}，请先启动对应 worker`}
+        </div>
+      )}
 
       <div className="filter-bar">
         <span className="filter-label muted">类型</span>

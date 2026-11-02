@@ -2,6 +2,7 @@ package app
 
 import (
 	"strings"
+	"time"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
 )
@@ -30,4 +31,24 @@ func decideReason(action string, decision domain.Decision, reason string) *strin
 		value := strings.TrimSpace(reason)
 		return &value
 	}
+}
+
+// timestampAt truncates a clock reading to milliseconds, the precision of the
+// persisted create_time/update_time columns.
+func timestampAt(now time.Time) time.Time {
+	return now.UTC().Truncate(time.Millisecond)
+}
+
+// nextTimestampAfter returns a timestamp strictly after previous, so two
+// writes in the same millisecond still order deterministically.
+func nextTimestampAfter(now time.Time, previous string) time.Time {
+	next := timestampAt(now)
+	old, err := parseTimestamp(previous)
+	if err != nil {
+		return next
+	}
+	if !next.After(old) {
+		return old.Add(time.Millisecond)
+	}
+	return next
 }

@@ -1743,6 +1743,22 @@ button {
   font-size: 0.76rem;
 }
 
+.phase-worker-banner {
+  margin: 0 2px 10px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: #fff7e0;
+  border: 1px solid #f0d59a;
+  color: #7a5600;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.phase-worker-banner strong {
+  font-weight: 600;
+}
+
 .review-banner {
   margin: 0 2px 8px;
   padding: 8px 10px;

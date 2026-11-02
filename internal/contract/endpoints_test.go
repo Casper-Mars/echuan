@@ -669,8 +669,11 @@ func TestContractEndpoints(t *testing.T) {
 
 	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
 	completed := object(t, raw)
-	if total := intField(t, completed, "work_item_total"); total != 2 {
-		t.Errorf("work_item_total = %d, want 2", total)
+	// Two dev cards plus the three stage cards the pipeline created while the
+	// project walked 0 → 6. The stage cards were bypassed by manual submits,
+	// so approving each gate cancelled them; they are counted but not "done".
+	if total := intField(t, completed, "work_item_total"); total != 5 {
+		t.Errorf("work_item_total = %d, want 5", total)
 	}
 	if done := intField(t, completed, "work_item_done"); done != 2 {
 		t.Errorf("work_item_done = %d, want 2", done)

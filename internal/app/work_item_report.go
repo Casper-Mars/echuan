@@ -104,6 +104,14 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 			return err
 		}
 
+		// Phase cards drive the project: a reported requirement/design/
+		// breakdown moves 0→1, 2→3 or 4→5 in this same transaction. A missing
+		// prerequisite aborts here and rolls the completion back, so the card
+		// stays leased and the actor can supply the material and report again.
+		if _, err := s.advanceProjectOnPhaseReport(ctx, tx, row, actorOrDefault(in.Actor)); err != nil {
+			return err
+		}
+
 		out, err = s.detail(ctx, tx, row.ID)
 		return err
 	})
@@ -382,6 +390,12 @@ func (s *WorkItemService) ReviewWorkItems(ctx context.Context, in ReviewWorkItem
 				return readErr
 			}
 			return &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
+		}
+
+		// The breakdown stage is over once the batch is approved; closing its
+		// card here keeps 6→7 reachable and cannot touch a dev card.
+		if err := settlePhaseWorkItem(ctx, tx, project.ID, phaseKindBreakdown, s.now()); err != nil {
+			return err
 		}
 
 		result = ReviewWorkItemsResult{

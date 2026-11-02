@@ -163,6 +163,15 @@ func (s *ProjectService) CreateProject(ctx context.Context, in CreateProjectInpu
 			}
 		}
 
+		// The project lands in requirement_draft with the card that says who
+		// still has to write the requirement: the stage is now real work
+		// instead of an empty waiting state. Same transaction as the project
+		// insert, so no project can exist without its card.
+		enqueuer := phaseEnqueuer{now: s.now, maxAttempts: s.maxAttempts}
+		if err := enqueuer.ensure(ctx, tx, id, projectID, normalized.Title, phaseKindRequirement); err != nil {
+			return err
+		}
+
 		out, err = s.detail(ctx, tx, id)
 		return err
 	})
@@ -310,13 +319,22 @@ func (s *ProjectService) DeleteProject(ctx context.Context, projectID string) er
 			return &domain.ConflictError{Reason: fmt.Sprintf(
 				"project %q already has a spec", projectID)}
 		}
-		items, err := store.CountWorkItemsByProject(ctx, tx, row.ID)
+		// Phase cards are scaffolding owned by the state machine, not user
+		// children: every project has at least one, so counting them would make
+		// every project undeletable. Only hand-created/dev cards block the
+		// delete; the scaffolding rows are dropped below with the project.
+		items, err := store.CountUserWorkItemsByProject(ctx, tx, row.ID)
 		if err != nil {
 			return err
 		}
 		if items > 0 {
 			return &domain.ConflictError{Reason: fmt.Sprintf(
 				"project %q still has %d work item(s)", projectID, items)}
+		}
+		// work_items has no ON DELETE CASCADE and its events/inputs reference
+		// it, so the scaffolding must go first (only phase rows can remain).
+		if _, err := store.DeleteWorkItemsByProject(ctx, tx, row.ID); err != nil {
+			return err
 		}
 		return store.DeleteProject(ctx, tx, row.ID)
 	})
@@ -577,21 +595,13 @@ func materialFromRow(row store.Material) (domain.Material, error) {
 // timestamp returns the current time truncated to milliseconds, the precision
 // persisted in create_time/update_time.
 func (s *ProjectService) timestamp() time.Time {
-	return s.now().UTC().Truncate(time.Millisecond)
+	return timestampAt(s.now())
 }
 
 // nextTimestamp returns a timestamp strictly after the persisted update_time,
 // so two writes in the same millisecond still order deterministically.
 func (s *ProjectService) nextTimestamp(previous string) time.Time {
-	next := s.timestamp()
-	old, err := parseTimestamp(previous)
-	if err != nil {
-		return next
-	}
-	if !next.After(old) {
-		return old.Add(time.Millisecond)
-	}
-	return next
+	return nextTimestampAfter(s.now(), previous)
 }
 
 // materialWriteError translates the writer's sentinels into domain errors. An

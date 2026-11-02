@@ -830,20 +830,12 @@ func normalizeEnums(field string, values []string, valid func(string) bool) ([]s
 // timestamp returns the current time truncated to milliseconds, the precision
 // persisted in create_time/update_time.
 func (s *WorkItemService) timestamp() time.Time {
-	return s.now().UTC().Truncate(time.Millisecond)
+	return timestampAt(s.now())
 }
 
 // nextTimestamp returns a timestamp strictly after the persisted update_time.
 func (s *WorkItemService) nextTimestamp(previous string) time.Time {
-	next := s.timestamp()
-	old, err := parseTimestamp(previous)
-	if err != nil {
-		return next
-	}
-	if !next.After(old) {
-		return old.Add(time.Millisecond)
-	}
-	return next
+	return nextTimestampAfter(s.now(), previous)
 }
 
 // clearTasksReviewRejection drops a recorded objection after the batch changed
