@@ -29,7 +29,7 @@ func newPhaseFixture(t *testing.T) *phaseFixture {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return &phaseFixture{
 		env:    env,
-		work:   NewWorkItemService(env.store),
+		work:   NewWorkItemService(env.store, env.writer),
 		claims: NewClaimService(env.store, logger, 60*time.Second),
 		workers: NewWorkerService(env.store, logger, WorkerServiceOptions{
 			LeaseTTL:          60 * time.Second,

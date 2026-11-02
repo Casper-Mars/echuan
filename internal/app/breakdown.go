@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -47,6 +48,49 @@ type BreakdownPlanItem struct {
 // caller explicitly submitted no child (no items).
 type BreakdownPlan struct {
 	Items []BreakdownPlanItem
+}
+
+// breakdownPlanDocument is the stable JSON body persisted as the kind=4 plan
+// material. The field names mirror the report wire format so a reviewer can
+// parse the artifact with the same shape they approved.
+type breakdownPlanDocument struct {
+	Items []breakdownPlanDocumentItem `json:"items"`
+}
+
+type breakdownPlanDocumentItem struct {
+	SeqNo     int    `json:"seq_no"`
+	ProjectID string `json:"project_id,omitempty"`
+	Title     string `json:"title"`
+	BodyMD    string `json:"body_md"`
+	Priority  int    `json:"priority"`
+	DependsOn []int  `json:"depends_on"`
+}
+
+// breakdownPlanBody renders the validated plan as deterministic JSON.
+//
+// DependsOn is normalised to an empty array (never null) so an item without
+// dependencies still parses as a list and the document is stable across writes.
+func breakdownPlanBody(items []BreakdownPlanItem) ([]byte, error) {
+	document := breakdownPlanDocument{Items: make([]breakdownPlanDocumentItem, 0, len(items))}
+	for _, item := range items {
+		dependsOn := item.DependsOn
+		if dependsOn == nil {
+			dependsOn = []int{}
+		}
+		document.Items = append(document.Items, breakdownPlanDocumentItem{
+			SeqNo:     item.SeqNo,
+			ProjectID: item.ProjectID,
+			Title:     item.Title,
+			BodyMD:    item.BodyMD,
+			Priority:  item.Priority,
+			DependsOn: dependsOn,
+		})
+	}
+	body, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("render breakdown plan: %w", err)
+	}
+	return append(body, '\n'), nil
 }
 
 // validateBreakdownPlan checks one plan against its target project and returns

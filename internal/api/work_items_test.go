@@ -41,7 +41,7 @@ func newWorkItemTestServer(t *testing.T) (http.Handler, *store.Store) {
 		NewRouter(logger, nil, nil,
 			app.NewProductService(st),
 			app.NewProjectService(st, nil),
-			app.NewWorkItemService(st),
+			app.NewWorkItemService(st, nil),
 			app.NewClaimService(st, logger, 60*time.Second),
 			app.NewWorkerService(st, logger, app.WorkerServiceOptions{
 				LeaseTTL:          60 * time.Second,

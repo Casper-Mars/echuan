@@ -371,11 +371,32 @@ export interface RenewWorkItemLeaseInput {
   lease_id: string
 }
 
+/** breakdown report 的 plan.items[i]：一张待生成的 dev 卡。 */
+export interface ReportPlanItemInput {
+  /** 计划内 1..N 序号（依赖用它引用）。 */
+  seq_no: number
+  title: string
+  body_md: string
+  /** 调度优先级，缺省 0（平台允许 0..99）。 */
+  priority?: number
+  /** 依赖的计划内序号（1-based），缺省无依赖。 */
+  depends_on?: number[]
+  /** 目标项目编号（可选；传了必须等于当前项目）。 */
+  project_id?: string
+}
+
+/** breakdown report 携带的拆分计划。 */
+export interface ReportPlanInput {
+  items: ReportPlanItemInput[]
+}
+
 export interface ReportWorkItemInput {
   work_id: string
-  /** 已存在的 material_id（报告正文由平台侧物料承载）。 */
-  material_id: string
+  /** 已存在的 material_id。非 breakdown 必填；breakdown 可用 plan 代替。 */
+  material_id?: string
   lease_id: string
+  /** breakdown 卡的计划；平台会落成 kind=4 物料并回填 result_material_id。 */
+  plan?: ReportPlanInput
 }
 
 export interface CreateProjectInput {
@@ -907,12 +928,24 @@ export function createClient(
 
     async reportWorkItem(input) {
       const work_id = requireNonEmpty(input?.work_id, 'work_id')
-      const material_id = requireNonEmpty(input?.material_id, 'material_id')
       const lease_id = requireNonEmpty(input?.lease_id, 'lease_id')
+      const material_id = optionalNonEmpty(input?.material_id, 'material_id')
+      const plan = input?.plan ?? undefined
+      if (material_id === undefined && plan === undefined) {
+        throw new EchuanValidationError(
+          'material_id 与 plan 至少提供一个：非 breakdown 卡用 material_id 交报告，'
+            + 'breakdown 卡用 plan 提拆分计划。下一步：补齐参数后重试，不要发空报告。',
+          'invalid_argument',
+          'material_id',
+        )
+      }
+      const body: Record<string, unknown> = { work_id, lease_id }
+      if (material_id !== undefined) body.material_id = material_id
+      if (plan !== undefined) body.plan = plan
       return requestJson<WorkItemDetail>(ctx, {
         method: 'POST',
         path: '/v1/work-items/report',
-        body: { work_id, material_id, lease_id },
+        body,
       })
     },
 
@@ -1331,6 +1364,20 @@ function requireNonEmpty(value: unknown, field: string): string {
     )
   }
   return value.trim()
+}
+
+/** 可选非空字符串：undefined / 全空白统一视为「未提供」。 */
+function optionalNonEmpty(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') {
+    throw new EchuanValidationError(
+      `${field} 必须是字符串，收到 ${typeof value}。下一步：检查调用参数后重试。`,
+      'invalid_argument',
+      field,
+    )
+  }
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
 }
 
 /** 必填正文：保留首尾空白，只拒绝全空白（Markdown 原样保存）。 */

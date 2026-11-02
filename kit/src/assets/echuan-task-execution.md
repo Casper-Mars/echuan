@@ -6,8 +6,24 @@
 
 - 任务来自 Worker 派单：可能是 `echuan_work_claim` 领到的卡，也可能是 Worker 心跳投递到当前会话的派单消息。**收到派单直接开工**，不要反问能否开始，不要停在原地等人点头。
 - 派单消息里通常已带 `work_id`、`lease_id` 与方案摘要，够用就直接进入第 2 步；字段缺失时用平台只读工具补齐，不要回头向派单人索要。
-- 仓库不在时按 `git_url` 拉取；每张卡在自己的 worktree 里做，按第 2 节创建，除此之外不另建平行目录、不改与本卡无关的模块。
-- 一张卡对应一次完整交付：同步 → 实现 → 自检 → 推送 → 汇报。中途不要换卡，也不要顺手处理别的卡。
+- 仓库不在时按 `git_url` 拉取；每张 **dev 代码卡**在自己的 worktree 里做，按第 2 节创建；阶段卡（requirement / design / breakdown）按第 1.1 节处理，不建 worktree。
+- 一张 dev 卡对应一次完整交付：同步 → 实现 → 自检 → 推送 → 汇报。中途不要换卡，也不要顺手处理别的卡。
+
+## 1.1 阶段工作项：不是代码卡，不要建 worktree
+
+派单的 `kind` 是 `requirement` / `design` / `breakdown` 时，交付物是平台资料，不是 git 代码：**不建 worktree、不开任务 PR、不改仓库**。按下面三条路径执行，`work_id` / `lease_id` / `project_id` / `material_id` 只能来自派单或平台回包，禁止编造。
+
+| 卡 kind | 做什么 | 交报告 |
+| --- | --- | --- |
+| `requirement` | 项目还没有需求正文时，用 `echuan_project_requirement_write(project_id, body_md)` 写入，返回 `material_id` | `echuan_work_report(work_id, material_id, lease_id)` |
+| `design` | 用 `echuan_spec_create(project_id, title, body_md)` 建方案，返回 `material_id` | `echuan_work_report(work_id, material_id, lease_id)` |
+| `breakdown` | 把方案拆成 dev 卡，直接交 `plan`（不传 `material_id`） | `echuan_work_report(work_id, lease_id, plan={items:[...]})` |
+
+- `requirement`：派单 `inputs` 已带需求物料时直接用它汇报，不要重复写一版；确实没有才写。
+- `design`：已有方案要改时用 `echuan_spec_revise` 在原链上修订，不要新建第二条方案链。
+- `breakdown` 的 `plan.items` 每项：`seq_no`（计划内 1..N）、`title`、`body_md`，可选 `priority`（0..99）、`depends_on`（计划内序号，如 `[1]`）、`project_id`（传了必须等于当前项目）。平台会把 plan 落成 kind=4 物料、回填 `result_material_id`，并在同一事务里生成 blocked 状态的 dev 卡；计划评审通过后才会放行。
+- 阶段卡报告被 400 / 409 拒绝时，卡仍在你手里：按 `details` 里的 `field` / `reason` 补资料或修 plan，再用**同一个 `lease_id`** 重报；不要重新领卡，不要手工建卡绕过平台。
+- `409 plan already submitted for breakdown item` 表示这批卡已经生成，不要重复提交；成功一次即止，等评审结论。
 
 ## 2. 开工前：先判定分支归属，再建 worktree
 
@@ -149,7 +165,7 @@ gh pr create --repo "$FORK" --base "feature/<project_id>" --head "task/<work_id>
 - 没有 `gh` 时，给出 compare 链接与目标 base/head，由人创建。
 - 任务分支在合并前不要删，方便 review 与追溯。
 
-任何一次交付都必须调 `echuan_work_report(work_id, material_id, lease_id)`：平台按「已有物料 + 有效租约」把工作项转为待验收。只在会话里说一句「做完了」不算交付，平台侧看不到。
+任何一次交付都必须调 `echuan_work_report(work_id, material_id, lease_id)`：平台按「已有物料 + 有效租约」把工作项转为待验收。只在会话里说一句「做完了」不算交付，平台侧看不到。只有 `breakdown` 例外：用 `echuan_work_report(work_id, lease_id, plan={items:[...]})`，不要为了交计划去手工造 `material_id`。
 
 报告正文作为物料提交（`material_id` 由平台返回或派单方提供），内容固定下列四段，缺一段视为未完成：
 
