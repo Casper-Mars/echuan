@@ -57,7 +57,7 @@ func newProjectTestServerWithMaxAttempts(t *testing.T, maxAttempts int) (http.Ha
 	if maxAttempts > 0 {
 		projects.SetMaxAttempts(maxAttempts)
 	}
-	workItems := app.NewWorkItemService(st)
+	workItems := app.NewWorkItemService(st, writer)
 	if maxAttempts > 0 {
 		workItems.SetMaxAttempts(maxAttempts)
 	}

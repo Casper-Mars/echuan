@@ -39,6 +39,8 @@ const (
 	MaterialKindSpec = 2
 	// MaterialKindReport holds a task report (kind=3).
 	MaterialKindReport = 3
+	// MaterialKindPlan holds the dev plan of a breakdown card (kind=4).
+	MaterialKindPlan = 4
 )
 
 // Decision is one human verdict on a review gate. The persisted form is the

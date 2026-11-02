@@ -86,7 +86,7 @@ func newEndpointEnv(t *testing.T) *endpointEnv {
 	logger := platform.NewLogger("info", logs)
 	products := app.NewProductService(st)
 	projects := app.NewProjectService(st, writer)
-	workItems := app.NewWorkItemService(st)
+	workItems := app.NewWorkItemService(st, writer)
 	claims := app.NewClaimService(st, logger, 90*time.Second)
 	workers := app.NewWorkerService(st, logger, app.WorkerServiceOptions{
 		LeaseTTL:          90 * time.Second,

@@ -44,11 +44,21 @@
 |---|---|---|---|
 | `echuan_work_claim` | `POST /v1/work-items/claim` | 无必填；可选 `work_id`（只领指定卡） | 成功返回 `dispatch`（`work_id` / `kind` / `inputs` / `work_item` / `lease` / `context`）；204 = 当前无活 |
 | `echuan_work_renew` | `POST /v1/work-items/lease` | `work_id`、`lease_id` | 新 `lease_id`、`until`、`ttl_seconds` |
-| `echuan_work_report` | `POST /v1/work-items/report` | `work_id`、`material_id`、`lease_id` | 平台把工作项转为 `submitted`；`material_id` 不存在 404、租约失效 409 原样透出 |
+| `echuan_work_report` | `POST /v1/work-items/report` | `work_id`、`lease_id`，以及 `material_id` / `plan` 二选一（非 breakdown 必须 `material_id`；breakdown 必须 `plan`） | 平台把工作项转为 `submitted`；breakdown 的 plan 落成 kind=4 物料并回填 `result_material_id`；物料不存在 404、租约失效/重复提交 409、plan 业务校验失败 400 原样透出 |
 
 `echuan_work_claim` 的 `worker_id` **不在工具参数里**：它只来自心跳循环的内存（平台契约必填）。`worker.poll.enable=false` 或首轮心跳尚未成功时，领卡会在本地拒绝、零请求。
 
 **典型调用顺序**：`echuan_project_create` → `echuan_project_requirement_write` → `echuan_project_submit`（需求评审）→ 人工评审通过 → `echuan_spec_create` → `echuan_project_submit`（方案评审）→ 人工评审通过 → `echuan_plan_submit`（批量建卡，项目进入计划评审）。
+
+**阶段工作项（kind = requirement / design / breakdown）**：这三类卡交付的是平台资料，不是代码，不建 worktree、不开任务 PR。
+
+| 卡 kind | 执行 | 报告 |
+|---|---|---|
+| `requirement` | 缺需求时 `echuan_project_requirement_write` 写入（已有需求物料可直接复用） | `echuan_work_report(work_id, material_id, lease_id)` |
+| `design` | `echuan_spec_create` 建方案；修订用 `echuan_spec_revise` | `echuan_work_report(work_id, material_id, lease_id)` |
+| `breakdown` | 直接提交 `plan.items`（`seq_no` / `title` / `body_md`，可选 `priority` / `depends_on` / `project_id`） | `echuan_work_report(work_id, lease_id, plan={items:[...]})` |
+
+`breakdown` 的 plan 由平台在同一事务里落成 kind=4 物料（`result_material_id`）并生成 blocked 的 dev 卡；400 / 409 后卡仍是 leased，按 `details` 修正后用同一 `lease_id` 重报，不要重新领卡或重复提交。
 
 列表工具的参数（都只发 GET，不缓存、不落盘）：
 
@@ -187,6 +197,8 @@ dsh plugin --profile <name> add ./dsh-echuan-1.0.0.tgz
 
 启动日志：`[dsh-echuan] 已注册 11 个工具（3 写 + 8 读；已排除 12 个：...）：...`
 
+> 上面是 **dev-only worker** 的裁剪示例。若 `worker.kinds` 含 `requirement` / `design`，不要套用这份 exclude：`requirement` 卡需要 `echuan_project_requirement_write`，`design` 卡需要 `echuan_spec_create` / `echuan_spec_revise`；`breakdown` 卡只用 `echuan_work_report` 的 `plan` 参数。阶段 worker 至少保留这些工具，或直接不传 `exclude`（全量 23 个）。
+
 - 名称必须与上文工具表**逐字一致**；写错（如 `echuan_plan_submmit`）会让插件激活直接失败，日志里给出未知项与合法名单。
 - 条目会先 `trim` 再去重（保序）；空白项视为配置错误。
 - 全部排除也合法：`已注册 0 个工具（已排除 23 个：...）`，心跳与派单照常（是否需要心跳只由 `worker.poll.enable` 与 `worker.kinds` 决定）。
@@ -229,7 +241,7 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 | `echuan_work_claim` 报 `409 worker_busy` | 该 worker 已持有卡 | 先 `echuan_work_report` 交掉当前卡，不要并发抢卡 |
 | 续租/报告报 `409 lease_lost` | 租约过期或被回收 | 立即停止该卡，旧结果不可再提交，重新 `echuan_work_claim` |
 | `/v1/workers` 显示 `presence=offline` | 插件停了 / 心跳关了 / 超过 45s 没心跳 | 确认 `worker.poll.enable=true`、`kinds` 非空、进程在跑、网络通 |
-| 报告被拒 `422 material_required` | 没有可用的 `material_id` | 先把报告正文作为物料提交并拿到 `material_id`，再调 `echuan_work_report` |
+| 报告被拒 `422 material_required` | 非 breakdown 卡没有可用的 `material_id` | 先把报告正文作为物料提交并拿到 `material_id`，再调 `echuan_work_report`；breakdown 卡改用 `plan` 参数 |
 
 ## 已知行为（实测）
 

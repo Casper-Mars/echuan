@@ -94,7 +94,7 @@ func run() error {
 	// Work items are reachable through the board, the worker queue and the
 	// single-card endpoints; the attempt budget is the same configuration the
 	// plan path uses.
-	workItems := app.NewWorkItemService(st)
+	workItems := app.NewWorkItemService(st, materials)
 	workItems.SetMaxAttempts(cfg.MaxAttempts)
 
 	// Pull mode: workers claim a card, hold a lease and renew it. The reclaimer

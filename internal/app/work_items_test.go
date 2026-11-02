@@ -40,7 +40,7 @@ func newWorkItemFixture(t *testing.T) *workItemFixture {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	items := NewWorkItemService(env.store)
+	items := NewWorkItemService(env.store, env.writer)
 	claims := NewClaimService(env.store, logger, 60*time.Second)
 	workers := NewWorkerService(env.store, logger, WorkerServiceOptions{
 		LeaseTTL:          60 * time.Second,

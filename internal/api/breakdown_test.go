@@ -56,7 +56,7 @@ func newBreakdownHTTPEnv(t *testing.T) *breakdownHTTPEnv {
 	logger := testLogger(io.Discard)
 	products := app.NewProductService(st)
 	projects := app.NewProjectService(st, writer)
-	work := app.NewWorkItemService(st)
+	work := app.NewWorkItemService(st, writer)
 	claims := app.NewClaimService(st, logger, 60*time.Second)
 	workers := app.NewWorkerService(st, logger, app.WorkerServiceOptions{
 		LeaseTTL:          60 * time.Second,
@@ -258,15 +258,52 @@ func TestBreakdownReportHTTPSuccess(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
-	var reported workItemResponse
+	var reported workItemDetailResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &reported); err != nil {
 		t.Fatalf("decode report: %v", err)
 	}
 	if reported.State != "submitted" {
 		t.Errorf("state = %q, want submitted", reported.State)
 	}
-	if reported.ResultMaterialID != nil {
-		t.Errorf("result_material_id = %v, want null", *reported.ResultMaterialID)
+	if reported.ResultMaterialID == nil {
+		t.Fatal("result_material_id = nil, want the kind=4 plan material")
+	}
+	if reported.Result == nil || reported.Result.MaterialID != *reported.ResultMaterialID {
+		t.Errorf("result = %+v, want material %q", reported.Result, *reported.ResultMaterialID)
+	}
+	if reported.Result.Kind != 4 {
+		t.Errorf("result.kind = %d, want 4", reported.Result.Kind)
+	}
+	if reported.Result.Title != "拆分计划：HTTP 拆分" {
+		t.Errorf("result.title = %q", reported.Result.Title)
+	}
+
+	rec = doJSON(t, e.handler, http.MethodGet, "/v1/materials?id="+*reported.ResultMaterialID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download plan material = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var planDocument struct {
+		Items []struct {
+			SeqNo     int    `json:"seq_no"`
+			ProjectID string `json:"project_id"`
+			Title     string `json:"title"`
+			BodyMD    string `json:"body_md"`
+			Priority  int    `json:"priority"`
+			DependsOn []int  `json:"depends_on"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &planDocument); err != nil {
+		t.Fatalf("plan material is not JSON: %v (%s)", err, rec.Body.String())
+	}
+	if len(planDocument.Items) != 2 {
+		t.Fatalf("plan items = %d, want 2", len(planDocument.Items))
+	}
+	if planDocument.Items[0].SeqNo != 1 || planDocument.Items[0].Title != "实现登录" ||
+		planDocument.Items[0].ProjectID != e.projectID {
+		t.Errorf("plan item[0] = %+v", planDocument.Items[0])
+	}
+	if deps := planDocument.Items[1].DependsOn; len(deps) != 1 || deps[0] != 1 {
+		t.Errorf("plan item[1].depends_on = %v, want [1]", deps)
 	}
 	if status := e.projectStatus(t); status != 5 {
 		t.Errorf("project status = %d, want tasks_review", status)

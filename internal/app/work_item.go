@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
+	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
 )
@@ -123,15 +124,20 @@ type UpdateWorkItemInput struct {
 // WorkItemService implements the work-item use cases. It owns the business
 // rules and the transaction boundaries; SQL stays in the store package.
 type WorkItemService struct {
-	store       *store.Store
+	store *store.Store
+	// materials writes the kind=4 plan material of a breakdown report. It may
+	// be nil in tests that only exercise the store; production always injects
+	// the same writer the project service uses.
+	materials   *material.Writer
 	now         func() time.Time
 	maxAttempts int
 }
 
 // NewWorkItemService builds the work-item service on top of an open store.
-func NewWorkItemService(st *store.Store) *WorkItemService {
+func NewWorkItemService(st *store.Store, materials *material.Writer) *WorkItemService {
 	return &WorkItemService{
 		store:       st,
+		materials:   materials,
 		now:         func() time.Time { return time.Now().UTC() },
 		maxAttempts: defaultWorkItemMaxAttempts,
 	}

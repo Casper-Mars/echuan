@@ -317,6 +317,113 @@ describe('echuan_work_report：material_id 本地校验', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 4a. breakdown：plan 与 material_id 二选一
+// ---------------------------------------------------------------------------
+
+describe('echuan_work_report：breakdown plan 与 material_id 二选一', () => {
+  const reportResponse = { work_id: WORK_ID, state: 'submitted' }
+
+  it('只传 plan：POST body 携带 plan，不出现 material_id', async () => {
+    const platform = createPlatform(() => jsonResponse(reportResponse))
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
+
+    const plan = {
+      items: [
+        {
+          seq_no: 1,
+          project_id: 'APP-1',
+          title: '实现登录',
+          body_md: '# 实现登录\n',
+          priority: 10,
+          depends_on: [],
+        },
+        {
+          seq_no: 2,
+          title: '登录测试',
+          body_md: '# 登录测试\n',
+          priority: 5,
+          depends_on: [1],
+        },
+      ],
+    }
+    const { value, text } = await runTool(tool!, {
+      work_id: WORK_ID,
+      lease_id: 'l_9f8b7b09ff971dd1',
+      plan,
+    })
+    expectValidOutput(tool!, value)
+
+    expect(platform.calls).toHaveLength(1)
+    expect(platform.calls[0]!.url).toBe('http://platform.test/v1/work-items/report')
+    const body = parsedBody(platform.calls[0])
+    expect(body).toEqual({
+      work_id: WORK_ID,
+      lease_id: 'l_9f8b7b09ff971dd1',
+      plan,
+    })
+    expect(body).not.toHaveProperty('material_id')
+    expect(text).toContain('工作项已提交待验收')
+    expect(text).toContain(WORK_ID)
+  })
+
+  it('只传 material_id：body 不出现 plan（非 breakdown 旧路径不变）', async () => {
+    const platform = createPlatform(() => jsonResponse(reportResponse))
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
+
+    await runTool(tool!, {
+      work_id: WORK_ID,
+      material_id: 'M_report_1',
+      lease_id: 'l_9f8b',
+    })
+
+    expect(platform.calls).toHaveLength(1)
+    const body = parsedBody(platform.calls[0])
+    expect(body).toEqual({ work_id: WORK_ID, material_id: 'M_report_1', lease_id: 'l_9f8b' })
+    expect(body).not.toHaveProperty('plan')
+  })
+
+  it('material_id 与 plan 都不传 → 本地拒绝、零请求', async () => {
+    const platform = createPlatform(() => jsonResponse(reportResponse))
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
+
+    const error = await failureOf(runTool(tool!, {
+      work_id: WORK_ID,
+      lease_id: 'l_9f8b',
+    }))
+
+    expect(error.message).toContain('material_id')
+    expect(error.message).toContain('plan')
+    expect(platform.calls).toHaveLength(0)
+  })
+
+  for (const [label, plan, field] of [
+    ['plan 缺 items', {}, 'plan.items'],
+    ['items 为空', { items: [] }, 'plan.items'],
+    ['seq_no 非正整数', { items: [{ seq_no: 0, title: '卡', body_md: '# 卡' }] }, 'plan.items[0].seq_no'],
+    ['title 空白', { items: [{ seq_no: 1, title: '   ', body_md: '# 卡' }] }, 'plan.items[0].title'],
+    [
+      'depends_on 含 0',
+      { items: [{ seq_no: 1, title: '卡', body_md: '# 卡', depends_on: [0] }] },
+      'plan.items[0].depends_on[0]',
+    ],
+  ] as const) {
+    it(`${label} → 本地拒绝、零请求`, async () => {
+      const platform = createPlatform(() => jsonResponse(reportResponse))
+      const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
+
+      const error = await failureOf(runTool(tool!, {
+        work_id: WORK_ID,
+        lease_id: 'l_9f8b',
+        plan,
+      }))
+
+      expect(error.message).toContain(field)
+      expect(platform.calls).toHaveLength(0)
+    })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // 4b. 报告成功 → notifyReported
 // ---------------------------------------------------------------------------
 

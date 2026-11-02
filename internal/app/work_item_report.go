@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
+	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
 )
@@ -77,6 +78,7 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 	actor := actorOrDefault(in.Actor)
 
 	var out WorkItemDetail
+	var written material.Stored
 	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
 		row, err := store.GetWorkItemByWorkID(ctx, tx, workID)
 		if err != nil {
@@ -120,6 +122,33 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 		}
 
 		var materialID *int64
+		// A breakdown report persists the approved plan itself as a kind=4
+		// material and points result_material_id at it. The write shares the
+		// report transaction, so a later failure (children, gate move) rolls
+		// the row back; the object file created here is removed below.
+		if row.Kind == phaseKindBreakdown && len(planItems) > 0 && s.materials != nil {
+			project, err := store.GetProjectByProjectID(ctx, tx, row.ProjectCode)
+			if err != nil {
+				if store.IsNotFound(err) {
+					return &domain.NotFoundError{Resource: "project", Key: row.ProjectCode}
+				}
+				return err
+			}
+			body, err := breakdownPlanBody(planItems)
+			if err != nil {
+				return err
+			}
+			written, err = s.materials.Write(ctx, tx, material.WriteInput{
+				Kind:       domain.MaterialKindPlan,
+				Title:      "拆分计划：" + project.Title,
+				Body:       body,
+				UploadedBy: actor,
+			})
+			if err != nil {
+				return materialWriteError("plan", err)
+			}
+			materialID = &written.Material.ID
+		}
 		if value := strings.TrimSpace(in.MaterialID); value != "" {
 			material, err := store.GetMaterialByMaterialID(ctx, tx, value)
 			if err != nil {
@@ -128,7 +157,12 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 				}
 				return err
 			}
-			materialID = &material.ID
+			// The plan artifact is the primary result of a breakdown report;
+			// an explicitly supplied material is still validated above but
+			// does not replace it.
+			if materialID == nil {
+				materialID = &material.ID
+			}
 		}
 
 		updateTime := formatTimestamp(s.nextTimestamp(row.UpdateTime))
@@ -167,6 +201,11 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 		return err
 	})
 	if err != nil {
+		// The materials row died with the rolled-back transaction; the object
+		// file did not. Drop it only when this write created it.
+		if written.NewObject && s.materials != nil {
+			_ = s.materials.RemoveNewObject(written)
+		}
 		return WorkItemDetail{}, err
 	}
 	return out, nil

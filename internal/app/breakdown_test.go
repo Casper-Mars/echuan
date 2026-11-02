@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -119,8 +122,63 @@ func TestBreakdownPlanCreatesBlockedChildren(t *testing.T) {
 	if detail.Item.State != store.WorkItemStateSubmitted {
 		t.Fatalf("breakdown state = %q, want submitted", detail.Item.State)
 	}
-	if detail.Item.ResultMaterialID != nil {
-		t.Errorf("result_material_id = %v, want nil when the plan carries the report", *detail.Item.ResultMaterialID)
+	if detail.Item.ResultMaterialID == nil {
+		t.Fatal("result_material_id = nil, want the kind=4 plan material")
+	}
+	if detail.Result == nil || detail.Result.MaterialID != *detail.Item.ResultMaterialID {
+		t.Fatalf("detail.Result = %+v, want material %q", detail.Result, *detail.Item.ResultMaterialID)
+	}
+	planMaterial, err := store.GetMaterialByMaterialID(context.Background(), f.env.store.Read(),
+		*detail.Item.ResultMaterialID)
+	if err != nil {
+		t.Fatalf("read plan material: %v", err)
+	}
+	if planMaterial.Kind != domain.MaterialKindPlan {
+		t.Errorf("plan material kind = %d, want %d", planMaterial.Kind, domain.MaterialKindPlan)
+	}
+	if planMaterial.Title != "拆分计划：拆分项目" {
+		t.Errorf("plan material title = %q", planMaterial.Title)
+	}
+	if planMaterial.UploadedBy != "agent:w" {
+		t.Errorf("plan material uploaded_by = %q, want agent:w", planMaterial.UploadedBy)
+	}
+	if planMaterial.PreviousMaterialID != nil || planMaterial.Version != 1 {
+		t.Errorf("plan material version chain = %v/%d, want a new root version 1",
+			planMaterial.PreviousMaterialID, planMaterial.Version)
+	}
+
+	planBody, err := os.ReadFile(filepath.Join(f.env.dataDir, planMaterial.Path))
+	if err != nil {
+		t.Fatalf("read plan object: %v", err)
+	}
+	var document struct {
+		Items []struct {
+			SeqNo     int    `json:"seq_no"`
+			ProjectID string `json:"project_id"`
+			Title     string `json:"title"`
+			BodyMD    string `json:"body_md"`
+			Priority  int    `json:"priority"`
+			DependsOn []int  `json:"depends_on"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(planBody, &document); err != nil {
+		t.Fatalf("plan object is not JSON: %v (%s)", err, planBody)
+	}
+	if len(document.Items) != 3 {
+		t.Fatalf("plan document items = %d, want 3", len(document.Items))
+	}
+	wantPlanTitles := []string{"实现登录", "登录测试", "登录文档"}
+	for i, item := range document.Items {
+		if item.SeqNo != i+1 || item.Title != wantPlanTitles[i] {
+			t.Errorf("plan item[%d] = %d/%q, want %d/%q",
+				i, item.SeqNo, item.Title, i+1, wantPlanTitles[i])
+		}
+	}
+	if got := document.Items[0].DependsOn; got == nil || len(got) != 0 {
+		t.Errorf("plan item[0].depends_on = %v, want []", got)
+	}
+	if got := document.Items[1].DependsOn; len(got) != 1 || got[0] != 1 {
+		t.Errorf("plan item[1].depends_on = %v, want [1]", got)
 	}
 	if state := f.env.projectState(t, f.projectID); state.Status != domain.StatusTasksReview {
 		t.Fatalf("project status = %d, want tasks_review", state.Status)
@@ -228,6 +286,47 @@ func TestBreakdownPlanCreatesBlockedChildren(t *testing.T) {
 	}
 	if state := f.env.projectState(t, f.projectID); state.Status != domain.StatusCompleted {
 		t.Errorf("project status = %d, want completed after the last acceptance", state.Status)
+	}
+}
+
+// TestBreakdownPlanMaterialRolledBackOnFailure forces a write failure after the
+// kind=4 material has been persisted. The report transaction must roll the row
+// back and remove the object file created by this write.
+func TestBreakdownPlanMaterialRolledBackOnFailure(t *testing.T) {
+	f := newBreakdownFixture(t)
+	beforeObjects := countObjectFiles(t, f.env.dataDir)
+
+	// The dependency edge is inserted after the plan material and the children.
+	// Failing it therefore exercises the post-write cleanup path.
+	if _, err := f.env.store.Write().ExecContext(context.Background(), `
+		CREATE TRIGGER fail_work_deps BEFORE INSERT ON work_deps
+		BEGIN SELECT RAISE(ABORT, 'forced work_deps failure'); END;`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+
+	_, err := f.reportPlan(planOf(
+		item(1, "实现登录", 30),
+		item(2, "登录测试", 20, 1),
+	), "")
+	if err == nil {
+		t.Fatal("reportPlan succeeded, want the forced failure")
+	}
+
+	if got := f.env.count(t, "SELECT COUNT(*) FROM materials WHERE kind = ?", domain.MaterialKindPlan); got != 0 {
+		t.Errorf("kind=4 materials = %d, want 0 after rollback", got)
+	}
+	if got := countObjectFiles(t, f.env.dataDir); got != beforeObjects {
+		t.Errorf("object files = %d, want %d (plan object must be removed)", got, beforeObjects)
+	}
+	if got := f.childCount(t); got != 0 {
+		t.Errorf("children = %d, want 0 after rollback", got)
+	}
+	current := f.singlePhaseItem(t, f.projectID, phaseKindBreakdown)
+	if current.State != store.WorkItemStateLeased {
+		t.Errorf("breakdown state = %q, want leased after rollback", current.State)
+	}
+	if current.ResultMaterialID != nil {
+		t.Errorf("result_material_id = %v, want nil after rollback", *current.ResultMaterialID)
 	}
 }
 

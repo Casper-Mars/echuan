@@ -436,6 +436,37 @@ describe('URL 与请求头', () => {
     })
     expect(headerOf(calls[0]!.init, 'content-type')).toBe('application/json')
   })
+
+  it('breakdown report：plan 走 JSON body，material_id 可省略', async () => {
+    const { calls, fetchImpl } = createFetch(() => jsonResponse({ id: 'APP-1-T0001' }))
+    const client = createClient(config, { fetchImpl })
+
+    const plan = {
+      items: [
+        { seq_no: 1, title: '实现登录', body_md: '# 实现登录\n', priority: 10 },
+        { seq_no: 2, title: '登录测试', body_md: '# 登录测试\n', priority: 5, depends_on: [1] },
+      ],
+    }
+    await client.reportWorkItem({ work_id: 'w_01M5Z4ABCDEF', lease_id: 'l_1', plan })
+
+    expect(bodyOf(calls[0]!.init)).toEqual({
+      work_id: 'w_01M5Z4ABCDEF',
+      lease_id: 'l_1',
+      plan,
+    })
+    expect(bodyOf(calls[0]!.init)).not.toHaveProperty('material_id')
+  })
+
+  it('breakdown report：material_id 与 plan 都不传时本地拒绝、零请求', async () => {
+    const { calls, fetchImpl } = createFetch(() => jsonResponse({}))
+    const client = createClient(config, { fetchImpl })
+
+    await expect(client.reportWorkItem({
+      work_id: 'w_01M5Z4ABCDEF',
+      lease_id: 'l_1',
+    })).rejects.toThrow(/material_id/)
+    expect(calls).toHaveLength(0)
+  })
 })
 
 describe('方法集合：恰好 20 个，无审批类动作', () => {

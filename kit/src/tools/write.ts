@@ -8,7 +8,12 @@
  *   把 `createWorkerLoop` 的实例传进来），本模块不缓存、不读磁盘、不读 env。
  */
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
-import type { EchuanClient, WorkItemInput } from '../client.js'
+import type {
+  EchuanClient,
+  ReportPlanInput,
+  ReportPlanItemInput,
+  WorkItemInput,
+} from '../client.js'
 import { EchuanValidationError } from '../errors.js'
 import type { WorkerInfoDeps } from './worker-info.js'
 import {
@@ -294,12 +299,115 @@ export function createRenewTool(options: EchuanToolOptions): ToolDefinition {
   })
 }
 
+/** 可选字符串：undefined 或全空白视为「未提供」。 */
+function optionalText(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') {
+    throw new EchuanValidationError(
+      `${field} 必须是字符串。下一步：检查调用参数后重试。`,
+      'invalid_argument',
+      field,
+    )
+  }
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+/** 必填字符串：保留原文，只拒绝全空白。 */
+function requiredText(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new EchuanValidationError(
+      `${field} 不能为空。下一步：补齐必填字段后重试，不要发空报告。`,
+      'invalid_argument',
+      field,
+    )
+  }
+  return value
+}
+
+function requiredInteger(value: unknown, field: string, minimum?: number): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)
+    || (minimum !== undefined && value < minimum)) {
+    throw new EchuanValidationError(
+      `${field} 必须是整数${minimum === undefined ? '' : `（>= ${minimum}）`}，收到 ${String(value)}。`
+        + '下一步：按 plan.items 结构传入整数后重试。',
+      'invalid_argument',
+      field,
+    )
+  }
+  return value
+}
+
+/**
+ * 校验 breakdown report 的 plan 结构（只做 shape，不判断 seq 连续性 / 依赖环等
+ * 业务规则；这些由平台校验并原样透出）。
+ */
+function requireReportPlan(value: unknown): ReportPlanInput | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new EchuanValidationError(
+      'plan 必须是对象，形如 { items: [...] }。下一步：按 echuan_work_report 的参数说明传入。',
+      'invalid_argument',
+      'plan',
+    )
+  }
+  const items = (value as Record<string, unknown>)['items']
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new EchuanValidationError(
+      'plan.items 至少包含 1 张待拆分的开发卡。下一步：补齐 items（seq_no/title/body_md）后重试。',
+      'invalid_argument',
+      'plan.items',
+    )
+  }
+
+  return {
+    items: items.map((raw, index): ReportPlanItemInput => {
+      const field = `plan.items[${index}]`
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new EchuanValidationError(
+          `${field} 必须是对象。下一步：按 { seq_no, title, body_md, priority, depends_on } 传入。`,
+          'invalid_argument',
+          field,
+        )
+      }
+      const record = raw as Record<string, unknown>
+      const item: ReportPlanItemInput = {
+        seq_no: requiredInteger(record['seq_no'], `${field}.seq_no`, 1),
+        title: requiredText(record['title'], `${field}.title`),
+        body_md: requiredText(record['body_md'], `${field}.body_md`),
+      }
+      if (record['priority'] !== undefined) {
+        item.priority = requiredInteger(record['priority'], `${field}.priority`)
+      }
+      if (record['depends_on'] !== undefined) {
+        const dependsOn = record['depends_on']
+        if (!Array.isArray(dependsOn)) {
+          throw new EchuanValidationError(
+            `${field}.depends_on 必须是数组（1-based 计划内序号）。`,
+            'invalid_argument',
+            `${field}.depends_on`,
+          )
+        }
+        item.depends_on = dependsOn.map((dep, depIndex) => requiredInteger(
+          dep,
+          `${field}.depends_on[${depIndex}]`,
+          1,
+        ))
+      }
+      const projectID = optionalText(record['project_id'], `${field}.project_id`)
+      if (projectID !== undefined) item.project_id = projectID
+      return item
+    }),
+  }
+}
+
 /**
  * `echuan_work_report`：交报告。
  *
- * 平台契约要求 `material_id`（报告正文已作为物料存在）：工具不代传正文、不做本地
- * 内容校验，只把三个编号原样交给平台；Platform 的 404（物料不存在）/409（租约失效）
- * 原样透出。
+ * 非 breakdown 卡必须带 `material_id`；breakdown 卡必须带 `plan`（`material_id`
+ * 可省略）。工具只做「至少一个」与 plan shape 的本地校验，不判断 seq 连续性 /
+ * 依赖环等业务规则；平台的 404（物料不存在）/409（租约失效/重复提交）/400
+ * （plan 业务校验）原样透出。
  */
 export function createReportTool(options: EchuanToolOptions): ToolDefinition {
   const { client, identity } = options
@@ -307,13 +415,50 @@ export function createReportTool(options: EchuanToolOptions): ToolDefinition {
   return defineTool({
     name: 'echuan_work_report',
     description:
-      '用一份已有物料交付一张租约中的 work item（POST /v1/work-items/report），'
-      + '平台把状态转为 submitted。work_id / material_id / lease_id 均必填；'
-      + 'material_id 不存在时平台 404，租约失效时 409，均不重试。',
+      '交付一张租约中的 work item（POST /v1/work-items/report），平台把状态转为 submitted。'
+      + 'work_id / lease_id 必填；material_id 与 plan 至少提供一个：'
+      + '非 breakdown 卡必须传 material_id（已有报告物料）；breakdown 卡必须传 plan'
+      + '（material_id 可省略），平台会把计划落成 kind=4 物料并回填 result_material_id。'
+      + 'plan.items 每项含 seq_no / title / body_md，可选 priority / depends_on'
+      + '（1-based 计划内序号）/ project_id。物料不存在 404，租约失效或重复提交 409，'
+      + 'plan 业务校验失败 400，均原样透出且不重试。',
     parameters: {
       work_id: { type: 'string', required: true, description: '工作项编号（必填）' },
-      material_id: { type: 'string', required: true, description: '交付物料的 material_id（必填）' },
+      material_id: {
+        type: 'string',
+        description: '已有交付物料的 material_id；非 breakdown 必填，breakdown 可省略',
+      },
       lease_id: { type: 'string', required: true, description: '当前有效的租约 id（必填）' },
+      plan: {
+        type: 'object',
+        additionalProperties: false,
+        description: 'breakdown 卡的拆分计划（非 breakdown 不要传）；items 至少 1 条',
+        properties: {
+          items: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                seq_no: { type: 'integer', required: true, description: '计划内 1..N 序号' },
+                title: { type: 'string', required: true, description: '开发卡标题' },
+                body_md: { type: 'string', required: true, description: '开发卡正文（Markdown）' },
+                priority: { type: 'integer', description: '优先级（可选，0..99，缺省 0）' },
+                depends_on: {
+                  type: 'array',
+                  items: { type: 'integer' },
+                  description: '依赖的计划内序号（可选，1-based，例如 [1]）',
+                },
+                project_id: {
+                  type: 'string',
+                  description: '目标项目编号（可选；传了必须等于当前项目）',
+                },
+              },
+            },
+          },
+        },
+      },
     },
     output: {
       schema: reportedSchema,
@@ -321,19 +466,37 @@ export function createReportTool(options: EchuanToolOptions): ToolDefinition {
     },
     async execute(args) {
       try {
-        const result = await client.reportWorkItem({
-          work_id: args.work_id,
-          material_id: args.material_id,
-          lease_id: args.lease_id,
-        })
+        const work_id = requiredText(args.work_id, 'work_id')
+        const lease_id = requiredText(args.lease_id, 'lease_id')
+        const material_id = optionalText(args.material_id, 'material_id')
+        const plan = requireReportPlan(args.plan)
+        if (material_id === undefined && plan === undefined) {
+          throw new EchuanValidationError(
+            'material_id 与 plan 至少提供一个：非 breakdown 卡用 material_id 交报告，'
+              + 'breakdown 卡用 plan 提拆分计划。下一步：补齐参数后重试，本次没有发出请求。',
+            'invalid_argument',
+            'material_id',
+          )
+        }
+
+        const input = { work_id, lease_id } as {
+          work_id: string
+          lease_id: string
+          material_id?: string
+          plan?: ReportPlanInput
+        }
+        if (material_id !== undefined) input.material_id = material_id
+        if (plan !== undefined) input.plan = plan
+
+        const result = await client.reportWorkItem(input)
         if (result.kind === 'empty') unexpectedEmpty('交报告')
 
         const detail = result.data
-        const value: ReportedValue = { kind: 'reported', work_id: args.work_id }
+        const value: ReportedValue = { kind: 'reported', work_id }
         if (typeof detail.state === 'string') value.state = detail.state
         // inflight 只跟「平台确认收到报告」走：本地校验失败与请求失败都不会到这里。
         try {
-          identity.notifyReported?.(args.work_id)
+          identity.notifyReported?.(work_id)
         } catch {
           // 回调失败不影响已成功的报告。
         }
