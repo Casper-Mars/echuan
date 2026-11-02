@@ -336,33 +336,34 @@ func TestProjectCRUDAndTransitions(t *testing.T) {
 		t.Errorf("requirement pointer = %v, want %d", withSpec.RequirementMaterialID, secondReq)
 	}
 
-	// Task counters and the status histogram.
-	insertSeededTasks(t, st, projectID, []taskSeed{
-		{taskID: "APP-1-T0001", seq: 1, status: 1},
-		{taskID: "APP-1-T0002", seq: 2, status: 4},
-		{taskID: "APP-1-T0003", seq: 3, status: 4},
-		{taskID: "APP-1-T0004", seq: 4, status: 7},
+	// Work-item counters and the state histogram.
+	insertSeededWorkItems(t, st, projectID, []workItemSeed{
+		{workID: "w_01", seq: 1, state: WorkItemStateQueued},
+		{workID: "w_02", seq: 2, state: WorkItemStateAccepted},
+		{workID: "w_03", seq: 3, state: WorkItemStateAccepted},
+		{workID: "w_04", seq: 4, state: WorkItemStateCancelled},
 	})
-	if n, err := CountTasksByProject(ctx, st.Read(), projectID); err != nil || n != 4 {
-		t.Errorf("CountTasksByProject = %d (%v), want 4", n, err)
+	if n, err := CountWorkItemsByProject(ctx, st.Read(), projectID); err != nil || n != 4 {
+		t.Errorf("CountWorkItemsByProject = %d (%v), want 4", n, err)
 	}
-	histogram, err := TaskStatusHistogram(ctx, st.Read(), projectID)
+	histogram, err := WorkItemStateHistogram(ctx, st.Read(), projectID)
 	if err != nil {
-		t.Fatalf("TaskStatusHistogram: %v", err)
+		t.Fatalf("WorkItemStateHistogram: %v", err)
 	}
-	if histogram[1] != 1 || histogram[4] != 2 || histogram[7] != 1 || len(histogram) != 3 {
-		t.Errorf("histogram = %v, want {1:1,4:2,7:1}", histogram)
+	if histogram[WorkItemStateQueued] != 1 || histogram[WorkItemStateAccepted] != 2 ||
+		histogram[WorkItemStateCancelled] != 1 || len(histogram) != 3 {
+		t.Errorf("histogram = %v, want {queued:1,accepted:2,cancelled:1}", histogram)
 	}
-	withTasks, err := GetProjectByID(ctx, st.Read(), projectID)
+	withItems, err := GetProjectByID(ctx, st.Read(), projectID)
 	if err != nil {
-		t.Fatalf("GetProjectByID with tasks: %v", err)
+		t.Fatalf("GetProjectByID with work items: %v", err)
 	}
-	if withTasks.TaskTotal != 4 || withTasks.TaskDone != 2 {
-		t.Errorf("task counters = %d/%d, want 4/2", withTasks.TaskTotal, withTasks.TaskDone)
+	if withItems.WorkItemTotal != 4 || withItems.WorkItemDone != 2 {
+		t.Errorf("work item counters = %d/%d, want 4/2", withItems.WorkItemTotal, withItems.WorkItemDone)
 	}
 
-	// Delete removes exactly one project row (otherID has no tasks, so the
-	// tasks.project_id foreign key does not block it).
+	// Delete removes exactly one project row (otherID has no work items, so the
+	// work_items.project_id foreign key does not block it).
 	if err := st.Tx(ctx, func(tx *sql.Tx) error { return DeleteProject(ctx, tx, otherID) }); err != nil {
 		t.Fatalf("DeleteProject: %v", err)
 	}

@@ -41,15 +41,16 @@ func insertInboxProject(t *testing.T, st *Store, productFK int64, projectID stri
 	return id
 }
 
-// insertInboxTask writes one task row.
-func insertInboxTask(t *testing.T, st *Store, projectFK int64, taskID string, seq, status int, updateTime string, reason *string) {
+// insertInboxWorkItem writes one work_items row.
+func insertInboxWorkItem(t *testing.T, st *Store, projectFK int64, workID string, seq int, state, updateTime string, reason *string) {
 	t.Helper()
 	if _, err := st.Write().ExecContext(context.Background(), `
-		INSERT INTO tasks (task_id, project_id, seq_no, title, body_md, priority, status,
-		                   attempt_count, max_attempts, reason, version, create_time, update_time)
-		VALUES (?, ?, ?, ?, 'body', 0, ?, 0, 3, ?, 1, ?, ?)`,
-		taskID, projectFK, seq, "任务 "+taskID, status, reason, updateTime, updateTime); err != nil {
-		t.Fatalf("insert task %s: %v", taskID, err)
+		INSERT INTO work_items (work_id, project_id, kind, seq_no, title, body_md,
+		                        priority, state, attempt, max_attempts, reason,
+		                        version, create_time, update_time)
+		VALUES (?, ?, 'dev', ?, ?, 'body', 0, ?, 0, 3, ?, 1, ?, ?)`,
+		workID, projectFK, seq, "工作项 "+workID, state, reason, updateTime, updateTime); err != nil {
+		t.Fatalf("insert work item %s: %v", workID, err)
 	}
 }
 
@@ -75,20 +76,27 @@ func TestListInboxEmpty(t *testing.T) {
 	}
 }
 
-// TestListInboxStatusCoverage pins the exact status sets of the contract:
-// projects 1/3/5 and tasks 3/5, everything else absent.
+// TestListInboxStatusCoverage pins the exact candidate sets of the contract:
+// projects 1/3/5 and work items submitted/failed, everything else absent.
 func TestListInboxStatusCoverage(t *testing.T) {
 	st := openTestStore(t, 1)
 	productFK := seedInboxProduct(t, st)
 
-	// A planning project (status 2) owns the tasks, so the project itself is
-	// never a candidate and the task rows are the only task candidates.
+	// A planning project (status 2) owns the work items, so the project itself
+	// is never a candidate and the work-item rows are the only candidates.
 	ownerFK := insertInboxProject(t, st, productFK, "OWNER", 100, 2, "2026-10-01T00:00:00Z", nil)
 	for status := 0; status <= 7; status++ {
 		insertInboxProject(t, st, productFK, fmt.Sprintf("P-%d", status), status+1,
 			status, fmt.Sprintf("2026-10-02T00:00:%02dZ", status), nil)
-		insertInboxTask(t, st, ownerFK, fmt.Sprintf("OWNER-T-%d", status), status+1,
-			status, fmt.Sprintf("2026-10-03T00:00:%02dZ", status), nil)
+	}
+	states := []string{
+		WorkItemStateBlocked, WorkItemStateQueued, WorkItemStateLeased,
+		WorkItemStateSubmitted, WorkItemStateAccepted, WorkItemStateFailed,
+		WorkItemStateCancelled,
+	}
+	for i, state := range states {
+		insertInboxWorkItem(t, st, ownerFK, fmt.Sprintf("OWNER-W-%d", i), i+1,
+			state, fmt.Sprintf("2026-10-03T00:00:%02dZ", i), nil)
 	}
 
 	rows, err := ListInbox(context.Background(), st.Read(), 200)
@@ -96,9 +104,9 @@ func TestListInboxStatusCoverage(t *testing.T) {
 		t.Fatalf("ListInbox: %v", err)
 	}
 
-	want := map[string]int{
-		"P-1": 1, "P-3": 3, "P-5": 5,
-		"OWNER-T-3": 3, "OWNER-T-5": 5,
+	want := map[string]string{
+		"P-1": "1", "P-3": "3", "P-5": "5",
+		"OWNER-W-3": WorkItemStateSubmitted, "OWNER-W-5": WorkItemStateFailed,
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("ids = %v, want exactly %d rows", inboxIDs(rows), len(want))
@@ -110,7 +118,7 @@ func TestListInboxStatusCoverage(t *testing.T) {
 			continue
 		}
 		if row.State != state {
-			t.Errorf("%s state = %d, want %d", row.ID, row.State, state)
+			t.Errorf("%s state = %q, want %q", row.ID, row.State, state)
 		}
 	}
 }
@@ -122,16 +130,16 @@ func TestListInboxOldestFirst(t *testing.T) {
 	productFK := seedInboxProduct(t, st)
 
 	ownerFK := insertInboxProject(t, st, productFK, "OWNER", 1, 4, "2026-10-01T00:00:00Z", nil)
-	insertInboxProject(t, st, productFK, "P-OLD", 2, 1, "2026-10-24T09:00:00Z", nil) // 3 days
-	insertInboxTask(t, st, ownerFK, "T-MID", 1, 5, "2026-10-25T09:00:00Z", nil)      // 2 days
-	insertInboxTask(t, st, ownerFK, "T-NEW", 2, 3, "2026-10-27T08:00:00Z", nil)      // 1 hour
+	insertInboxProject(t, st, productFK, "P-OLD", 2, 1, "2026-10-24T09:00:00Z", nil)                     // 3 days
+	insertInboxWorkItem(t, st, ownerFK, "W-MID", 1, WorkItemStateFailed, "2026-10-25T09:00:00Z", nil)    // 2 days
+	insertInboxWorkItem(t, st, ownerFK, "W-NEW", 2, WorkItemStateSubmitted, "2026-10-27T08:00:00Z", nil) // 1 hour
 
 	rows, err := ListInbox(context.Background(), st.Read(), 50)
 	if err != nil {
 		t.Fatalf("ListInbox: %v", err)
 	}
 	got := inboxIDs(rows)
-	want := []string{"P-OLD", "T-MID", "T-NEW"}
+	want := []string{"P-OLD", "W-MID", "W-NEW"}
 	if len(got) != len(want) {
 		t.Fatalf("ids = %v, want %v", got, want)
 	}
@@ -152,16 +160,16 @@ func TestListInboxFractionalSecondOrdering(t *testing.T) {
 	productFK := seedInboxProduct(t, st)
 	ownerFK := insertInboxProject(t, st, productFK, "OWNER", 1, 2, "2026-10-01T00:00:00Z", nil)
 
-	insertInboxTask(t, st, ownerFK, "T-HALF", 1, 3, "2026-10-01T00:00:00.500Z", nil)
-	insertInboxTask(t, st, ownerFK, "T-WHOLE-NEXT", 2, 3, "2026-10-01T00:00:01Z", nil)
-	insertInboxTask(t, st, ownerFK, "T-WHOLE", 3, 3, "2026-10-01T00:00:00Z", nil)
+	insertInboxWorkItem(t, st, ownerFK, "W-HALF", 1, WorkItemStateSubmitted, "2026-10-01T00:00:00.500Z", nil)
+	insertInboxWorkItem(t, st, ownerFK, "W-WHOLE-NEXT", 2, WorkItemStateSubmitted, "2026-10-01T00:00:01Z", nil)
+	insertInboxWorkItem(t, st, ownerFK, "W-WHOLE", 3, WorkItemStateSubmitted, "2026-10-01T00:00:00Z", nil)
 
 	rows, err := ListInbox(context.Background(), st.Read(), 50)
 	if err != nil {
 		t.Fatalf("ListInbox: %v", err)
 	}
 	got := inboxIDs(rows)
-	want := []string{"T-WHOLE", "T-HALF", "T-WHOLE-NEXT"}
+	want := []string{"W-WHOLE", "W-HALF", "W-WHOLE-NEXT"}
 	if len(got) != len(want) {
 		t.Fatalf("ids = %v, want %v", got, want)
 	}
@@ -181,14 +189,14 @@ func TestListInboxStableTieBreak(t *testing.T) {
 	insertInboxProject(t, st, productFK, "APP-1", 1, 1, sameTime, nil)
 	insertInboxProject(t, st, productFK, "APP-2", 2, 1, sameTime, nil)
 	ownerFK := insertInboxProject(t, st, productFK, "OWNER", 3, 2, sameTime, nil)
-	insertInboxTask(t, st, ownerFK, "APP-1-T0001", 1, 3, sameTime, nil)
+	insertInboxWorkItem(t, st, ownerFK, "APP-1-T0001", 1, WorkItemStateSubmitted, sameTime, nil)
 
 	rows, err := ListInbox(context.Background(), st.Read(), 50)
 	if err != nil {
 		t.Fatalf("ListInbox: %v", err)
 	}
 	got := inboxIDs(rows)
-	want := []string{"APP-1", "APP-2", "APP-1-T0001"} // project < task, then id
+	want := []string{"APP-1", "APP-2", "APP-1-T0001"} // project < work_item, then id
 	if len(got) != len(want) {
 		t.Fatalf("ids = %v, want %v", got, want)
 	}
@@ -201,7 +209,7 @@ func TestListInboxStableTieBreak(t *testing.T) {
 
 // TestListInboxLimitIsGlobal inserts 60 candidates (30 per kind, interleaved
 // by age) and checks that limit=50 returns the 50 oldest overall — not "the
-// 50 oldest projects plus tasks", which is what two separate queries would
+// 50 oldest projects plus work items", which is what two separate queries would
 // produce.
 func TestListInboxLimitIsGlobal(t *testing.T) {
 	st := openTestStore(t, 1)
@@ -217,8 +225,8 @@ func TestListInboxLimitIsGlobal(t *testing.T) {
 			insertInboxProject(t, st, productFK, id, i+1, 1, ts, nil)
 			order = append(order, id)
 		} else {
-			id := fmt.Sprintf("T-%02d", i)
-			insertInboxTask(t, st, ownerFK, id, i+1, 5, ts, nil)
+			id := fmt.Sprintf("W-%02d", i)
+			insertInboxWorkItem(t, st, ownerFK, id, i+1, WorkItemStateFailed, ts, nil)
 			order = append(order, id)
 		}
 	}

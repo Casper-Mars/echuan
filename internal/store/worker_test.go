@@ -8,22 +8,22 @@ import (
 	"time"
 )
 
-// workerTimestamp is a stable base instant for the worker tests; every value is
+// workerTestBase is a stable base instant for the worker tests; every value is
 // produced through FormatWorkerTime so the fixed-width comparison is exercised
 // end to end.
 var workerTestBase = time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 
-// insertWorkerTask inserts one tasks row with the given status and returns its
-// physical id. projectID comes from seedProject.
-func insertWorkerTask(t *testing.T, st *Store, projectID int64, seq int, taskID string, status int) int64 {
+// insertWorkerWorkItem inserts one work_items row with the given state and
+// returns its physical id. projectID comes from seedProject.
+func insertWorkerWorkItem(t *testing.T, st *Store, projectID int64, seq int, workID, state string) int64 {
 	t.Helper()
 	ctx := context.Background()
 	var id int64
 	err := st.Tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO tasks (task_id, project_id, seq_no, title, body_md, status, create_time, update_time)
-			 VALUES (?, ?, ?, 't', 'b', ?, 'T', 'T')`,
-			taskID, projectID, seq, status)
+			`INSERT INTO work_items (work_id, project_id, kind, seq_no, title, body_md, state, create_time, update_time)
+			 VALUES (?, ?, 'dev', ?, 't', 'b', ?, 'T', 'T')`,
+			workID, projectID, seq, state)
 		if err != nil {
 			return err
 		}
@@ -31,7 +31,7 @@ func insertWorkerTask(t *testing.T, st *Store, projectID int64, seq int, taskID 
 		return err
 	})
 	if err != nil {
-		t.Fatalf("insert task %s: %v", taskID, err)
+		t.Fatalf("insert work item %s: %v", workID, err)
 	}
 	return id
 }
@@ -74,6 +74,7 @@ func TestUpsertWorkerIsIdempotent(t *testing.T) {
 		WorkerID:     "w_01JA0000000000000000000001",
 		MetadataJSON: `{"host":"mbp"}`,
 		State:        "idle",
+		Kinds:        []string{"dev", "design"},
 		LastSeen:     firstSeen,
 		UpdateTime:   "2026-10-27T12:00:00.000000001Z",
 	})
@@ -114,6 +115,29 @@ func TestUpsertWorkerIsIdempotent(t *testing.T) {
 	if second.UpdateTime != "2026-10-27T12:00:30.000000001Z" {
 		t.Errorf("update_time = %q, want the refreshed timestamp", second.UpdateTime)
 	}
+
+	// A heartbeat with nil Kinds leaves the declaration alone.
+	kinds, err := ListWorkerKinds(context.Background(), st.Read(), second.WorkerID)
+	if err != nil {
+		t.Fatalf("ListWorkerKinds: %v", err)
+	}
+	if len(kinds) != 2 || kinds[0] != "design" || kinds[1] != "dev" {
+		t.Errorf("kinds after heartbeat = %v, want [design dev]", kinds)
+	}
+
+	// An explicit empty declaration clears it.
+	upsertTestWorker(t, st, WorkerUpsert{
+		WorkerID: second.WorkerID, State: "idle",
+		Kinds:    []string{},
+		LastSeen: laterSeen, UpdateTime: "2026-10-27T12:00:31.000000001Z",
+	})
+	kinds, err = ListWorkerKinds(context.Background(), st.Read(), second.WorkerID)
+	if err != nil {
+		t.Fatalf("ListWorkerKinds after clear: %v", err)
+	}
+	if len(kinds) != 0 {
+		t.Errorf("kinds = %v, want empty after an explicit clear", kinds)
+	}
 }
 
 // TestUpsertWorkerEmptyMetadataKeepsDocument pins the heartbeat rule: an upsert
@@ -143,14 +167,14 @@ func TestUpsertWorkerEmptyMetadataKeepsDocument(t *testing.T) {
 	}
 }
 
-// TestUpsertWorkerKeepsBinding checks that a heartbeat never disturbs the task
-// pointer: refreshing a busy worker leaves current_task_id/current_lease_id
+// TestUpsertWorkerKeepsBinding checks that a heartbeat never disturbs the card
+// pointer: refreshing a busy worker leaves current_work_item_id/current_lease_id
 // alone.
 func TestUpsertWorkerKeepsBinding(t *testing.T) {
 	st := openTestStore(t, 2)
 	ctx := context.Background()
 	projectID := seedProject(t, st)
-	taskID := insertWorkerTask(t, st, projectID, 1, "APP-1-T0001", 2)
+	workItemID := insertWorkerWorkItem(t, st, projectID, 1, "w_01", WorkItemStateLeased)
 
 	seen := FormatWorkerTime(workerTestBase)
 	worker := upsertTestWorker(t, st, WorkerUpsert{
@@ -158,9 +182,9 @@ func TestUpsertWorkerKeepsBinding(t *testing.T) {
 		LastSeen: seen, UpdateTime: "2026-10-27T12:00:00Z",
 	})
 	if err := st.Tx(ctx, func(tx *sql.Tx) error {
-		return BindTask(ctx, tx, worker.WorkerID, taskID, "lease-1", "2026-10-27T12:00:01Z")
+		return BindWorkItem(ctx, tx, worker.WorkerID, workItemID, "lease-1", "2026-10-27T12:00:01Z")
 	}); err != nil {
-		t.Fatalf("BindTask: %v", err)
+		t.Fatalf("BindWorkItem: %v", err)
 	}
 
 	heartbeat := upsertTestWorker(t, st, WorkerUpsert{
@@ -168,22 +192,22 @@ func TestUpsertWorkerKeepsBinding(t *testing.T) {
 		LastSeen:   FormatWorkerTime(workerTestBase.Add(15 * time.Second)),
 		UpdateTime: "2026-10-27T12:00:15Z",
 	})
-	if heartbeat.CurrentTaskID == nil || *heartbeat.CurrentTaskID != taskID {
-		t.Fatalf("current_task_id = %v, want %d after heartbeat", heartbeat.CurrentTaskID, taskID)
+	if heartbeat.CurrentWorkItemID == nil || *heartbeat.CurrentWorkItemID != workItemID {
+		t.Fatalf("current_work_item_id = %v, want %d after heartbeat", heartbeat.CurrentWorkItemID, workItemID)
 	}
 	if heartbeat.CurrentLeaseID == nil || *heartbeat.CurrentLeaseID != "lease-1" {
 		t.Fatalf("current_lease_id = %v, want lease-1 after heartbeat", heartbeat.CurrentLeaseID)
 	}
 }
 
-// TestBindTaskAndClear covers the happy path plus both idempotency
+// TestBindWorkItemAndClear covers the happy path plus both idempotency
 // requirements: binding the same pair twice succeeds, and clearing twice does
 // not fail.
-func TestBindTaskAndClear(t *testing.T) {
+func TestBindWorkItemAndClear(t *testing.T) {
 	st := openTestStore(t, 2)
 	ctx := context.Background()
 	projectID := seedProject(t, st)
-	taskID := insertWorkerTask(t, st, projectID, 1, "APP-1-T0001", 2)
+	workItemID := insertWorkerWorkItem(t, st, projectID, 1, "w_01", WorkItemStateLeased)
 
 	worker := upsertTestWorker(t, st, WorkerUpsert{
 		WorkerID: "w_01JA0000000000000000000003", State: "idle",
@@ -192,19 +216,19 @@ func TestBindTaskAndClear(t *testing.T) {
 
 	bind := func(leaseID string) error {
 		return st.Tx(ctx, func(tx *sql.Tx) error {
-			return BindTask(ctx, tx, worker.WorkerID, taskID, leaseID, "2026-10-27T12:00:05Z")
+			return BindWorkItem(ctx, tx, worker.WorkerID, workItemID, leaseID, "2026-10-27T12:00:05Z")
 		})
 	}
 	if err := bind("lease-a"); err != nil {
-		t.Fatalf("BindTask: %v", err)
+		t.Fatalf("BindWorkItem: %v", err)
 	}
 
 	busy, err := GetWorker(ctx, st.Read(), worker.WorkerID)
 	if err != nil {
 		t.Fatalf("GetWorker: %v", err)
 	}
-	if busy.CurrentTaskID == nil || *busy.CurrentTaskID != taskID {
-		t.Errorf("current_task_id = %v, want %d", busy.CurrentTaskID, taskID)
+	if busy.CurrentWorkItemID == nil || *busy.CurrentWorkItemID != workItemID {
+		t.Errorf("current_work_item_id = %v, want %d", busy.CurrentWorkItemID, workItemID)
 	}
 	if busy.CurrentLeaseID == nil || *busy.CurrentLeaseID != "lease-a" {
 		t.Errorf("current_lease_id = %v, want lease-a", busy.CurrentLeaseID)
@@ -215,7 +239,7 @@ func TestBindTaskAndClear(t *testing.T) {
 
 	// Re-binding the same pair is a retry, not a conflict.
 	if err := bind("lease-b"); err != nil {
-		t.Fatalf("re-BindTask same task: %v", err)
+		t.Fatalf("re-BindWorkItem same item: %v", err)
 	}
 	rebound, err := GetWorker(ctx, st.Read(), worker.WorkerID)
 	if err != nil {
@@ -227,9 +251,9 @@ func TestBindTaskAndClear(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		if err := st.Tx(ctx, func(tx *sql.Tx) error {
-			return ClearTaskByWorker(ctx, tx, worker.WorkerID, "2026-10-27T12:00:10Z")
+			return ClearWorkItemByWorker(ctx, tx, worker.WorkerID, "2026-10-27T12:00:10Z")
 		}); err != nil {
-			t.Fatalf("ClearTaskByWorker call %d: %v", i+1, err)
+			t.Fatalf("ClearWorkItemByWorker call %d: %v", i+1, err)
 		}
 	}
 
@@ -237,37 +261,37 @@ func TestBindTaskAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorker after clear: %v", err)
 	}
-	if idle.CurrentTaskID != nil || idle.CurrentLeaseID != nil {
-		t.Errorf("pointers = %v/%v, want NULL after clear", idle.CurrentTaskID, idle.CurrentLeaseID)
+	if idle.CurrentWorkItemID != nil || idle.CurrentLeaseID != nil {
+		t.Errorf("pointers = %v/%v, want NULL after clear", idle.CurrentWorkItemID, idle.CurrentLeaseID)
 	}
 	if idle.State != "idle" {
 		t.Errorf("state = %q, want idle", idle.State)
 	}
 }
 
-// TestClearTaskByWorkerMissingWorker pins the "targeted write" contract: the
-// by-worker release reports a missing row, unlike the by-task sweep.
-func TestClearTaskByWorkerMissingWorker(t *testing.T) {
+// TestClearWorkItemByWorkerMissingWorker pins the "targeted write" contract: the
+// by-worker release reports a missing row, unlike the by-item sweep.
+func TestClearWorkItemByWorkerMissingWorker(t *testing.T) {
 	st := openTestStore(t, 1)
 
 	err := st.Tx(context.Background(), func(tx *sql.Tx) error {
-		return ClearTaskByWorker(context.Background(), tx, "w_missing", "T")
+		return ClearWorkItemByWorker(context.Background(), tx, "w_missing", "T")
 	})
 	if !IsNotFound(err) {
-		t.Fatalf("ClearTaskByWorker(missing) = %v, want sql.ErrNoRows", err)
+		t.Fatalf("ClearWorkItemByWorker(missing) = %v, want sql.ErrNoRows", err)
 	}
 }
 
-// TestBindTaskConflicts covers both sides of the one-task-per-worker rule. The
-// task side is enforced by the partial UNIQUE index; the worker side has no
-// index and must be rejected by BindTask itself. Both must be recognisable as
-// ErrUniqueViolation so the HTTP layer renders one worker_busy code.
-func TestBindTaskConflicts(t *testing.T) {
+// TestBindWorkItemConflicts covers both sides of the one-card-per-worker rule.
+// The card side is enforced by the partial UNIQUE index; the worker side has no
+// index and must be rejected by BindWorkItem itself. Both must be recognisable
+// as ErrUniqueViolation so the HTTP layer renders one worker_busy code.
+func TestBindWorkItemConflicts(t *testing.T) {
 	st := openTestStore(t, 2)
 	ctx := context.Background()
 	projectID := seedProject(t, st)
-	taskOne := insertWorkerTask(t, st, projectID, 1, "APP-1-T0001", 2)
-	taskTwo := insertWorkerTask(t, st, projectID, 2, "APP-1-T0002", 2)
+	itemOne := insertWorkerWorkItem(t, st, projectID, 1, "w_01", WorkItemStateLeased)
+	itemTwo := insertWorkerWorkItem(t, st, projectID, 2, "w_02", WorkItemStateLeased)
 
 	workerA := upsertTestWorker(t, st, WorkerUpsert{
 		WorkerID: "w_01JA000000000000000000000A", State: "idle",
@@ -278,26 +302,26 @@ func TestBindTaskConflicts(t *testing.T) {
 		LastSeen: FormatWorkerTime(workerTestBase), UpdateTime: "T",
 	})
 
-	bind := func(workerID string, taskID int64) error {
+	bind := func(workerID string, workItemID int64) error {
 		return st.Tx(ctx, func(tx *sql.Tx) error {
-			return BindTask(ctx, tx, workerID, taskID, "lease", "2026-10-27T12:00:05Z")
+			return BindWorkItem(ctx, tx, workerID, workItemID, "lease", "2026-10-27T12:00:05Z")
 		})
 	}
 
-	if err := bind(workerA.WorkerID, taskOne); err != nil {
+	if err := bind(workerA.WorkerID, itemOne); err != nil {
 		t.Fatalf("first bind: %v", err)
 	}
 
-	// Task side: the unique index rejects a second owner of taskOne.
-	err := bind(workerB.WorkerID, taskOne)
+	// Card side: the unique index rejects a second owner of itemOne.
+	err := bind(workerB.WorkerID, itemOne)
 	if !errors.Is(err, ErrUniqueViolation) {
-		t.Errorf("second worker on the same task = %v, want ErrUniqueViolation", err)
+		t.Errorf("second worker on the same item = %v, want ErrUniqueViolation", err)
 	}
 
-	// Worker side: no index guards it, so BindTask must reject it explicitly.
-	err = bind(workerA.WorkerID, taskTwo)
+	// Worker side: no index guards it, so BindWorkItem must reject it explicitly.
+	err = bind(workerA.WorkerID, itemTwo)
 	if !errors.Is(err, ErrUniqueViolation) {
-		t.Errorf("busy worker taking another task = %v, want ErrUniqueViolation", err)
+		t.Errorf("busy worker taking another item = %v, want ErrUniqueViolation", err)
 	}
 
 	// Neither failure may disturb the existing binding.
@@ -305,84 +329,84 @@ func TestBindTaskConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorker(A): %v", err)
 	}
-	if still.CurrentTaskID == nil || *still.CurrentTaskID != taskOne {
-		t.Errorf("worker A task = %v, want %d to survive the conflicts", still.CurrentTaskID, taskOne)
+	if still.CurrentWorkItemID == nil || *still.CurrentWorkItemID != itemOne {
+		t.Errorf("worker A item = %v, want %d to survive the conflicts", still.CurrentWorkItemID, itemOne)
 	}
 	idleB, err := GetWorker(ctx, st.Read(), workerB.WorkerID)
 	if err != nil {
 		t.Fatalf("GetWorker(B): %v", err)
 	}
-	if idleB.CurrentTaskID != nil {
-		t.Errorf("worker B task = %v, want NULL after the rejected bind", idleB.CurrentTaskID)
+	if idleB.CurrentWorkItemID != nil {
+		t.Errorf("worker B item = %v, want NULL after the rejected bind", idleB.CurrentWorkItemID)
 	}
 }
 
-// TestGetWorkerByTaskID checks both lookup directions and the release path.
-func TestGetWorkerByTaskID(t *testing.T) {
+// TestGetWorkerByWorkItemID checks both lookup directions and the release path.
+func TestGetWorkerByWorkItemID(t *testing.T) {
 	st := openTestStore(t, 2)
 	ctx := context.Background()
 	projectID := seedProject(t, st)
-	taskID := insertWorkerTask(t, st, projectID, 1, "APP-1-T0001", 2)
+	workItemID := insertWorkerWorkItem(t, st, projectID, 1, "w_01", WorkItemStateLeased)
 
 	worker := upsertTestWorker(t, st, WorkerUpsert{
 		WorkerID: "w_01JA000000000000000000000C", State: "idle",
 		LastSeen: FormatWorkerTime(workerTestBase), UpdateTime: "T",
 	})
-	if _, err := GetWorkerByTaskID(ctx, st.Read(), taskID); !IsNotFound(err) {
-		t.Fatalf("GetWorkerByTaskID before bind = %v, want not found", err)
+	if _, err := GetWorkerByWorkItemID(ctx, st.Read(), workItemID); !IsNotFound(err) {
+		t.Fatalf("GetWorkerByWorkItemID before bind = %v, want not found", err)
 	}
 
 	if err := st.Tx(ctx, func(tx *sql.Tx) error {
-		return BindTask(ctx, tx, worker.WorkerID, taskID, "lease-c", "T")
+		return BindWorkItem(ctx, tx, worker.WorkerID, workItemID, "lease-c", "T")
 	}); err != nil {
-		t.Fatalf("BindTask: %v", err)
+		t.Fatalf("BindWorkItem: %v", err)
 	}
 
-	byTask, err := GetWorkerByTaskID(ctx, st.Read(), taskID)
+	byItem, err := GetWorkerByWorkItemID(ctx, st.Read(), workItemID)
 	if err != nil {
-		t.Fatalf("GetWorkerByTaskID: %v", err)
+		t.Fatalf("GetWorkerByWorkItemID: %v", err)
 	}
-	if byTask.WorkerID != worker.WorkerID {
-		t.Errorf("worker of task = %q, want %q", byTask.WorkerID, worker.WorkerID)
+	if byItem.WorkerID != worker.WorkerID {
+		t.Errorf("worker of item = %q, want %q", byItem.WorkerID, worker.WorkerID)
 	}
 	byID, err := GetWorker(ctx, st.Read(), worker.WorkerID)
 	if err != nil {
 		t.Fatalf("GetWorker: %v", err)
 	}
-	if byID.ID != byTask.ID {
-		t.Errorf("forward/reverse lookups disagree: %d vs %d", byID.ID, byTask.ID)
+	if byID.ID != byItem.ID {
+		t.Errorf("forward/reverse lookups disagree: %d vs %d", byID.ID, byItem.ID)
 	}
 
 	n, err := func() (int64, error) {
 		var changed int64
 		err := st.Tx(ctx, func(tx *sql.Tx) error {
 			var err error
-			changed, err = ClearTaskByTaskID(ctx, tx, taskID, "T")
+			changed, err = ClearWorkItemByWorkItemID(ctx, tx, workItemID, "T")
 			return err
 		})
 		return changed, err
 	}()
 	if err != nil {
-		t.Fatalf("ClearTaskByTaskID: %v", err)
+		t.Fatalf("ClearWorkItemByWorkItemID: %v", err)
 	}
 	if n != 1 {
-		t.Errorf("ClearTaskByTaskID changed %d rows, want 1", n)
+		t.Errorf("ClearWorkItemByWorkItemID changed %d rows, want 1", n)
 	}
 
-	if _, err := GetWorkerByTaskID(ctx, st.Read(), taskID); !IsNotFound(err) {
-		t.Errorf("GetWorkerByTaskID after clear = %v, want not found", err)
+	if _, err := GetWorkerByWorkItemID(ctx, st.Read(), workItemID); !IsNotFound(err) {
+		t.Errorf("GetWorkerByWorkItemID after clear = %v, want not found", err)
 	}
 	// Clearing again is a no-op, not an error: the sweep may run twice.
 	if n, err := func() (int64, error) {
 		var changed int64
 		err := st.Tx(ctx, func(tx *sql.Tx) error {
 			var err error
-			changed, err = ClearTaskByTaskID(ctx, tx, taskID, "T")
+			changed, err = ClearWorkItemByWorkItemID(ctx, tx, workItemID, "T")
 			return err
 		})
 		return changed, err
 	}(); err != nil || n != 0 {
-		t.Errorf("second ClearTaskByTaskID = %d, %v; want 0, nil", n, err)
+		t.Errorf("second ClearWorkItemByWorkItemID = %d, %v; want 0, nil", n, err)
 	}
 }
 
@@ -489,12 +513,12 @@ func TestListWorkersTieBreakByID(t *testing.T) {
 }
 
 // TestListStaleWorkers checks the sweep selection (offline and unbound) and
-// that DeleteStaleWorker refuses to drop a row that has just taken a task.
+// that DeleteStaleWorker refuses to drop a row that has just taken a card.
 func TestListStaleWorkers(t *testing.T) {
 	st := openTestStore(t, 2)
 	ctx := context.Background()
 	projectID := seedProject(t, st)
-	taskID := insertWorkerTask(t, st, projectID, 1, "APP-1-T0001", 2)
+	workItemID := insertWorkerWorkItem(t, st, projectID, 1, "w_01", WorkItemStateLeased)
 
 	ttl := 45 * time.Second
 	before := FormatWorkerTime(workerTestBase.Add(-ttl))
@@ -512,9 +536,9 @@ func TestListStaleWorkers(t *testing.T) {
 		LastSeen: FormatWorkerTime(workerTestBase), UpdateTime: "T",
 	})
 	if err := st.Tx(ctx, func(tx *sql.Tx) error {
-		return BindTask(ctx, tx, staleBusy.WorkerID, taskID, "lease", "T")
+		return BindWorkItem(ctx, tx, staleBusy.WorkerID, workItemID, "lease", "T")
 	}); err != nil {
-		t.Fatalf("BindTask: %v", err)
+		t.Fatalf("BindWorkItem: %v", err)
 	}
 
 	stale, err := ListStaleWorkers(ctx, st.Read(), before)
@@ -525,7 +549,7 @@ func TestListStaleWorkers(t *testing.T) {
 		t.Fatalf("stale workers = %+v, want only %s", stale, staleIdle.WorkerID)
 	}
 
-	// A stale row that still holds a task must survive the delete.
+	// A stale row that still holds a card must survive the delete.
 	err = st.Tx(ctx, func(tx *sql.Tx) error {
 		return DeleteStaleWorker(ctx, tx, staleBusy.ID)
 	})
@@ -550,22 +574,22 @@ func TestListStaleWorkers(t *testing.T) {
 }
 
 // TestClearDanglingPointers covers the §5 maintenance statement: pointers to
-// tasks that are no longer in progress are cleared, pointers to a live claim
-// are preserved, and a second sweep changes nothing.
+// cards that are no longer leased are cleared, pointers to a live claim are
+// preserved, and a second sweep changes nothing.
 func TestClearDanglingPointers(t *testing.T) {
 	st := openTestStore(t, 2)
 	ctx := context.Background()
 	projectID := seedProject(t, st)
 
-	liveTask := insertWorkerTask(t, st, projectID, 1, "APP-1-T0001", 2)   // in_progress
-	doneTask := insertWorkerTask(t, st, projectID, 2, "APP-1-T0002", 4)   // done
-	cancelTask := insertWorkerTask(t, st, projectID, 3, "APP-1-T0003", 7) // cancelled
+	liveItem := insertWorkerWorkItem(t, st, projectID, 1, "w_01", WorkItemStateLeased)
+	acceptedItem := insertWorkerWorkItem(t, st, projectID, 2, "w_02", WorkItemStateAccepted)
+	cancelItem := insertWorkerWorkItem(t, st, projectID, 3, "w_03", WorkItemStateCancelled)
 
 	live := upsertTestWorker(t, st, WorkerUpsert{
 		WorkerID: "w_01JA000000000000000000040", State: "idle",
 		LastSeen: FormatWorkerTime(workerTestBase), UpdateTime: "T",
 	})
-	done := upsertTestWorker(t, st, WorkerUpsert{
+	accepted := upsertTestWorker(t, st, WorkerUpsert{
 		WorkerID: "w_01JA000000000000000000041", State: "idle",
 		LastSeen: FormatWorkerTime(workerTestBase), UpdateTime: "T",
 	})
@@ -577,20 +601,20 @@ func TestClearDanglingPointers(t *testing.T) {
 	err := st.Tx(ctx, func(tx *sql.Tx) error {
 		for _, pair := range []struct {
 			worker string
-			taskID int64
+			itemID int64
 		}{
-			{live.WorkerID, liveTask},
-			{done.WorkerID, doneTask},
-			{cancelled.WorkerID, cancelTask},
+			{live.WorkerID, liveItem},
+			{accepted.WorkerID, acceptedItem},
+			{cancelled.WorkerID, cancelItem},
 		} {
-			if err := BindTask(ctx, tx, pair.worker, pair.taskID, "lease-"+pair.worker, "T"); err != nil {
+			if err := BindWorkItem(ctx, tx, pair.worker, pair.itemID, "lease-"+pair.worker, "T"); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("BindTask(batch): %v", err)
+		t.Fatalf("BindWorkItem(batch): %v", err)
 	}
 
 	var cleared int64
@@ -602,25 +626,25 @@ func TestClearDanglingPointers(t *testing.T) {
 		t.Fatalf("ClearDanglingPointers: %v", err)
 	}
 	if cleared != 2 {
-		t.Errorf("cleared = %d, want 2 (done + cancelled)", cleared)
+		t.Errorf("cleared = %d, want 2 (accepted + cancelled)", cleared)
 	}
 
 	liveRow, err := GetWorker(ctx, st.Read(), live.WorkerID)
 	if err != nil {
 		t.Fatalf("GetWorker(live): %v", err)
 	}
-	if liveRow.CurrentTaskID == nil || *liveRow.CurrentTaskID != liveTask || liveRow.State != "busy" {
-		t.Errorf("live worker = %v/%s, want task %d and busy", liveRow.CurrentTaskID, liveRow.State, liveTask)
+	if liveRow.CurrentWorkItemID == nil || *liveRow.CurrentWorkItemID != liveItem || liveRow.State != "busy" {
+		t.Errorf("live worker = %v/%s, want item %d and busy", liveRow.CurrentWorkItemID, liveRow.State, liveItem)
 	}
 
-	for _, workerID := range []string{done.WorkerID, cancelled.WorkerID} {
+	for _, workerID := range []string{accepted.WorkerID, cancelled.WorkerID} {
 		row, err := GetWorker(ctx, st.Read(), workerID)
 		if err != nil {
 			t.Fatalf("GetWorker(%s): %v", workerID, err)
 		}
-		if row.CurrentTaskID != nil || row.CurrentLeaseID != nil || row.State != "idle" {
+		if row.CurrentWorkItemID != nil || row.CurrentLeaseID != nil || row.State != "idle" {
 			t.Errorf("worker %s = %v/%v/%s, want NULL/NULL/idle",
-				workerID, row.CurrentTaskID, row.CurrentLeaseID, row.State)
+				workerID, row.CurrentWorkItemID, row.CurrentLeaseID, row.State)
 		}
 	}
 
