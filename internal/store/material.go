@@ -17,7 +17,7 @@ var ErrChainBroken = errors.New("store: material chain is broken")
 //
 // previous_material_id is the chain link, not a project reference: materials
 // have no owning column, the holder (projects.requirement_material_id,
-// projects.spec_material_id, tasks.report_material_id) points at the chain
+// projects.spec_material_id, work_items.result_material_id) points at the chain
 // head.
 const materialColumns = `m.id, m.material_id, m.kind, m.version, m.title,
 	m.sha256, m.size, m.path, m.uploaded_by, m.previous_material_id,

@@ -1,42 +1,29 @@
-package store_test
+package store
 
 import (
 	"context"
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"path/filepath"
 	"testing"
-
-	"github.com/Casper-Mars/echuan/internal/api"
-	"github.com/Casper-Mars/echuan/internal/platform"
-	"github.com/Casper-Mars/echuan/internal/store"
 )
 
-// readyzBody mirrors the API readiness response for assertions.
-type readyzBody struct {
-	Status string            `json:"status"`
-	Checks map[string]string `json:"checks"`
-}
-
-// openReadyzStore opens a migrated store with a read pool. The test lives in
-// the external store_test package because the API router now depends on the
-// application layer, which in turn depends on store: importing api from
-// package store would be an import cycle.
-func openReadyzStore(t *testing.T, readPoolSize int) *store.Store {
+// The readiness probes are tested directly here rather than through the HTTP
+// router: the router lives in internal/api, which depends on the application
+// layer, and a store test must not drag that in (it would also invert the
+// dependency direction).
+func openReadyzStore(t *testing.T, readPoolSize int) *Store {
 	t.Helper()
 
-	st, err := store.Open(store.Config{
+	st, err := Open(Config{
 		Path:         filepath.Join(t.TempDir(), "state.db"),
 		ReadPoolSize: readPoolSize,
 	})
 	if err != nil {
-		t.Fatalf("store.Open: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := st.Close(); err != nil {
-			t.Errorf("store.Close: %v", err)
+			t.Errorf("Close: %v", err)
 		}
 	})
 
@@ -49,45 +36,24 @@ func openReadyzStore(t *testing.T, readPoolSize int) *store.Store {
 	return st
 }
 
-func readyzServer(st *store.Store) http.Handler {
-	return api.NewRouter(
-		platform.NewLogger("error", io.Discard),
-		nil,
-		[]api.HealthChecker{store.NewDBChecker(st), store.NewMigrationChecker(st)},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-	)
-}
-
-func getReadyz(t *testing.T, h http.Handler) (int, readyzBody) {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-
-	var body readyzBody
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode readyz body %q: %v", rec.Body.String(), err)
-	}
-	return rec.Code, body
-}
-
 func TestReadyzHealthy(t *testing.T) {
 	st := openReadyzStore(t, 2)
+	ctx := context.Background()
 
-	status, body := getReadyz(t, readyzServer(st))
-	if status != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %+v", status, body)
+	db := NewDBChecker(st)
+	if db.Name() != "db" {
+		t.Errorf("DBChecker.Name() = %q, want db", db.Name())
 	}
-	if body.Status != "ok" {
-		t.Errorf("status field = %q, want ok", body.Status)
+	if err := db.Check(ctx); err != nil {
+		t.Errorf("DBChecker.Check = %v, want nil", err)
 	}
-	if body.Checks["db"] != "ok" || body.Checks["migration"] != "ok" {
-		t.Errorf("checks = %v, want db/migration ok", body.Checks)
+
+	migration := NewMigrationChecker(st)
+	if migration.Name() != "migration" {
+		t.Errorf("MigrationChecker.Name() = %q, want migration", migration.Name())
+	}
+	if err := migration.Check(ctx); err != nil {
+		t.Errorf("MigrationChecker.Check = %v, want nil", err)
 	}
 }
 
@@ -97,34 +63,27 @@ func TestReadyzClosedStore(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	status, body := getReadyz(t, readyzServer(st))
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", status)
+	if err := NewDBChecker(st).Check(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Errorf("DBChecker.Check on a closed store = %v, want ErrClosed", err)
 	}
-	if body.Status != "unavailable" {
-		t.Errorf("status field = %q, want unavailable", body.Status)
-	}
-	if body.Checks["db"] != "error" {
-		t.Errorf("checks = %v, want db error", body.Checks)
+	if err := NewMigrationChecker(st).Check(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Errorf("MigrationChecker.Check on a closed store = %v, want ErrClosed", err)
 	}
 }
 
 func TestReadyzMigrationMismatch(t *testing.T) {
 	st := openReadyzStore(t, 1)
+	ctx := context.Background()
 
 	// Simulate a schema left behind by another binary version.
-	if _, err := st.Write().ExecContext(context.Background(), "PRAGMA user_version = 0"); err != nil {
+	if _, err := st.Write().ExecContext(ctx, "PRAGMA user_version = 0"); err != nil {
 		t.Fatalf("set user_version: %v", err)
 	}
 
-	status, body := getReadyz(t, readyzServer(st))
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503; body = %+v", status, body)
+	if err := NewDBChecker(st).Check(ctx); err != nil {
+		t.Errorf("DBChecker.Check = %v, want nil (the database itself works)", err)
 	}
-	if body.Checks["db"] != "ok" {
-		t.Errorf("db check = %q, want ok (the database itself works)", body.Checks["db"])
-	}
-	if body.Checks["migration"] != "error" {
-		t.Errorf("migration check = %q, want error", body.Checks["migration"])
+	if err := NewMigrationChecker(st).Check(ctx); err == nil {
+		t.Error("MigrationChecker.Check = nil, want a version mismatch error")
 	}
 }

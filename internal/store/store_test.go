@@ -5,14 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io/fs"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
-
-	"github.com/Casper-Mars/echuan/migrations"
 )
 
 // testLogger writes nothing but keeps the production log contract.
@@ -98,15 +95,28 @@ func schemaColumns(t *testing.T, st *Store, table string) map[string]bool {
 func TestMigrateCreatesSchema(t *testing.T) {
 	st := openTestStore(t, 4)
 
-	wantTables := []string{"products", "projects", "tasks", "task_deps", "materials", "workers", "project_specs"}
+	wantTables := []string{
+		"products", "materials", "projects", "project_specs",
+		"work_items", "work_inputs", "work_deps", "work_item_events",
+		"workers", "worker_kinds",
+	}
 	tables := schemaObjects(t, st, "table")
 	for _, name := range wantTables {
 		if !tables[name] {
 			t.Errorf("table %s missing; have %v", name, tables)
 		}
 	}
+	for _, gone := range []string{"tasks", "task_deps"} {
+		if tables[gone] {
+			t.Errorf("table %s must not exist in v2", gone)
+		}
+	}
 
-	wantIndexes := []string{"ix_projects_inbox", "ix_tasks_queue", "ix_tasks_lease", "ix_materials_chain", "ix_workers_last_seen", "ux_workers_current_task"}
+	wantIndexes := []string{
+		"ix_projects_inbox", "ix_work_queue", "ix_work_lease", "ux_work_active_phase",
+		"ux_work_worker", "ix_work_events_item", "ix_materials_chain",
+		"ix_workers_last_seen", "ux_workers_current_work_item",
+	}
 	indexes := schemaObjects(t, st, "index")
 	for _, name := range wantIndexes {
 		if !indexes[name] {
@@ -118,8 +128,8 @@ func TestMigrateCreatesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 6 {
-		t.Errorf("user_version = %d, want 6", version)
+	if version != 1 {
+		t.Errorf("user_version = %d, want 1", version)
 	}
 
 	columns := schemaColumns(t, st, "projects")
@@ -127,6 +137,21 @@ func TestMigrateCreatesSchema(t *testing.T) {
 		if !columns[name] {
 			t.Errorf("projects.%s missing; have %v", name, columns)
 		}
+	}
+
+	workItemColumns := schemaColumns(t, st, "work_items")
+	for _, name := range []string{
+		"id", "work_id", "project_id", "parent_id", "kind", "seq_no", "title",
+		"body_md", "priority", "state", "attempt", "max_attempts", "not_before",
+		"lease_id", "lease_until", "worker_id", "result_material_id", "reason",
+		"version", "create_time", "update_time",
+	} {
+		if !workItemColumns[name] {
+			t.Errorf("work_items.%s missing; have %v", name, workItemColumns)
+		}
+	}
+	if workItemColumns["last_actor"] {
+		t.Error("work_items.last_actor must not exist in v2")
 	}
 
 	latest, err := LatestMigrationVersion()
@@ -149,8 +174,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if applied != 6 {
-		t.Errorf("first applied = %d, want 6", applied)
+	if applied != 1 {
+		t.Errorf("first applied = %d, want 1", applied)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first: %v", err)
@@ -174,99 +199,70 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 6 {
-		t.Errorf("user_version = %d, want 6", version)
+	if version != 1 {
+		t.Errorf("user_version = %d, want 1", version)
 	}
 }
 
-// TestMigrate0002PreservesExistingProjects starts from a version-1 database
-// with real rows, applies every remaining embedded migration and checks that
-// the new column is present and the existing project survived untouched.
-//
-// The expected count and version are derived from the embedded migration list
-// so that adding a migration does not leave a stale hardcoded number behind.
-func TestMigrate0002PreservesExistingProjects(t *testing.T) {
-	st, err := Open(Config{Path: filepath.Join(t.TempDir(), "state.db")})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer st.Close()
+// TestMigratePreservesExistingData re-opens an already migrated database: the
+// runner must apply nothing, leave user_version alone and keep every row that
+// was written by the previous process.
+func TestMigratePreservesExistingData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
 	ctx := context.Background()
 
-	base, err := fs.ReadFile(migrations.FS, "0001_init.sql")
+	first, err := Open(Config{Path: path})
 	if err != nil {
-		t.Fatalf("read 0001: %v", err)
+		t.Fatalf("Open first: %v", err)
 	}
-	applied, err := st.MigrateFS(ctx, fstest.MapFS{
-		"0001_init.sql": {Data: base},
-	})
-	if err != nil {
-		t.Fatalf("MigrateFS(0001): %v", err)
+	if _, err := first.Migrate(ctx); err != nil {
+		t.Fatalf("first Migrate: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("applied = %d, want 1", applied)
-	}
-	if version, err := st.MigrationVersion(ctx); err != nil || version != 1 {
-		t.Fatalf("version = %d (%v), want 1", version, err)
-	}
-	if schemaColumns(t, st, "projects")["last_actor"] {
-		t.Fatal("projects.last_actor exists before 0002")
-	}
-
-	if _, err := st.Write().ExecContext(ctx, `
+	if _, err := first.Write().ExecContext(ctx, `
 		INSERT INTO products (product_id, name, git_url, create_time, update_time)
 		VALUES ('APP', '产品', 'git@example.com:APP.git', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatalf("insert product: %v", err)
 	}
-	if _, err := st.Write().ExecContext(ctx, `
+	if _, err := first.Write().ExecContext(ctx, `
 		INSERT INTO projects (project_id, product_id, seq_no, title, status, version, create_time, update_time)
 		VALUES ('APP-1', 1, 1, '既有项目', 0, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatalf("insert project: %v", err)
 	}
-
-	pending, err := migrations.Load(migrations.FS)
-	if err != nil {
-		t.Fatalf("load migrations: %v", err)
+	if _, err := first.Write().ExecContext(ctx, `
+		INSERT INTO work_items (work_id, project_id, kind, seq_no, title, create_time, update_time)
+		VALUES ('w_01', 1, 'dev', 1, '既有工作项', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert work item: %v", err)
 	}
-	wantApplied, wantVersion := 0, 1
-	for _, m := range pending {
-		if m.Version > 1 {
-			wantApplied++
-		}
-		if m.Version > wantVersion {
-			wantVersion = m.Version
-		}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first: %v", err)
 	}
 
-	applied, err = st.Migrate(ctx)
+	second, err := Open(Config{Path: path})
 	if err != nil {
-		t.Fatalf("Migrate: %v", err)
+		t.Fatalf("Open second: %v", err)
 	}
-	if applied != wantApplied {
-		t.Fatalf("applied = %d, want %d (every migration after 0001)", applied, wantApplied)
+	defer second.Close()
+
+	applied, err := second.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("second Migrate: %v", err)
 	}
-	if version, err := st.MigrationVersion(ctx); err != nil || version != wantVersion {
-		t.Fatalf("version = %d (%v), want %d", version, err, wantVersion)
-	}
-	if !schemaColumns(t, st, "projects")["last_actor"] {
-		t.Fatal("projects.last_actor missing after 0002")
+	if applied != 0 {
+		t.Errorf("applied = %d, want 0 on an up-to-date database", applied)
 	}
 
 	var (
-		title     string
-		status    int
-		lastActor *string
+		title string
+		state string
 	)
-	if err := st.Read().QueryRowContext(ctx,
-		`SELECT title, status, last_actor FROM projects WHERE project_id = 'APP-1'`).
-		Scan(&title, &status, &lastActor); err != nil {
-		t.Fatalf("select project: %v", err)
+	if err := second.Read().QueryRowContext(ctx,
+		`SELECT p.title, w.state FROM projects p
+		   JOIN work_items w ON w.project_id = p.id
+		  WHERE p.project_id = 'APP-1' AND w.work_id = 'w_01'`).Scan(&title, &state); err != nil {
+		t.Fatalf("select preserved rows: %v", err)
 	}
-	if title != "既有项目" || status != 0 {
-		t.Errorf("project = %q/%d, want 既有项目/0", title, status)
-	}
-	if lastActor != nil {
-		t.Errorf("last_actor = %q, want NULL for pre-existing rows", *lastActor)
+	if title != "既有项目" || state != WorkItemStateQueued {
+		t.Errorf("rows = %q/%q, want 既有项目/queued", title, state)
 	}
 }
 
@@ -368,7 +364,7 @@ func TestNextSeqNo(t *testing.T) {
 
 	for want := 1; want <= 5; want++ {
 		err := st.Tx(ctx, func(tx *sql.Tx) error {
-			next, err := NextSeqNo(ctx, tx, "tasks", "project_id", projectID)
+			next, err := NextSeqNo(ctx, tx, "work_items", "project_id", projectID)
 			if err != nil {
 				return err
 			}
@@ -376,13 +372,13 @@ func TestNextSeqNo(t *testing.T) {
 				t.Errorf("NextSeqNo = %d, want %d", next, want)
 			}
 			_, err = tx.ExecContext(ctx,
-				`INSERT INTO tasks (task_id, project_id, seq_no, title, body_md, create_time, update_time)
-				 VALUES (?, ?, ?, 't', 'b', 't', 't')`,
-				fmt.Sprintf("APP-1-T%04d", next), projectID, next)
+				`INSERT INTO work_items (work_id, project_id, kind, seq_no, title, body_md, create_time, update_time)
+				 VALUES (?, ?, 'dev', ?, 't', 'b', 't', 't')`,
+				fmt.Sprintf("w_%04d", next), projectID, next)
 			return err
 		})
 		if err != nil {
-			t.Fatalf("insert task %d: %v", want, err)
+			t.Fatalf("insert work item %d: %v", want, err)
 		}
 	}
 }
@@ -401,14 +397,14 @@ func TestNextSeqNoConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			errs <- st.Tx(ctx, func(tx *sql.Tx) error {
-				seq, err := NextSeqNo(ctx, tx, "tasks", "project_id", projectID)
+				seq, err := NextSeqNo(ctx, tx, "work_items", "project_id", projectID)
 				if err != nil {
 					return err
 				}
 				_, err = tx.ExecContext(ctx,
-					`INSERT INTO tasks (task_id, project_id, seq_no, title, body_md, create_time, update_time)
-					 VALUES (?, ?, ?, 't', 'b', 't', 't')`,
-					fmt.Sprintf("APP-1-T%04d", seq), projectID, seq)
+					`INSERT INTO work_items (work_id, project_id, kind, seq_no, title, body_md, create_time, update_time)
+					 VALUES (?, ?, 'dev', ?, 't', 'b', 't', 't')`,
+					fmt.Sprintf("w_%04d", seq), projectID, seq)
 				return err
 			})
 		}()
@@ -424,7 +420,7 @@ func TestNextSeqNoConcurrent(t *testing.T) {
 
 	var count, distinct, maxSeq int
 	if err := st.Read().QueryRowContext(ctx,
-		`SELECT COUNT(*), COUNT(DISTINCT seq_no), MAX(seq_no) FROM tasks WHERE project_id = ?`,
+		`SELECT COUNT(*), COUNT(DISTINCT seq_no), MAX(seq_no) FROM work_items WHERE project_id = ?`,
 		projectID).Scan(&count, &distinct, &maxSeq); err != nil {
 		t.Fatalf("aggregate: %v", err)
 	}
@@ -434,7 +430,7 @@ func TestNextSeqNoConcurrent(t *testing.T) {
 }
 
 func TestNextSeqNoRequiresTransaction(t *testing.T) {
-	if _, err := NextSeqNo(context.Background(), nil, "tasks", "project_id", 1); err == nil {
+	if _, err := NextSeqNo(context.Background(), nil, "work_items", "project_id", 1); err == nil {
 		t.Fatal("NextSeqNo(nil tx) succeeded, want error")
 	}
 }
@@ -554,8 +550,8 @@ func TestMigrateRejectsNewerSchema(t *testing.T) {
 	if !errors.As(err, &sv) {
 		t.Fatalf("error = %v, want SchemaVersionError", err)
 	}
-	if sv.Database != 99 || sv.Binary != 6 {
-		t.Errorf("versions = %d/%d, want 99/6", sv.Database, sv.Binary)
+	if sv.Database != 99 || sv.Binary != 1 {
+		t.Errorf("versions = %d/%d, want 99/1", sv.Database, sv.Binary)
 	}
 }
 

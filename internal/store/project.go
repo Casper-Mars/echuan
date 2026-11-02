@@ -8,18 +8,18 @@ import (
 )
 
 // projectColumns selects one project together with its product's business id
-// and its task counters.
+// and its work-item counters.
 //
 // The counters are correlated subqueries so listing N projects stays one
 // statement (no N+1) and both numbers are read in the same snapshot as the
-// project row. tasks.status = 4 is domain.TaskStatusDone; the constant lives
-// in domain, so it is spelled out here as a literal rather than making store
-// depend on domain (the dependency runs domain ← store ← app ← api).
+// project row. state = 'accepted' is the terminal success state of the work-item
+// machine; it is spelled out here as a literal rather than making store depend
+// on domain (the dependency runs domain ← store ← app ← api).
 const projectColumns = `p.id, p.project_id, pr.product_id AS product_code, p.seq_no,
 	p.title, p.requirement_material_id, p.spec_material_id, p.status, p.reason,
 	p.last_actor, p.version, p.tasks_review_reason, p.tasks_review_rejected_at,
-	(SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_total,
-	(SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status = 4) AS task_done,
+	(SELECT COUNT(*) FROM work_items w WHERE w.project_id = p.id) AS work_item_total,
+	(SELECT COUNT(*) FROM work_items w WHERE w.project_id = p.id AND w.state = 'accepted') AS work_item_done,
 	p.create_time, p.update_time`
 
 // Project is the read model of one projects row.
@@ -40,8 +40,8 @@ type Project struct {
 	Version               int     `db:"version"`
 	TasksReviewReason     *string `db:"tasks_review_reason"`
 	TasksReviewRejectedAt *string `db:"tasks_review_rejected_at"`
-	TaskTotal             int64   `db:"task_total"`
-	TaskDone              int64   `db:"task_done"`
+	WorkItemTotal         int64   `db:"work_item_total"`
+	WorkItemDone          int64   `db:"work_item_done"`
 	CreateTime            string  `db:"create_time"`
 	UpdateTime            string  `db:"update_time"`
 }
@@ -344,33 +344,33 @@ func DeleteProject(ctx context.Context, tx *sql.Tx, id int64) error {
 	return nil
 }
 
-// CountTasksByProject counts the tasks owned by one project.
+// CountWorkItemsByProject counts the work items owned by one project.
 //
-// It is meant to run inside the same transaction as the DELETE so that no task
+// It is meant to run inside the same transaction as the DELETE so that no item
 // can be attached between the check and the removal.
-func CountTasksByProject(ctx context.Context, q Querier, projectID int64) (int64, error) {
+func CountWorkItemsByProject(ctx context.Context, q Querier, projectID int64) (int64, error) {
 	row, err := One[struct {
 		Count int64 `db:"count"`
-	}](ctx, q, `SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?`, projectID)
+	}](ctx, q, `SELECT COUNT(*) AS count FROM work_items WHERE project_id = ?`, projectID)
 	if err != nil {
-		return 0, fmt.Errorf("store: count tasks for project %d: %w", projectID, err)
+		return 0, fmt.Errorf("store: count work items for project %d: %w", projectID, err)
 	}
 	return row.Count, nil
 }
 
-// TaskStatusHistogram returns tasks per status for one project. Statuses with
-// no task are absent from the map.
-func TaskStatusHistogram(ctx context.Context, q Querier, projectID int64) (map[int]int64, error) {
+// WorkItemStateHistogram returns work items per state for one project. States
+// with no item are absent from the map.
+func WorkItemStateHistogram(ctx context.Context, q Querier, projectID int64) (map[string]int64, error) {
 	rows, err := All[struct {
-		Status int   `db:"status"`
-		Count  int64 `db:"count"`
-	}](ctx, q, `SELECT status, COUNT(*) AS count FROM tasks WHERE project_id = ? GROUP BY status`, projectID)
+		State string `db:"state"`
+		Count int64  `db:"count"`
+	}](ctx, q, `SELECT state, COUNT(*) AS count FROM work_items WHERE project_id = ? GROUP BY state`, projectID)
 	if err != nil {
-		return nil, fmt.Errorf("store: task histogram for project %d: %w", projectID, err)
+		return nil, fmt.Errorf("store: work item histogram for project %d: %w", projectID, err)
 	}
-	histogram := make(map[int]int64, len(rows))
+	histogram := make(map[string]int64, len(rows))
 	for _, row := range rows {
-		histogram[row.Status] = row.Count
+		histogram[row.State] = row.Count
 	}
 	return histogram, nil
 }
