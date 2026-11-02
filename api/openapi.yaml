@@ -430,11 +430,16 @@ paths:
       description: |
         按当前状态进入对应的评审门：
         - `requirement_draft`(0) → `requirement_review`(1)：要求需求文档已存在；
-        - `spec_draft`(2) → `spec_review`(3)：要求至少存在一份方案文档。
+        - `spec_draft`(2) → `spec_review`(3)：要求至少存在一份方案文档；
+        - `tasks_draft`(4) → `tasks_review`(5)：任务拆分阶段的报告也会走这条边。
         提交会清空 `reason`。
 
         `requirement_draft` 缺少需求文档时返回 409 `invalid_state`，message 固定为
         `请先上传需求文档`；前端在提交前会先读取项目详情并做同样的拦截。
+
+        阶段工作项（requirement/design/breakdown）的门禁通过会在同一事务里
+        结清对应阶段项并自动入队下一阶段项，因此手工 submit 与 worker 报告
+        可以共存；被手工跳过的阶段项按 cancelled 结清，不会阻塞项目完成。
       tags: [projects]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -901,6 +906,10 @@ paths:
     post:
       operationId: reportWorkItem
       summary: 用已有 material 交付一张租约中的 work item
+      description: |
+        报告完成后工作项进入 `submitted`。若该卡是阶段工作项，同一事务内还会
+        推进项目：requirement 0→1（需需求指针）、design 2→3（需至少一份方案）、
+        breakdown 4→5；前置不足返回 409 `invalid_state` 并整体回滚，租约保留。
       tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"

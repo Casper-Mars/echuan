@@ -110,6 +110,11 @@ var projectTransitions = []ProjectTransition{
 
 	{From: StatusSpecDraft, Action: ProjectActionSubmit, Decision: "", To: StatusSpecReview},
 
+	// The task-breakdown draft submits like the two earlier drafts. The legacy
+	// "first dev card opens the gate" move (add_first_task) stays legal; both
+	// edges lead to tasks_review.
+	{From: StatusTasksDraft, Action: ProjectActionSubmit, Decision: "", To: StatusTasksReview},
+
 	{From: StatusSpecReview, Action: ProjectActionDecide, Decision: DecisionApprove, To: StatusTasksDraft},
 	{From: StatusSpecReview, Action: ProjectActionDecide, Decision: DecisionReject, To: StatusSpecDraft},
 

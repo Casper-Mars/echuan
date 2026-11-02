@@ -113,8 +113,10 @@ func TestCreateWorkItemLandsBlockedAndOpensReviewGate(t *testing.T) {
 	if detail.Item.Attempt != 0 || detail.Item.MaxAttempts != defaultWorkItemMaxAttempts {
 		t.Errorf("attempt/max = %d/%d", detail.Item.Attempt, detail.Item.MaxAttempts)
 	}
-	if detail.Item.SeqNo != 1 {
-		t.Errorf("seq_no = %d, want 1", detail.Item.SeqNo)
+	// The requirement, design and breakdown stage cards already took seq 1–3
+	// while the fixture walked to tasks_draft; the first dev card is 4.
+	if detail.Item.SeqNo != 4 {
+		t.Errorf("seq_no = %d, want 4", detail.Item.SeqNo)
 	}
 	if detail.Item.Kind != "dev" || detail.Item.ProjectID != f.projectID {
 		t.Errorf("kind/project = %q/%q", detail.Item.Kind, detail.Item.ProjectID)
