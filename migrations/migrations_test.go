@@ -6,46 +6,29 @@ import (
 	"testing/fstest"
 )
 
-// TestEmbeddedMigrations guards the embedded FS itself: the binary must ship
-// the initial schema, the projects.last_actor addition and the workers table.
+// TestEmbeddedMigrations guards the embedded FS itself: v2 ships exactly one
+// file, the initial schema, and its version is 1.
 func TestEmbeddedMigrations(t *testing.T) {
 	list, err := Load(FS)
 	if err != nil {
 		t.Fatalf("Load(FS): %v", err)
 	}
-	if len(list) != 6 {
-		t.Fatalf("migrations = %d, want 6", len(list))
+	if len(list) != 1 {
+		t.Fatalf("migrations = %d, want 1", len(list))
 	}
 	if list[0].Version != 1 || list[0].Name != "0001_init.sql" {
 		t.Errorf("migration = %d/%s, want 1/0001_init.sql", list[0].Version, list[0].Name)
 	}
-	if list[1].Version != 2 || list[1].Name != "0002_project_last_actor.sql" {
-		t.Errorf("migration = %d/%s, want 2/0002_project_last_actor.sql", list[1].Version, list[1].Name)
-	}
-	if list[2].Version != 3 || list[2].Name != "0003_workers.sql" {
-		t.Errorf("migration = %d/%s, want 3/0003_workers.sql", list[2].Version, list[2].Name)
-	}
-	if list[3].Version != 4 || list[3].Name != "0004_project_specs.sql" {
-		t.Errorf("migration = %d/%s, want 4/0004_project_specs.sql", list[3].Version, list[3].Name)
-	}
-	if list[5].Version != 6 || list[5].Name != "0006_tasks_review_rejection.sql" {
-		t.Errorf("migration = %d/%s, want 6/0006_tasks_review_rejection.sql", list[5].Version, list[5].Name)
-	}
-	if list[4].Version != 5 || list[4].Name != "0005_project_status_range.sql" {
-		t.Errorf("migration = %d/%s, want 5/0005_project_status_range.sql", list[4].Version, list[4].Name)
-	}
-	for _, migration := range list {
-		if len(migration.SQL) == 0 {
-			t.Errorf("embedded migration %s has no SQL", migration.Name)
-		}
+	if len(list[0].SQL) == 0 {
+		t.Errorf("embedded migration %s has no SQL", list[0].Name)
 	}
 
 	latest, err := Latest(FS)
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
 	}
-	if latest != 6 {
-		t.Errorf("latest = %d, want 6", latest)
+	if latest != 1 {
+		t.Errorf("latest = %d, want 1", latest)
 	}
 }
 
