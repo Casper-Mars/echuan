@@ -111,19 +111,24 @@ const config = resolveConfig({
 })
 
 const claimBody = {
-  task: {
-    id: 'APP-1-T0001',
-    project_id: 'APP-1',
-    title: '实现登录接口',
-    body_md: '# 任务正文\n',
-    attempt: 1,
-    priority: 10,
-  },
-  lease: { lease_id: 'l_1', until: '2026-10-28T10:00:00Z', ttl_seconds: 90 },
-  context: {
-    spec_version: 1,
-    spec_digest: 'sha256:abc',
-    product: { id: 'APP', name: '示例', git_url: 'git@example.com:APP.git' },
+  dispatch: {
+    protocol: 'v2',
+    work_id: 'w_01M5Z4ABCDEF',
+    kind: 'dev',
+    inputs: [{ material_id: 'M_spec_1', kind: 2, version: 1 }],
+    work_item: {
+      project_id: 'APP-1',
+      title: '实现登录接口',
+      body_md: '# 工作项正文\n',
+      attempt: 1,
+      priority: 10,
+    },
+    lease: { lease_id: 'l_1', until: '2026-10-28T10:00:00Z', ttl_seconds: 90 },
+    context: {
+      spec_version: 1,
+      spec_digest: 'sha256:abc',
+      product: { id: 'APP', name: '示例', git_url: 'git@example.com:APP.git' },
+    },
   },
 }
 
@@ -134,29 +139,29 @@ describe('成功路径', () => {
     )
     const client = createClient(config, { fetchImpl })
 
-    const result = await client.claimTask({ product: 'APP' })
+    const result = await client.claimWorkItem({ worker_id: 'w_test' })
 
     expect(result.kind).toBe('ok')
     expect(calls).toHaveLength(1)
     const call = calls[0]!
-    expect(call.url).toBe('http://platform.test:8720/v1/tasks/claim')
+    expect(call.url).toBe('http://platform.test:8720/v1/work-items/claim')
     expect(call.init.method).toBe('POST')
     expect(headerOf(call.init, 'X-Actor')).toBe('agent:echuan:test')
     expect(headerOf(call.init, 'content-type')).toBe('application/json')
-    expect(bodyOf(call.init)).toEqual({ product: 'APP' })
+    expect(bodyOf(call.init)).toEqual({ worker_id: 'w_test' })
 
     if (result.kind === 'ok') {
       expect(result.status).toBe(200)
-      expect(result.data.task.id).toBe('APP-1-T0001')
+      expect(result.data.dispatch.work_id).toBe('w_01M5Z4ABCDEF')
       expect(result.requestId).toBe('req-200')
     }
   })
 
-  it('204：claimTask 返回明确的「无活」结果，不抛异常', async () => {
+  it('204：claimWorkItem 返回明确的「无活」结果，不抛异常', async () => {
     const { fetchImpl } = createFetch(() => jsonResponse(null, 204, { 'x-request-id': 'req-204' }))
     const client = createClient(config, { fetchImpl })
 
-    const result = await client.claimTask({ product: 'APP' })
+    const result = await client.claimWorkItem({ worker_id: 'w_test' })
 
     expect(result.kind).toBe('empty')
     if (result.kind !== 'empty') throw new Error('期望 204 返回 empty，但拿到了 200')
@@ -248,7 +253,7 @@ describe('错误映射：每种错误都给出可读中文与下一步，并保�
       )
       const client = createClient(config, { fetchImpl })
 
-      const err = await catchApiError(client.claimTask({ product: 'APP' }))
+      const err = await catchApiError(client.claimWorkItem({ worker_id: 'w_test' }))
 
       expect(err.code).toBe(item.code)
       expect(err.status).toBe(item.status)
@@ -388,7 +393,7 @@ describe('URL 与请求头', () => {
     const client = createClient(config, { fetchImpl })
 
     await client.getInbox({ limit: 5 })
-    await client.listTasks({ status: [1, 2], cursor: 'a b&c', project_id: 'APP-1' })
+    await client.listWorkItems({ kind: ['requirement', 'design'], cursor: 'a b&c', project_id: 'APP-1' })
     await client.getMaterials({ id: 'M 1' })
 
     expect(calls).toHaveLength(3)
@@ -398,8 +403,8 @@ describe('URL 与请求头', () => {
     expect(inbox.searchParams.get('limit')).toBe('5')
 
     const tasks = new URL(calls[1]!.url)
-    expect(tasks.origin + tasks.pathname).toBe('http://platform.test:8720/v1/tasks')
-    expect(tasks.searchParams.getAll('status')).toEqual(['1', '2'])
+    expect(tasks.origin + tasks.pathname).toBe('http://platform.test:8720/v1/work-items')
+    expect(tasks.searchParams.getAll('kind')).toEqual(['requirement', 'design'])
     expect(tasks.searchParams.get('cursor')).toBe('a b&c')
     expect(tasks.searchParams.get('project_id')).toBe('APP-1')
     expect(calls[1]!.url).toContain('%26')
@@ -415,16 +420,20 @@ describe('URL 与请求头', () => {
     }
   })
 
-  it('语义参数走 JSON body，标识走 query（reportTask）', async () => {
+  it('语义参数走 JSON body，标识走 query（reportWorkItem）', async () => {
     const { calls, fetchImpl } = createFetch(() => jsonResponse({ id: 'APP-1-T0001' }))
     const client = createClient(config, { fetchImpl })
 
-    await client.reportTask({ id: 'APP-1-T0001', lease_id: 'l_1', summary_md: '# 完成' })
+    await client.reportWorkItem({ work_id: 'w_01M5Z4ABCDEF', material_id: 'M_report_1', lease_id: 'l_1' })
 
     const url = new URL(calls[0]!.url)
-    expect(url.pathname).toBe('/v1/tasks/report')
-    expect(url.searchParams.get('id')).toBe('APP-1-T0001')
-    expect(bodyOf(calls[0]!.init)).toEqual({ lease_id: 'l_1', summary_md: '# 完成' })
+    expect(url.pathname).toBe('/v1/work-items/report')
+    expect(url.searchParams.get('id')).toBeNull()
+    expect(bodyOf(calls[0]!.init)).toEqual({
+      work_id: 'w_01M5Z4ABCDEF',
+      material_id: 'M_report_1',
+      lease_id: 'l_1',
+    })
     expect(headerOf(calls[0]!.init, 'content-type')).toBe('application/json')
   })
 })

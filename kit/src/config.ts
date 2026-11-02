@@ -18,6 +18,20 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 35_000
 /** `worker.metadata` 序列化后的上限（字节）。 */
 export const WORKER_METADATA_MAX_BYTES = 8 * 1024
 
+/**
+ * worker 可声明的工作项类别（平台契约 `WorkerHeartbeatRequest.kinds` 的枚举）。
+ *
+ * 一个 worker 只声明「自己能做什么」，平台按声明派单；kit 不做 kind→agent 映射：
+ * 一个 worker 对应一个 agent，需要隔离就拆 worker。
+ */
+export const WORKER_KINDS = ['requirement', 'design', 'breakdown', 'dev'] as const
+
+/** 单个工作项类别。 */
+export type WorkerKind = (typeof WORKER_KINDS)[number]
+
+/** 合法 kind 的查找表（配置解析时校验用）。 */
+const WORKER_KIND_SET: ReadonlySet<string> = new Set(WORKER_KINDS)
+
 /** 插件收到的原始配置：字段均可缺省，由 Schema 的默认值补齐。 */
 export interface ConfigInput {
   baseUrl?: string | null
@@ -26,6 +40,7 @@ export interface ConfigInput {
   exclude?: string[] | null
   worker?: {
     poll?: { enable?: boolean | null } | null
+    kinds?: string[] | null
     metadata?: Record<string, unknown> | null
   } | null
 }
@@ -45,7 +60,21 @@ export interface ResolvedConfig {
       /** 是否启用定时心跳；默认 false。 */
       enable: boolean
     }
+    /** 声明可执行的工作项类别（已 trim、去重、保序）；默认 `[]`。 */
+    kinds: WorkerKind[]
     /** 任意 JSON 对象，原样上报。 */
+    metadata: Record<string, unknown>
+  }
+}
+
+/**
+ * Schema 的输出形状：`kinds` 在这里仍是 `string[]`（枚举校验在 `resolveConfig`
+ * 里做），避免 schemastery 的 `.default([])` 与窄联合类型互相打架。
+ */
+export type SchemaConfig = Omit<ResolvedConfig, 'worker'> & {
+  worker: {
+    poll: { enable: boolean }
+    kinds: string[]
     metadata: Record<string, unknown>
   }
 }
@@ -57,7 +86,7 @@ export interface ResolvedConfig {
  * `@deepseek-ai/cosmokit` 的 `Dict`：不标注时 `declaration` 生成会报
  * TS2742「inferred type cannot be named」。
  */
-export const Config: Schemastery<ConfigInput, ResolvedConfig> = Schema.object({
+export const Config: Schemastery<ConfigInput, SchemaConfig> = Schema.object({
   baseUrl: Schema.string()
     .default(DEFAULT_BASE_URL)
     .description('驿传平台地址，例如 http://127.0.0.1:8720（结尾斜杠会被去掉）'),
@@ -75,10 +104,16 @@ export const Config: Schemastery<ConfigInput, ResolvedConfig> = Schema.object({
     poll: Schema.object({
       enable: Schema.boolean()
         .default(false)
-        .description('是否由插件定时心跳并拉取任务；关闭时插件不创建任何定时器'),
+        .description('是否由插件定时心跳并接收派单；关闭时插件不创建任何定时器'),
     })
       .default({})
-      .description('心跳与任务拉取'),
+      .description('心跳与派单接收'),
+    kinds: Schema.array(Schema.string())
+      .default([])
+      .description(
+        '声明本 worker 可执行的 work item 类别（requirement / design / breakdown / dev）；'
+        + '为空时不启动心跳循环。一个 worker 对应一个 agent，不做 kind→agent 映射',
+      ),
     metadata: Schema.dict(Schema.any())
       .default({})
       .description('任意 JSON 对象，随心跳原样上报（序列化后 ≤ 8KiB）'),
@@ -93,7 +128,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   actor: DEFAULT_ACTOR,
   requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
   exclude: [],
-  worker: { poll: { enable: false }, metadata: {} },
+  worker: { poll: { enable: false }, kinds: [], metadata: {} },
 }
 
 /**
@@ -103,6 +138,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
  * - 缺省字段回落默认值（Schema 的 `.default()` 负责）；
  * - `baseUrl` 去掉结尾斜杠，为空则回落默认值；
  * - `worker.metadata` 原样保留（不做深拷贝、不做键裁剪）；
+ * - `worker.kinds` 每项 trim、去重（保序），未知类别抛 `TypeError`；
  * - `exclude` 每项做 `trim`、去重（保序），空白项抛 `TypeError`；工具名是否合法
  *   由 `tool-names.ts` 的 `validateExclude` 在插件入口校验（config 不依赖 dsh-tools）。
  *
@@ -121,9 +157,35 @@ export function resolveConfig(input?: ConfigInput | null): ResolvedConfig {
     exclude: normalizeExclude(resolved.exclude),
     worker: {
       poll: { enable: resolved.worker.poll.enable },
+      kinds: normalizeKinds(resolved.worker.kinds),
       metadata: resolved.worker.metadata,
     },
   }
+}
+
+/**
+ * 归一化 `worker.kinds`：trim、去重（保序），未知类别抛 `TypeError`。
+ *
+ * 未知 kind 必须让配置解析失败：平台心跳只接受四类枚举，静默丢弃会让
+ * 「以为声明了某类」变成「其实没声明」，派单永远不来。
+ */
+function normalizeKinds(kinds?: readonly string[] | null): WorkerKind[] {
+  if (kinds === undefined || kinds === null || kinds.length === 0) return []
+  const normalized: WorkerKind[] = []
+  const seen = new Set<string>()
+  for (const item of kinds) {
+    const kind = item.trim()
+    if (!WORKER_KIND_SET.has(kind)) {
+      throw new TypeError(
+        `worker.kinds 含未知类别：${JSON.stringify(item)}。合法取值（${WORKER_KINDS.length} 个）：`
+          + `${WORKER_KINDS.join(', ')}。`,
+      )
+    }
+    if (seen.has(kind)) continue
+    seen.add(kind)
+    normalized.push(kind as WorkerKind)
+  }
+  return normalized
 }
 
 /**

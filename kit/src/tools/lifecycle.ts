@@ -3,16 +3,16 @@
  *
  * 边界（硬约束）：
  * - 只负责「起草 → 提交评审」这一段，**没有任何审批/驳回/取消动作**；
- * - 入参在本地先校验（缺字段、空白、空 `tasks`、非正 `version`），
+ * - 入参在本地先校验（缺字段、空白、空 `work_items`、非正 `version`），
  *   不合法时直接抛 {@link EchuanValidationError}，**不发任何请求**；
  * - 不自动重试、不落盘、不缓存；错误体（409 / 400 / 413）原样透出；
- * - 返回结构稳定，带下一步要用的 id（project_id / spec_id / 任务 id）。
+ * - 返回结构稳定，带下一步要用的 id（project_id / spec_id / work_id）。
  */
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type {
   CreateProjectInput,
   CreateSpecInput,
-  PlanTaskInput,
+  PlanItemInput,
   PlanResponse,
   Project,
   ProjectDetail,
@@ -78,12 +78,13 @@ export interface SpecRevisedValue {
   material_id?: string
 }
 
-export interface PlanTaskValue {
-  task_id: string
+export interface PlanItemValue {
+  work_id: string
   seq_no?: number
+  work_kind?: string
   title: string
   priority?: number
-  status_name?: string
+  state?: string
   depends_on: string[]
 }
 
@@ -93,7 +94,7 @@ export interface PlanSubmittedValue {
   status?: number
   status_name?: string
   version?: number
-  tasks: PlanTaskValue[]
+  work_items: PlanItemValue[]
 }
 
 /* ------------------------------------------------------------------ *
@@ -162,18 +163,19 @@ const planSubmittedSchema = {
     status: nullableInteger,
     status_name: nullableString,
     version: nullableInteger,
-    tasks: {
+    work_items: {
       type: 'array',
       required: true,
       items: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          task_id: { type: 'string', required: true },
+          work_id: { type: 'string', required: true },
           seq_no: nullableInteger,
+          work_kind: nullableString,
           title: { type: 'string', required: true },
           priority: nullableInteger,
-          status_name: nullableString,
+          state: nullableString,
           depends_on: { type: 'array', items: { type: 'string' }, required: true },
         },
       },
@@ -223,60 +225,60 @@ function requireVersion(value: unknown): number {
 }
 
 /** 批量建卡的入参校验；`depends_on` 为 1-based 批内序号，原样透传。 */
-function requireTasks(value: unknown): PlanTaskInput[] {
+function requirePlanItems(value: unknown): PlanItemInput[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new EchuanValidationError(
-      'tasks 不能为空。下一步：至少给一张卡（title + body_md），本次没有发出任何请求。',
+      'work_items 不能为空。下一步：至少给一张卡（title + body_md），本次没有发出任何请求。',
       'invalid_argument',
-      'tasks',
+      'work_items',
     )
   }
 
   return value.map((item, index) => {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) {
       throw new EchuanValidationError(
-        `tasks[${index}] 必须是对象。下一步：按 { title, body_md, priority?, depends_on? } 传参。`,
+        `work_items[${index}] 必须是对象。下一步：按 { title, body_md, priority?, depends_on? } 传参。`,
         'invalid_argument',
-        'tasks',
+        'work_items',
       )
     }
     const record = item as Record<string, unknown>
-    const task: PlanTaskInput = {
-      title: requireText(record['title'], `tasks[${index}].title`),
-      body_md: requireBody(record['body_md'], `tasks[${index}].body_md`),
+    const workItem: PlanItemInput = {
+      title: requireText(record['title'], `work_items[${index}].title`),
+      body_md: requireBody(record['body_md'], `work_items[${index}].body_md`),
     }
     if (record['priority'] !== undefined) {
       const priority = record['priority']
       if (typeof priority !== 'number' || !Number.isInteger(priority)) {
         throw new EchuanValidationError(
-          `tasks[${index}].priority 必须是整数，收到 ${String(priority)}。`,
+          `work_items[${index}].priority 必须是整数，收到 ${String(priority)}。`,
           'invalid_argument',
-          'tasks',
+          'work_items',
         )
       }
-      task.priority = priority
+      workItem.priority = priority
     }
     if (record['depends_on'] !== undefined) {
       const dependsOn = record['depends_on']
       if (!Array.isArray(dependsOn)) {
         throw new EchuanValidationError(
-          `tasks[${index}].depends_on 必须是数组（1-based 批内序号）。`,
+          `work_items[${index}].depends_on 必须是数组（1-based 批内序号）。`,
           'invalid_argument',
-          'tasks',
+          'work_items',
         )
       }
-      task.depends_on = dependsOn.map((dep, depIndex) => {
+      workItem.depends_on = dependsOn.map((dep, depIndex) => {
         if (typeof dep !== 'number' || !Number.isInteger(dep) || dep <= 0) {
           throw new EchuanValidationError(
-            `tasks[${index}].depends_on[${depIndex}] 必须是大于 0 的整数（1-based 批内序号）。`,
+            `work_items[${index}].depends_on[${depIndex}] 必须是大于 0 的整数（1-based 批内序号）。`,
             'invalid_argument',
-            'tasks',
+            'work_items',
           )
         }
         return dep
       })
     }
-    return task
+    return workItem
   })
 }
 
@@ -318,7 +320,7 @@ function specValue(
 }
 
 function planValue(plan: PlanResponse): PlanSubmittedValue {
-  const tasks = Array.isArray(plan.tasks) ? plan.tasks : []
+  const workItems = Array.isArray(plan.work_items) ? plan.work_items : []
   const status = asNumber(plan.status)
   const statusName = asString(plan.status_name)
   const version = asNumber(plan.project_version)
@@ -328,19 +330,21 @@ function planValue(plan: PlanResponse): PlanSubmittedValue {
     ...(status === undefined ? {} : { status }),
     ...(statusName === undefined ? {} : { status_name: statusName }),
     ...(version === undefined ? {} : { version }),
-    tasks: tasks.map((task) => {
-      const seqNo = asNumber(task.seq_no)
-      const priority = asNumber(task.priority)
-      const taskStatusName = asString(task.status_name)
+    work_items: workItems.map((item) => {
+      const seqNo = asNumber(item.seq_no)
+      const priority = asNumber(item.priority)
+      const kind = asString(item.kind)
+      const state = asString(item.state)
       return {
-        task_id: asString(task.id) ?? '',
-        title: asString(task.title) ?? '',
-        depends_on: Array.isArray(task.depends_on)
-          ? task.depends_on.filter((id): id is string => typeof id === 'string')
+        work_id: asString(item.work_id) ?? '',
+        title: asString(item.title) ?? '',
+        depends_on: Array.isArray(item.depends_on)
+          ? item.depends_on.filter((id): id is string => typeof id === 'string')
           : [],
         ...(seqNo === undefined ? {} : { seq_no: seqNo }),
+        ...(kind === undefined ? {} : { work_kind: kind }),
         ...(priority === undefined ? {} : { priority }),
-        ...(taskStatusName === undefined ? {} : { status_name: taskStatusName }),
+        ...(state === undefined ? {} : { state }),
       }
     }),
   }
@@ -404,18 +408,19 @@ export function renderSpecRevised(value: SpecRevisedValue): TextContent[] {
 
 export function renderPlanSubmitted(value: PlanSubmittedValue): TextContent[] {
   const lines = [
-    `✅ 已批量建卡 ${value.tasks.length} 张：项目 ${value.project_id}`,
+    `✅ 已批量建卡 ${value.work_items.length} 张：项目 ${value.project_id}`,
     `- 项目状态：${statusLine(value.status, value.status_name)}`,
     `- 项目版本：${value.version === undefined ? '未知' : `v${value.version}`}`,
   ]
-  for (const task of value.tasks) {
-    const seq = task.seq_no === undefined ? '' : `#${task.seq_no} `
-    const priority = task.priority === undefined ? '未知' : String(task.priority)
-    const depends = task.depends_on.length === 0 ? '无' : task.depends_on.join('、')
-    const status = task.status_name === undefined ? '' : `｜${task.status_name}`
-    lines.push(`- ${seq}${task.task_id}：${task.title}（优先级 ${priority}，依赖 ${depends}${status}）`)
+  for (const item of value.work_items) {
+    const seq = item.seq_no === undefined ? '' : `#${item.seq_no} `
+    const priority = item.priority === undefined ? '未知' : String(item.priority)
+    const depends = item.depends_on.length === 0 ? '无' : item.depends_on.join('、')
+    const kind = item.work_kind === undefined ? '' : `｜${item.work_kind}`
+    const state = item.state === undefined ? '' : `｜${item.state}`
+    lines.push(`- ${seq}${item.work_id}：${item.title}（优先级 ${priority}，依赖 ${depends}${kind}${state}）`)
   }
-  lines.push('下一步：等待任务计划评审；通过后 worker 用 `echuan_task_claim` 领卡。')
+  lines.push('下一步：等待计划评审；通过后 worker 用 `echuan_work_claim` 领卡。')
   return [textBlock(lines.join('\n'))]
 }
 
@@ -668,20 +673,20 @@ export function createPlanSubmitTool(options: EchuanToolOptions): ToolDefinition
   return defineTool({
     name: 'echuan_plan_submit',
     description:
-      '向驿传（echuan）项目批量添加任务卡（POST /v1/projects/plans?id=）。'
-      + 'tasks 至少一张，每张含 title / body_md，可选 priority 与 depends_on（1-based 批内序号）。'
-      + '返回项目状态与新建卡列表（含任务编号）。',
+      '向驿传（echuan）项目批量添加 work item（POST /v1/projects/plans?id=）。'
+      + 'work_items 至少一张，每张含 title / body_md，可选 priority 与 depends_on（1-based 批内序号）。'
+      + '返回项目状态与新建卡列表（含 work_id 与 kind）。',
     parameters: {
       project_id: { type: 'string', required: true, description: '项目编号（必填，走 query `?id=`）' },
-      tasks: {
+      work_items: {
         type: 'array',
         required: true,
         items: {
           type: 'object',
           additionalProperties: false,
           properties: {
-            title: { type: 'string', required: true, description: '任务标题' },
-            body_md: { type: 'string', required: true, description: '任务正文（Markdown）' },
+            title: { type: 'string', required: true, description: '工作项标题' },
+            body_md: { type: 'string', required: true, description: '工作项正文（Markdown）' },
             priority: { type: 'integer', description: '优先级（可选，默认由平台决定）' },
             depends_on: {
               type: 'array',
@@ -700,14 +705,14 @@ export function createPlanSubmitTool(options: EchuanToolOptions): ToolDefinition
       try {
         const input: SubmitPlanInput = {
           id: requireText(args.project_id, 'project_id'),
-          tasks: requireTasks(args.tasks),
+          work_items: requirePlanItems(args.work_items),
         }
 
         const result = await client.submitPlan(input)
         if (result.kind === 'empty') {
           throw new EchuanValidationError(
             '平台对批量建卡返回 204（无内容），与接口契约不符。'
-              + '下一步：用 `echuan_task_list` 确认卡片是否已创建，不要原样重试。',
+              + '下一步：用 `echuan_work_list` 确认卡片是否已创建，不要原样重试。',
             'unexpected_empty',
             'plan',
           )

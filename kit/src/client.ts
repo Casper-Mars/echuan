@@ -22,9 +22,11 @@
  * 两者共用 `requestRaw` / `requestJson`，仍然是全插件唯一的 fetch 出口。
  */
 import {
+  WORKER_KINDS,
   WORKER_METADATA_MAX_BYTES,
   metadataByteLength,
   type ResolvedConfig,
+  type WorkerKind,
 } from './config.js'
 import {
   DEFAULT_RETRY_AFTER_MS,
@@ -114,38 +116,74 @@ export type ApiResult<T> = OkResult<T> | NoWorkResult
 
 /** 204 的统一文案。 */
 export const NO_WORK_MESSAGE =
-  '无活：平台当前没有可领取的任务（HTTP 204）。'
+  '无活：平台当前没有可领取的 work item（HTTP 204）。'
   + '下一步：按退避策略稍后再试，不要把 204 当错误重试。'
 
 // ---------------------------------------------------------------------------
 // 平台数据结构（只声明本工具包实际读取的字段，其余透传）
 // ---------------------------------------------------------------------------
 
-export interface ClaimedTask {
-  id: string
+/** 工作项类别（`Dispatch.kind` / 工具的 `kind` 入参）。 */
+export type WorkItemKind = 'requirement' | 'design' | 'breakdown' | 'dev'
+
+/** 工作项状态（文本枚举，平台 v2 契约）。 */
+export type WorkItemState =
+  | 'blocked'
+  | 'queued'
+  | 'leased'
+  | 'submitted'
+  | 'accepted'
+  | 'failed'
+  | 'cancelled'
+
+/** 派单附带的输入物料（需求 / 方案版本）。 */
+export interface WorkItemInput {
+  material_id: string
+  kind: number
+  version: number
+}
+
+/** `Dispatch.work_item`：工作项的执行视图（正文与标题等）。 */
+export interface DispatchWorkItem {
   project_id: string
   title: string
   body_md: string
-  attempt: number
   priority: number
+  attempt: number
 }
 
-export interface ClaimLease {
+/** `Dispatch.lease`：本次派单的租约。 */
+export interface DispatchLease {
   lease_id: string
   until: string
   ttl_seconds: number
 }
 
-export interface ClaimContext {
+/** `Dispatch.context`：产品与规格摘要。 */
+export interface DispatchContext {
   spec_version: number
   spec_digest: string
   product: { id: string; name: string; git_url: string }
 }
 
+/**
+ * 心跳回包 `commands[]` 里的 dispatch 指令（v2 派单协议）。
+ *
+ * 与 `POST /v1/work-items/claim` 的 200 回包同构。注意 `work_id` 在顶层，
+ * `work_item` 里没有编号——渲染与汇报都以顶层 `work_id` 为准。
+ */
+export interface Dispatch {
+  protocol: 'v2'
+  work_id: string
+  kind: WorkItemKind
+  inputs: WorkItemInput[]
+  work_item: DispatchWorkItem
+  lease: DispatchLease
+  context: DispatchContext
+}
+
 export interface ClaimResponse {
-  task: ClaimedTask
-  lease: ClaimLease
-  context: ClaimContext
+  dispatch: Dispatch
 }
 
 export interface HeartbeatResponse {
@@ -154,27 +192,51 @@ export interface HeartbeatResponse {
   ttl_seconds: number
 }
 
-export interface TaskDetail {
+/** 工作项（列表项 / 详情）里本工具包读取的字段，其余透传。 */
+export interface WorkItemDetail {
   id?: string
-  task_id?: string
+  work_id?: string
   project_id?: string
-  status?: number
-  status_name?: string
+  parent_id?: string | null
+  kind?: WorkItemKind | string
+  seq_no?: number
+  title?: string
+  body_md?: string
+  priority?: number
+  state?: WorkItemState | string
+  worker_id?: string | null
+  attempt?: number
+  max_attempts?: number
+  reason?: string | null
+  version?: number
+  depends_on?: string[]
+  result_material_id?: string | null
+  create_time?: string
+  update_time?: string
+  lease?: DispatchLease | null
+  result?: MaterialMeta | null
   [key: string]: unknown
 }
 
-export interface Task {
-  id?: string
-  [key: string]: unknown
-}
-
-export interface TaskList {
-  items: Task[]
+export interface WorkItemList {
+  items: WorkItemDetail[]
   next_cursor?: string
 }
 
 export interface Project {
   id?: string
+  project_id?: string
+  product_id?: string
+  title?: string
+  status?: number
+  status_name?: string
+  reason?: string | null
+  version?: number
+  work_item_total?: number
+  work_item_done?: number
+  work_item_by_state?: Record<string, number>
+  create_time?: string
+  update_time?: string
   [key: string]: unknown
 }
 
@@ -262,23 +324,23 @@ export interface SpecDocument {
   [key: string]: unknown
 }
 
-/** `POST /v1/projects/plans` 的单张任务卡入参（`depends_on` 为 1-based 批内序号）。 */
-export interface PlanTaskInput {
+/** `POST /v1/projects/plans` 的单张 work item 入参（`depends_on` 为 1-based 批内序号）。 */
+export interface PlanItemInput {
   title: string
   body_md: string
   priority?: number
   depends_on?: number[]
 }
 
-/** `PlanResponse.tasks` 里的一行。 */
-export interface PlanTaskResult {
-  id: string
+/** `PlanResponse.work_items` 里的一行。 */
+export interface PlanItemResult {
+  work_id: string
   seq_no: number
+  kind: WorkItemKind | string
   title: string
   priority: number
-  status: number
-  status_name: string
-  /** 平台返回的是任务 id（不是批内序号）。 */
+  state: WorkItemState | string
+  /** 平台返回的是 work_id（不是批内序号）。 */
   depends_on: string[]
   [key: string]: unknown
 }
@@ -289,7 +351,7 @@ export interface PlanResponse {
   status: number
   status_name: string
   project_version: number
-  tasks: PlanTaskResult[]
+  work_items: PlanItemResult[]
   [key: string]: unknown
 }
 
@@ -297,22 +359,23 @@ export interface PlanResponse {
 // 方法入参
 // ---------------------------------------------------------------------------
 
-export interface ClaimTaskInput {
-  product: string
-  task_id?: string
-  worker_id?: string
+export interface ClaimWorkItemInput {
+  /** 已注册的 `w_` worker id（契约必填）；其 kinds 声明决定可领的卡。 */
+  worker_id: string
+  /** 只领这一张卡（可选）；不可领取时平台返回 204。 */
+  work_id?: string
 }
 
-export interface RenewLeaseInput {
-  /** 任务 id，走 query `?id=`。 */
-  id: string
+export interface RenewWorkItemLeaseInput {
+  work_id: string
   lease_id: string
 }
 
-export interface ReportTaskInput {
-  id: string
+export interface ReportWorkItemInput {
+  work_id: string
+  /** 已存在的 material_id（报告正文由平台侧物料承载）。 */
+  material_id: string
   lease_id: string
-  summary_md: string
 }
 
 export interface CreateProjectInput {
@@ -353,29 +416,30 @@ export interface ReviseSpecInput {
 export interface SubmitPlanInput {
   /** 项目编号，走 query `?id=`。 */
   id: string
-  tasks: PlanTaskInput[]
+  work_items: PlanItemInput[]
 }
 
-export interface CreateTaskInput {
-  /** 项目编号，走 query `?project_id=`。 */
+export interface CreateWorkItemInput {
   project_id: string
+  kind: WorkItemKind
   title: string
   body_md: string
   priority?: number
-  /** 依赖的任务 id（平台返回的是任务 id，不是批内序号）。 */
+  /** 依赖的 work_id（平台返回的是 work_id，不是批内序号）。 */
   depends_on?: string[]
+  parent_id?: string
 }
 
-export interface UpdateTaskInput {
-  /** 任务编号，走 query `?id=`。 */
+export interface UpdateWorkItemInput {
+  /** 工作项编号，走 query `?id=`。 */
   id: string
   title?: string
   body_md?: string
   priority?: number
 }
 
-export interface DeleteTaskInput {
-  /** 任务编号，走 query `?id=`。 */
+export interface DeleteWorkItemInput {
+  /** 工作项编号，走 query `?id=`。 */
   id: string
 }
 
@@ -418,10 +482,13 @@ export interface ProjectsQuery {
   cursor?: string
 }
 
-export interface TasksQuery {
+export interface WorkItemsQuery {
+  /** 详情形态：`?id=` 或 `?work_id=`。 */
   id?: string
+  work_id?: string
   project_id?: string
-  status?: readonly number[]
+  kind?: readonly string[]
+  state?: readonly string[]
   limit?: number
   cursor?: string
 }
@@ -432,25 +499,25 @@ export interface MaterialsQuery {
 
 /** 20 个客户端方法的集合（顺序即客户端对象属性顺序）。 */
 export const TOOL_METHODS = [
-  'claimTask',
-  'renewLease',
-  'reportTask',
+  'claimWorkItem',
+  'renewWorkItemLease',
+  'reportWorkItem',
   'createProject',
   'writeRequirement',
   'submitProject',
   'createSpec',
   'reviseSpec',
   'submitPlan',
-  'createTask',
-  'updateTask',
-  'deleteTask',
+  'createWorkItem',
+  'updateWorkItem',
+  'deleteWorkItem',
   'updateProject',
   'createProduct',
   'downloadProjectPackage',
   'getInbox',
   'listProducts',
   'listProjects',
-  'listTasks',
+  'listWorkItems',
   'getMaterials',
 ] as const
 
@@ -462,22 +529,32 @@ export type ToolMethodName = (typeof TOOL_METHODS)[number]
  * `tool` 是客户端方法名；`method`/`path`/`operationId` 必须能在
  * `api/openapi.yaml` 的 `paths` 下原样找到（单测解析 yaml 校验）。
  *
- * 注意：23 个工具共用这 20 个 operation（`echuan_worker_info` 零 HTTP）——`listProjects` / `listTasks`
+ * 注意：23 个工具共用这 20 个 operation（`echuan_worker_info` 零 HTTP）——`listProjects` / `listWorkItems`
  * 各由一个 GET 同时承担「列表」与「按 id 取详情」两种工具语义。
  */
 export const TOOL_OPERATIONS = [
-  { tool: 'claimTask', method: 'POST', path: '/v1/tasks/claim', operationId: 'claimTask' },
-  { tool: 'renewLease', method: 'POST', path: '/v1/tasks/heartbeat', operationId: 'heartbeatTask' },
-  { tool: 'reportTask', method: 'POST', path: '/v1/tasks/report', operationId: 'reportTask' },
+  { tool: 'claimWorkItem', method: 'POST', path: '/v1/work-items/claim', operationId: 'claimWorkItem' },
+  {
+    tool: 'renewWorkItemLease',
+    method: 'POST',
+    path: '/v1/work-items/lease',
+    operationId: 'renewWorkItemLease',
+  },
+  {
+    tool: 'reportWorkItem',
+    method: 'POST',
+    path: '/v1/work-items/report',
+    operationId: 'reportWorkItem',
+  },
   { tool: 'createProject', method: 'POST', path: '/v1/projects', operationId: 'createProject' },
   { tool: 'writeRequirement', method: 'POST', path: '/v1/projects/requirement', operationId: 'writeProjectRequirement' },
   { tool: 'submitProject', method: 'POST', path: '/v1/projects/submit', operationId: 'submitProject' },
   { tool: 'createSpec', method: 'POST', path: '/v1/specs', operationId: 'createSpecDocument' },
   { tool: 'reviseSpec', method: 'PATCH', path: '/v1/specs', operationId: 'reviseSpecDocument' },
   { tool: 'submitPlan', method: 'POST', path: '/v1/projects/plans', operationId: 'submitProjectPlan' },
-  { tool: 'createTask', method: 'POST', path: '/v1/tasks', operationId: 'createTask' },
-  { tool: 'updateTask', method: 'PATCH', path: '/v1/tasks', operationId: 'updateTask' },
-  { tool: 'deleteTask', method: 'DELETE', path: '/v1/tasks', operationId: 'deleteTask' },
+  { tool: 'createWorkItem', method: 'POST', path: '/v1/work-items', operationId: 'createWorkItem' },
+  { tool: 'updateWorkItem', method: 'PATCH', path: '/v1/work-items', operationId: 'updateWorkItem' },
+  { tool: 'deleteWorkItem', method: 'DELETE', path: '/v1/work-items', operationId: 'deleteWorkItem' },
   { tool: 'updateProject', method: 'PATCH', path: '/v1/projects', operationId: 'updateProject' },
   { tool: 'createProduct', method: 'POST', path: '/v1/products', operationId: 'createProduct' },
   {
@@ -489,21 +566,21 @@ export const TOOL_OPERATIONS = [
   { tool: 'getInbox', method: 'GET', path: '/v1/inbox', operationId: 'listInbox' },
   { tool: 'listProducts', method: 'GET', path: '/v1/products', operationId: 'listOrGetProducts' },
   { tool: 'listProjects', method: 'GET', path: '/v1/projects', operationId: 'listOrGetProjects' },
-  { tool: 'listTasks', method: 'GET', path: '/v1/tasks', operationId: 'listOrGetTasks' },
+  { tool: 'listWorkItems', method: 'GET', path: '/v1/work-items', operationId: 'listOrGetWorkItems' },
   { tool: 'getMaterials', method: 'GET', path: '/v1/materials', operationId: 'downloadMaterial' },
 ] as const
 
 /** 客户端对外的 20 个方法。 */
 export interface EchuanClient {
   /**
-   * `POST /v1/tasks/claim`（operationId `claimTask`）。
+   * `POST /v1/work-items/claim`（operationId `claimWorkItem`）。
    * 无卡可领时平台返回 204，本方法返回 {@link NoWorkResult}，不抛错。
    */
-  claimTask(input: ClaimTaskInput): Promise<ApiResult<ClaimResponse>>
-  /** `POST /v1/tasks/heartbeat`（operationId `heartbeatTask`）。 */
-  renewLease(input: RenewLeaseInput): Promise<ApiResult<HeartbeatResponse>>
-  /** `POST /v1/tasks/report`（operationId `reportTask`）。 */
-  reportTask(input: ReportTaskInput): Promise<ApiResult<TaskDetail>>
+  claimWorkItem(input: ClaimWorkItemInput): Promise<ApiResult<ClaimResponse>>
+  /** `POST /v1/work-items/lease`（operationId `renewWorkItemLease`）。 */
+  renewWorkItemLease(input: RenewWorkItemLeaseInput): Promise<ApiResult<HeartbeatResponse>>
+  /** `POST /v1/work-items/report`（operationId `reportWorkItem`）。 */
+  reportWorkItem(input: ReportWorkItemInput): Promise<ApiResult<WorkItemDetail>>
   /** `POST /v1/projects`（operationId `createProject`）；返回 `ProjectDetail`。 */
   createProject(input: CreateProjectInput): Promise<ApiResult<ProjectDetail>>
   /** `POST /v1/projects/requirement?id=`（operationId `writeProjectRequirement`）。 */
@@ -516,12 +593,12 @@ export interface EchuanClient {
   reviseSpec(input: ReviseSpecInput): Promise<ApiResult<SpecDocument>>
   /** `POST /v1/projects/plans?id=`（operationId `submitProjectPlan`）。 */
   submitPlan(input: SubmitPlanInput): Promise<ApiResult<PlanResponse>>
-  /** `POST /v1/tasks?project_id=`（operationId `createTask`）。 */
-  createTask(input: CreateTaskInput): Promise<ApiResult<TaskDetail>>
-  /** `PATCH /v1/tasks?id=`（operationId `updateTask`）；无 If-Match。 */
-  updateTask(input: UpdateTaskInput): Promise<ApiResult<TaskDetail>>
-  /** `DELETE /v1/tasks?id=`（operationId `deleteTask`）；204 表示已删除。 */
-  deleteTask(input: DeleteTaskInput): Promise<ApiResult<TaskDetail>>
+  /** `POST /v1/work-items`（operationId `createWorkItem`）。 */
+  createWorkItem(input: CreateWorkItemInput): Promise<ApiResult<WorkItemDetail>>
+  /** `PATCH /v1/work-items?id=`（operationId `updateWorkItem`）；无 If-Match。 */
+  updateWorkItem(input: UpdateWorkItemInput): Promise<ApiResult<WorkItemDetail>>
+  /** `DELETE /v1/work-items?id=`（operationId `deleteWorkItem`）；204 表示已删除。 */
+  deleteWorkItem(input: DeleteWorkItemInput): Promise<ApiResult<WorkItemDetail>>
   /** `PATCH /v1/projects?id=`（operationId `updateProject`）；只发 title。 */
   updateProject(input: UpdateProjectInput): Promise<ApiResult<Project>>
   /** `POST /v1/products`（operationId `createProduct`）。 */
@@ -534,8 +611,8 @@ export interface EchuanClient {
   listProducts(query?: ProductsQuery): Promise<ApiResult<Product | ProductList>>
   /** `GET /v1/projects`（operationId `listOrGetProjects`）；带 `id` 时为详情。 */
   listProjects(query?: ProjectsQuery): Promise<ApiResult<Project | ProjectList>>
-  /** `GET /v1/tasks`（operationId `listOrGetTasks`）；带 `id` 时为详情。 */
-  listTasks(query?: TasksQuery): Promise<ApiResult<TaskDetail | TaskList>>
+  /** `GET /v1/work-items`（operationId `listOrGetWorkItems`）；带 `id` / `work_id` 时为详情。 */
+  listWorkItems(query?: WorkItemsQuery): Promise<ApiResult<WorkItemDetail | WorkItemList>>
   /** `GET /v1/materials`（operationId `downloadMaterial`）；`?id=` 必填。 */
   getMaterials(query: MaterialsQuery): Promise<ApiResult<MaterialBody>>
 }
@@ -550,6 +627,8 @@ export type WorkerState = 'idle' | 'busy'
 export interface WorkerHeartbeatInput {
   worker_id?: string
   state: WorkerState
+  /** 声明可执行的 work item 类别（必填、非空；每次心跳覆盖）。 */
+  kinds: readonly WorkItemKind[]
   metadata: Record<string, unknown>
 }
 
@@ -558,7 +637,8 @@ export interface WorkerSnapshot {
   worker_id: string
   presence?: string
   state?: WorkerState
-  current_task_id?: string | null
+  kinds?: readonly WorkItemKind[]
+  current_work_item_id?: string | null
   metadata?: Record<string, unknown>
   first_seen?: string
   last_seen?: string
@@ -567,25 +647,23 @@ export interface WorkerSnapshot {
   [key: string]: unknown
 }
 
-/** 指令公共形状；当前枚举只有 `run_task`。 */
+/** 指令公共形状；当前枚举只有 `dispatch`。 */
 export interface WorkerCommandBase {
   kind: string
 }
 
-export interface WorkerRunTaskCommand extends WorkerCommandBase {
-  kind: 'run_task'
-  task: ClaimedTask
-  lease: ClaimLease
-  context: ClaimContext
+export interface WorkerDispatchCommand extends WorkerCommandBase {
+  kind: 'dispatch'
+  dispatch: Dispatch
 }
 
 /** 心跳返回的一条指令；未识别的 kind 由调用方忽略。 */
-export type WorkerCommand = WorkerRunTaskCommand | WorkerCommandBase
+export type WorkerCommand = WorkerDispatchCommand | WorkerCommandBase
 
 /** `POST /v1/workers/heartbeat` 的 200 回包。 */
 export interface WorkerHeartbeatPayload {
   worker: WorkerSnapshot
-  /** 无任务时恒为 `[]`（不会是 null 或省略）。 */
+  /** 无工作项时恒为 `[]`（不会是 null 或省略）。 */
   commands: WorkerCommand[]
   [key: string]: unknown
 }
@@ -806,38 +884,35 @@ export function createClient(
   const ctx = createRequestContext(config, options)
 
   return {
-    async claimTask(input) {
-      const product = requireNonEmpty(input?.product, 'product')
-      const body: Record<string, string> = { product }
-      if (input?.task_id !== undefined) body.task_id = requireNonEmpty(input.task_id, 'task_id')
-      if (input?.worker_id !== undefined) body.worker_id = requireNonEmpty(input.worker_id, 'worker_id')
+    async claimWorkItem(input) {
+      const worker_id = requireNonEmpty(input?.worker_id, 'worker_id')
+      const body: Record<string, string> = { worker_id }
+      if (input?.work_id !== undefined) body.work_id = requireNonEmpty(input.work_id, 'work_id')
       return requestJson<ClaimResponse>(ctx, {
         method: 'POST',
-        path: '/v1/tasks/claim',
+        path: '/v1/work-items/claim',
         body,
       })
     },
 
-    async renewLease(input) {
-      const id = requireNonEmpty(input?.id, 'id')
+    async renewWorkItemLease(input) {
+      const work_id = requireNonEmpty(input?.work_id, 'work_id')
       const lease_id = requireNonEmpty(input?.lease_id, 'lease_id')
       return requestJson<HeartbeatResponse>(ctx, {
         method: 'POST',
-        path: '/v1/tasks/heartbeat',
-        query: { id },
-        body: { lease_id },
+        path: '/v1/work-items/lease',
+        body: { work_id, lease_id },
       })
     },
 
-    async reportTask(input) {
-      const id = requireNonEmpty(input?.id, 'id')
+    async reportWorkItem(input) {
+      const work_id = requireNonEmpty(input?.work_id, 'work_id')
+      const material_id = requireNonEmpty(input?.material_id, 'material_id')
       const lease_id = requireNonEmpty(input?.lease_id, 'lease_id')
-      const summary_md = requireString(input?.summary_md, 'summary_md')
-      return requestJson<TaskDetail>(ctx, {
+      return requestJson<WorkItemDetail>(ctx, {
         method: 'POST',
-        path: '/v1/tasks/report',
-        query: { id },
-        body: { lease_id, summary_md },
+        path: '/v1/work-items/report',
+        body: { work_id, material_id, lease_id },
       })
     },
 
@@ -906,50 +981,51 @@ export function createClient(
 
     async submitPlan(input) {
       const id = requireNonEmpty(input?.id, 'id')
-      const tasks = requirePlanTasks(input?.tasks)
+      const workItems = requirePlanItems(input?.work_items)
       return requestJson<PlanResponse>(ctx, {
         method: 'POST',
         path: '/v1/projects/plans',
         query: { id },
-        body: { tasks },
+        body: { work_items: workItems },
       })
     },
 
-    async createTask(input) {
+    async createWorkItem(input) {
       const project_id = requireNonEmpty(input?.project_id, 'project_id')
+      const kind = requireWorkItemKind(input?.kind, 'kind')
       const title = requireNonEmpty(input?.title, 'title')
       const body_md = requireNonBlank(input?.body_md, 'body_md')
-      const body: Record<string, unknown> = { title, body_md }
+      const body: Record<string, unknown> = { project_id, kind, title, body_md }
       if (input?.priority !== undefined) body.priority = requireInteger(input.priority, 'priority')
       if (input?.depends_on !== undefined) body.depends_on = requireIdList(input.depends_on, 'depends_on')
-      return requestJson<TaskDetail>(ctx, {
+      if (input?.parent_id !== undefined) body.parent_id = requireNonEmpty(input.parent_id, 'parent_id')
+      return requestJson<WorkItemDetail>(ctx, {
         method: 'POST',
-        path: '/v1/tasks',
-        query: { project_id },
+        path: '/v1/work-items',
         body,
       })
     },
 
-    async updateTask(input) {
+    async updateWorkItem(input) {
       const id = requireNonEmpty(input?.id, 'id')
       const body: Record<string, unknown> = {}
       if (input?.title !== undefined) body.title = requireString(input.title, 'title')
       if (input?.body_md !== undefined) body.body_md = requireString(input.body_md, 'body_md')
       if (input?.priority !== undefined) body.priority = requireInteger(input.priority, 'priority')
       // 空 patch 不本地拦截：交给平台按契约返回 400（错误原样透出）。
-      return requestJson<TaskDetail>(ctx, {
+      return requestJson<WorkItemDetail>(ctx, {
         method: 'PATCH',
-        path: '/v1/tasks',
+        path: '/v1/work-items',
         query: { id },
         body,
       })
     },
 
-    async deleteTask(input) {
+    async deleteWorkItem(input) {
       const id = requireNonEmpty(input?.id, 'id')
-      return requestJson<TaskDetail>(ctx, {
+      return requestJson<WorkItemDetail>(ctx, {
         method: 'DELETE',
-        path: '/v1/tasks',
+        path: '/v1/work-items',
         query: { id },
       })
     },
@@ -1012,10 +1088,10 @@ export function createClient(
       })
     },
 
-    async listTasks(query) {
-      return requestJson<TaskDetail | TaskList>(ctx, {
+    async listWorkItems(query) {
+      return requestJson<WorkItemDetail | WorkItemList>(ctx, {
         method: 'GET',
-        path: '/v1/tasks',
+        path: '/v1/work-items',
         ...(query === undefined ? {} : { query: toQuery(query) }),
       })
     },
@@ -1050,7 +1126,8 @@ export function createClient(
  * {@link TOOL_METHODS}（任务-02 有断言），worker 心跳走独立命名空间。
  *
  * 首次注册时请求体里**没有** `worker_id` 键（不是空串、不是 null）；
- * `metadata` 原样上报，仍会经过 {@link assertWorkerMetadataSize} 的 8KiB 前置校验。
+ * `kinds` 原样上报（配置已在归一化阶段校验枚举）；`metadata` 原样上报，
+ * 仍会经过 {@link assertWorkerMetadataSize} 的 8KiB 前置校验。
  */
 export function createWorkerClient(
   config: ResolvedConfig,
@@ -1061,11 +1138,13 @@ export function createWorkerClient(
   return {
     async heartbeat(input) {
       const state: WorkerState = input?.state === 'busy' ? 'busy' : 'idle'
+      const kinds = requireKinds(input?.kinds)
       const body: Record<string, unknown> = {}
       if (input?.worker_id !== undefined && input.worker_id !== '') {
         body.worker_id = input.worker_id
       }
       body.state = state
+      body.kinds = kinds
       body.metadata = input?.metadata ?? {}
 
       return requestJson<WorkerHeartbeatPayload>(ctx, {
@@ -1280,60 +1359,60 @@ function requirePositiveInt(value: unknown, field: string): number {
 }
 
 /** 校验批量建卡入参：非空数组，逐项校验 title/body_md/priority/depends_on。 */
-function requirePlanTasks(value: unknown): PlanTaskInput[] {
+function requirePlanItems(value: unknown): PlanItemInput[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new EchuanValidationError(
-      'tasks 不能为空。下一步：至少给一张卡（title + body_md），不要发空批次。',
+      'work_items 不能为空。下一步：至少给一张卡（title + body_md），不要发空批次。',
       'invalid_argument',
-      'tasks',
+      'work_items',
     )
   }
 
   return value.map((item, index) => {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) {
       throw new EchuanValidationError(
-        `tasks[${index}] 必须是对象。下一步：按 api/openapi.yaml 传 { title, body_md }。`,
+        `work_items[${index}] 必须是对象。下一步：按 api/openapi.yaml 传 { title, body_md }。`,
         'invalid_argument',
-        'tasks',
+        'work_items',
       )
     }
     const record = item as Record<string, unknown>
-    const task: PlanTaskInput = {
-      title: requireNonEmpty(record['title'], `tasks[${index}].title`),
-      body_md: requireNonEmpty(record['body_md'], `tasks[${index}].body_md`),
+    const workItem: PlanItemInput = {
+      title: requireNonEmpty(record['title'], `work_items[${index}].title`),
+      body_md: requireNonEmpty(record['body_md'], `work_items[${index}].body_md`),
     }
     if (record['priority'] !== undefined) {
       const priority = record['priority']
       if (typeof priority !== 'number' || !Number.isInteger(priority)) {
         throw new EchuanValidationError(
-          `tasks[${index}].priority 必须是整数，收到 ${String(priority)}。`,
+          `work_items[${index}].priority 必须是整数，收到 ${String(priority)}。`,
           'invalid_argument',
-          'tasks',
+          'work_items',
         )
       }
-      task.priority = priority
+      workItem.priority = priority
     }
     if (record['depends_on'] !== undefined) {
       const dependsOn = record['depends_on']
       if (!Array.isArray(dependsOn)) {
         throw new EchuanValidationError(
-          `tasks[${index}].depends_on 必须是数组（1-based 批内序号）。`,
+          `work_items[${index}].depends_on 必须是数组（1-based 批内序号）。`,
           'invalid_argument',
-          'tasks',
+          'work_items',
         )
       }
-      task.depends_on = dependsOn.map((dep, depIndex) => {
+      workItem.depends_on = dependsOn.map((dep, depIndex) => {
         if (typeof dep !== 'number' || !Number.isInteger(dep) || dep <= 0) {
           throw new EchuanValidationError(
-            `tasks[${index}].depends_on[${depIndex}] 必须是大于 0 的整数（1-based 批内序号）。`,
+            `work_items[${index}].depends_on[${depIndex}] 必须是大于 0 的整数（1-based 批内序号）。`,
             'invalid_argument',
-            'tasks',
+            'work_items',
           )
         }
         return dep
       })
     }
-    return task
+    return workItem
   })
 }
 
@@ -1351,12 +1430,38 @@ function requireInteger(value: unknown, field: string): number {
 function requireIdList(value: unknown, field: string): string[] {
   if (!Array.isArray(value)) {
     throw new EchuanValidationError(
-      `${field} 必须是字符串数组。下一步：传入任务 id 数组（不是批内序号）。`,
+      `${field} 必须是字符串数组。下一步：传入 work_id 数组（不是批内序号）。`,
       'invalid_argument',
       field,
     )
   }
   return value.map((item, index) => requireNonEmpty(item, `${field}[${index}]`))
+}
+
+/** 工作项类别：必须是契约四类之一（避免把拼写错误直接发给平台）。 */
+function requireWorkItemKind(value: unknown, field: string): WorkerKind {
+  if (typeof value !== 'string' || !(WORKER_KINDS as readonly string[]).includes(value)) {
+    throw new EchuanValidationError(
+      `${field} 必须是 ${WORKER_KINDS.join(' / ')} 之一，收到 ${String(value)}。`
+        + '下一步：检查调用参数，按 api/openapi.yaml 的 kind 枚举传入。',
+      'invalid_argument',
+      field,
+    )
+  }
+  return value as WorkerKind
+}
+
+/** 心跳 kinds：至少一项，且必须是契约四类之一。 */
+function requireKinds(value: unknown): WorkerKind[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new EchuanValidationError(
+      'kinds 必须是非空数组（requirement / design / breakdown / dev）。'
+        + '下一步：在 worker.kinds 里声明本 worker 能执行的类别；为空时不要发心跳。',
+      'invalid_argument',
+      'kinds',
+    )
+  }
+  return value.map((item, index) => requireWorkItemKind(item, `kinds[${index}]`))
 }
 
 function requireString(value: unknown, field: string): string {

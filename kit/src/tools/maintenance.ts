@@ -1,5 +1,5 @@
 /**
- * 五个辅助写工具：单卡增 / 改 / 删、项目改标题、产品创建。
+ * 五个辅助写工具：work item 增 / 改 / 删、项目改标题、产品创建。
  *
  * 边界（硬约束）：
  * - **没有**审批 / 决策 / 取消动作：只做「建卡、改卡、删卡、改标题、建产品」；
@@ -10,10 +10,11 @@
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type {
   CreateProductInput,
-  CreateTaskInput,
-  TaskDetail,
+  CreateWorkItemInput,
   UpdateProjectInput,
-  UpdateTaskInput,
+  UpdateWorkItemInput,
+  WorkItemDetail,
+  WorkItemKind,
 } from '../client.js'
 import { EchuanValidationError } from '../errors.js'
 import {
@@ -21,6 +22,7 @@ import {
   asString,
   textBlock,
   toToolError,
+  workItemStateLabel,
   type TextContent,
 } from './render.js'
 import type { EchuanToolOptions } from './write.js'
@@ -29,29 +31,29 @@ import type { EchuanToolOptions } from './write.js'
  * 规范值
  * ------------------------------------------------------------------ */
 
-export interface TaskCreatedValue {
-  kind: 'task_created'
-  task_id: string
+export interface WorkItemCreatedValue {
+  kind: 'work_item_created'
+  work_id: string
+  work_kind: string
   seq_no?: number
   title: string
-  status?: number
-  status_name?: string
+  state?: string
   priority?: number
   depends_on: string[]
 }
 
-export interface TaskUpdatedValue {
-  kind: 'task_updated'
-  task_id: string
+export interface WorkItemUpdatedValue {
+  kind: 'work_item_updated'
+  work_id: string
   title?: string
-  status?: number
-  status_name?: string
+  work_kind?: string
+  state?: string
   priority?: number
 }
 
-export interface TaskDeletedValue {
-  kind: 'task_deleted'
-  task_id: string
+export interface WorkItemDeletedValue {
+  kind: 'work_item_deleted'
+  work_id: string
 }
 
 export interface ProjectUpdatedValue {
@@ -77,40 +79,40 @@ export interface ProductCreatedValue {
 const optionalInteger = { type: 'integer' } as const
 const optionalString = { type: 'string' } as const
 
-const taskCreatedSchema = {
+const workItemCreatedSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    kind: { type: 'string', const: 'task_created', required: true },
-    task_id: { type: 'string', required: true },
+    kind: { type: 'string', const: 'work_item_created', required: true },
+    work_id: { type: 'string', required: true },
+    work_kind: { type: 'string', required: true },
     seq_no: optionalInteger,
     title: { type: 'string', required: true },
-    status: optionalInteger,
-    status_name: optionalString,
+    state: optionalString,
     priority: optionalInteger,
     depends_on: { type: 'array', items: { type: 'string' }, required: true },
   },
 } as const
 
-const taskUpdatedSchema = {
+const workItemUpdatedSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    kind: { type: 'string', const: 'task_updated', required: true },
-    task_id: { type: 'string', required: true },
+    kind: { type: 'string', const: 'work_item_updated', required: true },
+    work_id: { type: 'string', required: true },
     title: optionalString,
-    status: optionalInteger,
-    status_name: optionalString,
+    work_kind: optionalString,
+    state: optionalString,
     priority: optionalInteger,
   },
 } as const
 
-const taskDeletedSchema = {
+const workItemDeletedSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    kind: { type: 'string', const: 'task_deleted', required: true },
-    task_id: { type: 'string', required: true },
+    kind: { type: 'string', const: 'work_item_deleted', required: true },
+    work_id: { type: 'string', required: true },
   },
 } as const
 
@@ -164,6 +166,18 @@ function requireBody(value: unknown, field: string): string {
   return value
 }
 
+function requireKind(value: unknown): WorkItemKind {
+  if (value !== 'requirement' && value !== 'design' && value !== 'breakdown' && value !== 'dev') {
+    throw new EchuanValidationError(
+      `kind 必须是 requirement / design / breakdown / dev 之一，收到 ${String(value)}。`
+        + '本次没有发出任何请求。',
+      'invalid_argument',
+      'kind',
+    )
+  }
+  return value
+}
+
 function requirePriority(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     throw new EchuanValidationError(
@@ -178,7 +192,7 @@ function requirePriority(value: unknown): number {
 function requireDependsOn(value: unknown): string[] {
   if (!Array.isArray(value)) {
     throw new EchuanValidationError(
-      'depends_on 必须是任务 id 数组（不是批内序号）。本次没有发出任何请求。',
+      'depends_on 必须是 work_id 数组（不是批内序号）。本次没有发出任何请求。',
       'invalid_argument',
       'depends_on',
     )
@@ -186,47 +200,50 @@ function requireDependsOn(value: unknown): string[] {
   return value.map((item, index) => requireText(item, `depends_on[${index}]`))
 }
 
-/** 任务 id 列表里的字段，用于返回；平台可能缺省。 */
-function dependsOnOf(detail: TaskDetail): string[] {
+/** 详情里的依赖字段，用于返回；平台可能缺省。 */
+function dependsOnOf(detail: WorkItemDetail): string[] {
   const raw = detail.depends_on
   return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : []
 }
 
-function taskIdOf(detail: TaskDetail): string {
-  return asString(detail.task_id) ?? asString(detail.id) ?? ''
+function workIdOf(detail: WorkItemDetail): string {
+  return asString(detail.work_id) ?? asString(detail.id) ?? ''
 }
 
 /* ------------------------------------------------------------------ *
  * 渲染
  * ------------------------------------------------------------------ */
 
-export function renderTaskCreated(value: TaskCreatedValue): TextContent[] {
+export function renderWorkItemCreated(value: WorkItemCreatedValue): TextContent[] {
   const seq = value.seq_no === undefined ? '' : `（#${value.seq_no}）`
   const priority = value.priority === undefined ? '未知' : String(value.priority)
   const depends = value.depends_on.length === 0 ? '无' : value.depends_on.join('、')
   return [textBlock([
-    `✅ 任务已创建：${value.task_id}${seq}`,
+    `✅ 工作项已创建：${value.work_id}${seq}`,
+    `- 类别：${value.work_kind}`,
     `- 标题：${value.title}`,
     `- 优先级：${priority}`,
     `- 依赖：${depends}`,
-    '下一步：需要调整时用 `echuan_task_update`；要撤掉用 `echuan_task_delete`。',
+    `- 状态：${workItemStateLabel(value.state)}`,
+    '下一步：需要调整时用 `echuan_work_update`；要撤掉用 `echuan_work_delete`。',
   ].join('\n'))]
 }
 
-export function renderTaskUpdated(value: TaskUpdatedValue): TextContent[] {
-  const status = value.status_name === undefined ? '' : `，状态 ${value.status_name}`
+export function renderWorkItemUpdated(value: WorkItemUpdatedValue): TextContent[] {
+  const state = value.state === undefined ? '' : `，状态 ${workItemStateLabel(value.state)}`
   return [textBlock([
-    `✅ 任务已修改：${value.task_id}${status}`,
+    `✅ 工作项已修改：${value.work_id}${state}`,
     ...(value.title === undefined ? [] : [`- 标题：${value.title}`]),
+    ...(value.work_kind === undefined ? [] : [`- 类别：${value.work_kind}`]),
     ...(value.priority === undefined ? [] : [`- 优先级：${value.priority}`]),
     '下一步：若该卡刚被驳回，驳回提示会随本次写入清空，可确认后重新领卡。',
   ].join('\n'))]
 }
 
-export function renderTaskDeleted(value: TaskDeletedValue): TextContent[] {
+export function renderWorkItemDeleted(value: WorkItemDeletedValue): TextContent[] {
   return [textBlock([
-    `✅ 任务已删除：${value.task_id}`,
-    '下一步：需要补卡时用 `echuan_task_create`（或重新提交任务计划）。',
+    `✅ 工作项已删除：${value.work_id}`,
+    '下一步：需要补卡时用 `echuan_work_create`（或重新提交计划批次）。',
   ].join('\n'))]
 }
 
@@ -252,62 +269,69 @@ export function renderProductCreated(value: ProductCreatedValue): TextContent[] 
  * 工具定义
  * ------------------------------------------------------------------ */
 
-/** `echuan_task_create`：在规划中的项目里新增一张卡。 */
-export function createTaskCreateTool(options: EchuanToolOptions): ToolDefinition {
+/** `echuan_work_create`：在规划中的项目里新增一张卡。 */
+export function createWorkItemCreateTool(options: EchuanToolOptions): ToolDefinition {
   const { client } = options
 
   return defineTool({
-    name: 'echuan_task_create',
+    name: 'echuan_work_create',
     description:
-      '在驿传（echuan）项目中新增一张任务卡（POST /v1/tasks?project_id=）。'
-      + '输入标题、正文，可选优先级与依赖任务 id；返回 task_id / seq_no / 状态。',
+      '在驿传（echuan）项目中新增一个 work item（POST /v1/work-items）。'
+      + '输入 project_id、kind、标题与正文，可选优先级与依赖 work_id；'
+      + '返回 work_id / kind / state / seq_no。',
     parameters: {
-      project_id: { type: 'string', required: true, description: '项目编号（必填，走 query `?project_id=`）' },
-      title: { type: 'string', required: true, description: '任务标题（必填）' },
-      body_md: { type: 'string', required: true, description: '任务正文（必填，Markdown）' },
+      project_id: { type: 'string', required: true, description: '项目编号（必填）' },
+      kind: {
+        type: 'string',
+        required: true,
+        description: '工作项类别（必填）：requirement / design / breakdown / dev',
+      },
+      title: { type: 'string', required: true, description: '工作项标题（必填）' },
+      body_md: { type: 'string', required: true, description: '工作项正文（必填，Markdown）' },
       priority: { type: 'integer', description: '优先级（可选，整数，平台范围 -1000..1000）' },
       depends_on: {
         type: 'array',
         items: { type: 'string' },
-        description: '依赖的任务 id 数组（可选，不是批内序号）',
+        description: '依赖的 work_id 数组（可选，不是批内序号）',
       },
     },
     output: {
-      schema: taskCreatedSchema,
-      render: (_args, value) => renderTaskCreated(value),
+      schema: workItemCreatedSchema,
+      render: (_args, value) => renderWorkItemCreated(value),
     },
     async execute(args) {
       try {
-        const input: CreateTaskInput = {
+        const input: CreateWorkItemInput = {
           project_id: requireText(args.project_id, 'project_id'),
+          kind: requireKind(args.kind),
           title: requireText(args.title, 'title'),
           body_md: requireBody(args.body_md, 'body_md'),
         }
         if (args.priority !== undefined) input.priority = requirePriority(args.priority)
         if (args.depends_on !== undefined) input.depends_on = requireDependsOn(args.depends_on)
 
-        const result = await client.createTask(input)
+        const result = await client.createWorkItem(input)
         if (result.kind === 'empty') {
           throw new EchuanValidationError(
-            '平台对建卡返回 204（无内容），没有给出 task_id。'
-              + '下一步：先用 `echuan_task_list` 确认是否已创建，不要原样重试。',
+            '平台对建卡返回 204（无内容），没有给出 work_id。'
+              + '下一步：先用 `echuan_work_list` 确认是否已创建，不要原样重试。',
             'unexpected_empty',
-            'task',
+            'work_item',
           )
         }
         const detail = result.data
         const seqNo = asNumber(detail.seq_no)
-        const status = asNumber(detail.status)
-        const statusName = asString(detail.status_name)
+        const state = asString(detail.state)
         const priority = asNumber(detail.priority)
+        const kind = asString(detail.kind) ?? input.kind
         return {
-          kind: 'task_created' as const,
-          task_id: taskIdOf(detail),
+          kind: 'work_item_created' as const,
+          work_id: workIdOf(detail),
+          work_kind: kind,
           title: asString(detail.title) ?? input.title,
           depends_on: dependsOnOf(detail),
           ...(seqNo === undefined ? {} : { seq_no: seqNo }),
-          ...(status === undefined ? {} : { status }),
-          ...(statusName === undefined ? {} : { status_name: statusName }),
+          ...(state === undefined ? {} : { state }),
           ...(priority === undefined ? {} : { priority }),
         }
       } catch (err) {
@@ -317,28 +341,28 @@ export function createTaskCreateTool(options: EchuanToolOptions): ToolDefinition
   })
 }
 
-/** `echuan_task_update`：改标题 / 正文 / 优先级（至少一项，空白不算有效修改）。 */
-export function createTaskUpdateTool(options: EchuanToolOptions): ToolDefinition {
+/** `echuan_work_update`：改标题 / 正文 / 优先级（至少一项，空白不算有效修改）。 */
+export function createWorkItemUpdateTool(options: EchuanToolOptions): ToolDefinition {
   const { client } = options
 
   return defineTool({
-    name: 'echuan_task_update',
+    name: 'echuan_work_update',
     description:
-      '修改驿传任务卡的标题、正文或优先级（PATCH /v1/tasks?id=）。'
-      + '三个字段至少传一个且不能是空白；平台按任务状态校验，不可改时 400/409 原样透出。',
+      '修改驿传 work item 的标题、正文或优先级（PATCH /v1/work-items?id=）。'
+      + '三个字段至少传一个且不能是空白；平台按状态校验，不可改时 400/409 原样透出。',
     parameters: {
-      task_id: { type: 'string', required: true, description: '任务编号（必填，走 query `?id=`）' },
+      work_id: { type: 'string', required: true, description: '工作项编号（必填，走 query `?id=`）' },
       title: { type: 'string', description: '新标题（可选，非空白）' },
       body_md: { type: 'string', description: '新正文（可选，非空白，Markdown）' },
       priority: { type: 'integer', description: '新优先级（可选，整数）' },
     },
     output: {
-      schema: taskUpdatedSchema,
-      render: (_args, value) => renderTaskUpdated(value),
+      schema: workItemUpdatedSchema,
+      render: (_args, value) => renderWorkItemUpdated(value),
     },
     async execute(args) {
       try {
-        const input: UpdateTaskInput = { id: requireText(args.task_id, 'task_id') }
+        const input: UpdateWorkItemInput = { id: requireText(args.work_id, 'work_id') }
         if (args.title !== undefined) input.title = requireText(args.title, 'title')
         if (args.body_md !== undefined) input.body_md = requireBody(args.body_md, 'body_md')
         if (args.priority !== undefined) input.priority = requirePriority(args.priority)
@@ -351,26 +375,26 @@ export function createTaskUpdateTool(options: EchuanToolOptions): ToolDefinition
           )
         }
 
-        const result = await client.updateTask(input)
+        const result = await client.updateWorkItem(input)
         if (result.kind === 'empty') {
           throw new EchuanValidationError(
             '平台对改卡返回 204（无内容），没有回包可核对。'
-              + '下一步：用 `echuan_task_get` 确认修改结果，不要原样重试。',
+              + '下一步：用 `echuan_work_get` 确认修改结果，不要原样重试。',
             'unexpected_empty',
-            'task',
+            'work_item',
           )
         }
         const detail = result.data
         const title = asString(detail.title)
-        const status = asNumber(detail.status)
-        const statusName = asString(detail.status_name)
+        const kind = asString(detail.kind)
+        const state = asString(detail.state)
         const priority = asNumber(detail.priority)
         return {
-          kind: 'task_updated' as const,
-          task_id: args.task_id,
+          kind: 'work_item_updated' as const,
+          work_id: args.work_id,
           ...(title === undefined ? {} : { title }),
-          ...(status === undefined ? {} : { status }),
-          ...(statusName === undefined ? {} : { status_name: statusName }),
+          ...(kind === undefined ? {} : { work_kind: kind }),
+          ...(state === undefined ? {} : { state }),
           ...(priority === undefined ? {} : { priority }),
         }
       } catch (err) {
@@ -380,34 +404,34 @@ export function createTaskUpdateTool(options: EchuanToolOptions): ToolDefinition
   })
 }
 
-/** `echuan_task_delete`：删一张未领取的待办卡。 */
-export function createTaskDeleteTool(options: EchuanToolOptions): ToolDefinition {
+/** `echuan_work_delete`：删一张未被领取的卡。 */
+export function createWorkItemDeleteTool(options: EchuanToolOptions): ToolDefinition {
   const { client } = options
 
   return defineTool({
-    name: 'echuan_task_delete',
+    name: 'echuan_work_delete',
     description:
-      '删除一张未领取的待办任务卡（DELETE /v1/tasks?id=）。'
+      '删除一个从未被领取的 blocked work item（DELETE /v1/work-items?id=）。'
       + '成功为 204；卡已被领取或不可删时平台 409 原样透出，不要重试。',
     parameters: {
-      task_id: { type: 'string', required: true, description: '任务编号（必填，走 query `?id=`）' },
+      work_id: { type: 'string', required: true, description: '工作项编号（必填，走 query `?id=`）' },
     },
     output: {
-      schema: taskDeletedSchema,
-      render: (_args, value) => renderTaskDeleted(value),
+      schema: workItemDeletedSchema,
+      render: (_args, value) => renderWorkItemDeleted(value),
     },
     async execute(args) {
       try {
-        const taskId = requireText(args.task_id, 'task_id')
-        const result = await client.deleteTask({ id: taskId })
+        const workId = requireText(args.work_id, 'work_id')
+        const result = await client.deleteWorkItem({ id: workId })
         if (result.kind !== 'empty') {
           throw new EchuanValidationError(
-            `平台对删卡返回 ${result.status}（预期 204）。下一步：用 \`echuan_task_get\` 确认卡是否还在，不要原样重试。`,
+            `平台对删卡返回 ${result.status}（预期 204）。下一步：用 \`echuan_work_get\` 确认卡是否还在，不要原样重试。`,
             'invalid_response',
-            'task',
+            'work_item',
           )
         }
-        return { kind: 'task_deleted' as const, task_id: taskId }
+        return { kind: 'work_item_deleted' as const, work_id: workId }
       } catch (err) {
         return toToolError(err)
       }

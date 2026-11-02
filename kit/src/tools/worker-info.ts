@@ -1,14 +1,17 @@
 /**
  * `echuan_worker_info`：worker 只读诊断（**零 HTTP、零副作用**）。
  *
- * 排障时模型最需要知道的是「心跳有没有开 / worker 有没有注册 / 手里压着哪几张卡 /
- * 项目会话在不在」，这些全是进程内内存态，不需要也不应该打平台：
+ * 排障时模型最需要知道的是「心跳有没有开 / 声明了哪些 kinds / worker 有没有注册 /
+ * 手里压着哪几张卡 / 派单会投给哪个 agent」，这些全是进程内内存态，不需要也不应该
+ * 打平台：
  *
  * - **不发请求**：不拿 `client`，只读注入的 `workerInfo` 依赖；
- * - **不写盘、不改状态**：所有依赖都是只读投影（`workerId()` / `inflight()`）；
- * - **服务缺失只降级**：`sessionPersistence` / `agentPresets` / `workspaceRegistry`
- *   任一缺失都只是少展示一项（标注「服务缺失」），不抛错；
- * - 查看哪些项目：显式 `project_id` 优先，否则看 inflight 里压着的项目。
+ * - **不写盘、不改状态**：所有依赖都是只读投影（`workerId()` / `inflight()` /
+ *   `agents.roots()`）；
+ * - **服务缺失只降级**：`agents` 缺失只标注「无法判定」，不抛错。
+ *
+ * 一个 worker 只有一个 agent：这里展示的派单目标固定是 `agents.roots()[0]`，
+ * 与心跳循环的投递目标完全一致。
  *
  * 输出与只读工具一致：`textBlock` + `TextValue`（规范值就是模型要读的那段文本）。
  */
@@ -27,55 +30,42 @@ const textOutputSchema = {
   },
 } as const
 
-/** 会话 header 的投影（`stat` 只用到这两个字段）。 */
-export interface WorkerInfoSessionHeader {
-  cwd?: string
-  agentPreset?: string
+/** 诊断工具用到的 agent 投影（只读 `id` / `status`）。 */
+export interface WorkerInfoAgent {
+  id?: string
+  status?: string
 }
 
-/** 诊断工具的可注入依赖；全部惰性读取（`index.ts` 用 `ctx.get(...)` 包一层）。 */
+/** 诊断工具的可注入依赖；全部惰性读取（`index.ts` 用 `ctx.agents` 包一层）。 */
 export interface WorkerInfoDeps {
   /** `worker.poll.enable`：心跳是否开启。 */
   pollEnabled: boolean
+  /** 配置声明的 kinds（与心跳 body 一致）。 */
+  kinds: readonly string[]
   /** 当前 worker id（未注册返回 `undefined`；输出前打码）。 */
   workerId: () => string | undefined
   /** 当前 inflight 快照。 */
   inflight: () => readonly Inflight[]
-  /** 按会话 id 读 agent（只用 `status`）。 */
-  agents: { get(id: string): { status?: string } | undefined } | undefined
-  /** 会话持久化（缺失 → 无法判定 persisted / missing）。 */
-  sessionPersistence?: {
-    stat(id: string): Promise<{ header?: WorkerInfoSessionHeader } | undefined | null>
-  } | undefined
-  /** preset registry（缺失 → 默认 preset 不可用）。 */
-  agentPresets?: { resolve(): Promise<{ id: string }> } | undefined
-  /** 工作区列表（缺失 → 无法列出工作区）。 */
-  workspaceRegistry?: { list(): readonly { path: string }[] } | undefined
+  /** 本进程 agent 注册表（取第一项作为派单目标；缺失 → 无法判定）。 */
+  agents?: { roots(): readonly WorkerInfoAgent[] } | undefined
 }
 
 /**
  * `echuan_worker_info`：查看本进程 worker 的运行态（只读，零 HTTP）。
- *
- * 参数只有可选的 `project_id`；不传则看 inflight 里的项目。
  */
 export function createWorkerInfoTool(options: EchuanToolOptions): ToolDefinition {
   return defineTool({
     name: 'echuan_worker_info',
     description:
       '查看本进程驿传（echuan）worker 的运行态（只读，零 HTTP、零副作用）：心跳开关、'
-      + 'worker_id（打码）、inflight 里的任务与租约、各项目会话状态（live / persisted / missing）、'
-      + '默认 preset 与工作区列表。排障「为什么没派单 / 会话在不在」时先看这里。',
-    parameters: {
-      project_id: {
-        type: 'string',
-        description: '要检查的项目编号（可选，例如 APP-1；不传则看 inflight 里的项目）',
-      },
-    },
+      + '声明的 kinds、worker_id（打码）、派单目标 agent、inflight 里的工作项与租约。'
+      + '排障「为什么没派单 / 派单投给了谁」时先看这里。',
+    parameters: {},
     output: {
       schema: textOutputSchema,
       render: (_args, value) => renderText(value),
     },
-    async execute(args) {
+    async execute() {
       const deps = options.workerInfo
       if (deps === undefined) {
         return {
@@ -84,9 +74,8 @@ export function createWorkerInfoTool(options: EchuanToolOptions): ToolDefinition
         }
       }
 
-      const requested = typeof args.project_id === 'string' ? args.project_id.trim() : ''
       try {
-        return { text: await renderWorkerInfo(deps, requested === '' ? undefined : requested) }
+        return { text: renderWorkerInfo(deps) }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         return {
@@ -98,23 +87,30 @@ export function createWorkerInfoTool(options: EchuanToolOptions): ToolDefinition
   })
 }
 
-/** 渲染诊断文本；单项服务失败只降级，不影响其余段落。 */
-async function renderWorkerInfo(
-  deps: WorkerInfoDeps,
-  requestedProjectId: string | undefined,
-): Promise<string> {
+/** 渲染诊断文本；单个依赖读取失败只降级，不影响其余段落。 */
+function renderWorkerInfo(deps: WorkerInfoDeps): string {
   const lines: string[] = ['驿传 worker 诊断（只读，零 HTTP）', '']
 
-  // 1) 心跳开关与 worker id。
-  const id = safeCall(() => deps.workerId())
+  // 1) 心跳开关与 kinds。
   lines.push(`poll.enable：${deps.pollEnabled ? 'true' : 'false'}`)
+  lines.push(
+    deps.kinds.length === 0
+      ? 'worker.kinds：（未声明；心跳循环不会启动）'
+      : `worker.kinds：${deps.kinds.join('、')}`,
+  )
+
+  // 2) worker id。
+  const id = safeCall(() => deps.workerId())
   lines.push(
     id === undefined
       ? 'worker_id：未注册（本轮心跳尚未成功，或 poll.enable=false）'
       : `worker_id：${maskWorkerId(id)}`,
   )
 
-  // 2) inflight。
+  // 3) 派单目标：一个 worker 一个 agent，固定看 roots()[0]。
+  lines.push(`派单目标：${describeTarget(deps.agents)}`)
+
+  // 4) inflight。
   const inflight = safeCall(() => deps.inflight()) ?? []
   const nowMs = Date.now()
   lines.push('', `inflight：${inflight.length === 0 ? '（无）' : `${inflight.length} 条`}`)
@@ -122,109 +118,35 @@ async function renderWorkerInfo(
     lines.push(`  - ${describeInflight(item, nowMs)}`)
   }
 
-  // 3) 会话状态：显式 project_id 优先，否则看 inflight 里压着的项目。
-  const projects = unique(
-    requestedProjectId === undefined
-      ? inflight.map(item => item.projectId)
-      : [requestedProjectId, ...inflight.map(item => item.projectId)],
-  )
-  lines.push('', '会话状态：')
-  if (projects.length === 0) {
-    lines.push('  （无 inflight 项目；可带 project_id 参数指定要检查的项目）')
-  } else {
-    for (const projectId of projects) {
-      lines.push(`  - ${projectId}：${await describeSession(deps, projectId)}`)
-    }
-  }
-
-  // 4) 默认 preset。
-  lines.push('', `默认 preset：${await describeDefaultPreset(deps.agentPresets)}`)
-
-  // 5) 工作区选择规则与工作区列表。
-  lines.push(
-    '',
-    '工作区选择：新建会话取会话数最多的 workspace（无可用工作区时用进程目录）',
-  )
-  lines.push('工作区列表：')
-  const registry = deps.workspaceRegistry
-  if (registry === undefined) {
-    lines.push('  （workspaceRegistry 服务缺失，无法列出）')
-  } else {
-    const listed = safeCall(() => registry.list())
-    if (listed === undefined) {
-      lines.push('  （读取工作区列表失败，可稍后重试）')
-    } else if (listed.length === 0) {
-      lines.push('  （无）')
-    } else {
-      for (const workspace of listed) {
-        if (typeof workspace?.path !== 'string' || workspace.path === '') continue
-        lines.push(`  - ${workspace.path}`)
-      }
-    }
-  }
-
   return lines.join('\n')
 }
 
-/** inflight 一行：任务 / 项目 / 租约到期 / 剩余秒数（过期标注）。 */
+/** 派单目标一行：取第一个 root agent；服务缺失 / 为空都只标注，不抛错。 */
+function describeTarget(agents: WorkerInfoDeps['agents']): string {
+  if (agents === undefined) return '无法判定（agents 服务缺失）'
+  const roots = safeCall(() => agents.roots())
+  if (roots === undefined) return '无法判定（读取 agents.roots() 失败）'
+  const agent = roots.find(item => item !== undefined && item !== null)
+  if (agent === undefined) {
+    return '本进程暂无 agent（下一轮心跳会重试投递）'
+  }
+  const status = typeof agent.status === 'string' && agent.status !== ''
+    ? agent.status
+    : '状态未知'
+  const agentId = typeof agent.id === 'string' && agent.id !== '' ? agent.id : '编号未知'
+  return `agent ${agentId}（${status}）`
+}
+
+/** inflight 一行：工作项 / kind / 租约到期 / 剩余秒数（过期标注）。 */
 function describeInflight(item: Inflight, nowMs: number): string {
   const untilMs = Date.parse(item.leaseUntil)
-  const head = `任务 ${item.taskId}｜项目 ${item.projectId}｜租约至 ${item.leaseUntil}`
+  const head = `工作项 ${item.workId}｜kind=${item.kind}｜租约至 ${item.leaseUntil}`
   if (Number.isNaN(untilMs)) return `${head}｜剩余时间未知（租约时间无法解析）`
   const remainingMs = untilMs - nowMs
   if (remainingMs <= 0) {
     return `${head}｜已过期 ${formatSeconds(-remainingMs)}（下一轮心跳前清除）`
   }
   return `${head}｜剩余 ${formatSeconds(remainingMs)}`
-}
-
-/** 单个项目会话的三态：live / persisted / missing，服务缺失时标注降级原因。 */
-async function describeSession(deps: WorkerInfoDeps, projectId: string): Promise<string> {
-  const agents = deps.agents
-  if (agents === undefined) return '无法判定（agents 服务缺失）'
-
-  const agent = safeCall(() => agents.get(projectId))
-  if (agent !== undefined && agent !== null) {
-    const status = typeof agent.status === 'string' && agent.status !== ''
-      ? agent.status
-      : '未知'
-    return `live（${status}）`
-  }
-
-  const persistence = deps.sessionPersistence
-  if (persistence === undefined) return '无法判定（sessionPersistence 服务缺失）'
-
-  let stat: { header?: WorkerInfoSessionHeader } | undefined | null
-  try {
-    stat = await persistence.stat(projectId)
-  } catch {
-    return '无法判定（sessionPersistence.stat 失败）'
-  }
-  if (stat === undefined || stat === null) return 'missing（无活跃会话，也未持久化）'
-
-  const header = stat.header ?? {}
-  const cwd = typeof header.cwd === 'string' && header.cwd !== '' ? header.cwd : '未记录'
-  const preset = typeof header.agentPreset === 'string' && header.agentPreset !== ''
-    ? header.agentPreset
-    : '未记录'
-  return `persisted（cwd=${cwd}, preset=${preset}）`
-}
-
-/** 默认 preset：服务缺失 / 解析失败都只标注「不可用」。 */
-async function describeDefaultPreset(
-  presets: WorkerInfoDeps['agentPresets'],
-): Promise<string> {
-  if (presets === undefined) return '不可用（agentPresets 服务缺失）'
-  try {
-    const preset = await presets.resolve()
-    if (preset === undefined || preset === null || typeof preset.id !== 'string'
-      || preset.id === '') {
-      return '不可用（resolve 未返回有效 preset）'
-    }
-    return preset.id
-  } catch (err) {
-    return `不可用（解析失败：${err instanceof Error ? err.message : String(err)}）`
-  }
 }
 
 /** 毫秒 → 「42s」/「3m20s」（诊断文本够用即可）。 */
@@ -246,16 +168,4 @@ function safeCall<T>(read: () => T): T | undefined {
   } catch {
     return undefined
   }
-}
-
-function unique(values: readonly string[]): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const value of values) {
-    const trimmed = value.trim()
-    if (trimmed === '' || seen.has(trimmed)) continue
-    seen.add(trimmed)
-    out.push(trimmed)
-  }
-  return out
 }

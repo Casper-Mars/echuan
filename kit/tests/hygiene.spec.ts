@@ -296,11 +296,9 @@ function scanPromisesImports(
 }
 
 describe('源码级：node:fs/promises 一律不导入', () => {
-  it('全量扫描：没有任何文件导入 node:fs/promises（含 session.ts）', () => {
+  it('全量扫描：没有任何文件导入 node:fs/promises', () => {
     expect(scanPromisesImports(sourceFiles)).toEqual([])
     expect(sourceFiles.filter(file => importsPromises(file.code))).toEqual([])
-    // 反向自证：session.ts 现在只用只读的 `stat` 探测目录存在性。
-    expect(sourceOf('src/session.ts')).toContain('statSync')
   })
 
   it('规则不是空转：任何文件、任何函数、任何写法都会被抓出来', () => {
@@ -308,18 +306,17 @@ describe('源码级：node:fs/promises 一律不导入', () => {
       { relative: 'src/tools/read.ts', code: "import { mkdir } from 'node:fs/promises'" },
     ])).toEqual(['src/tools/read.ts: mkdir'])
 
-    // 会话层自己也不行：cwd 不再建目录。
     expect(scanPromisesImports([
-      { relative: 'src/session.ts', code: "import { mkdir } from 'node:fs/promises'" },
-    ])).toEqual(['src/session.ts: mkdir'])
+      { relative: 'src/config.ts', code: "import { mkdir } from 'node:fs/promises'" },
+    ])).toEqual(['src/config.ts: mkdir'])
 
     expect(scanPromisesImports([
-      { relative: 'src/session.ts', code: "import { mkdir, rm } from 'node:fs/promises'" },
-    ])).toEqual(['src/session.ts: mkdir', 'src/session.ts: rm'])
+      { relative: 'src/config.ts', code: "import { mkdir, rm } from 'node:fs/promises'" },
+    ])).toEqual(['src/config.ts: mkdir', 'src/config.ts: rm'])
 
     expect(scanPromisesImports([
-      { relative: 'src/session.ts', code: "import fsp from 'node:fs/promises'" },
-    ])).toEqual(['src/session.ts: 非具名导入'])
+      { relative: 'src/config.ts', code: "import fsp from 'node:fs/promises'" },
+    ])).toEqual(['src/config.ts: 非具名导入'])
   })
 
   it('规则不是空转：双引号与动态 import 同样按同一套规则处理', () => {
@@ -328,12 +325,12 @@ describe('源码级：node:fs/promises 一律不导入', () => {
     ])).toEqual(['src/config.ts: mkdir'])
 
     expect(scanPromisesImports([
-      { relative: 'src/session.ts', code: 'const { mkdir } = await import("node:fs/promises")' },
-    ])).toEqual(['src/session.ts: mkdir'])
+      { relative: 'src/config.ts', code: 'const { mkdir } = await import("node:fs/promises")' },
+    ])).toEqual(['src/config.ts: mkdir'])
 
     expect(scanPromisesImports([
-      { relative: 'src/session.ts', code: "const fsp = await import('node:fs/promises')" },
-    ])).toEqual(['src/session.ts: 非具名导入'])
+      { relative: 'src/config.ts', code: "const fsp = await import('node:fs/promises')" },
+    ])).toEqual(['src/config.ts: 非具名导入'])
   })
 })
 
@@ -389,30 +386,35 @@ function json(payload: unknown): Response {
 }
 
 const CLAIM_PAYLOAD = {
-  task: {
-    id: 'APP-1-T0001',
-    project_id: 'APP-1',
-    title: '实现登录接口',
-    body_md: '# 任务正文',
-    attempt: 1,
-    priority: 10,
-  },
-  lease: { lease_id: 'l_9f8b', until: '2026-10-27T16:49:25.157Z', ttl_seconds: 90 },
-  context: {
-    spec_version: 1,
-    spec_digest: 'sha256:bb23',
-    product: { id: 'APP', name: '驿传示例产品', git_url: 'git@example.com:APP.git' },
+  dispatch: {
+    protocol: 'v2',
+    work_id: 'APP-1-T0001',
+    kind: 'dev',
+    inputs: [{ material_id: 'M-SPEC-1', kind: 2, version: 1 }],
+    work_item: {
+      project_id: 'APP-1',
+      title: '实现登录接口',
+      body_md: '# 工作项正文',
+      attempt: 1,
+      priority: 10,
+    },
+    lease: { lease_id: 'l_9f8b', until: '2026-10-27T16:49:25.157Z', ttl_seconds: 90 },
+    context: {
+      spec_version: 1,
+      spec_digest: 'sha256:bb23',
+      product: { id: 'APP', name: '驿传示例产品', git_url: 'git@example.com:APP.git' },
+    },
   },
 }
 
 const respondByPath = (call: RecordedCall): Response => {
   switch (call.url.pathname) {
-    case '/v1/tasks/claim':
+    case '/v1/work-items/claim':
       return json(CLAIM_PAYLOAD)
-    case '/v1/tasks/heartbeat':
+    case '/v1/work-items/lease':
       return json({ lease_id: 'l_next', until: '2026-10-27T16:51:00.000Z', ttl_seconds: 90 })
-    case '/v1/tasks/report':
-      return json({ task_id: 'APP-1-T0001', status_name: '待验收' })
+    case '/v1/work-items/report':
+      return json({ work_id: 'APP-1-T0001', state: 'submitted' })
     case '/v1/inbox':
       return json({
         items: [],
@@ -455,13 +457,13 @@ const respondByPath = (call: RecordedCall): Response => {
         status: 5,
         status_name: '任务评审',
         project_version: 6,
-        tasks: [{
-          id: 'APP-2-T0001',
+        work_items: [{
+          work_id: 'APP-2-T0001',
           seq_no: 1,
+          kind: 'dev',
           title: '卡 1',
           priority: 0,
-          status: 0,
-          status_name: '待办',
+          state: 'queued',
           depends_on: [],
         }],
       })
@@ -473,28 +475,38 @@ const respondByPath = (call: RecordedCall): Response => {
         version: call.method === 'PATCH' ? 4 : 1,
         material: { material_id: 'M-SPEC-1' },
       })
-    case '/v1/tasks':
+    case '/v1/work-items':
       if (call.method === 'POST') {
         return json({
-          task_id: 'APP-2-T0003',
+          work_id: 'APP-2-T0003',
           project_id: 'APP-2',
+          kind: 'dev',
           seq_no: 3,
           title: '卡 3',
           body_md: '正文 3',
           priority: 7,
-          status: 0,
-          status_name: '待办',
+          state: 'queued',
           depends_on: ['APP-2-T0001'],
         })
       }
       if (call.method === 'PATCH') {
-        return json({ task_id: 'APP-2-T0003', title: '新标题', priority: 1, status: 0, status_name: '待办' })
+        return json({ work_id: 'APP-2-T0003', kind: 'dev', title: '新标题', priority: 1, state: 'queued' })
       }
       if (call.method === 'DELETE') {
         return new Response(null, { status: 204 })
       }
-      return call.url.searchParams.has('id')
-        ? json({ task_id: 'APP-1-T0007', title: '示例任务' })
+      return call.url.searchParams.has('id') || call.url.searchParams.has('work_id')
+        ? json({
+          work_id: 'APP-1-T0007',
+          project_id: 'APP-1',
+          kind: 'dev',
+          title: '示例任务',
+          body_md: '# 正文',
+          state: 'queued',
+          attempt: 1,
+          max_attempts: 3,
+          depends_on: [],
+        })
         : json({ items: [] })
     case '/v1/projects/package':
       return new Response(buildZip([
@@ -514,7 +526,7 @@ const respondByPath = (call: RecordedCall): Response => {
   }
 }
 
-/** worker 心跳回包：第一轮给一条 run_task，验证派单路径也不碰网络/磁盘。 */
+/** worker 心跳回包：第一轮给一条 dispatch，验证派单路径也不碰网络/磁盘。 */
 function workerPayload(call: RecordedCall): Response {
   const body = call.body === undefined ? {} : (JSON.parse(call.body) as Record<string, unknown>)
   if (body['worker_id'] === undefined) {
@@ -525,14 +537,14 @@ function workerPayload(call: RecordedCall): Response {
   }
   return json({
     worker: { worker_id: 'w_TEST01ABCDEFGHIJKLMN', heartbeat_interval_ms: 15_000 },
-    commands: [{ kind: 'run_task', ...CLAIM_PAYLOAD }],
+    commands: [{ kind: 'dispatch', ...CLAIM_PAYLOAD }],
   })
 }
 
 const config = resolveConfig({ baseUrl: 'http://platform.test' })
 const pollConfig = resolveConfig({
   baseUrl: 'http://platform.test',
-  worker: { poll: { enable: true }, metadata: { host: 'ci' } },
+  worker: { poll: { enable: true }, kinds: ['dev'], metadata: { host: 'ci' } },
 })
 
 const silentLogger = { info: () => {}, warn: () => {}, debug: () => {} }
@@ -588,9 +600,9 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<string[]> {
   const tools = new Map(createAllEchuanTools(options).map(tool => [tool.name, tool]))
 
   const calls: Array<[string, Record<string, unknown>]> = [
-    ['echuan_task_claim', { product: 'APP' }],
-    ['echuan_task_renew', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b' }],
-    ['echuan_task_report', { task_id: 'APP-1-T0001', lease_id: 'l_9f8b', summary_md: '四段式报告' }],
+    ['echuan_work_claim', {}],
+    ['echuan_work_renew', { work_id: 'APP-1-T0001', lease_id: 'l_9f8b' }],
+    ['echuan_work_report', { work_id: 'APP-1-T0001', material_id: 'M-REPORT-1', lease_id: 'l_9f8b' }],
     ['echuan_project_create', { product_id: 'APP', title: '新项目' }],
     ['echuan_project_requirement_write', { project_id: 'APP-2', body_md: '# 需求正文' }],
     ['echuan_project_submit', { project_id: 'APP-2' }],
@@ -598,17 +610,18 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<string[]> {
     ['echuan_spec_revise', { spec_id: 'S-1', version: 1, title: '方案 A', body_md: '# 方案正文 v2' }],
     ['echuan_plan_submit', {
       project_id: 'APP-2',
-      tasks: [{ title: '卡 1', body_md: '正文 1' }],
+      work_items: [{ title: '卡 1', body_md: '正文 1' }],
     }],
-    ['echuan_task_create', {
+    ['echuan_work_create', {
       project_id: 'APP-2',
+      kind: 'dev',
       title: '卡 3',
       body_md: '正文 3',
       priority: 7,
       depends_on: ['APP-2-T0001'],
     }],
-    ['echuan_task_update', { task_id: 'APP-2-T0003', title: '新标题' }],
-    ['echuan_task_delete', { task_id: 'APP-2-T0003' }],
+    ['echuan_work_update', { work_id: 'APP-2-T0003', title: '新标题' }],
+    ['echuan_work_delete', { work_id: 'APP-2-T0003' }],
     ['echuan_project_update', { project_id: 'APP-2', title: '新项目名' }],
     ['echuan_product_create', {
       product_id: 'APPX',
@@ -619,9 +632,9 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<string[]> {
     ['echuan_inbox', { limit: 5 }],
     ['echuan_product_list', { limit: 5 }],
     ['echuan_project_list', { product_id: 'APP' }],
-    ['echuan_task_list', { project_id: 'APP-1' }],
+    ['echuan_work_list', { project_id: 'APP-1' }],
     ['echuan_project_get', { id: 'APP-2' }],
-    ['echuan_task_get', { id: 'APP-1-T0007' }],
+    ['echuan_work_get', { work_id: 'APP-1-T0007' }],
     ['echuan_material_get', { id: 'M-1' }],
     // 只读诊断：零 HTTP、零写盘。
     ['echuan_worker_info', {}],
@@ -646,8 +659,8 @@ interface WorkerRun {
   delivered: string[]
 }
 
-/** 项目会话桩：`id` 即项目号（APP-1），投递按 `task.project_id` 命中它。 */
-const ROOT_AGENT = { id: 'APP-1', status: 'running' } as unknown as Agent
+/** 本进程唯一的 root agent：派单固定投给它（一个 worker 一个 agent）。 */
+const ROOT_AGENT = { id: 'agent-root', status: 'running' } as unknown as Agent
 
 /** 跑 `rounds` 轮 worker 心跳（每轮都由假定时器触发：首轮也要推进过 5s 延迟）。 */
 async function runWorkerRounds(rounds = 2): Promise<WorkerRun> {
@@ -658,10 +671,7 @@ async function runWorkerRounds(rounds = 2): Promise<WorkerRun> {
   const loop = createWorkerLoop({
     config: pollConfig,
     client: createWorkerClient(config, { fetchImpl: platform.fetchImpl }),
-    sessions: { get: (id: string) => (id === ROOT_AGENT.id ? ROOT_AGENT : undefined) },
-    ensureSession: async (projectId: string) => (
-      projectId === ROOT_AGENT.id ? { agent: ROOT_AGENT } : undefined
-    ),
+    agents: { roots: () => [ROOT_AGENT] },
     logger: silentLogger,
     timer: timer.api,
     deliver: (_agent, text) => delivered.push(text),

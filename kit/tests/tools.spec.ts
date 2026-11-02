@@ -5,7 +5,7 @@
  * 1. 领卡成功的 render（任务编号 / 标题 / 租约到期，不含工作目录与操作指示）；
  * 2. 204 → 「当前无活」，正常返回不抛错；
  * 3. 请求体 worker_id 与心跳循环内存 id 一致；未注册时该键完全不出现；
- * 4. report 空/全空白 summary_md → 本地拒绝、零请求、四段式提示；
+ * 4. report 缺失/空白 material_id → 本地拒绝、零请求；
  * 5. lease_lost / worker_busy / worker_unknown / material_required 的下一步文案；
  * 6. 工具名集合恰好 15 个，且没有门禁动作；
  * 7. TOOL_METHODS 恰好 20 个（工具层不污染客户端方法集）。
@@ -25,7 +25,6 @@ import { resolveConfig } from '../src/config.js'
 import { createWorkerLoop } from '../src/worker.js'
 import {
   NO_WORK_TEXT,
-  REPORT_STRUCTURE_HINT,
   WRITE_TOOL_NAMES,
   createEchuanTools,
 } from '../src/tools/index.js'
@@ -85,24 +84,31 @@ function parsedBody(call: RecordedCall | undefined): Record<string, unknown> {
 
 const WORKER_ID = 'w_TEST01ABCDEFGHIJKLMN'
 
+const WORK_ID = 'w_01M5Z4ABCDEF'
+
 const CLAIM_PAYLOAD = {
-  task: {
-    id: 'APP-1-T0001',
-    project_id: 'APP-1',
-    title: '实现登录接口',
-    body_md: '# 任务正文\n请实现登录接口。',
-    attempt: 1,
-    priority: 10,
-  },
-  lease: {
-    lease_id: 'l_9f8b7b09ff971dd1',
-    until: '2026-10-27T16:49:25.157Z',
-    ttl_seconds: 90,
-  },
-  context: {
-    spec_version: 1,
-    spec_digest: 'sha256:bb23da360a3b21e827138bad027ef3f30a29699e84014bc520e4f40131ea2d76',
-    product: { id: 'APP', name: '驿传示例产品', git_url: 'git@example.com:APP.git' },
+  dispatch: {
+    protocol: 'v2',
+    work_id: WORK_ID,
+    kind: 'dev',
+    inputs: [{ material_id: 'M_spec_1', kind: 2, version: 1 }],
+    work_item: {
+      project_id: 'APP-1',
+      title: '实现登录接口',
+      body_md: '# 工作项正文\n请实现登录接口。',
+      attempt: 1,
+      priority: 10,
+    },
+    lease: {
+      lease_id: 'l_9f8b7b09ff971dd1',
+      until: '2026-10-27T16:49:25.157Z',
+      ttl_seconds: 90,
+    },
+    context: {
+      spec_version: 1,
+      spec_digest: 'sha256:bb23da360a3b21e827138bad027ef3f30a29699e84014bc520e4f40131ea2d76',
+      product: { id: 'APP', name: '驿传示例产品', git_url: 'git@example.com:APP.git' },
+    },
   },
 }
 
@@ -153,34 +159,36 @@ function toolsFor(fetchImpl: FetchLike, workerId: string | undefined): Map<strin
 // 1. 领卡成功
 // ---------------------------------------------------------------------------
 
-describe('echuan_task_claim：领到卡', () => {
-  it('render 含任务编号、标题、租约到期，不含工作目录与操作指示', async () => {
+describe('echuan_work_claim：领到卡', () => {
+  it('render 含工作项编号、kind、标题、租约、inputs，不含工作目录与操作指示', async () => {
     const platform = createPlatform(() => jsonResponse(CLAIM_PAYLOAD))
-    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_claim')
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_claim')
 
-    const { value, text } = await runTool(tool!, { product: 'APP' })
+    const { value, text } = await runTool(tool!, {})
     expectValidOutput(tool!, value)
 
-    expect(text).toContain('任务编号：APP-1-T0001')
+    expect(text).toContain(`工作项编号：${WORK_ID}`)
+    expect(text).toContain('类别：dev（开发）')
     expect(text).toContain('标题：实现登录接口')
     expect(text).toContain('2026-10-27T16:49:25.157Z')
+    expect(text).toContain('material_id=M_spec_1')
     expect(text).not.toContain('工作目录')
-    expect(text).not.toContain('echuan_task_report')
+    expect(text).not.toContain('echuan_work_report')
     expect(text).not.toContain('下一步')
     // 正文也要给到模型，否则没法干活。
     expect(text).toContain('请实现登录接口。')
   })
 
-  it('走 POST /v1/tasks/claim，body 带 product，可选 task_id 原样透传', async () => {
+  it('走 POST /v1/work-items/claim，body 带 worker_id，可选 work_id 原样透传', async () => {
     const platform = createPlatform(() => jsonResponse(CLAIM_PAYLOAD))
-    const tool = toolsFor(platform.fetchImpl, undefined).get('echuan_task_claim')
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_claim')
 
-    await runTool(tool!, { product: 'APP', task_id: 'APP-1-T0001' })
+    await runTool(tool!, { work_id: WORK_ID })
 
     expect(platform.calls).toHaveLength(1)
-    expect(platform.calls[0]!.url).toBe('http://platform.test/v1/tasks/claim')
+    expect(platform.calls[0]!.url).toBe('http://platform.test/v1/work-items/claim')
     expect(platform.calls[0]!.init.method).toBe('POST')
-    expect(parsedBody(platform.calls[0])).toEqual({ product: 'APP', task_id: 'APP-1-T0001' })
+    expect(parsedBody(platform.calls[0])).toEqual({ worker_id: WORKER_ID, work_id: WORK_ID })
   })
 })
 
@@ -188,12 +196,12 @@ describe('echuan_task_claim：领到卡', () => {
 // 2. 204 = 当前无活
 // ---------------------------------------------------------------------------
 
-describe('echuan_task_claim：204 当前无活', () => {
+describe('echuan_work_claim：204 当前无活', () => {
   it('按正常结果返回，不抛异常，render 明确说「当前无活」', async () => {
     const platform = createPlatform(() => emptyResponse())
-    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_claim')
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_claim')
 
-    const { value, text } = await runTool(tool!, { product: 'APP' })
+    const { value, text } = await runTool(tool!, {})
 
     expect(value).toEqual({ kind: 'no_work' })
     expectValidOutput(tool!, value)
@@ -206,21 +214,20 @@ describe('echuan_task_claim：204 当前无活', () => {
 // 3. worker_id 只来自心跳循环内存
 // ---------------------------------------------------------------------------
 
-describe('echuan_task_claim：worker_id 的唯一来源是心跳循环', () => {
+describe('echuan_work_claim：worker_id 的唯一来源是心跳循环', () => {
   it('body 的 worker_id 与 loop.workerId 完全一致', async () => {
     // 真循环 + 假平台：心跳把 id 写进循环内存。
     const loopPlatform = createPlatform(() => jsonResponse({
       worker: { worker_id: WORKER_ID, heartbeat_interval_ms: 15_000 },
       commands: [],
     }))
-    const config = resolveConfig({ worker: { poll: { enable: true } } })
+    const config = resolveConfig({ worker: { poll: { enable: true }, kinds: ['dev'] } })
     // 首轮心跳延迟 5s：抓住挂起的定时器回调，手动触发它完成注册。
     const pendingTimers: Array<() => void> = []
     const loop = createWorkerLoop({
       config,
       client: createWorkerClient(config, { fetchImpl: loopPlatform.fetchImpl }),
-      sessions: { get: () => undefined },
-      ensureSession: async () => undefined,
+      agents: { roots: () => [] },
       logger: { info: () => {}, warn: () => {} },
       timer: {
         setTimeout: (handler: () => void) => {
@@ -243,26 +250,23 @@ describe('echuan_task_claim：worker_id 的唯一来源是心跳循环', () => {
     const tool = createEchuanTools({
       client,
       identity: { get workerId() { return loop.workerId } },
-    }).find(item => item.name === 'echuan_task_claim')
+    }).find(item => item.name === 'echuan_work_claim')
 
-    await runTool(tool!, { product: 'APP' })
+    await runTool(tool!, {})
 
-    expect(parsedBody(claimPlatform.calls[0])).toEqual({
-      product: 'APP',
-      worker_id: WORKER_ID,
-    })
+    expect(parsedBody(claimPlatform.calls[0])).toEqual({ worker_id: WORKER_ID })
     expect(parsedBody(claimPlatform.calls[0])['worker_id']).toBe(loop.workerId)
   })
 
-  it('未注册（workerId=undefined）时请求体完全不出现 worker_id 键', async () => {
+  it('未注册（workerId=undefined）时本地拒绝、零请求', async () => {
     const platform = createPlatform(() => jsonResponse(CLAIM_PAYLOAD))
-    const tool = toolsFor(platform.fetchImpl, undefined).get('echuan_task_claim')
+    const tool = toolsFor(platform.fetchImpl, undefined).get('echuan_work_claim')
 
-    await runTool(tool!, { product: 'APP' })
+    const error = await failureOf(runTool(tool!, {}))
 
-    const body = parsedBody(platform.calls[0])
-    expect('worker_id' in body).toBe(false)
-    expect(platform.calls[0]!.body).toBe('{"product":"APP"}')
+    expect(error.message).toContain('worker_id')
+    expect(error.message).toContain('worker.poll.enable')
+    expect(platform.calls).toHaveLength(0)
   })
 })
 
@@ -270,57 +274,45 @@ describe('echuan_task_claim：worker_id 的唯一来源是心跳循环', () => {
 // 4. 交报告前的本地校验
 // ---------------------------------------------------------------------------
 
-describe('echuan_task_report：summary_md 本地校验', () => {
-  for (const [label, summary] of [
+describe('echuan_work_report：material_id 本地校验', () => {
+  for (const [label, material] of [
+    ['缺失', undefined],
     ['空串', ''],
     ['全空白', '   \n\t  '],
   ] as const) {
-    it(`${label} → 本地拒绝、零请求、提示四段式`, async () => {
-      const platform = createPlatform(() => jsonResponse({ id: 'APP-1-T0001' }))
-      const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_report')
+    it(`${label} → 本地拒绝、零请求`, async () => {
+      const platform = createPlatform(() => jsonResponse({ work_id: WORK_ID }))
+      const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
 
-      await expect(
-        runTool(tool!, { task_id: 'APP-1-T0001', lease_id: 'l_1', summary_md: summary }),
-      ).rejects.toThrow(/summary_md/)
+      const args: Record<string, unknown> = { work_id: WORK_ID, lease_id: 'l_1' }
+      if (material !== undefined) args.material_id = material
+      const error = await failureOf(runTool(tool!, args))
 
-      expect(platform.calls).toHaveLength(0)
-
-      const error = await failureOf(runTool(tool!, {
-        task_id: 'APP-1-T0001',
-        lease_id: 'l_1',
-        summary_md: summary,
-      }))
-
-      expect(error.message).toContain('①改了什么')
-      expect(error.message).toContain('②怎么自检')
-      expect(error.message).toContain('③git 交付')
-      expect(error.message).toContain('④遗留风险')
-      // 与描述里的固定提示同一份文案，避免两处漂移。
-      expect(error.message).toContain(REPORT_STRUCTURE_HINT)
+      expect(error.message).toContain('material_id')
       expect(platform.calls).toHaveLength(0)
     })
   }
 
-  it('非空报告正常提交：POST /v1/tasks/report?id=，render 说「任务已转待验收」', async () => {
-    const platform = createPlatform(() => jsonResponse({ id: 'APP-1-T0001', status_name: '待验收' }))
-    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_report')
-    const summary = '## 改了什么\n- 新增登录接口\n## 怎么自检\n- pnpm test\n## 遗留风险\n- 无'
+  it('正常提交：POST /v1/work-items/report（无 query），render 说「工作项已提交待验收」', async () => {
+    const platform = createPlatform(() => jsonResponse({ work_id: WORK_ID, state: 'submitted' }))
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
 
     const { value, text } = await runTool(tool!, {
-      task_id: 'APP-1-T0001',
+      work_id: WORK_ID,
+      material_id: 'M_report_1',
       lease_id: 'l_9f8b7b09ff971dd1',
-      summary_md: summary,
     })
     expectValidOutput(tool!, value)
 
     expect(platform.calls).toHaveLength(1)
-    expect(platform.calls[0]!.url).toBe('http://platform.test/v1/tasks/report?id=APP-1-T0001')
+    expect(platform.calls[0]!.url).toBe('http://platform.test/v1/work-items/report')
     expect(parsedBody(platform.calls[0])).toEqual({
+      work_id: WORK_ID,
+      material_id: 'M_report_1',
       lease_id: 'l_9f8b7b09ff971dd1',
-      summary_md: summary,
     })
-    expect(text).toContain('任务已转待验收')
-    expect(text).toContain('APP-1-T0001')
+    expect(text).toContain('工作项已提交待验收')
+    expect(text).toContain(WORK_ID)
   })
 })
 
@@ -328,29 +320,29 @@ describe('echuan_task_report：summary_md 本地校验', () => {
 // 4b. 报告成功 → notifyReported
 // ---------------------------------------------------------------------------
 
-describe('echuan_task_report：成功后回调 notifyReported', () => {
-  it('HTTP 成功 → notifyReported(task_id) 恰好 1 次', async () => {
-    const platform = createPlatform(() => jsonResponse({ task_id: 'APP-1-T0001', status_name: '待验收' }))
+describe('echuan_work_report：成功后回调 notifyReported', () => {
+  it('HTTP 成功 → notifyReported(work_id) 恰好 1 次', async () => {
+    const platform = createPlatform(() => jsonResponse({ work_id: 'APP-1-T0001', status_name: '待验收' }))
     const client = createClient(resolveConfig({ baseUrl: 'http://platform.test' }), {
       fetchImpl: platform.fetchImpl,
     })
     const seen: string[] = []
     const tool = createEchuanTools({
       client,
-      identity: { workerId: WORKER_ID, notifyReported: taskId => seen.push(taskId) },
-    }).find(item => item.name === 'echuan_task_report')
+      identity: { workerId: WORKER_ID, notifyReported: workId => seen.push(workId) },
+    }).find(item => item.name === 'echuan_work_report')
 
     await runTool(tool!, {
-      task_id: 'APP-1-T0001',
+      work_id: WORK_ID,
+      material_id: 'M_report_1',
       lease_id: 'l_9f8b',
-      summary_md: '①改了什么 ②怎么自检 ③git 交付 ④遗留风险',
     })
 
     expect(platform.calls).toHaveLength(1)
-    expect(seen).toEqual(['APP-1-T0001'])
+    expect(seen).toEqual([WORK_ID])
   })
 
-  it('本地校验失败（空 summary）→ 0 请求、notifyReported 0 次', async () => {
+  it('本地校验失败（空 material_id）→ 0 请求、notifyReported 0 次', async () => {
     const platform = createPlatform(() => jsonResponse({}))
     const client = createClient(resolveConfig({ baseUrl: 'http://platform.test' }), {
       fetchImpl: platform.fetchImpl,
@@ -358,14 +350,14 @@ describe('echuan_task_report：成功后回调 notifyReported', () => {
     const seen: string[] = []
     const tool = createEchuanTools({
       client,
-      identity: { workerId: WORKER_ID, notifyReported: taskId => seen.push(taskId) },
-    }).find(item => item.name === 'echuan_task_report')
+      identity: { workerId: WORKER_ID, notifyReported: workId => seen.push(workId) },
+    }).find(item => item.name === 'echuan_work_report')
 
     await expect(runTool(tool!, {
-      task_id: 'APP-1-T0001',
+      work_id: WORK_ID,
+      material_id: '   ',
       lease_id: 'l_9f8b',
-      summary_md: '   ',
-    })).rejects.toThrow(/summary_md 为空或全空白/)
+    })).rejects.toThrow(/material_id/)
 
     expect(platform.calls).toHaveLength(0)
     expect(seen).toEqual([])
@@ -377,56 +369,56 @@ describe('echuan_task_report：成功后回调 notifyReported', () => {
 // ---------------------------------------------------------------------------
 
 describe('错误映射：每种错误都给出该怎么做', () => {
-  it('worker_busy → 先完成当前卡并用 echuan_task_report 汇报', async () => {
+  it('worker_busy → 先完成当前卡并用 echuan_work_report 汇报', async () => {
     const platform = createPlatform(() => errorResponse(409, 'worker_busy'))
-    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_claim')
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_claim')
 
-    const error = await failureOf(runTool(tool!, { product: 'APP' }))
+    const error = await failureOf(runTool(tool!, {}))
 
     expect(error.message).toContain('[worker_busy]')
     expect(error.message).toContain('已持卡')
-    expect(error.message).toContain('echuan_task_report')
+    expect(error.message).toContain('echuan_work_report')
   })
 
   it('worker_unknown → 等下一次心跳自动重注册后再试', async () => {
     const platform = createPlatform(() => errorResponse(409, 'worker_unknown'))
-    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_claim')
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_claim')
 
-    const error = await failureOf(runTool(tool!, { product: 'APP' }))
+    const error = await failureOf(runTool(tool!, {}))
 
     expect(error.message).toContain('[worker_unknown]')
     expect(error.message).toContain('心跳')
     expect(error.message).toContain('重新注册')
   })
 
-  it('lease_lost → 停止该卡、旧结果不可再提交、重新 echuan_task_claim', async () => {
+  it('lease_lost → 停止该卡、旧结果不可再提交、重新 echuan_work_claim', async () => {
     const platform = createPlatform(() => errorResponse(409, 'lease_lost'))
-    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_renew')
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_renew')
 
     const error = await failureOf(runTool(tool!, {
-      task_id: 'APP-1-T0001',
+      work_id: 'APP-1-T0001',
       lease_id: 'l_stale',
     }))
 
     expect(error.message).toContain('[lease_lost]')
     expect(error.message).toContain('停止执行')
     expect(error.message).toContain('旧结果不可再提交')
-    expect(error.message).toContain('echuan_task_claim')
+    expect(error.message).toContain('echuan_work_claim')
   })
 
   it('material_required（422）→ 提示补全报告内容', async () => {
     const platform = createPlatform(() => errorResponse(422, 'material_required'))
-    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_report')
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
 
     const error = await failureOf(runTool(tool!, {
-      task_id: 'APP-1-T0001',
+      work_id: WORK_ID,
+      material_id: 'M_missing',
       lease_id: 'l_1',
-      summary_md: '## 改了什么\n- x',
     }))
 
     expect(error.message).toContain('[material_required]')
-    expect(error.message).toContain('补全报告内容')
-    expect(error.message).toContain('echuan_task_report')
+    expect(error.message).toContain('material_id')
+    expect(error.message).toContain('echuan_work_report')
   })
 })
 
@@ -434,23 +426,26 @@ describe('错误映射：每种错误都给出该怎么做', () => {
 // 6. 续租成功
 // ---------------------------------------------------------------------------
 
-describe('echuan_task_renew：续租成功', () => {
-  it('render 新的 lease_id 与到期时间；走 POST /v1/tasks/heartbeat?id=', async () => {
+describe('echuan_work_renew：续租成功', () => {
+  it('render 新的 lease_id 与到期时间；走 POST /v1/work-items/lease?id=', async () => {
     const platform = createPlatform(() => jsonResponse({
       lease_id: 'l_newlease0000001',
       until: '2026-10-27T16:51:00.000Z',
       ttl_seconds: 90,
     }))
-    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_task_renew')
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_renew')
 
     const { value, text } = await runTool(tool!, {
-      task_id: 'APP-1-T0001',
+      work_id: 'APP-1-T0001',
       lease_id: 'l_9f8b7b09ff971dd1',
     })
     expectValidOutput(tool!, value)
 
-    expect(platform.calls[0]!.url).toBe('http://platform.test/v1/tasks/heartbeat?id=APP-1-T0001')
-    expect(parsedBody(platform.calls[0])).toEqual({ lease_id: 'l_9f8b7b09ff971dd1' })
+    expect(platform.calls[0]!.url).toBe('http://platform.test/v1/work-items/lease')
+    expect(parsedBody(platform.calls[0])).toEqual({
+      work_id: 'APP-1-T0001',
+      lease_id: 'l_9f8b7b09ff971dd1',
+    })
     expect(text).toContain('l_newlease0000001')
     expect(text).toContain('2026-10-27T16:51:00.000Z')
   })
@@ -483,7 +478,11 @@ describe('工具集合：恰好 15 个写工具，无审批类动作', () => {
 
     // 等价于 `grep -rn "accept|decide|cancel|rework" src/tools` 必须无命中。
     for (const file of readdirSync(toolsDir)) {
-      const source = readFileSync(path.join(toolsDir, file), 'utf8').toLowerCase()
+      // `accepted` / `cancelled` 是契约里的工作项状态枚举，不是门禁动作；先剔除再扫。
+      const source = readFileSync(path.join(toolsDir, file), 'utf8')
+        .toLowerCase()
+        .replaceAll('accepted', '')
+        .replaceAll('cancelled', '')
       for (const word of forbidden) {
         expect(source, `${file} 不应出现 ${word}`).not.toContain(word)
       }

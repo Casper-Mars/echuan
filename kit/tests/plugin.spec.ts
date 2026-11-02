@@ -220,27 +220,27 @@ describe('apply：加载与生命周期', () => {
     await settleTools(fake)
 
     expect(fake.registrations).toEqual([
-      'echuan_task_claim',
-      'echuan_task_renew',
-      'echuan_task_report',
+      'echuan_work_claim',
+      'echuan_work_renew',
+      'echuan_work_report',
       'echuan_project_create',
       'echuan_project_requirement_write',
       'echuan_project_submit',
       'echuan_spec_create',
       'echuan_spec_revise',
       'echuan_plan_submit',
-      'echuan_task_create',
-      'echuan_task_update',
-      'echuan_task_delete',
+      'echuan_work_create',
+      'echuan_work_update',
+      'echuan_work_delete',
       'echuan_project_update',
       'echuan_product_create',
       'echuan_project_package',
       'echuan_inbox',
       'echuan_product_list',
       'echuan_project_list',
-      'echuan_task_list',
+      'echuan_work_list',
       'echuan_project_get',
-      'echuan_task_get',
+      'echuan_work_get',
       'echuan_material_get',
       'echuan_worker_info',
     ])
@@ -283,7 +283,7 @@ describe('apply：加载与生命周期', () => {
       .map((call, index) => ({ ms: call[1], value: setSpy.mock.results[index]?.value }))
       .find(entry => entry.ms === FIRST_HEARTBEAT_DELAY_MS)?.value
 
-    apply(fake.ctx, { worker: { poll: { enable: true } } })
+    apply(fake.ctx, { worker: { poll: { enable: true }, kinds: ['dev'] } })
     await settleTools(fake)
 
     // 惰性 import → start() 只排一个 5s 后的首轮定时器，延迟期内零请求。
@@ -361,7 +361,7 @@ describe('apply：exclude 按 agent 裁剪工具', () => {
     const setSpy = vi.spyOn(globalThis, 'setTimeout')
     const fake = createFakeContext()
 
-    expect(() => apply(fake.ctx, { exclude: ['echuan_task_claim', 'echuan_plan_submitt'] }))
+    expect(() => apply(fake.ctx, { exclude: ['echuan_work_claim', 'echuan_plan_submitt'] }))
       .toThrow(TypeError)
     expect(() => apply(fake.ctx, { exclude: ['echuan_plan_submitt'] }))
       .toThrow(/echuan_plan_submitt/)
@@ -393,7 +393,7 @@ describe('apply：exclude 按 agent 裁剪工具', () => {
 
     expect(() => apply(fake.ctx, {
       exclude: [...TOOL_NAMES],
-      worker: { poll: { enable: true } },
+      worker: { poll: { enable: true }, kinds: ['dev'] },
     })).not.toThrow()
 
     await vi.waitFor(() => {
@@ -426,7 +426,7 @@ describe('apply：R-02 metadata 超限不启动心跳循环', () => {
     const bytes = metadataByteLength(metadata)
     expect(bytes).toBeGreaterThan(8192)
 
-    apply(fake.ctx, { worker: { poll: { enable: true }, metadata } })
+    apply(fake.ctx, { worker: { poll: { enable: true }, kinds: ['dev'], metadata } })
     await settleTools(fake)
     // 留出一轮惰性 import 的时间：正常路径这里会走 createWorkerLoop + start()。
     await new Promise<void>(resolve => { setTimeout(resolve, 20) })

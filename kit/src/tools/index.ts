@@ -2,9 +2,9 @@
  * 工具层入口：装配并注册 23 个工具（15 个写：项目创建 / 需求写入 / 提交评审 /
  * 方案创建 / 方案修订 / 批量建卡 / 领卡 / 续租 / 交报告 / 单卡增改删 /
  * 项目改标题 / 建产品 / 资料包下载；8 个读：待办 / 产品列表 / 项目列表 /
- * 任务列表 / 项目全景 / 任务详情 / 资料正文 / worker 诊断）。
+ * 工作项列表 / 项目全景 / 工作项详情 / 资料正文 / worker 诊断）。
  *
- * 写工具只覆盖「起草 → 提交评审 → 建卡」、任务执行（领卡/续租/交报告）与
+ * 写工具只覆盖「起草 → 提交评审 → 建卡」、工作项执行（领卡/续租/交报告）与
  * 单卡增改删等辅助动作，**不提供任何审批 / 驳回 / 取消动作**。
  *
  * 裁剪：`EchuanToolOptions.exclude` 里的工具名不会进入本进程的注册表。过滤只发生在
@@ -27,9 +27,9 @@ import { createEchuanReadTools } from './read.js'
 import {
   createProductCreateTool,
   createProjectUpdateTool,
-  createTaskCreateTool,
-  createTaskDeleteTool,
-  createTaskUpdateTool,
+  createWorkItemCreateTool,
+  createWorkItemDeleteTool,
+  createWorkItemUpdateTool,
 } from './maintenance.js'
 import { createProjectPackageTool } from './package.js'
 import {
@@ -50,21 +50,21 @@ import {
 export type { ClaimValue, EchuanToolOptions, WorkerIdentity } from './write.js'
 export type { WorkerInfoDeps } from './worker-info.js'
 export { createWorkerInfoTool } from './worker-info.js'
-export { REPORT_STRUCTURE_HINT } from './write.js'
 /** 工具名清单唯一真源在 `../tool-names.js`，这里原样再导出（保持旧导入路径可用）。 */
 export { READ_TOOL_NAMES, TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from '../tool-names.js'
 export {
   LIST_TEXT_MAX_CHARS,
   MATERIAL_MAX_CHARS,
-  TASK_BODY_MAX_CHARS,
+  WORK_ITEM_BODY_MAX_CHARS,
   formatDuration,
   formatInbox,
   formatMaterial,
   formatProductList,
   formatProject,
   formatProjectList,
-  formatTask,
-  formatTaskList,
+  formatWorkItem,
+  formatWorkItemList,
+  formatWorkItemStats,
   truncateText,
 } from './render.js'
 export { NO_WORK_TEXT } from './render.js'
@@ -74,7 +74,7 @@ export function createEchuanTools(options: EchuanToolOptions): ToolDefinition[] 
   return createEchuanWriteTools(options)
 }
 
-/** 构造 15 个写工具定义（生命周期 6 个 + 任务执行 3 个 + 辅助 6 个）。 */
+/** 构造 15 个写工具定义（生命周期 6 个 + 工作项执行 3 个 + 辅助 6 个）。 */
 export function createEchuanWriteTools(options: EchuanToolOptions): ToolDefinition[] {
   return [
     createClaimTool(options),
@@ -86,9 +86,9 @@ export function createEchuanWriteTools(options: EchuanToolOptions): ToolDefiniti
     createSpecCreateTool(options),
     createSpecReviseTool(options),
     createPlanSubmitTool(options),
-    createTaskCreateTool(options),
-    createTaskUpdateTool(options),
-    createTaskDeleteTool(options),
+    createWorkItemCreateTool(options),
+    createWorkItemUpdateTool(options),
+    createWorkItemDeleteTool(options),
     createProjectUpdateTool(options),
     createProductCreateTool(options),
     createProjectPackageTool(options),

@@ -7,7 +7,7 @@
  * 3. `spec_revise` 缺 version：本地拒绝且零请求；
  * 4. `spec_revise` 错版本：后端 409 invalid_version 透出，且 `If-Match` 走请求头、不进 body；
  * 5. `depends_on` 透传为 1-based 批内序号数组；
- * 6. 缺字段 / 空 tasks：本地拒绝、零请求。
+ * 6. 缺字段 / 空 work_items：本地拒绝、零请求。
  */
 import { describe, expect, it } from 'vitest'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
@@ -141,9 +141,9 @@ describe('生命周期链路：项目 0 → 1 → 2 → 3 → 5，id 逐步串�
             status: 5,
             status_name: '任务评审',
             project_version: 6,
-            tasks: [
-              { id: 'APP-9-T0001', seq_no: 1, title: '卡 1', priority: 0, status: 0, status_name: '待办', depends_on: [] },
-              { id: 'APP-9-T0002', seq_no: 2, title: '卡 2', priority: 5, status: 0, status_name: '待办', depends_on: ['APP-9-T0001'] },
+            work_items: [
+              { work_id: 'APP-9-T0001', seq_no: 1, kind: 'dev', title: '卡 1', priority: 0, state: 'queued', depends_on: [] },
+              { work_id: 'APP-9-T0002', seq_no: 2, kind: 'dev', title: '卡 2', priority: 5, state: 'blocked', depends_on: ['APP-9-T0001'] },
             ],
           }, 201)
         default:
@@ -186,13 +186,13 @@ describe('生命周期链路：项目 0 → 1 → 2 → 3 → 5，id 逐步串�
 
     const plan = await call(tools, 'echuan_plan_submit', {
       project_id: created.project_id,
-      tasks: [
+      work_items: [
         { title: '卡 1', body_md: '正文 1' },
         { title: '卡 2', body_md: '正文 2', priority: 5, depends_on: [1] },
       ],
-    }) as { status: number; tasks: Array<{ task_id: string }> }
+    }) as { status: number; work_items: Array<{ work_id: string }> }
     expect(plan.status).toBe(5)
-    expect(plan.tasks.map(task => task.task_id)).toEqual(['APP-9-T0001', 'APP-9-T0002'])
+    expect(plan.work_items.map(item => item.work_id)).toEqual(['APP-9-T0001', 'APP-9-T0002'])
 
     // 每个请求都落在预期端点上，且没有多余请求。
     expect(platform.calls.map(request => `${request.method} ${request.url.pathname}`)).toEqual([
@@ -388,13 +388,13 @@ describe('echuan_plan_submit：depends_on 透传', () => {
       status: 5,
       status_name: '任务评审',
       project_version: 2,
-      tasks: [],
+      work_items: [],
     }, 201))
     const tools = toolsFor(platform.fetchImpl)
 
     await call(tools, 'echuan_plan_submit', {
       project_id: 'APP-2',
-      tasks: [
+      work_items: [
         { title: '卡 1', body_md: '正文 1', depends_on: [2, 3] },
         { title: '卡 2', body_md: '正文 2', priority: -1 },
       ],
@@ -403,19 +403,19 @@ describe('echuan_plan_submit：depends_on 透传', () => {
     expect(platform.calls).toHaveLength(1)
     expect(platform.calls[0]!.url.searchParams.get('id')).toBe('APP-2')
     expect(platform.calls[0]!.body).toEqual({
-      tasks: [
+      work_items: [
         { title: '卡 1', body_md: '正文 1', depends_on: [2, 3] },
         { title: '卡 2', body_md: '正文 2', priority: -1 },
       ],
     })
   })
 
-  it('空 tasks / 空白 title / 非法 depends_on：本地拒绝且零请求', async () => {
+  it('空 work_items / 空白 title / 非法 depends_on：本地拒绝且零请求', async () => {
     const cases: Array<Record<string, unknown>> = [
-      { project_id: 'APP-2', tasks: [] },
-      { project_id: 'APP-2', tasks: [{ title: '  ', body_md: '正文' }] },
-      { project_id: 'APP-2', tasks: [{ title: '卡', body_md: '' }] },
-      { project_id: 'APP-2', tasks: [{ title: '卡', body_md: '正文', depends_on: [0] }] },
+      { project_id: 'APP-2', work_items: [] },
+      { project_id: 'APP-2', work_items: [{ title: '  ', body_md: '正文' }] },
+      { project_id: 'APP-2', work_items: [{ title: '卡', body_md: '' }] },
+      { project_id: 'APP-2', work_items: [{ title: '卡', body_md: '正文', depends_on: [0] }] },
     ]
 
     for (const args of cases) {

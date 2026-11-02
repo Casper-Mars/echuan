@@ -212,18 +212,18 @@ function parseRequestBodyContract(operationId: string): RequestBodyContract | un
  * 换顺序、换路径都会让下面的用例变红。
  */
 const EXPECTED_OPERATIONS = [
-  { tool: 'claimTask', method: 'POST', path: '/v1/tasks/claim', operationId: 'claimTask' },
-  { tool: 'renewLease', method: 'POST', path: '/v1/tasks/heartbeat', operationId: 'heartbeatTask' },
-  { tool: 'reportTask', method: 'POST', path: '/v1/tasks/report', operationId: 'reportTask' },
+  { tool: 'claimWorkItem', method: 'POST', path: '/v1/work-items/claim', operationId: 'claimWorkItem' },
+  { tool: 'renewWorkItemLease', method: 'POST', path: '/v1/work-items/lease', operationId: 'renewWorkItemLease' },
+  { tool: 'reportWorkItem', method: 'POST', path: '/v1/work-items/report', operationId: 'reportWorkItem' },
   { tool: 'createProject', method: 'POST', path: '/v1/projects', operationId: 'createProject' },
   { tool: 'writeRequirement', method: 'POST', path: '/v1/projects/requirement', operationId: 'writeProjectRequirement' },
   { tool: 'submitProject', method: 'POST', path: '/v1/projects/submit', operationId: 'submitProject' },
   { tool: 'createSpec', method: 'POST', path: '/v1/specs', operationId: 'createSpecDocument' },
   { tool: 'reviseSpec', method: 'PATCH', path: '/v1/specs', operationId: 'reviseSpecDocument' },
   { tool: 'submitPlan', method: 'POST', path: '/v1/projects/plans', operationId: 'submitProjectPlan' },
-  { tool: 'createTask', method: 'POST', path: '/v1/tasks', operationId: 'createTask' },
-  { tool: 'updateTask', method: 'PATCH', path: '/v1/tasks', operationId: 'updateTask' },
-  { tool: 'deleteTask', method: 'DELETE', path: '/v1/tasks', operationId: 'deleteTask' },
+  { tool: 'createWorkItem', method: 'POST', path: '/v1/work-items', operationId: 'createWorkItem' },
+  { tool: 'updateWorkItem', method: 'PATCH', path: '/v1/work-items', operationId: 'updateWorkItem' },
+  { tool: 'deleteWorkItem', method: 'DELETE', path: '/v1/work-items', operationId: 'deleteWorkItem' },
   { tool: 'updateProject', method: 'PATCH', path: '/v1/projects', operationId: 'updateProject' },
   { tool: 'createProduct', method: 'POST', path: '/v1/products', operationId: 'createProduct' },
   {
@@ -235,7 +235,7 @@ const EXPECTED_OPERATIONS = [
   { tool: 'getInbox', method: 'GET', path: '/v1/inbox', operationId: 'listInbox' },
   { tool: 'listProducts', method: 'GET', path: '/v1/products', operationId: 'listOrGetProducts' },
   { tool: 'listProjects', method: 'GET', path: '/v1/projects', operationId: 'listOrGetProjects' },
-  { tool: 'listTasks', method: 'GET', path: '/v1/tasks', operationId: 'listOrGetTasks' },
+  { tool: 'listWorkItems', method: 'GET', path: '/v1/work-items', operationId: 'listOrGetWorkItems' },
   { tool: 'getMaterials', method: 'GET', path: '/v1/materials', operationId: 'downloadMaterial' },
 ] as const
 
@@ -275,25 +275,25 @@ describe('契约闸门：客户端声明的 operation 恰好 20 个', () => {
 
   it('operationId 序列稳定，正好是契约里的 20 个动作', () => {
     expect(TOOL_OPERATIONS.map(entry => entry.operationId)).toEqual([
-      'claimTask',
-      'heartbeatTask',
-      'reportTask',
+      'claimWorkItem',
+      'renewWorkItemLease',
+      'reportWorkItem',
       'createProject',
       'writeProjectRequirement',
       'submitProject',
       'createSpecDocument',
       'reviseSpecDocument',
       'submitProjectPlan',
-      'createTask',
-      'updateTask',
-      'deleteTask',
+      'createWorkItem',
+      'updateWorkItem',
+      'deleteWorkItem',
       'updateProject',
       'createProduct',
       'downloadProjectPackage',
       'listInbox',
       'listOrGetProducts',
       'listOrGetProjects',
-      'listOrGetTasks',
+      'listOrGetWorkItems',
       'downloadMaterial',
     ])
   })
@@ -384,7 +384,7 @@ describe('契约闸门：worker 心跳端点', () => {
     ))
     const worker = createWorkerClient(config, { fetchImpl: platform.fetchImpl })
 
-    await worker.heartbeat({ state: 'idle', metadata: {} })
+    await worker.heartbeat({ state: 'idle', kinds: ['dev'], metadata: {} })
 
     expect(platform.calls).toHaveLength(1)
     expect(platform.calls[0]?.init.method).toBe('POST')
@@ -448,22 +448,22 @@ describe('契约闸门：物料读取返回原始正文', () => {
 
 /**
  * 工具名 → operationId。23 个工具共用 20 个 operation：
- * 项目/任务各由一个 GET 同时承担 list 与 get；`echuan_worker_info` 零 HTTP，
+ * 项目/工作项各由一个 GET 同时承担 list 与 get；`echuan_worker_info` 零 HTTP，
  * 不映射任何 operation（值为 `undefined`）。
  */
 const TOOL_TO_OPERATION = {
-  echuan_task_claim: 'claimTask',
-  echuan_task_renew: 'heartbeatTask',
-  echuan_task_report: 'reportTask',
+  echuan_work_claim: 'claimWorkItem',
+  echuan_work_renew: 'renewWorkItemLease',
+  echuan_work_report: 'reportWorkItem',
   echuan_project_create: 'createProject',
   echuan_project_requirement_write: 'writeProjectRequirement',
   echuan_project_submit: 'submitProject',
   echuan_spec_create: 'createSpecDocument',
   echuan_spec_revise: 'reviseSpecDocument',
   echuan_plan_submit: 'submitProjectPlan',
-  echuan_task_create: 'createTask',
-  echuan_task_update: 'updateTask',
-  echuan_task_delete: 'deleteTask',
+  echuan_work_create: 'createWorkItem',
+  echuan_work_update: 'updateWorkItem',
+  echuan_work_delete: 'deleteWorkItem',
   echuan_project_update: 'updateProject',
   echuan_product_create: 'createProduct',
   echuan_project_package: 'downloadProjectPackage',
@@ -471,8 +471,8 @@ const TOOL_TO_OPERATION = {
   echuan_product_list: 'listOrGetProducts',
   echuan_project_list: 'listOrGetProjects',
   echuan_project_get: 'listOrGetProjects',
-  echuan_task_list: 'listOrGetTasks',
-  echuan_task_get: 'listOrGetTasks',
+  echuan_work_list: 'listOrGetWorkItems',
+  echuan_work_get: 'listOrGetWorkItems',
   echuan_material_get: 'downloadMaterial',
   echuan_worker_info: undefined,
 } as const
@@ -512,7 +512,7 @@ describe('契约闸门：23 个工具逐个映射到 20 个 operation', () => {
 
   it('list 与 get 共用同一个 operation；20 个 operation 全部被用到', () => {
     expect(TOOL_TO_OPERATION.echuan_project_list).toBe(TOOL_TO_OPERATION.echuan_project_get)
-    expect(TOOL_TO_OPERATION.echuan_task_list).toBe(TOOL_TO_OPERATION.echuan_task_get)
+    expect(TOOL_TO_OPERATION.echuan_work_list).toBe(TOOL_TO_OPERATION.echuan_work_get)
 
     const used = new Set(Object.values(TOOL_TO_OPERATION).filter(value => value !== undefined))
     expect(used.size).toBe(20)

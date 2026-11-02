@@ -1,20 +1,20 @@
 # dsh-echuan — 驿传平台接入工具包
 
-这是驿传（echuan）的 dsh（Cordis 4）Agent 接入插件：把平台 HTTP 契约接进 Agent。装进一个 profile 后，Agent 能领卡、续租、交报告，平台也能把派单投递给它。
+这是驿传（echuan）的 dsh（Cordis 4）Agent 接入插件：把平台 HTTP 契约接进 Agent。装进一个 profile 后，Agent 能领 work item、续租、交报告，平台也能按 worker 声明的 `kinds` 把派单投递给它。
 
 ## 能力边界（先看这段）
 
 插件**只做三件事**：
 
-1. **定时心跳**：上报 `state`（`busy` = 手里有未报告的卡，`idle` = 没有）与 metadata，并带上平台下发的 `worker_id`（仅存内存）。
-2. **投递派单**：按 `task.project_id` 确保项目会话就绪（项目号即会话号），再把 `run_task` 投给该会话的 agent。
+1. **定时心跳**：上报 `state`（`busy` = 手里有未交付的 work item，`idle` = 没有）、`kinds`（本 worker 能做的类别）与 metadata，并带上平台下发的 `worker_id`（仅存内存）。
+2. **投递派单**：把心跳回包里的 `dispatch` 直接投给**本进程唯一的 agent**（`ctx.agents.roots()[0]`）。不按项目建会话、不做任何分支判断：一个 worker 一个 agent，需要隔离就拆 worker。
 3. **提供 23 个工具**（默认全量；可用 `exclude` 按 agent 裁剪，见「配置」）：
    - 生命周期写：`echuan_project_create`（建项目）、`echuan_project_requirement_write`（写需求）、`echuan_project_submit`（提交评审）、`echuan_spec_create`（建方案）、`echuan_spec_revise`（修订方案）、`echuan_plan_submit`（批量建卡）
-   - 任务写：`echuan_task_claim`（领卡）、`echuan_task_renew`（续租）、`echuan_task_report`（交报告）
-   - 辅助写：`echuan_task_create`（单卡新增）、`echuan_task_update`（改卡）、`echuan_task_delete`（删卡）、`echuan_project_update`（改项目标题）、`echuan_product_create`（建产品）、`echuan_project_package`（下载资料包）
-   - 读：`echuan_inbox`（待办）、`echuan_product_list`（产品列表）、`echuan_project_list`（项目列表）、`echuan_task_list`（任务列表）、`echuan_project_get`（项目详情）、`echuan_task_get`（任务详情）、`echuan_material_get`（资料）、`echuan_worker_info`（worker 诊断，零 HTTP）
+   - 工作项写：`echuan_work_claim`（领卡）、`echuan_work_renew`（续租）、`echuan_work_report`（交报告）
+   - 辅助写：`echuan_work_create`（单卡新增）、`echuan_work_update`（改卡）、`echuan_work_delete`（删卡）、`echuan_project_update`（改项目标题）、`echuan_product_create`（建产品）、`echuan_project_package`（下载资料包）
+   - 读：`echuan_inbox`（待办）、`echuan_product_list`（产品列表）、`echuan_project_list`（项目列表）、`echuan_work_list`（工作项列表）、`echuan_project_get`（项目详情）、`echuan_work_get`（工作项详情）、`echuan_material_get`（资料）、`echuan_worker_info`（worker 诊断，零 HTTP）
 
-`echuan_worker_info` 只读进程内状态（心跳开关、打码的 `worker_id`、inflight 任务与租约、项目会话 live/persisted/missing、默认 preset、工作区选择规则与工作区列表），**不发任何 HTTP 请求、不写盘、不改状态**；宿主服务缺失时只降级展示。
+`echuan_worker_info` 只读进程内状态（心跳开关、声明的 `kinds`、打码的 `worker_id`、派单目标 agent、inflight 工作项与租约），**不发任何 HTTP 请求、不写盘、不改状态**；`ctx.agents` 缺失时只降级展示。
 
 生命周期写工具的参数与副作用：
 
@@ -25,20 +25,30 @@
 | `echuan_project_submit` | `POST /v1/projects/submit?id=` | `project_id`（无 body） | 新状态；缺需求时平台 409「请先上传需求文档」原样透出 |
 | `echuan_spec_create` | `POST /v1/specs` | `project_id`、`title`、`body_md`（均必填） | `spec_id`、`version` |
 | `echuan_spec_revise` | `PATCH /v1/specs?id=` | `spec_id`、`title`、`body_md`（均必填）、必填 `version`（走 `If-Match` 头） | 新 `version`；错版本 409 `invalid_version` 透出 |
-| `echuan_plan_submit` | `POST /v1/projects/plans?id=` | `project_id`、`tasks[]`（`title`/`body_md`，可选 `priority`、`depends_on` 为 1-based 批内序号） | 项目状态 + 新卡列表（含 `task_id`） |
+| `echuan_plan_submit` | `POST /v1/projects/plans?id=` | `project_id`、`work_items[]`（`title`/`body_md`，可选 `priority`、`depends_on` 为 1-based 批内序号） | 项目状态 + 新卡列表（含 `work_id` / `kind` / `state`） |
 
-辅助写工具（任务被驳回后自行改卡/删卡，或补建产品/下载资料）：
+辅助写工具（工作项被驳回后自行改卡/删卡，或补建产品/下载资料）：
 
 | 工具 | 端点 | 关键入参 | 返回 / 下一步 |
 |---|---|---|---|
-| `echuan_task_create` | `POST /v1/tasks?project_id=` | `project_id`、`title`、`body_md`，可选 `priority`、`depends_on`（任务 id 数组） | `task_id`、`seq_no`、状态；依赖以任务 id 表示 |
-| `echuan_task_update` | `PATCH /v1/tasks?id=` | `task_id` + 至少一个 `title` / `body_md` / `priority`（空白不算有效修改） | 空 patch 本地拒绝、零请求；驳回提示随写入清空 |
-| `echuan_task_delete` | `DELETE /v1/tasks?id=` | `task_id` | 204 成功；已领取/不可删时 409 原样透出 |
+| `echuan_work_create` | `POST /v1/work-items` | `project_id`、`kind`（四类之一）、`title`、`body_md`，可选 `priority`、`depends_on`（`work_id` 数组） | `work_id`、`seq_no`、`state`；依赖以 `work_id` 表示 |
+| `echuan_work_update` | `PATCH /v1/work-items?id=` | `work_id` + 至少一个 `title` / `body_md` / `priority`（空白不算有效修改） | 空 patch 本地拒绝、零请求；驳回提示随写入清空 |
+| `echuan_work_delete` | `DELETE /v1/work-items?id=` | `work_id` | 204 成功；已领取/不可删时 409 原样透出 |
 | `echuan_project_update` | `PATCH /v1/projects?id=` | `project_id`、`title` | 只改标题，状态与需求/方案指针不变 |
 | `echuan_product_create` | `POST /v1/products` | `product_id`、`name`、`git_url`，可选 `description`、`license` | 产品 id；可立即用 `echuan_project_create` 建项目 |
 | `echuan_project_package` | `GET /v1/projects/package?id=` | `project_id` | zip 写入 `os.tmpdir()`，返回 `saved_path` / `bytes` / `entries`；同名不覆盖 |
 
-**典型调用顺序**：`echuan_project_create` → `echuan_project_requirement_write` → `echuan_project_submit`（需求评审）→ 人工评审通过 → `echuan_spec_create` → `echuan_project_submit`（方案评审）→ 人工评审通过 → `echuan_plan_submit`（批量建卡，项目进入任务评审）。
+**执行类工具的契约（v2）**：
+
+| 工具 | 端点 | 关键入参 | 返回 |
+|---|---|---|---|
+| `echuan_work_claim` | `POST /v1/work-items/claim` | 无必填；可选 `work_id`（只领指定卡） | 成功返回 `dispatch`（`work_id` / `kind` / `inputs` / `work_item` / `lease` / `context`）；204 = 当前无活 |
+| `echuan_work_renew` | `POST /v1/work-items/lease` | `work_id`、`lease_id` | 新 `lease_id`、`until`、`ttl_seconds` |
+| `echuan_work_report` | `POST /v1/work-items/report` | `work_id`、`material_id`、`lease_id` | 平台把工作项转为 `submitted`；`material_id` 不存在 404、租约失效 409 原样透出 |
+
+`echuan_work_claim` 的 `worker_id` **不在工具参数里**：它只来自心跳循环的内存（平台契约必填）。`worker.poll.enable=false` 或首轮心跳尚未成功时，领卡会在本地拒绝、零请求。
+
+**典型调用顺序**：`echuan_project_create` → `echuan_project_requirement_write` → `echuan_project_submit`（需求评审）→ 人工评审通过 → `echuan_spec_create` → `echuan_project_submit`（方案评审）→ 人工评审通过 → `echuan_plan_submit`（批量建卡，项目进入计划评审）。
 
 列表工具的参数（都只发 GET，不缓存、不落盘）：
 
@@ -46,14 +56,15 @@
 |---|---|---|
 | `echuan_product_list` | 无 | `limit` 1–200、`cursor` |
 | `echuan_project_list` | `product_id`、`status`（单个整数） | `limit` 1–200、`cursor` |
-| `echuan_task_list` | `project_id`、`status`（可多个，按重复 key 传） | `limit` 1–200、`cursor` |
-`limit` 非整数或越界时本地拒绝、不发请求；空列表返回「当前没有…」而不是报错；回包带 `next_cursor` 时末尾提示 `cursor=…`。23 个工具共用 20 个 HTTP operation（`echuan_worker_info` 零 HTTP）：项目/任务各由一个 `GET` 同时承担列表与按 `id` 取详情。
+| `echuan_work_list` | `project_id`、`kind`（可多个）、`state`（可多个；均按重复 key 传） | `limit` 1–200、`cursor` |
 
-写工具在本地先校验：缺字段（含 `echuan_spec_create` / `echuan_spec_revise` 的 `title`）、空白正文、空 `tasks`、缺失或非正的 `version` 都直接报 `invalid_argument`，**不发请求**；平台错误（400 / 409 / 413）原样透出 code 与 message，`details` 中的 `field` / `reason` 也会附加到错误文本（如 `（title: is required）`），不自动重试。
+`limit` 非整数或越界时本地拒绝、不发请求；空列表返回「当前没有…」而不是报错；回包带 `next_cursor` 时末尾提示 `cursor=…`。23 个工具共用 20 个 HTTP operation（`echuan_worker_info` 零 HTTP）：项目/工作项各由一个 `GET` 同时承担列表与按 id 取详情。
+
+写工具在本地先校验：缺字段（含 `echuan_spec_create` / `echuan_spec_revise` 的 `title`、`echuan_work_create` 的 `kind`）、空白正文、空 `work_items`、缺失或非正的 `version` 都直接报 `invalid_argument`，**不发请求**；平台错误（400 / 409 / 413）原样透出 code 与 message，`details` 中的 `field` / `reason` 也会附加到错误文本（如 `（title: is required）`），不自动重试。
 
 `exclude` 只影响**本进程注册哪些工具**：不改工具定义、参数或平台 HTTP 契约，也不影响心跳与派单；不配置时默认全量 23 个。
 
-**不提供**：验收、返工、取消、改状态——所有审批类动作一律没有。**不代交报告**：报告必须由 agent 自己调 `echuan_task_report`。**不缓存、不落盘**：`worker_id` 只在内存，进程重启后重新注册（会拿到新的 `w_` id）；唯一的落盘动作是 `echuan_project_package` 把 zip 写到 `os.tmpdir()`（同名不覆盖、失败清理半成品，绝不写仓库目录）。
+**不提供**：验收、返工、取消、改状态——所有审批类动作一律没有。**不代交报告**：报告必须由 agent 自己调 `echuan_work_report`。**不缓存、不落盘**：`worker_id` 只在内存，进程重启后重新注册（会拿到新的 `w_` id）；唯一的落盘动作是 `echuan_project_package` 把 zip 写到 `os.tmpdir()`（同名不覆盖、失败清理半成品，绝不写仓库目录）。
 
 ## 与平台的关系：同仓
 
@@ -97,8 +108,8 @@ dsh plugin --profile <name> add ./kit
 
 ```bash
 cd kit
-pnpm build && pnpm pack            # 产出 dsh-echuan-0.1.0.tgz（已被 gitignore）
-dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
+pnpm build && pnpm pack            # 产出 dsh-echuan-1.0.0.tgz（已被 gitignore）
+dsh plugin --profile <name> add ./dsh-echuan-1.0.0.tgz
 ```
 
 同样受上面两条 ⚠️ 约束：`--profile` 在前；手工补 `bundles` 时要保留 `dsh-echuan`。
@@ -116,18 +127,22 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
     exclude: []                           # 不注册的工具名；默认 [] = 全量 23 个
     worker:
       poll:
-        enable: false                     # 默认关闭；打开才会定时心跳
+        enable: true                      # 默认关闭；打开才会定时心跳
+      kinds:                              # 声明本 worker 能做的类别（四类、去重保序）
+        - dev
       metadata:                           # 原样上报，序列化后 ≤8KiB
         host: build-01
         os: darwin
-        agent_version: 0.1.0
+        agent_version: 1.0.0
 ```
 
-- **新建会话的 cwd 选择规则**：取 `workspaceRegistry` 里 **session 数量最多的 workspace**，直接以它的目录作为 cwd——项目号只用来构造 session id（项目号即会话号），**不拼子路径、不为会话建子目录**。会话数并列时选 `sessionIds[0]` 的 `header.createdAt` 最新者；仍无法判定时取列表第一个。列表为空、所有 workspace 都没有会话记录，或 `workspaceRegistry` 缺失/读取失败时，回落到 `process.cwd()`。该规则只在**新建会话**生效：已存在会话走 resume / live 复用，完全不参与选择，也不改已有会话的 cwd。目录必须已存在：不存在时插件只 warn 并跳过本次投递，**不会自动创建**。
-- `worker.poll.enable=false` 是默认值：不建定时器、零请求；**手动领卡照常可用**（工具与心跳开关无关）。
+- `worker.kinds` 的合法值是 `requirement` / `design` / `breakdown` / `dev`。每项会 `trim`、去重（保序）；写未知类别会让插件激活直接失败（`TypeError`，错误里列出四类合法值），不会静默丢弃。
+- `worker.kinds` 为空（默认 `[]`）时**不启动心跳循环**：平台心跳要求 `kinds` 非空，发出去只会每轮 400。此时只 warn 一条，工具仍可正常调用（但 `echuan_work_claim` 因没有 `worker_id` 会在本地拒绝）。
+- `worker.poll.enable=false` 是默认值：不建定时器、零请求；**手动领卡需要先注册**（见上一条）。
 - `metadata` 序列化后超过 8KiB 时插件**不启动心跳循环**并 warn 一条（不是截断），避免每轮都被平台拒。
 - `exclude` 默认 `[]`（不排除，全量 23 个）；工具名写错或含空白项时**插件激活直接失败**（`TypeError`，错误里列出未知项与合法名单），不会静默少注册。
-- 真实例子：本机起好平台后，把上面的 `enable` 改成 `true`，`baseUrl` 保持 `http://127.0.0.1:8720`，重启 dsh 即可。
+- **一个 worker 一个 agent**：派单固定投给 `ctx.agents.roots()[0]`。不按项目建会话、不做任何分支判断；`roots()` 为空时只 warn 一条、本轮跳过、下一轮重试。需要多角色并行就拆成多个 worker。
+- 真实例子：本机起好平台后，把 `enable` 改成 `true` 并声明 `kinds`，`baseUrl` 保持 `http://127.0.0.1:8720`，重启 dsh 即可。
 
 ### 按 agent 裁剪工具（exclude）
 
@@ -153,6 +168,8 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
     worker:
       poll:
         enable: true                      # worker 通常需要派单，打开心跳
+      kinds:
+        - dev
     exclude:
       - echuan_project_create
       - echuan_project_requirement_write
@@ -160,9 +177,9 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
       - echuan_spec_create
       - echuan_spec_revise
       - echuan_plan_submit
-      - echuan_task_create
-      - echuan_task_update
-      - echuan_task_delete
+      - echuan_work_create
+      - echuan_work_update
+      - echuan_work_delete
       - echuan_project_update
       - echuan_product_create
       - echuan_project_package
@@ -172,26 +189,28 @@ dsh plugin --profile <name> add ./dsh-echuan-0.1.0.tgz
 
 - 名称必须与上文工具表**逐字一致**；写错（如 `echuan_plan_submmit`）会让插件激活直接失败，日志里给出未知项与合法名单。
 - 条目会先 `trim` 再去重（保序）；空白项视为配置错误。
-- 全部排除也合法：`已注册 0 个工具（已排除 23 个：...）`，心跳与派单照常（是否需要心跳只由 `worker.poll.enable` 决定）。
+- 全部排除也合法：`已注册 0 个工具（已排除 23 个：...）`，心跳与派单照常（是否需要心跳只由 `worker.poll.enable` 与 `worker.kinds` 决定）。
 
 ## 确认它真的在工作
 
 先按 profile 里 app bundle 的正常用法启动 dsh（如 `dsh --profile <name>`；ACP profile 会等待 stdin），保持进程不退出，然后在另一个终端：
 
 ```bash
-curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, presence, current_task_id, last_seen}'
+curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, presence, kinds, current_work_item_id, last_seen}'
 ```
 
 - 看到 `w_` 开头的 `worker_id` 且 `presence=active`：已注册。
-- `current_task_id` 非空：正在干活。
+- `kinds` 与配置一致：平台只会派这些类别的卡。
+- `current_work_item_id` 非空：正在干活。
 - 超过 `worker_ttl`（默认 45s）没有心跳：`presence=offline`。
 
 插件日志关键字（启动时 / 卸载时）：
 
 ```
-[dsh-echuan] 插件加载 ... poll=true
+[dsh-echuan] 插件加载 ... poll=true kinds=[dev]
 [dsh-echuan] 已注册 23 个工具（15 写 + 8 读）：...
 [dsh-echuan] 已注册技能 echuan-task-execution（source=runtime）
+[dsh-echuan] worker 心跳已启动（kinds=dev；首轮心跳将在 5000ms 后发出，兜底间隔 15000ms）
 [dsh-echuan] worker 心跳已停止（plugin dispose）：定时器已清除，不再产生请求与日志
 [dsh-echuan] 已注销技能 echuan-task-execution
 ```
@@ -204,16 +223,20 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 |---|---|---|
 | 心跳全部失败，日志 `warn` 网络错误 | `baseUrl` 写错 / 平台没起 / 端口不对 | `curl http://127.0.0.1:8720/readyz` 确认平台活着，再改 `baseUrl` |
 | 日志反复出现 `409 worker_unknown` | 平台库里没有这个 id（被保留期清理或换库） | 插件会自动清 id 重注册；持续出现则检查平台是否被重置 |
-| `echuan_task_claim` 报 `409 worker_busy` | 该 worker 已持有卡 | 先 `echuan_task_report` 交掉当前卡，不要并发抢卡 |
-| 续租/报告报 `409 lease_lost` | 租约过期或被回收 | 立即停止该卡，旧结果不可再提交，重新 `echuan_task_claim` |
-| `/v1/workers` 显示 `presence=offline` | 插件停了 / 心跳关了 / 超过 45s 没心跳 | 确认 `worker.poll.enable=true`、进程在跑、网络通 |
-| 报告被拒 `422 material_required` | `summary_md` 为空 | 按「改了什么 / 怎么自检 / git 交付 / 遗留风险」四段重写 |
+| 日志 `worker.kinds 为空，不启动心跳循环` | 没声明 kinds | 补 `worker.kinds`（至少一个），或保持 `poll.enable=false` |
+| 派单来了但没人干（日志 `没有可用 agent`） | 本进程还没有 root agent | 确认插件加载在有 agent 的 profile 里；下一轮心跳会自动重试投递 |
+| `echuan_work_claim` 本地拒绝 `worker_id 尚未就绪` | 心跳没开 / 尚未注册成功 | 打开 `worker.poll.enable` 并声明 `kinds`，等首轮心跳成功后再领 |
+| `echuan_work_claim` 报 `409 worker_busy` | 该 worker 已持有卡 | 先 `echuan_work_report` 交掉当前卡，不要并发抢卡 |
+| 续租/报告报 `409 lease_lost` | 租约过期或被回收 | 立即停止该卡，旧结果不可再提交，重新 `echuan_work_claim` |
+| `/v1/workers` 显示 `presence=offline` | 插件停了 / 心跳关了 / 超过 45s 没心跳 | 确认 `worker.poll.enable=true`、`kinds` 非空、进程在跑、网络通 |
+| 报告被拒 `422 material_required` | 没有可用的 `material_id` | 先把报告正文作为物料提交并拿到 `material_id`，再调 `echuan_work_report` |
 
 ## 已知行为（实测）
 
 - 首轮心跳**延迟 5 秒**发出：几秒内就退出的命令（如 `dsh --profile <name> --help`）在 `worker.poll.enable=true` 时不会产生任何请求；若进程存活超过 5s 仍会注册（`--help` 不再是「必然打一次真实 POST」的命令）。
 - 心跳间隔只认平台回包 `heartbeat_interval_ms`（默认 15s），客户端夹紧在 [500ms, 24h]。
-- `state` 是**占用声明**，不是 agent 的瞬时运行态：inflight 非空（或上一轮回包 `current_task_id` 非空，覆盖手动 `echuan_task_claim` 领的卡）期间**每一轮都上报 `busy`**，所以回合间隙不会被平台当成空闲再派一张卡；只有 `echuan_task_report` 成功（`notifyReported`）或租约过期后才会回到 `idle`。一个 worker 同一时间只持一张卡。
+- 每次心跳都上报配置里的 `kinds`，平台据此覆盖本 worker 的声明；`dispatch` 按 `work_id + lease_id` 去重（内存 LRU 200 条），重复下发只投一次。
+- `state` 是**占用声明**，不是 agent 的瞬时运行态：inflight 非空（或上一轮回包 `current_work_item_id` 非空，覆盖手动 `echuan_work_claim` 领的卡）期间**每一轮都上报 `busy`**，所以回合间隙不会被平台当成空闲再派一张卡；只有 `echuan_work_report` 成功（`notifyReported`）或租约过期后才会回到 `idle`。一个 worker 同一时间只持一张卡。
 - 连续 `worker_unknown` 会退避 1s→2s→5s→15s，不会打爆平台。
 
 ## 卸载
@@ -227,7 +250,7 @@ dsh plugin --profile <name> remove dsh-echuan
 ## 给维护者：测试与验收
 
 ```bash
-# 单测：typecheck + 297 条用例（在 kit/ 下）
+# 单测：typecheck + 330 条用例（在 kit/ 下）
 cd kit && pnpm verify
 
 # 真机端到端：独立 compose 栈 18720，约 90s，进/出不动 ~/echuan-data（在仓库根目录）

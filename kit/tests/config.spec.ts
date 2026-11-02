@@ -48,20 +48,20 @@ describe('resolveConfig：exclude 归一化', () => {
 
   it('每项 trim，重复项去重且保留首次出现顺序', () => {
     expect(resolveConfig({
-      exclude: ['  echuan_plan_submit ', 'echuan_task_claim', 'echuan_plan_submit'],
-    }).exclude).toEqual(['echuan_plan_submit', 'echuan_task_claim'])
+      exclude: ['  echuan_plan_submit ', 'echuan_work_claim', 'echuan_plan_submit'],
+    }).exclude).toEqual(['echuan_plan_submit', 'echuan_work_claim'])
   })
 
   it('空白项抛 TypeError，不静默丢弃', () => {
-    expect(() => resolveConfig({ exclude: ['echuan_task_claim', '  '] }))
+    expect(() => resolveConfig({ exclude: ['echuan_work_claim', '  '] }))
       .toThrow(TypeError)
-    expect(() => resolveConfig({ exclude: ['echuan_task_claim', '  '] }))
+    expect(() => resolveConfig({ exclude: ['echuan_work_claim', '  '] }))
       .toThrow(/exclude 不能包含空白工具名/)
   })
 
   it('非法类型按 Schema 语义抛错', () => {
     // @ts-expect-error 故意传错类型：exclude 必须是字符串数组
-    expect(() => resolveConfig({ exclude: 'echuan_task_claim' })).toThrow(TypeError)
+    expect(() => resolveConfig({ exclude: 'echuan_work_claim' })).toThrow(TypeError)
     // @ts-expect-error 元素必须是字符串
     expect(() => resolveConfig({ exclude: [1] })).toThrow(TypeError)
   })
@@ -141,7 +141,7 @@ describe('resolveConfig：未知键', () => {
 
     const resolved = resolveConfig(legacy)
     expect('legacyOption' in resolved.worker).toBe(false)
-    expect(resolved.worker).toEqual({ poll: { enable: false }, metadata: {} })
+    expect(resolved.worker).toEqual({ poll: { enable: false }, kinds: [], metadata: {} })
     expect(resolved).toEqual(DEFAULT_CONFIG)
   })
 })
@@ -162,5 +162,27 @@ describe('metadataByteLength', () => {
 
   it('S-04：BigInt 同样抛可读错误', () => {
     expect(() => metadataByteLength({ n: 1n })).toThrow(/无法序列化为 JSON/)
+  })
+})
+
+describe('worker.kinds：四类枚举、去重保序、默认空', () => {
+  it('默认 []', () => {
+    expect(resolveConfig({}).worker.kinds).toEqual([])
+  })
+
+  it('trim + 去重（保序）', () => {
+    const resolved = resolveConfig({
+      worker: { kinds: [' dev ', 'design', 'dev', 'breakdown', 'design'] },
+    })
+    expect(resolved.worker.kinds).toEqual(['dev', 'design', 'breakdown'])
+  })
+
+  it('未知 kind → TypeError，消息列出合法取值', () => {
+    expect(() => resolveConfig({ worker: { kinds: ['dev', 'qa'] } })).toThrow(TypeError)
+    expect(() => resolveConfig({ worker: { kinds: ['qa'] } })).toThrow(/requirement, design, breakdown, dev/)
+  })
+
+  it('DEFAULT_CONFIG 里 kinds 为 []（浅比较也要一致）', () => {
+    expect(DEFAULT_CONFIG.worker.kinds).toEqual([])
   })
 })

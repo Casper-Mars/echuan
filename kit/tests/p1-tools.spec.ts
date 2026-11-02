@@ -83,11 +83,11 @@ afterEach(() => {
   }
 })
 
-describe('echuan_task_update：本地校验零请求', () => {
-  it('空 patch（只传 task_id）→ 本地拒绝且 0 请求', async () => {
+describe('echuan_work_update：本地校验零请求', () => {
+  it('空 patch（只传 work_id）→ 本地拒绝且 0 请求', async () => {
     const platform = createPlatform(() => json({}))
-    const err = await failureOf(run(toolsFor(platform.fetchImpl).get('echuan_task_update'), {
-      task_id: 'APP-2-T0001',
+    const err = await failureOf(run(toolsFor(platform.fetchImpl).get('echuan_work_update'), {
+      work_id: 'APP-2-T0001',
     }))
     expect(err.message).toMatch(/invalid argument|\[invalid_argument\]/)
     expect(err.message).toContain('至少')
@@ -96,27 +96,27 @@ describe('echuan_task_update：本地校验零请求', () => {
 
   it('空白 title 不算有效修改 → 本地拒绝且 0 请求', async () => {
     const platform = createPlatform(() => json({}))
-    const err = await failureOf(run(toolsFor(platform.fetchImpl).get('echuan_task_update'), {
-      task_id: 'APP-2-T0001',
+    const err = await failureOf(run(toolsFor(platform.fetchImpl).get('echuan_work_update'), {
+      work_id: 'APP-2-T0001',
       title: '   ',
     }))
     expect(err.message).toContain('title')
     expect(platform.calls).toHaveLength(0)
   })
 
-  it('只改 title：PATCH /v1/tasks?id=，body 只有 title', async () => {
+  it('只改 title：PATCH /v1/work-items?id=，body 只有 title', async () => {
     const platform = createPlatform(() => json({
-      task_id: 'APP-2-T0001',
+      work_id: 'APP-2-T0001',
       title: '新标题',
       status: 0,
       status_name: '待办',
     }))
-    const value = await run(toolsFor(platform.fetchImpl).get('echuan_task_update'), {
-      task_id: 'APP-2-T0001',
+    const value = await run(toolsFor(platform.fetchImpl).get('echuan_work_update'), {
+      work_id: 'APP-2-T0001',
       title: '新标题',
     }) as { kind: string; title: string }
 
-    expect(value.kind).toBe('task_updated')
+    expect(value.kind).toBe('work_item_updated')
     expect(value.title).toBe('新标题')
     expect(platform.calls).toHaveLength(1)
     expect(platform.calls[0]!.method).toBe('PATCH')
@@ -124,14 +124,14 @@ describe('echuan_task_update：本地校验零请求', () => {
   })
 })
 
-describe('echuan_task_delete：204 成功 / 409 原样透出', () => {
+describe('echuan_work_delete：204 成功 / 409 原样透出', () => {
   it('204 → deleted，DELETE 带 ?id=', async () => {
     const platform = createPlatform(() => new Response(null, { status: 204 }))
-    const value = await run(toolsFor(platform.fetchImpl).get('echuan_task_delete'), {
-      task_id: 'APP-2-T0002',
-    }) as { kind: string; task_id: string }
+    const value = await run(toolsFor(platform.fetchImpl).get('echuan_work_delete'), {
+      work_id: 'APP-2-T0002',
+    }) as { kind: string; work_id: string }
 
-    expect(value).toEqual({ kind: 'task_deleted', task_id: 'APP-2-T0002' })
+    expect(value).toEqual({ kind: 'work_item_deleted', work_id: 'APP-2-T0002' })
     expect(platform.calls).toHaveLength(1)
     expect(platform.calls[0]!.method).toBe('DELETE')
     expect(platform.calls[0]!.url.searchParams.get('id')).toBe('APP-2-T0002')
@@ -141,7 +141,7 @@ describe('echuan_task_delete：204 成功 / 409 原样透出', () => {
     const platform = createPlatform(() => jsonError(409, 'task_claimed', '任务已被领取，不能删除'))
     let failure: unknown
     try {
-      await run(toolsFor(platform.fetchImpl).get('echuan_task_delete'), { task_id: 'APP-2-T0002' })
+      await run(toolsFor(platform.fetchImpl).get('echuan_work_delete'), { work_id: 'APP-2-T0002' })
     } catch (err) {
       failure = err
     }
@@ -300,7 +300,7 @@ describe('echuan_project_package：zip 落盘与 EOCD 条目数', () => {
 })
 
 describe('客户端空 patch：平台 400 原样透出（工具层已本地拦截）', () => {
-  it('client.updateTask({ id }) 发空对象，平台 400 的 code/message 保留', async () => {
+  it('client.updateWorkItem({ id }) 发空对象，平台 400 的 code/message 保留', async () => {
     const platform = createPlatform(() => jsonError(
       400,
       'invalid_argument',
@@ -310,7 +310,7 @@ describe('客户端空 patch：平台 400 原样透出（工具层已本地拦�
 
     let failure: unknown
     try {
-      await client.updateTask({ id: 'APP-2-T0001' })
+      await client.updateWorkItem({ id: 'APP-2-T0001' })
     } catch (err) {
       failure = err
     }

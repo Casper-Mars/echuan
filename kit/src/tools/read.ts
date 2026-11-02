@@ -1,9 +1,9 @@
 /**
- * 八个只读工具：待办 / 产品列表 / 项目列表 / 任务列表 / 项目全景 / 任务详情 /
+ * 八个只读工具：待办 / 产品列表 / 项目列表 / 工作项列表 / 项目全景 / 工作项详情 /
  * 资料正文 / worker 诊断（`echuan_worker_info`，零 HTTP、零副作用）。
  *
  * 边界（硬约束）：
- * - **只发 GET**：`getInbox` / `listProducts` / `listProjects` / `listTasks` /
+ * - **只发 GET**：`getInbox` / `listProducts` / `listProjects` / `listWorkItems` /
  *   `getMaterials`，不出现任何写方法；
  * - 缺 id 时**本地拒绝、零请求**，返回可读提示（不是抛异常、不是 404）；
  * - 平台 `not_found` 统一翻成「编号不存在，可能写错」+ 先查 `echuan_inbox`；
@@ -25,8 +25,8 @@ import type {
   Project,
   ProjectsQuery,
   QueryParams,
-  TaskDetail,
-  TasksQuery,
+  WorkItemDetail,
+  WorkItemsQuery,
 } from '../client.js'
 import { EchuanApiError } from '../errors.js'
 import {
@@ -35,8 +35,8 @@ import {
   formatProductList,
   formatProject,
   formatProjectList,
-  formatTask,
-  formatTaskList,
+  formatWorkItem,
+  formatWorkItemList,
   isRecord,
   missingIdText,
   renderTextValue as renderText,
@@ -68,7 +68,7 @@ function readError(err: unknown, subject: string): never {
   if (err instanceof EchuanApiError && (err.code === 'not_found' || err.status === 404)) {
     throw new Error(
       `[not_found] 平台没有找到这个${subject}：编号不存在，可能编号写错了。`
-        + '下一步：先用 `echuan_inbox` 确认编号（也可从项目/任务详情里的编号字段复制），'
+        + '下一步：先用 `echuan_inbox` 确认编号（也可从项目/工作项详情里的编号字段复制），'
         + '再用正确编号重试；本次没有做任何修改。',
     )
   }
@@ -80,9 +80,9 @@ function isProjectDetail(value: unknown): value is Project {
   return isRecord(value) && typeof value['project_id'] === 'string'
 }
 
-/** 平台返回的是不是任务详情（带 `task_id`）。 */
-function isTaskDetail(value: unknown): value is TaskDetail {
-  return isRecord(value) && typeof value['task_id'] === 'string'
+/** 平台返回的是不是 work item 详情（带 `work_id`）。 */
+function isWorkItemDetail(value: unknown): value is WorkItemDetail {
+  return isRecord(value) && typeof value['work_id'] === 'string'
 }
 
 /** 读取必填 id：缺参/空白返回 `undefined`（由调用方给本地提示，零请求）。 */
@@ -95,7 +95,7 @@ function readId(value: unknown): string | undefined {
 /**
  * 列表工具配置：三个列表工具共用分页校验、空列表与 `next_cursor` 提示。
  *
- * `subject` 是中文资源名（产品 / 项目 / 任务），只用于拼装用户可见文案；
+ * `subject` 是中文资源名（产品 / 项目 / 工作项），只用于拼装用户可见文案；
  * `request` 必须只发 GET；`format` 只投影非空列表（表头 + 每行字段）。
  */
 interface ListToolConfig<TItem> {
@@ -193,7 +193,7 @@ function createListTool<TItem>(config: ListToolConfig<TItem>): ToolDefinition {
 
 /** 收集工具参数里真正要发给平台的 query：丢掉空值，数组原样（重复 key）。 */
 function listQuery(values: Record<string, unknown>): QueryParams | undefined {
-  const query: Record<string, string | number | readonly number[]> = {}
+  const query: Record<string, string | number | readonly string[] | readonly number[]> = {}
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined || value === null || value === '') continue
     if (typeof value === 'string' || typeof value === 'number') {
@@ -201,10 +201,17 @@ function listQuery(values: Record<string, unknown>): QueryParams | undefined {
       continue
     }
     if (Array.isArray(value)) {
-      const items = value.filter(
+      const numbers = value.filter(
         (item): item is number => typeof item === 'number' && Number.isFinite(item),
       )
-      if (items.length > 0) query[key] = items
+      if (numbers.length > 0) {
+        query[key] = numbers
+        continue
+      }
+      const strings = value.filter(
+        (item): item is string => typeof item === 'string' && item.trim() !== '',
+      )
+      if (strings.length > 0) query[key] = strings
     }
   }
   return Object.keys(query).length === 0 ? undefined : query as QueryParams
@@ -227,7 +234,7 @@ export function createInboxTool(options: EchuanToolOptions): ToolDefinition {
   return defineTool({
     name: 'echuan_inbox',
     description:
-      '列出驿传（echuan）当前待处理项（只读，GET /v1/inbox）：项目评审与任务待验收。'
+      '列出驿传（echuan）当前待处理项（只读，GET /v1/inbox）：项目评审与工作项待验收。'
       + '返回每条的类型、编号、状态、已停留时长、是否超时、标题与原因，以及超时阈值汇总。',
     parameters: {
       limit: {
@@ -302,7 +309,7 @@ export function createProductListTool(options: EchuanToolOptions): ToolDefinitio
 /**
  * `echuan_project_list`：项目列表（`GET /v1/projects`）。
  *
- * `status` 在契约里是**单个整数**（与任务列表的数组语义不同）。
+ * `status` 在契约里是**单个整数**（与工作项 kind/state 的数组语义不同）。
  */
 export function createProjectListTool(options: EchuanToolOptions): ToolDefinition {
   const { client } = options
@@ -311,7 +318,7 @@ export function createProjectListTool(options: EchuanToolOptions): ToolDefinitio
     name: 'echuan_project_list',
     description:
       '列出驿传（echuan）项目（只读，GET /v1/projects）：项目编号、标题、状态、'
-      + '任务统计、原因说明与更新时间；可按 product_id 与 status 筛选。',
+      + '工作项统计、原因说明与更新时间；可按 product_id 与 status 筛选。',
     parameters: {
       product_id: {
         type: 'string',
@@ -333,34 +340,39 @@ export function createProjectListTool(options: EchuanToolOptions): ToolDefinitio
     },
     subject: '项目',
     emptyHint: '核对 product_id / status 筛选是否正确；不确定时去掉筛选再查一次。',
-    nextHint: '带 project_id 用 `echuan_task_list` 看该项目的任务。',
+    nextHint: '带 project_id 用 `echuan_work_list` 看该项目的工作项。',
     request: query => client.listProjects(query as ProjectsQuery | undefined),
     format: formatProjectList,
   })
 }
 
 /**
- * `echuan_task_list`：任务列表（`GET /v1/tasks`）。
+ * `echuan_work_list`：工作项列表（`GET /v1/work-items`）。
  *
- * `status` 按契约 `style: form / explode: true` 以**重复 key** 传给平台。
+ * `kind` / `state` 按契约 `style: form / explode: true` 以**重复 key** 传给平台。
  */
-export function createTaskListTool(options: EchuanToolOptions): ToolDefinition {
+export function createWorkItemListTool(options: EchuanToolOptions): ToolDefinition {
   const { client } = options
 
-  return createListTool<TaskDetail>({
-    name: 'echuan_task_list',
+  return createListTool<WorkItemDetail>({
+    name: 'echuan_work_list',
     description:
-      '列出驿传（echuan）任务（只读，GET /v1/tasks）：序号、任务编号、标题、状态、'
-      + '优先级、尝试次数与依赖；可按 project_id 与 status 筛选（status 可传多个）。',
+      '列出驿传（echuan）work item（只读，GET /v1/work-items）：序号、工作项编号、kind、标题、'
+      + '状态、优先级、尝试次数与依赖；可按 project_id / kind / state 筛选（kind 与 state 可传多个）。',
     parameters: {
       project_id: {
         type: 'string',
         description: '项目编号（可选，例如 APP-1）；先用 `echuan_project_list` 找到编号',
       },
-      status: {
+      kind: {
         type: 'array',
-        items: { type: 'integer' },
-        description: '任务状态数字（可选，可传多个；按重复 key 传给平台，例如 [1, 2]）',
+        items: { type: 'string' },
+        description: '类别（可选，可传多个）：requirement / design / breakdown / dev',
+      },
+      state: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '状态（可选，可传多个）：blocked / queued / leased / submitted / accepted / failed / cancelled',
       },
       limit: {
         // 用 number 接收，非整数由 createListTool 本地拒绝并给出可读文案。
@@ -372,11 +384,11 @@ export function createTaskListTool(options: EchuanToolOptions): ToolDefinition {
         description: '分页游标（可选；上一页返回 next_cursor 时原样传入）',
       },
     },
-    subject: '任务',
-    emptyHint: '核对 project_id / status 筛选是否正确；不确定时去掉筛选再查一次。',
-    nextHint: '带任务编号用 `echuan_task_get` 看任务详情。',
-    request: query => client.listTasks(query as TasksQuery | undefined),
-    format: formatTaskList,
+    subject: '工作项',
+    emptyHint: '核对 project_id / kind / state 筛选是否正确；不确定时去掉筛选再查一次。',
+    nextHint: '带工作项编号用 `echuan_work_get` 看工作项详情。',
+    request: query => client.listWorkItems(query as WorkItemsQuery | undefined),
+    format: formatWorkItemList,
   })
 }
 
@@ -392,7 +404,7 @@ export function createProjectGetTool(options: EchuanToolOptions): ToolDefinition
     name: 'echuan_project_get',
     description:
       '查看一个驿传（echuan）项目的全景（只读，GET /v1/projects?id=）：状态、'
-      + '需求与方案的元信息（标题、版本、material_id）、任务统计（总数与各状态计数）、'
+      + '需求与方案的元信息（标题、版本、material_id）、工作项统计（总数与各状态计数）、'
       + '原因说明；正文用 `echuan_material_get` 按 material_id 取。',
     parameters: {
       id: {
@@ -431,22 +443,22 @@ export function createProjectGetTool(options: EchuanToolOptions): ToolDefinition
 }
 
 /**
- * `echuan_task_get`：任务详情（`GET /v1/tasks?id=`）。
+ * `echuan_work_get`：工作项详情（`GET /v1/work-items?work_id=`）。
  *
  * 缺 id 直接本地返回提示，不发明请求。
  */
-export function createTaskGetTool(options: EchuanToolOptions): ToolDefinition {
+export function createWorkItemGetTool(options: EchuanToolOptions): ToolDefinition {
   const { client } = options
 
   return defineTool({
-    name: 'echuan_task_get',
+    name: 'echuan_work_get',
     description:
-      '查看一张驿传（echuan）任务卡的详情（只读，GET /v1/tasks?id=）：所属项目、状态、优先级、'
-      + '尝试次数与上限、正文、当前报告、原因说明、租约。',
+      '查看一个驿传（echuan）work item 的详情（只读，GET /v1/work-items?work_id=）：'
+      + '所属项目、kind、状态、优先级、尝试次数与上限、正文、交付结果、原因说明、租约。',
     parameters: {
-      id: {
+      work_id: {
         type: 'string',
-        description: '任务编号（必填，例如 APP-1-T0007）；先用 `echuan_inbox` 找到编号',
+        description: '工作项编号（必填，例如 w_01M5Z4...）；先用 `echuan_inbox` 找到编号',
       },
     },
     output: {
@@ -454,26 +466,26 @@ export function createTaskGetTool(options: EchuanToolOptions): ToolDefinition {
       render: (_args, value) => renderText(value),
     },
     async execute(args) {
-      const id = readId(args.id)
-      if (id === undefined) return { text: missingIdText('任务') }
+      const workId = readId(args.work_id)
+      if (workId === undefined) return { text: missingIdText('工作项') }
 
       try {
-        const result = await client.listTasks({ id })
+        const result = await client.listWorkItems({ work_id: workId })
         if (result.kind === 'empty') {
           return {
-            text: `平台对任务 ${id} 返回 204（无内容），未给出详情。`
-              + '下一步：先用 `echuan_inbox` 确认任务编号后再试。',
+            text: `平台对工作项 ${workId} 返回 204（无内容），未给出详情。`
+              + '下一步：先用 `echuan_inbox` 确认工作项编号后再试。',
           }
         }
-        if (!isTaskDetail(result.data)) {
+        if (!isWorkItemDetail(result.data)) {
           return {
-            text: `平台没有返回任务 ${id} 的详情（拿到的是列表或字段不全）。`
-              + '下一步：先用 `echuan_inbox` 确认任务编号，再带正确编号重试。',
+            text: `平台没有返回工作项 ${workId} 的详情（拿到的是列表或字段不全）。`
+              + '下一步：先用 `echuan_inbox` 确认工作项编号，再带正确编号重试。',
           }
         }
-        return { text: formatTask(result.data) }
+        return { text: formatWorkItem(result.data) }
       } catch (err) {
-        return readError(err, '任务')
+        return readError(err, '工作项')
       }
     },
   })
@@ -491,11 +503,11 @@ export function createMaterialGetTool(options: EchuanToolOptions): ToolDefinitio
     name: 'echuan_material_get',
     description:
       '读取一份驿传（echuan）资料的正文（只读，GET /v1/materials?id=）。'
-      + '需求、方案、报告都是资料；编号可从项目/任务详情里的 material_id 取。',
+      + '需求、方案、报告都是资料；编号可从项目/工作项详情里的 material_id 取。',
     parameters: {
       id: {
         type: 'string',
-        description: '资料编号 material_id（必填）；可从项目/任务详情里复制',
+        description: '资料编号 material_id（必填）；可从项目/工作项详情里复制',
       },
     },
     output: {
@@ -508,7 +520,7 @@ export function createMaterialGetTool(options: EchuanToolOptions): ToolDefinitio
         return {
           text: missingIdText(
             '资料',
-            '资料编号可从 `echuan_project_get` / `echuan_task_get` 返回的 material_id 复制。',
+            '资料编号可从 `echuan_project_get` / `echuan_work_get` 返回的 material_id 复制。',
           ),
         }
       }
@@ -542,9 +554,9 @@ export function createEchuanReadTools(options: EchuanToolOptions): ToolDefinitio
     createInboxTool(options),
     createProductListTool(options),
     createProjectListTool(options),
-    createTaskListTool(options),
+    createWorkItemListTool(options),
     createProjectGetTool(options),
-    createTaskGetTool(options),
+    createWorkItemGetTool(options),
     createMaterialGetTool(options),
     createWorkerInfoTool(options),
   ]

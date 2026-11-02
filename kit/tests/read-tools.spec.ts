@@ -1,6 +1,6 @@
 /**
- * 八个只读工具单测（任务-05 / 任务-11：待办 / 产品·项目·任务列表 /
- * 项目全景 / 任务详情 / 资料正文 / worker 诊断）。
+ * 八个只读工具单测：待办 / 产品·项目·工作项列表 /
+ * 项目全景 / 工作项详情 / 资料正文 / worker 诊断。
  *
  * 全部用假平台（注入 fetch），不连真实平台。覆盖：
  * 1. 23 个工具名（15 写 + 8 读），只读 8 个名字精确匹配；
@@ -116,8 +116,7 @@ const INBOX_PAYLOAD = {
     {
       kind: 'project',
       id: 'APP-2',
-      state: 1,
-      state_name: 'spec_review',
+      state: '3',
       title: '登录模块',
       update_time: '2026-10-28T09:44:00.000Z',
       age_seconds: 11_520,
@@ -125,10 +124,9 @@ const INBOX_PAYLOAD = {
       reason: '方案待评审',
     },
     {
-      kind: 'task',
+      kind: 'work_item',
       id: 'APP-1-T0007',
-      state: 3,
-      state_name: 'pending_acceptance',
+      state: 'submitted',
       title: '登录接口',
       update_time: '2026-10-28T20:55:15.000Z',
       age_seconds: 45,
@@ -147,12 +145,14 @@ const PROJECT_PAYLOAD = {
   product_id: 'APP',
   seq_no: 2,
   title: '登录模块',
-  status: 1,
-  status_name: 'spec_review',
+  status: 3,
+  status_name: '方案评审',
   reason: '等待人工确认方案',
   last_actor: 'agent:echuan',
   version: 7,
-  task_stats: { total: 12, done: 6, by_status: { '0': 3, '2': 2, '3': 1, '4': 6 } },
+  work_item_total: 12,
+  work_item_done: 6,
+  work_item_by_state: { queued: 3, leased: 2, submitted: 1, accepted: 6 },
   create_time: '2026-10-27T10:00:00.000Z',
   update_time: '2026-10-28T09:44:00.000Z',
   requirement: {
@@ -179,16 +179,16 @@ const PROJECT_PAYLOAD = {
 
 const TASK_PAYLOAD = {
   id: 'APP-1-T0007',
-  task_id: 'APP-1-T0007',
+  work_id: 'APP-1-T0007',
   project_id: 'APP-1',
+  kind: 'dev',
   seq_no: 7,
   title: '实现登录接口',
-  body_md: '# 任务正文\n请实现登录接口并补单测。',
+  body_md: '# 工作项正文\n请实现登录接口并补单测。',
   priority: 10,
-  status: 3,
-  status_name: 'pending_acceptance',
+  state: 'submitted',
   worker_id: 'w_TEST01ABCDEFGHIJKLMN',
-  attempt_count: 2,
+  attempt: 2,
   max_attempts: 3,
   reason: '第一次报告缺单测',
   last_actor: 'agent:echuan',
@@ -196,7 +196,7 @@ const TASK_PAYLOAD = {
   depends_on: ['APP-1-T0005'],
   create_time: '2026-10-27T11:00:00.000Z',
   update_time: '2026-10-28T20:30:00.000Z',
-  report: {
+  result: {
     material_id: 'm_rep0001',
     kind: 3,
     version: 1,
@@ -247,9 +247,9 @@ describe('工具集合：23 个（15 写 + 8 读）', () => {
       'echuan_inbox',
       'echuan_product_list',
       'echuan_project_list',
-      'echuan_task_list',
+      'echuan_work_list',
       'echuan_project_get',
-      'echuan_task_get',
+      'echuan_work_get',
       'echuan_material_get',
       'echuan_worker_info',
     ])
@@ -288,14 +288,14 @@ describe('echuan_inbox：待办', () => {
 
     // 项目条目
     expect(text).toContain('[项目] APP-2')
-    expect(text).toContain('spec_review')
+    expect(text).toContain('方案评审')
     expect(text).toContain('已停留 3 小时 12 分')
     expect(text).toContain('⚠ 已超时')
     expect(text).toContain('原因：方案待评审')
 
     // 任务条目
-    expect(text).toContain('[任务] APP-1-T0007')
-    expect(text).toContain('pending_acceptance')
+    expect(text).toContain('[工作项] APP-1-T0007')
+    expect(text).toContain('待验收')
     expect(text).toContain('已停留 45 秒')
     expect(text).toContain('正常')
     expect(text).toContain('原因：无')
@@ -363,7 +363,7 @@ describe('echuan_project_get：项目全景', () => {
     expectValidOutput(tool!, value)
 
     expect(text).toContain('项目 APP-2：登录模块')
-    expect(text).toContain('spec_review')
+    expect(text).toContain('方案评审')
 
     // 需求与方案只给元信息（标题 / 版本 / material_id），正文入口是 material_id
     expect(text).toContain('- 需求：登录需求（v2，material_id=m_req0001，3200B）')
@@ -378,8 +378,8 @@ describe('echuan_project_get：项目全景', () => {
     // 任务统计数字
     expect(text).toContain('共 12 个')
     expect(text).toContain('已完成 6 个')
-    expect(text).toContain('待办 3')
-    expect(text).toContain('进行中 2')
+    expect(text).toContain('排队中 3')
+    expect(text).toContain('执行中 2')
 
     // reason
     expect(text).toContain('等待人工确认方案')
@@ -435,17 +435,17 @@ describe('echuan_project_get：项目全景', () => {
 // 4. task_get
 // ---------------------------------------------------------------------------
 
-describe('echuan_task_get：任务详情', () => {
-  it('render 含 attempt_count/max_attempts、报告、reason、正文', async () => {
+describe('echuan_work_get：工作项详情', () => {
+  it('render 含 attempt/max_attempts、结果、reason、正文', async () => {
     const platform = createPlatform(() => jsonResponse(TASK_PAYLOAD))
-    const tool = toolsFor(platform.fetchImpl).get('echuan_task_get')
+    const tool = toolsFor(platform.fetchImpl).get('echuan_work_get')
 
-    const { value, text } = await runTool(tool!, { id: 'APP-1-T0007' })
+    const { value, text } = await runTool(tool!, { work_id: 'APP-1-T0007' })
     expectValidOutput(tool!, value)
 
-    expect(text).toContain('任务 APP-1-T0007：实现登录接口')
+    expect(text).toContain('工作项 APP-1-T0007：实现登录接口')
     expect(text).toContain('所属项目：APP-1')
-    expect(text).toContain('pending_acceptance')
+    expect(text).toContain('待验收')
     expect(text).toContain('尝试次数：2/3')
     expect(text).toContain('登录接口实现报告')
     expect(text).toContain('m_rep0001')
@@ -458,22 +458,22 @@ describe('echuan_task_get：任务详情', () => {
     expect(text).not.toContain('attempt_count')
   })
 
-  it('GET /v1/tasks?id=APP-1-T0007', async () => {
+  it('GET /v1/work-items?work_id=APP-1-T0007', async () => {
     const platform = createPlatform(() => jsonResponse(TASK_PAYLOAD))
-    const tool = toolsFor(platform.fetchImpl).get('echuan_task_get')
+    const tool = toolsFor(platform.fetchImpl).get('echuan_work_get')
 
-    await runTool(tool!, { id: 'APP-1-T0007' })
+    await runTool(tool!, { work_id: 'APP-1-T0007' })
 
     expect(platform.calls[0]!.init.method).toBe('GET')
-    expect(platform.calls[0]!.url).toBe('http://platform.test/v1/tasks?id=APP-1-T0007')
+    expect(platform.calls[0]!.url).toBe('http://platform.test/v1/work-items?work_id=APP-1-T0007')
   })
 
   it('超长正文截断并标注总字数', async () => {
     const body = '正文'.repeat(4000) // 8000 字
     const platform = createPlatform(() => jsonResponse({ ...TASK_PAYLOAD, body_md: body }))
-    const tool = toolsFor(platform.fetchImpl).get('echuan_task_get')
+    const tool = toolsFor(platform.fetchImpl).get('echuan_work_get')
 
-    const { text } = await runTool(tool!, { id: 'APP-1-T0007' })
+    const { text } = await runTool(tool!, { work_id: 'APP-1-T0007' })
     expect(text).toContain('已截断')
     expect(text).toContain(`完整内容共 ${body.length} 字`)
   })
@@ -481,13 +481,13 @@ describe('echuan_task_get：任务详情', () => {
   it('没有报告/租约时明确说「无」', async () => {
     const platform = createPlatform(() => jsonResponse({
       ...TASK_PAYLOAD,
-      report: null,
+      result: null,
       lease: null,
       reason: null,
     }))
-    const tool = toolsFor(platform.fetchImpl).get('echuan_task_get')
+    const tool = toolsFor(platform.fetchImpl).get('echuan_work_get')
 
-    const { text } = await runTool(tool!, { id: 'APP-1-T0007' })
+    const { text } = await runTool(tool!, { work_id: 'APP-1-T0007' })
     expect(text).toContain('无（尚未提交报告）')
     expect(text).toContain('原因说明：无')
     expect(text).not.toContain('租约：')
@@ -550,7 +550,7 @@ describe('echuan_material_get：资料正文', () => {
 // ---------------------------------------------------------------------------
 
 describe('缺 id：本地拒绝、零请求、提示先查 echuan_inbox', () => {
-  for (const name of ['echuan_project_get', 'echuan_task_get', 'echuan_material_get'] as const) {
+  for (const name of ['echuan_project_get', 'echuan_work_get', 'echuan_material_get'] as const) {
     it(`${name}：不传 id / 空白 id 都不发请求`, async () => {
       const platform = createPlatform(() => jsonResponse(PROJECT_PAYLOAD))
       const tool = toolsFor(platform.fetchImpl).get(name)
@@ -574,12 +574,13 @@ describe('缺 id：本地拒绝、零请求、提示先查 echuan_inbox', () => 
 // ---------------------------------------------------------------------------
 
 describe('平台 404：文案含「不存在」与「编号」', () => {
-  for (const name of ['echuan_project_get', 'echuan_task_get', 'echuan_material_get'] as const) {
+  for (const name of ['echuan_project_get', 'echuan_work_get', 'echuan_material_get'] as const) {
     it(`${name}：not_found → 编号不存在，先用 echuan_inbox 确认`, async () => {
       const platform = createPlatform(() => errorResponse(404, 'not_found'))
       const tool = toolsFor(platform.fetchImpl).get(name)
 
-      const error = await failureOf(runTool(tool!, { id: 'NOPE-1' }))
+      const args = name === 'echuan_work_get' ? { work_id: 'NOPE-1' } : { id: 'NOPE-1' }
+      const error = await failureOf(runTool(tool!, args))
 
       expect(error.message).toContain('[not_found]')
       expect(error.message).toContain('不存在')
@@ -609,7 +610,7 @@ describe('只读边界：7 个工具只发 GET', () => {
       if (url.includes('/v1/inbox')) return jsonResponse(INBOX_PAYLOAD)
       if (url.includes('/v1/products')) return jsonResponse(PRODUCTS_PAYLOAD)
       if (url.includes('/v1/projects')) return jsonResponse(PROJECT_PAYLOAD)
-      if (url.includes('/v1/tasks')) return jsonResponse(TASK_PAYLOAD)
+      if (url.includes('/v1/work-items')) return jsonResponse(TASK_PAYLOAD)
       return textResponse(MATERIAL_MD, { 'content-type': 'text/markdown' })
     })
     const tools = toolsFor(platform.fetchImpl)
@@ -617,9 +618,9 @@ describe('只读边界：7 个工具只发 GET', () => {
     await runTool(tools.get('echuan_inbox')!, {})
     await runTool(tools.get('echuan_product_list')!, {})
     await runTool(tools.get('echuan_project_list')!, { product_id: 'APP' })
-    await runTool(tools.get('echuan_task_list')!, { project_id: 'APP-1' })
+    await runTool(tools.get('echuan_work_list')!, { project_id: 'APP-1' })
     await runTool(tools.get('echuan_project_get')!, { id: 'APP-2' })
-    await runTool(tools.get('echuan_task_get')!, { id: 'APP-1-T0007' })
+    await runTool(tools.get('echuan_work_get')!, { work_id: 'APP-1-T0007' })
     await runTool(tools.get('echuan_material_get')!, { id: 'm_req0001' })
 
     expect(platform.calls).toHaveLength(7)
@@ -631,9 +632,9 @@ describe('只读边界：7 个工具只发 GET', () => {
       '/v1/inbox',
       '/v1/products',
       '/v1/projects',
-      '/v1/tasks',
+      '/v1/work-items',
       '/v1/projects',
-      '/v1/tasks',
+      '/v1/work-items',
       '/v1/materials',
     ])
   })
@@ -688,7 +689,7 @@ describe('echuan_product_list：产品列表', () => {
 })
 
 describe('echuan_project_list：项目列表', () => {
-  it('渲染 project_id / 标题 / 状态 / task_stats / reason / 更新时间', async () => {
+  it('渲染 project_id / 标题 / 状态 / 工作项统计 / reason / 更新时间', async () => {
     const platform = createPlatform(() => jsonResponse({ items: [PROJECT_PAYLOAD] }))
     const tool = toolsFor(platform.fetchImpl).get('echuan_project_list')
 
@@ -697,11 +698,11 @@ describe('echuan_project_list：项目列表', () => {
 
     expect(text).toContain('项目共 1 个')
     expect(text).toContain('APP-2：登录模块')
-    expect(text).toContain('状态：方案评审（spec_review）')
-    expect(text).toContain('任务统计：共 12 个｜已完成 6 个')
+    expect(text).toContain('状态：方案评审')
+    expect(text).toContain('工作项统计：共 12 个｜已完成 6 个')
     expect(text).toContain('原因：等待人工确认方案')
     expect(text).toContain('更新时间：2026-10-28T09:44:00.000Z')
-    expect(text).toContain('echuan_task_list')
+    expect(text).toContain('echuan_work_list')
   })
 
   it('筛选透传：product_id、status（单个整数，含 0）、limit、cursor', async () => {
@@ -719,38 +720,47 @@ describe('echuan_project_list：项目列表', () => {
   })
 })
 
-describe('echuan_task_list：任务列表', () => {
-  it('渲染 seq_no / task_id / 标题 / 状态 / 优先级 / 尝试次数 / 依赖', async () => {
+describe('echuan_work_list：工作项列表', () => {
+  it('渲染 seq_no / work_id / 标题 / 状态 / 优先级 / 尝试次数 / 依赖', async () => {
     const platform = createPlatform(() => jsonResponse({ items: [TASK_PAYLOAD] }))
-    const tool = toolsFor(platform.fetchImpl).get('echuan_task_list')
+    const tool = toolsFor(platform.fetchImpl).get('echuan_work_list')
 
     const { value, text } = await runTool(tool!, {})
     expectValidOutput(tool!, value)
 
-    expect(text).toContain('任务共 1 个')
+    expect(text).toContain('工作项共 1 个')
     expect(text).toContain('#7 APP-1-T0007：实现登录接口')
-    expect(text).toContain('状态：待验收（pending_acceptance）')
+    expect(text).toContain('状态：待验收')
     expect(text).toContain('优先级：10')
     expect(text).toContain('尝试次数：2')
     expect(text).toContain('依赖：APP-1-T0005')
-    expect(text).toContain('echuan_task_get')
+    expect(text).toContain('echuan_work_get')
   })
 
   it('筛选透传：project_id、status 数组按重复 key、limit、cursor', async () => {
     const platform = createPlatform(() => jsonResponse({ items: [] }))
-    const tool = toolsFor(platform.fetchImpl).get('echuan_task_list')
+    const tool = toolsFor(platform.fetchImpl).get('echuan_work_list')
 
-    await runTool(tool!, { project_id: 'APP-1', status: [1, 2], limit: 5, cursor: 'c_task' })
+    await runTool(tool!, {
+      project_id: 'APP-1',
+      kind: ['dev', 'design'],
+      state: ['queued', 'leased'],
+      limit: 5,
+      cursor: 'c_task',
+    })
 
     const query = queryOf(platform.calls[0])
     expect([...query.keys()].sort()).toEqual([
       'cursor',
+      'kind',
+      'kind',
       'limit',
       'project_id',
-      'status',
-      'status',
+      'state',
+      'state',
     ])
-    expect(query.getAll('status')).toEqual(['1', '2'])
+    expect(query.getAll('kind')).toEqual(['dev', 'design'])
+    expect(query.getAll('state')).toEqual(['queued', 'leased'])
     expect(query.get('project_id')).toBe('APP-1')
     expect(query.get('limit')).toBe('5')
     expect(query.get('cursor')).toBe('c_task')
@@ -761,7 +771,7 @@ describe('列表工具：limit 本地校验（零请求）', () => {
   const cases = [
     ['echuan_product_list', {}],
     ['echuan_project_list', { product_id: 'APP' }],
-    ['echuan_task_list', { project_id: 'APP-1' }],
+    ['echuan_work_list', { project_id: 'APP-1' }],
   ] as const
 
   for (const [name, baseArgs] of cases) {
@@ -785,7 +795,7 @@ describe('列表工具：空列表不报错', () => {
   for (const [name, subject] of [
     ['echuan_product_list', '产品'],
     ['echuan_project_list', '项目'],
-    ['echuan_task_list', '任务'],
+    ['echuan_work_list', '工作项'],
   ] as const) {
     it(`${name}：items=[] →「当前没有${subject}」+ 下一步`, async () => {
       const platform = createPlatform(() => jsonResponse({ items: [] }))
@@ -809,7 +819,7 @@ describe('列表工具：next_cursor 提示', () => {
       items: [TASK_PAYLOAD],
       next_cursor: 'c_task_2',
     }))
-    const tool = toolsFor(platform.fetchImpl).get('echuan_task_list')
+    const tool = toolsFor(platform.fetchImpl).get('echuan_work_list')
 
     const { text } = await runTool(tool!, {})
 
@@ -821,7 +831,7 @@ describe('列表工具：next_cursor 提示', () => {
 })
 
 describe('回归：get 工具仍走详情路径', () => {
-  it('echuan_project_get / echuan_task_get 带 id，返回详情而不是列表', async () => {
+  it('echuan_project_get / echuan_work_get 带 id，返回详情而不是列表', async () => {
     const platform = createPlatform((url) => {
       if (url.includes('/v1/projects')) return jsonResponse(PROJECT_PAYLOAD)
       return jsonResponse(TASK_PAYLOAD)
@@ -829,16 +839,16 @@ describe('回归：get 工具仍走详情路径', () => {
     const tools = toolsFor(platform.fetchImpl)
 
     const project = await runTool(tools.get('echuan_project_get')!, { id: 'APP-2' })
-    const task = await runTool(tools.get('echuan_task_get')!, { id: 'APP-1-T0007' })
+    const task = await runTool(tools.get('echuan_work_get')!, { work_id: 'APP-1-T0007' })
 
     expect(project.text).toContain('项目 APP-2：登录模块')
     expect(project.text).toContain('material_id=m_req0001')
-    expect(task.text).toContain('任务 APP-1-T0007：实现登录接口')
+    expect(task.text).toContain('工作项 APP-1-T0007：实现登录接口')
     expect(task.text).toContain('正文：')
 
     expect(queryOf(platform.calls[0]).get('id')).toBe('APP-2')
-    expect(queryOf(platform.calls[1]).get('id')).toBe('APP-1-T0007')
+    expect(queryOf(platform.calls[1]).get('work_id')).toBe('APP-1-T0007')
     expect([...queryOf(platform.calls[0]).keys()]).toEqual(['id'])
-    expect([...queryOf(platform.calls[1]).keys()]).toEqual(['id'])
+    expect([...queryOf(platform.calls[1]).keys()]).toEqual(['work_id'])
   })
 })

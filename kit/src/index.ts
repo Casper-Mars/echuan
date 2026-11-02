@@ -7,17 +7,19 @@
  * - 注册最多 23 个工具（`exclude` 可裁剪，默认全量）：15 个写（项目创建 / 需求写入 / 提交评审 / 方案创建 /
  *   方案修订 / 批量建卡 / 领卡 / 续租 / 交报告 / 单卡增改删 / 项目改标题 /
  *   建产品 / 资料包下载）+ 8 个只读
- *   （待办 / 产品 / 项目 / 任务列表 / 项目全景 / 任务详情 / 资料 / worker 诊断），
+ *   （待办 / 产品 / 项目 / 工作项列表 / 项目全景 / 工作项详情 / 资料 / worker 诊断），
  *   只调平台契约、不提供审批/驳回/取消动作；
  * - 静态注册 1 个技能 `echuan-task-execution`（派单开工 / 读上下文 / 汇报 / 续租 / 门禁禁区），
  *   随插件 fiber 一并注销；
  * - `worker.poll.enable=false`（默认）时**零请求、零定时器**，心跳循环完全不创建；
+ * - `worker.kinds` 为空时（平台心跳要求非空）只 warn 一条并**不启动心跳循环**；
  * - `worker.metadata` 序列化后超过 8KiB 时只 warn 一条并**不启动心跳循环**（R-02），
  *   避免每轮都被平台拒（413）而永久刷屏；
- * - 启用时把 worker 心跳循环挂到 `ctx.effect`，由它定时心跳、上报状态并投递派单。
+ * - 启用时把 worker 心跳循环挂到 `ctx.effect`，由它定时心跳、上报 kinds/state，
+ *   并把 dispatch 直接投给本进程第一个 root agent（一个 worker 一个 agent）。
  *
  * worker_id 只有一个内存来源：心跳循环的 `workerId`。工具层通过 getter 读同一个值，
- * 不缓存副本、不读磁盘；循环不存在（poll=false）时工具发请求不带该字段。
+ * 不缓存副本、不读磁盘；循环未注册（poll=false / kinds 为空）时 `echuan_work_claim` 本地拒绝、零请求。
  *
  * 依赖方向：kit 只依赖平台 HTTP 契约，不 import 任何 Go 代码。
  *
@@ -29,7 +31,6 @@
  * 都在 `apply` 内**惰性 import**，避免拖慢 `--help` 这类快速退出场景下的插件激活。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
 import {
   Config,
   WORKER_METADATA_MAX_BYTES,
@@ -41,7 +42,6 @@ import type { WorkerClient } from './client.js'
 import type { Logger } from './runtime.js'
 import { TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from './tool-names.js'
 import { ECHUAN_SKILL_NAME, registerEchuanSkill } from './skill.js'
-import { createSessionEnsurer } from './session.js'
 import type { WorkerInfoDeps } from './tools/worker-info.js'
 import type { WorkerLoop } from './worker.js'
 
@@ -59,28 +59,8 @@ export type { ConfigInput, ResolvedConfig } from './config.js'
 export { READ_TOOL_NAMES, TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from './tool-names.js'
 export { DEFAULT_POLL_INTERVAL_MS, createEchuanRuntime } from './runtime.js'
 export type { EchuanRuntime, EchuanRuntimeOptions, Logger, TimerApi } from './runtime.js'
-export { DEFAULT_PERMISSION_PRESET, createSessionEnsurer, ensureSession } from './session.js'
-export type {
-  EnsureAgent,
-  EnsureAgentDefaultModelLike,
-  EnsureAgentHandle,
-  EnsureAgentOptions,
-  EnsureAgentPreset,
-  EnsureAgentPresetsLike,
-  EnsureAgentsLike,
-  EnsureCreateOptions,
-  EnsureOutcome,
-  EnsurePermissionPresetsLike,
-  EnsureResumeOptions,
-  EnsureSessionDeps,
-  EnsureSessionHeader,
-  EnsureSessionLogger,
-  EnsureSessionPersistenceLike,
-  EnsureSessionResult,
-  EnsureSessionTitleLike,
-  EnsureWorkspaceLike,
-  EnsureWorkspaceRegistryLike,
-} from './session.js'
+export { WORKER_KINDS } from './config.js'
+export type { WorkerKind } from './config.js'
 export type { WorkerLoop, WorkerLoopOptions } from './worker.js'
 export {
   ECHUAN_SKILL_DESCRIPTION,
@@ -98,8 +78,8 @@ export const name = 'echuan'
  * 依赖服务。
  *
  * - `tools` / `skills`：后续阶段注册工具与技能指南；
- * - `agents`：按会话 id 读取 agent 状态（`idle` / `running`）、投递任务消息，并交给
- *   `createSessionEnsurer` 复用 / 恢复 / 新建项目会话（项目号即会话号）。
+ * - `agents`：本进程的 agent 注册表。一个 worker 只有一个 agent，心跳投递固定取
+ *   `ctx.agents.roots()[0]`，不按项目建会话，也不做任何分支判断。
  *
  * 三者由 `@deepseek-ai/dsh-base` 提供；缺任一则本插件保持未激活，而不是抛错。
  */
@@ -158,7 +138,8 @@ export function apply(ctx: Context, config?: ConfigInput): void {
   log(
     `${TAG} 插件加载 name=${name} inject=[${inject.join(', ')}] `
       + `baseUrl=${resolved.baseUrl} actor=${resolved.actor} `
-      + `timeout=${resolved.requestTimeoutMs}ms poll=${resolved.worker.poll.enable}`,
+      + `timeout=${resolved.requestTimeoutMs}ms poll=${resolved.worker.poll.enable} `
+      + `kinds=[${resolved.worker.kinds.join(',')}]`,
   )
 
   // R-02：超限在这里判一次，超限就完全不启动循环（零请求、零定时器）。
@@ -178,46 +159,33 @@ export function apply(ctx: Context, config?: ConfigInput): void {
     warn(`${TAG} 警告：${messageOf(err)}`)
   }
 
+  // 平台心跳要求 kinds 非空：空声明发出去只会每轮 400，开启轮询时先 warn 一条。
+  if (resolved.worker.poll.enable && resolved.worker.kinds.length === 0) {
+    warn(
+      `${TAG} 警告：worker.kinds 为空，不启动心跳循环；`
+        + '请在配置里声明至少一个 kind（requirement / design / breakdown / dev），'
+        + '或保持 worker.poll.enable=false',
+    )
+  }
+
   // worker_id 的**唯一内存来源**：心跳循环。工具层通过这个 getter 读同一个值，
   // 不自留副本、不读磁盘；循环尚未创建时（poll=false）自然是 undefined。
   let loop: WorkerLoop | undefined
 
-  /**
-   * 惰性读取宿主服务（`ctx.get('…')`）：插件加载早期服务可能还没就绪，
-   * 诊断工具每次调用都会重新取一次；缺失只降级展示，不抛错。
-   */
-  const readService = <T>(serviceName: string): T | undefined => {
-    const getter = (ctx as unknown as { get?: (name: string) => unknown }).get
-    if (typeof getter !== 'function') return undefined
-    try {
-      return (getter.call(ctx, serviceName) ?? undefined) as T | undefined
-    } catch {
-      return undefined
-    }
-  }
-
-  // `echuan_worker_info` 的只读依赖：全部惰性（`loop` 与宿主服务都在调用时读），
+  // `echuan_worker_info` 的只读依赖：全部惰性（`loop` 与 `ctx.agents` 都在调用时读），
   // 工具本身零 HTTP，不参与心跳与派单。
   const workerInfo: WorkerInfoDeps = {
     pollEnabled: resolved.worker.poll.enable,
+    kinds: resolved.worker.kinds,
     workerId: () => loop?.workerId,
     inflight: () => loop?.inflight ?? [],
     get agents() {
       const agents = (ctx as unknown as {
-        agents?: { get(id: string): { status?: string } | undefined }
+        agents?: { roots(): { id?: string; status?: string }[] }
       }).agents
       return agents === undefined
         ? undefined
-        : { get: (id: string) => agents.get(id) }
-    },
-    get sessionPersistence() {
-      return readService<NonNullable<WorkerInfoDeps['sessionPersistence']>>('sessionPersistence')
-    },
-    get agentPresets() {
-      return readService<NonNullable<WorkerInfoDeps['agentPresets']>>('agentPresets')
-    },
-    get workspaceRegistry() {
-      return readService<NonNullable<WorkerInfoDeps['workspaceRegistry']>>('workspaceRegistry')
+        : { roots: () => agents.roots() }
     },
   }
 
@@ -241,8 +209,8 @@ export function apply(ctx: Context, config?: ConfigInput): void {
             get workerId() {
               return loop?.workerId
             },
-            notifyReported(taskId: string) {
-              loop?.notifyReported(taskId)
+            notifyReported(workId: string) {
+              loop?.notifyReported(workId)
             },
           },
           workerInfo,
@@ -301,6 +269,12 @@ export function apply(ctx: Context, config?: ConfigInput): void {
       return () => {}
     }
 
+    if (resolved.worker.kinds.length === 0) {
+      // 平台心跳要求 kinds 非空：warn 已在 apply 打过，这里不加载客户端、不建定时器。
+      log(`${TAG} worker.kinds 为空，未创建心跳定时器`)
+      return () => {}
+    }
+
     // 惰性加载：只有真正启用轮询时才引入 fetch 客户端与 worker 循环，
     // 保证 `--help` 快路径不加载 HTTP / dsh-llm 依赖。
     void (async () => {
@@ -312,24 +286,12 @@ export function apply(ctx: Context, config?: ConfigInput): void {
         if (disposed) return
 
         const client: WorkerClient = clientModule.createWorkerClient(resolved)
-        // 派单按 `task.project_id` → `ensureSession` → 投给返回的 agent；
-        // 不再要求根 agent 唯一。
-        // ensure 返回的是结构替身 `EnsureAgent`（只有 `id` / `session`），运行时就是
-        // 真实 Agent；投递需要 `followup`，在这里收窄一次类型。
-        const ensure = createSessionEnsurer(ctx, { info: log, warn })
-        const ensureSession = async (
-          projectId: string,
-        ): Promise<{ agent: Agent } | undefined> => {
-          const result = await ensure(projectId)
-          return result === undefined ? undefined : { agent: result.agent as Agent }
-        }
         const nextLoop = workerModule.createWorkerLoop({
           config: resolved,
           client,
           // 惰性读取：`ctx.agents` 只在真正心跳/投递时访问。
-          // 项目号即会话号；dsh 的会话 id 是品牌类型，这里按字符串收窄一次。
-          sessions: { get: (id: string) => ctx.agents.get(id as never) },
-          ensureSession,
+          // 一个 worker 一个 agent：固定取 roots()[0]，不数数量、不建项目会话。
+          agents: { roots: () => ctx.agents.roots() },
           logger: toRuntimeLogger(log, warn),
         })
         loop = nextLoop

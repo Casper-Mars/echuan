@@ -55,31 +55,36 @@ function json(payload: unknown): Response {
 }
 
 const CLAIM_PAYLOAD = {
-  task: {
-    id: 'APP-1-T0001',
-    project_id: 'APP-1',
-    title: '实现登录接口',
-    body_md: '# 任务正文',
-    attempt: 1,
-    priority: 10,
-  },
-  lease: { lease_id: 'l_9f8b', until: '2026-10-27T16:49:25.157Z', ttl_seconds: 90 },
-  context: {
-    spec_version: 1,
-    spec_digest: 'sha256:bb23',
-    product: { id: 'APP', name: '驿传示例产品', git_url: 'git@example.com:APP.git' },
+  dispatch: {
+    protocol: 'v2',
+    work_id: 'APP-1-T0001',
+    kind: 'dev',
+    inputs: [{ material_id: 'M-SPEC-1', kind: 2, version: 1 }],
+    work_item: {
+      project_id: 'APP-1',
+      title: '实现登录接口',
+      body_md: '# 工作项正文',
+      attempt: 1,
+      priority: 10,
+    },
+    lease: { lease_id: 'l_9f8b', until: '2026-10-27T16:49:25.157Z', ttl_seconds: 90 },
+    context: {
+      spec_version: 1,
+      spec_digest: 'sha256:bb23',
+      product: { id: 'APP', name: '驿传示例产品', git_url: 'git@example.com:APP.git' },
+    },
   },
 }
 
 /** 按路径回包，让 22 个会发请求的工具能在同一条链路上跑完。 */
 const respondByPath: Responder = (call) => {
   switch (call.url.pathname) {
-    case '/v1/tasks/claim':
+    case '/v1/work-items/claim':
       return json(CLAIM_PAYLOAD)
-    case '/v1/tasks/heartbeat':
+    case '/v1/work-items/lease':
       return json({ lease_id: 'l_next', until: '2026-10-27T16:51:00.000Z', ttl_seconds: 90 })
-    case '/v1/tasks/report':
-      return json({ task_id: 'APP-1-T0001', status_name: '待验收' })
+    case '/v1/work-items/report':
+      return json({ work_id: 'APP-1-T0001', state: 'submitted' })
     case '/v1/inbox':
       return json({
         items: [],
@@ -141,25 +146,25 @@ const respondByPath: Responder = (call) => {
       return json({
         project_id: 'APP-2',
         status: 5,
-        status_name: '任务评审',
+        status_name: '计划评审',
         project_version: 6,
-        tasks: [
+        work_items: [
           {
-            id: 'APP-2-T0001',
+            work_id: 'APP-2-T0001',
+            kind: 'dev',
             seq_no: 1,
             title: '卡 1',
             priority: 0,
-            status: 0,
-            status_name: '待办',
+            state: 'queued',
             depends_on: [],
           },
           {
-            id: 'APP-2-T0002',
+            work_id: 'APP-2-T0002',
+            kind: 'dev',
             seq_no: 2,
             title: '卡 2',
             priority: 5,
-            status: 0,
-            status_name: '待办',
+            state: 'blocked',
             depends_on: ['APP-2-T0001'],
           },
         ],
@@ -172,35 +177,45 @@ const respondByPath: Responder = (call) => {
         version: call.method === 'PATCH' ? 4 : 1,
         material: { material_id: call.method === 'PATCH' ? 'M-SPEC-4' : 'M-SPEC-1' },
       })
-    case '/v1/tasks':
+    case '/v1/work-items':
       if (call.method === 'POST') {
         return json({
-          task_id: 'APP-2-T0003',
+          work_id: 'APP-2-T0003',
           id: 'APP-2-T0003',
           project_id: 'APP-2',
+          kind: 'dev',
           seq_no: 3,
           title: '卡 3',
           body_md: '正文 3',
           priority: 7,
-          status: 0,
-          status_name: '待办',
+          state: 'queued',
           depends_on: ['APP-2-T0001'],
         })
       }
       if (call.method === 'PATCH') {
         return json({
-          task_id: 'APP-2-T0003',
+          work_id: 'APP-2-T0003',
+          kind: 'dev',
           title: '新标题',
           priority: 1,
-          status: 0,
-          status_name: '待办',
+          state: 'queued',
         })
       }
       if (call.method === 'DELETE') {
         return new Response(null, { status: 204 })
       }
-      return call.url.searchParams.has('id')
-        ? json({ task_id: 'APP-1-T0007', title: '示例任务' })
+      return call.url.searchParams.has('id') || call.url.searchParams.has('work_id')
+        ? json({
+          work_id: 'APP-1-T0007',
+          project_id: 'APP-1',
+          kind: 'dev',
+          title: '示例工作项',
+          body_md: '# 正文',
+          state: 'queued',
+          attempt: 1,
+          max_attempts: 3,
+          depends_on: [],
+        })
         : json({ items: [] })
     case '/v1/projects/package':
       return new Response(buildZip([
@@ -225,7 +240,7 @@ const exec = { signal: new AbortController().signal } as unknown as Parameters<
   ToolDefinition['execute']
 >[1]
 
-function toolsFor(fetchImpl: FetchLike, workerId: string | undefined = undefined): Map<string, ToolDefinition> {
+function toolsFor(fetchImpl: FetchLike, workerId: string | undefined = 'w_TEST01ABCDEFGHIJKLMN'): Map<string, ToolDefinition> {
   const client = createClient(config, { fetchImpl })
   const options: EchuanToolOptions = { client, identity: { workerId } }
   return new Map(createAllEchuanTools(options).map(tool => [tool.name, tool]))
@@ -266,32 +281,32 @@ interface WiringCase {
 
 const WIRING_CASES: WiringCase[] = [
   {
-    name: 'echuan_task_claim',
-    args: { product: 'APP' },
+    name: 'echuan_work_claim',
+    args: {},
     method: 'POST',
-    path: '/v1/tasks/claim',
+    path: '/v1/work-items/claim',
     query: {},
-    bodyKeys: ['product'],
+    bodyKeys: ['worker_id'],
   },
   {
-    name: 'echuan_task_renew',
-    args: { task_id: 'APP-1-T0001', lease_id: 'l_9f8b' },
+    name: 'echuan_work_renew',
+    args: { work_id: 'APP-1-T0001', lease_id: 'l_9f8b' },
     method: 'POST',
-    path: '/v1/tasks/heartbeat',
-    query: { id: 'APP-1-T0001' },
-    bodyKeys: ['lease_id'],
+    path: '/v1/work-items/lease',
+    query: {},
+    bodyKeys: ['lease_id', 'work_id'],
   },
   {
-    name: 'echuan_task_report',
+    name: 'echuan_work_report',
     args: {
-      task_id: 'APP-1-T0001',
+      work_id: 'APP-1-T0001',
       lease_id: 'l_9f8b',
-      summary_md: '①改了什么 …\n②怎么自检 …\n③git 交付 …\n④遗留风险 …',
+      material_id: 'M-REPORT-1',
     },
     method: 'POST',
-    path: '/v1/tasks/report',
-    query: { id: 'APP-1-T0001' },
-    bodyKeys: ['lease_id', 'summary_md'],
+    path: '/v1/work-items/report',
+    query: {},
+    bodyKeys: ['lease_id', 'material_id', 'work_id'],
   },
   {
     name: 'echuan_project_create',
@@ -338,7 +353,7 @@ const WIRING_CASES: WiringCase[] = [
     name: 'echuan_plan_submit',
     args: {
       project_id: 'APP-2',
-      tasks: [
+      work_items: [
         { title: '卡 1', body_md: '正文 1' },
         { title: '卡 2', body_md: '正文 2', priority: 5, depends_on: [1] },
       ],
@@ -346,35 +361,36 @@ const WIRING_CASES: WiringCase[] = [
     method: 'POST',
     path: '/v1/projects/plans',
     query: { id: 'APP-2' },
-    bodyKeys: ['tasks'],
+    bodyKeys: ['work_items'],
   },
   {
-    name: 'echuan_task_create',
+    name: 'echuan_work_create',
     args: {
       project_id: 'APP-2',
+      kind: 'dev',
       title: '卡 3',
       body_md: '正文 3',
       priority: 7,
       depends_on: ['APP-2-T0001'],
     },
     method: 'POST',
-    path: '/v1/tasks',
-    query: { project_id: 'APP-2' },
-    bodyKeys: ['body_md', 'depends_on', 'priority', 'title'],
+    path: '/v1/work-items',
+    query: {},
+    bodyKeys: ['body_md', 'depends_on', 'kind', 'priority', 'project_id', 'title'],
   },
   {
-    name: 'echuan_task_update',
-    args: { task_id: 'APP-2-T0003', title: '新标题', priority: 1 },
+    name: 'echuan_work_update',
+    args: { work_id: 'APP-2-T0003', title: '新标题', priority: 1 },
     method: 'PATCH',
-    path: '/v1/tasks',
+    path: '/v1/work-items',
     query: { id: 'APP-2-T0003' },
     bodyKeys: ['priority', 'title'],
   },
   {
-    name: 'echuan_task_delete',
-    args: { task_id: 'APP-2-T0003' },
+    name: 'echuan_work_delete',
+    args: { work_id: 'APP-2-T0003' },
     method: 'DELETE',
-    path: '/v1/tasks',
+    path: '/v1/work-items',
     query: { id: 'APP-2-T0003' },
     bodyKeys: [],
   },
@@ -428,11 +444,11 @@ const WIRING_CASES: WiringCase[] = [
     query: { product_id: 'APP', status: '1', limit: '10', cursor: 'c1' },
   },
   {
-    name: 'echuan_task_list',
-    args: { project_id: 'APP-1', status: [1], limit: 5 },
+    name: 'echuan_work_list',
+    args: { project_id: 'APP-1', kind: ['dev'], state: ['queued'], limit: 5 },
     method: 'GET',
-    path: '/v1/tasks',
-    query: { project_id: 'APP-1', status: '1', limit: '5' },
+    path: '/v1/work-items',
+    query: { project_id: 'APP-1', kind: 'dev', state: 'queued', limit: '5' },
   },
   {
     name: 'echuan_project_get',
@@ -442,11 +458,11 @@ const WIRING_CASES: WiringCase[] = [
     query: { id: 'APP-2' },
   },
   {
-    name: 'echuan_task_get',
-    args: { id: 'APP-1-T0007' },
+    name: 'echuan_work_get',
+    args: { work_id: 'APP-1-T0007' },
     method: 'GET',
-    path: '/v1/tasks',
-    query: { id: 'APP-1-T0007' },
+    path: '/v1/work-items',
+    query: { work_id: 'APP-1-T0007' },
   },
   {
     name: 'echuan_material_get',
@@ -508,33 +524,30 @@ describe('工具接线：逐个工具恰好一条请求，method/path/query/body
 // ---------------------------------------------------------------------------
 
 describe('工具接线：可选参数', () => {
-  it('echuan_task_claim 带 task_id 时 body 键 ⊆ {product, task_id, worker_id}', async () => {
+  it('echuan_work_claim 带 work_id 时 body 键 ⊆ {work_id, worker_id}', async () => {
     const platform = createPlatform(respondByPath)
 
-    await call(toolsFor(platform.fetchImpl).get('echuan_task_claim'), {
-      product: 'APP',
-      task_id: 'APP-1-T0001',
+    await call(toolsFor(platform.fetchImpl).get('echuan_work_claim'), {
+      work_id: 'APP-1-T0001',
     })
 
     expect(platform.calls).toHaveLength(1)
-    const allowed = new Set(['product', 'task_id', 'worker_id'])
+    const allowed = new Set(['work_id', 'worker_id'])
     for (const key of bodyKeys(platform.calls[0]!)) expect(allowed.has(key)).toBe(true)
-    expect(bodyKeys(platform.calls[0]!)).toEqual(['product', 'task_id'])
+    expect(bodyKeys(platform.calls[0]!)).toEqual(['work_id', 'worker_id'])
     expect(JSON.parse(platform.calls[0]!.body as string)).toMatchObject({
-      product: 'APP',
-      task_id: 'APP-1-T0001',
+      work_id: 'APP-1-T0001',
+      worker_id: 'w_TEST01ABCDEFGHIJKLMN',
     })
   })
 
-  it('echuan_task_claim 在心跳循环已注册时把 worker_id 放进 body', async () => {
+  it('echuan_work_claim 在心跳循环已注册时把 worker_id 放进 body', async () => {
     const platform = createPlatform(respondByPath)
 
-    await call(toolsFor(platform.fetchImpl, 'w_TEST01ABCDEFGHIJKLMN').get('echuan_task_claim'), {
-      product: 'APP',
-    })
+    await call(toolsFor(platform.fetchImpl, 'w_TEST01ABCDEFGHIJKLMN').get('echuan_work_claim'), {})
 
     expect(platform.calls).toHaveLength(1)
-    expect(bodyKeys(platform.calls[0]!)).toEqual(['product', 'worker_id'])
+    expect(bodyKeys(platform.calls[0]!)).toEqual(['worker_id'])
   })
 
   it('echuan_inbox 带 limit 时 query 只有 limit 一个键', async () => {
@@ -557,24 +570,24 @@ const READ_TOOLS = [
   'echuan_inbox',
   'echuan_product_list',
   'echuan_project_list',
-  'echuan_task_list',
+  'echuan_work_list',
   'echuan_project_get',
-  'echuan_task_get',
+  'echuan_work_get',
   'echuan_material_get',
 ]
 const WRITE_TOOLS = [
-  'echuan_task_claim',
-  'echuan_task_renew',
-  'echuan_task_report',
+  'echuan_work_claim',
+  'echuan_work_renew',
+  'echuan_work_report',
   'echuan_project_create',
   'echuan_project_requirement_write',
   'echuan_project_submit',
   'echuan_spec_create',
   'echuan_spec_revise',
   'echuan_plan_submit',
-  'echuan_task_create',
-  'echuan_task_update',
-  'echuan_task_delete',
+  'echuan_work_create',
+  'echuan_work_update',
+  'echuan_work_delete',
   'echuan_project_update',
   'echuan_product_create',
   'echuan_project_package',
@@ -647,28 +660,28 @@ describe('工具接线：方向性约束', () => {
     const endpoints = calls.map(request => `${request.method} ${request.url.pathname}`)
     expect(new Set(endpoints).size).toBe(20)
     expect([...endpoints].sort()).toEqual([
-      'DELETE /v1/tasks',
+      'DELETE /v1/work-items',
       'GET /v1/inbox',
       'GET /v1/materials',
       'GET /v1/products',
       'GET /v1/projects',
       'GET /v1/projects',
       'GET /v1/projects/package',
-      'GET /v1/tasks',
-      'GET /v1/tasks',
+      'GET /v1/work-items',
+      'GET /v1/work-items',
       'PATCH /v1/projects',
       'PATCH /v1/specs',
-      'PATCH /v1/tasks',
+      'PATCH /v1/work-items',
       'POST /v1/products',
       'POST /v1/projects',
       'POST /v1/projects/plans',
       'POST /v1/projects/requirement',
       'POST /v1/projects/submit',
       'POST /v1/specs',
-      'POST /v1/tasks',
-      'POST /v1/tasks/claim',
-      'POST /v1/tasks/heartbeat',
-      'POST /v1/tasks/report',
+      'POST /v1/work-items',
+      'POST /v1/work-items/claim',
+      'POST /v1/work-items/lease',
+      'POST /v1/work-items/report',
     ])
   })
 })
