@@ -806,7 +806,7 @@ button {
   }
 }
 
-/* ===== 任务-15：页面动作、筛选、弹窗与详情 ===== */
+/* ===== 页面动作、筛选、弹窗与详情 ===== */
 
 .page-head-actions {
   display: flex;
@@ -1727,7 +1727,7 @@ button {
   }
 }
 
-/* 任务看板：待评审整批操作、驳回提示与卡片最小管理入口 */
+/* 工作项看板：待评审整批操作、驳回提示与卡片最小管理入口 */
 .board-column-review {
   border: 1px solid #d9e2f2;
 }
@@ -1786,4 +1786,61 @@ button {
 
 .row-reason-rejected .muted {
   font-weight: 400;
+}
+
+/* 工作项：state 徽标与 kind 徽标 */
+.state-blocked { background: #eef1f6; color: #52606f; }
+.state-queued { background: #f2edff; color: #6b46c1; }
+.state-leased { background: #e8f0ff; color: #2f5bea; }
+.state-submitted { background: #fff4e0; color: #9a5b00; }
+.state-accepted { background: #e6f7ef; color: #12805a; }
+.state-failed { background: #fdeced; color: #b23535; }
+.state-cancelled { background: #f4f4f5; color: #8a919c; }
+
+.kind-requirement { background: #f2edff; color: #6b46c1; }
+.kind-design { background: #e8f0ff; color: #2f5bea; }
+.kind-breakdown { background: #e8f7f4; color: #0f766e; }
+.kind-dev { background: #fff4e0; color: #9a5b00; }
+
+/* 工作项页头筛选：kind 多选按钮 + state 下拉 */
+.filter-label {
+  font-size: 0.86rem;
+}
+
+.kind-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filter-chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.filter-chip:hover {
+  border-color: #cfd9ea;
+  color: var(--text);
+}
+
+.filter-chip.is-active {
+  border-color: #2f5bea;
+  background: #e8f0ff;
+  color: #2f5bea;
+  font-weight: 600;
+}
+
+.board-card-kind {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 0;
+  font-size: 0.76rem;
 }

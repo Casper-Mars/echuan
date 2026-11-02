@@ -8,7 +8,7 @@ import {
   LoadingState,
   RefreshBar,
 } from '../components/States'
-import { TaskDetailDrawer } from '../components/TaskDetailDrawer'
+import { WorkItemDetailDrawer } from '../components/WorkItemDetailDrawer'
 import { usePolling } from '../hooks/usePolling'
 import { copyText } from '../lib/clipboard'
 import { formatDateTime, formatRelative } from '../lib/format'
@@ -46,8 +46,8 @@ function workerState(worker: Worker): { label: string; className: string } {
   if (worker.presence === 'offline') {
     return { label: '离线', className: 'worker-state-offline' }
   }
-  // 占用以 current_task_id 为准；state 只是 worker 的自报声明。
-  if (worker.current_task_id || worker.state === 'busy') {
+  // 占用以 current_work_item_id 为准；state 只是 worker 的自报声明。
+  if (worker.current_work_item_id || worker.state === 'busy') {
     return { label: '在线·执行中', className: 'worker-state-busy' }
   }
   return { label: '在线·空闲', className: 'worker-state-idle' }
@@ -70,7 +70,7 @@ function renderMetadataValue(value: unknown): string {
 }
 
 /**
- * Worker 列表：在线状态、当前任务、自报元数据与心跳时间。
+ * Worker 列表：在线状态、当前工作项、自报元数据与心跳时间。
  * 5s 轮询复用 usePolling；在线/离线完全以服务端 presence 为准。
  */
 export function WorkersPage() {
@@ -100,11 +100,11 @@ export function WorkersPage() {
     copyTimerRef.current = setTimeout(() => setCopiedId(null), 1500)
   }, [])
 
-  const openTask = useCallback(
-    (taskId: string) => {
+  const openWorkItem = useCallback(
+    (workId: string) => {
       openDrawer({
-        title: `任务 ${taskId}`,
-        body: <TaskDetailDrawer taskId={taskId} onChanged={refresh} />,
+        title: `工作项 ${workId}`,
+        body: <WorkItemDetailDrawer workId={workId} onChanged={refresh} />,
       })
     },
     [openDrawer, refresh],
@@ -148,7 +148,7 @@ export function WorkersPage() {
       {data && workers.length === 0 && (
         <EmptyState
           title="还没有执行节点"
-          hint="安装接入工具包并开启任务轮询后，执行节点会自动出现在这里。"
+          hint="安装接入工具包并开启工作项轮询后，执行节点会自动出现在这里。"
         />
       )}
 
@@ -157,7 +157,7 @@ export function WorkersPage() {
           <div className="worker-row worker-table-head" role="row">
             <span role="columnheader">执行节点</span>
             <span role="columnheader">状态</span>
-            <span role="columnheader">当前任务</span>
+            <span role="columnheader">当前工作项</span>
             <span role="columnheader">元数据</span>
             <span role="columnheader">时间</span>
           </div>
@@ -190,14 +190,14 @@ export function WorkersPage() {
                 </div>
 
                 <div className="worker-cell" role="cell">
-                  {worker.current_task_id ? (
+                  {worker.current_work_item_id ? (
                     <button
                       type="button"
                       className="worker-task-link mono"
-                      onClick={() => openTask(worker.current_task_id as string)}
-                      title="查看任务详情"
+                      onClick={() => openWorkItem(worker.current_work_item_id as string)}
+                      title="查看工作项详情"
                     >
-                      {worker.current_task_id}
+                      {worker.current_work_item_id}
                     </button>
                   ) : (
                     <span className="muted">—</span>

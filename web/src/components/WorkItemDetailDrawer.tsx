@@ -1,35 +1,37 @@
-import { getTask, materialDownloadUrl } from '../api/client'
+import { getWorkItem, materialDownloadUrl } from '../api/client'
 import { usePolling } from '../hooks/usePolling'
 import {
   formatBytes,
   formatDateTime,
   formatSince,
-  taskStatusLabel,
+  workItemKindLabel,
+  workItemStateLabel,
 } from '../lib/format'
 import { ErrorNotice, LoadingState } from './States'
 import { Markdown } from './Markdown'
-import { TaskActions } from './TaskActions'
+import { WorkItemActions } from './WorkItemActions'
 
 /**
- * 任务详情抽屉：描述、报告（元信息 + 下载）、依赖、尝试次数、
- * reason / last_actor / update_time，以及验收/返工/重排/放弃动作。
+ * 工作项详情抽屉：kind/state、描述、结果资料（元信息 + 下载）、依赖、
+ * 尝试次数、租约、reason / create_time / update_time，以及验收/返工/重排动作。
+ * dev 类型的展示字段与 v1 任务详情保持一致。
  */
-export function TaskDetailDrawer({
-  taskId,
+export function WorkItemDetailDrawer({
+  workId,
   onChanged,
 }: {
-  taskId: string
+  workId: string
   onChanged: () => void
 }) {
   const { data, error, loading, refreshing, refresh } = usePolling(
-    (signal) => getTask(taskId, signal),
-    [taskId],
+    (signal) => getWorkItem(workId, signal),
+    [workId],
   )
 
   if (!data) {
     return (
       <div className="detail">
-        {loading && <LoadingState label="正在加载任务详情…" />}
+        {loading && <LoadingState label="正在加载工作项详情…" />}
         {error && <ErrorNotice error={error} onRetry={refresh} />}
       </div>
     )
@@ -45,10 +47,11 @@ export function TaskDetailDrawer({
       {error && <ErrorNotice error={error} onRetry={refresh} />}
 
       <div className="detail-summary">
-        <span className={`badge status-${data.status}`}>{taskStatusLabel(data.status)}</span>
+        <span className={`badge state-${data.state}`}>{workItemStateLabel(data.state)}</span>
+        <span className={`badge kind-${data.kind}`}>类型：{workItemKindLabel(data.kind)}</span>
         <span className="mono">第 {data.version} 版</span>
         <span>
-          尝试 {data.attempt_count}/{data.max_attempts}
+          尝试 {data.attempt}/{data.max_attempts}
         </span>
         <span>停留 {formatSince(data.update_time)}</span>
         {refreshing && <span className="muted">刷新中…</span>}
@@ -56,8 +59,20 @@ export function TaskDetailDrawer({
 
       <dl className="meta-grid">
         <div>
-          <dt>最近操作人</dt>
-          <dd>{data.last_actor || '—'}</dd>
+          <dt>工作项 ID</dt>
+          <dd className="mono">{data.work_id}</dd>
+        </div>
+        <div>
+          <dt>所属项目</dt>
+          <dd className="mono">{data.project_id}</dd>
+        </div>
+        <div>
+          <dt>优先级</dt>
+          <dd>{data.priority}</dd>
+        </div>
+        <div>
+          <dt>执行节点</dt>
+          <dd className="mono">{data.worker_id || '—'}</dd>
         </div>
         <div>
           <dt>更新时间</dt>
@@ -66,10 +81,6 @@ export function TaskDetailDrawer({
         <div>
           <dt>创建时间</dt>
           <dd>{formatDateTime(data.create_time)}</dd>
-        </div>
-        <div>
-          <dt>优先级</dt>
-          <dd>{data.priority}</dd>
         </div>
         {data.lease && (
           <div>
@@ -84,37 +95,41 @@ export function TaskDetailDrawer({
         <p className={data.reason ? 'reason-text' : 'muted'}>{data.reason || '—'}</p>
       </section>
 
-      <TaskActions task={data} onChanged={changed} className="detail-actions" />
+      <WorkItemActions item={data} onChanged={changed} className="detail-actions" />
 
       <section className="detail-section">
-        <h3>任务描述</h3>
-        <Markdown source={data.body_md} empty="暂无任务描述" />
+        <h3>工作项描述</h3>
+        <Markdown source={data.body_md} empty="暂无工作项描述" />
       </section>
 
       <section className="detail-section">
-        <h3>报告</h3>
-        {data.report ? (
+        <h3>结果资料</h3>
+        {data.result ? (
           <div className="report-box">
             <div className="report-meta">
-              <span className="code">第 {data.report.version} 版</span>
-              <span>{data.report.uploaded_by || '—'}</span>
-              <span className="muted">{formatDateTime(data.report.create_time)}</span>
-              <span className="muted">{formatBytes(data.report.size)}</span>
+              <span className="code">第 {data.result.version} 版</span>
+              <span>{data.result.uploaded_by || '—'}</span>
+              <span className="muted">{formatDateTime(data.result.create_time)}</span>
+              <span className="muted">{formatBytes(data.result.size)}</span>
             </div>
-            <p className="mono muted ellipsis" title={data.report.sha256}>
-              内容校验值：{data.report.sha256}
+            <p className="mono muted ellipsis" title={data.result.sha256}>
+              内容校验值：{data.result.sha256}
             </p>
-            <a className="action action-primary" href={materialDownloadUrl(data.report.material_id)} download>
-              下载报告
+            <a
+              className="action action-primary"
+              href={materialDownloadUrl(data.result.material_id)}
+              download
+            >
+              下载结果资料
             </a>
           </div>
         ) : (
-          <p className="muted">尚未提交报告</p>
+          <p className="muted">尚未提交结果资料</p>
         )}
       </section>
 
       <section className="detail-section">
-        <h3>依赖任务</h3>
+        <h3>依赖工作项</h3>
         {data.depends_on.length === 0 ? (
           <p className="muted">—</p>
         ) : (

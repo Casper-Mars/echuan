@@ -5,7 +5,7 @@ export interface DrawerContent {
   body: ReactNode
 }
 
-/** 页面通过该 context 打开右侧详情抽屉（本任务只提供容器与占位内容）。 */
+/** 页面通过该 context 打开右侧详情抽屉（本文件只提供容器与占位内容）。 */
 export const DrawerContext = createContext<(content: DrawerContent) => void>(() => {})
 export const DrawerTitleContext = createContext<(title: string) => void>(() => {})
 

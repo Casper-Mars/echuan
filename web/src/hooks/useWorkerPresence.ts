@@ -4,7 +4,7 @@ import type { WorkerPresence } from '../api/types'
 import { usePolling } from './usePolling'
 
 /**
- * 任务卡只需要「本页任务涉及的 worker」的在线状态，不必拉全量：
+ * 工作项卡只需要「本页工作项涉及的 worker」的在线状态，不必拉全量：
  *
  * - 先用 `GET /v1/workers` 首页（200 条，按 last_seen 倒序）建 id→presence 映射；
  * - 首页未命中的 id 再用 `GET /v1/workers?id=` 逐个补查（worker 超过 200 个时才会走到）；
@@ -42,7 +42,7 @@ async function mapWithConcurrency<T, R>(
 }
 
 export function useWorkerPresence(workerIds: string[]): WorkerPresenceLookup {
-  // 首页 200 条：绝大多数任务卡的执行者都在内，命中就不必补查。
+  // 首页 200 条：绝大多数工作项卡的执行者都在内，命中就不必补查。
   const { data, lastUpdated } = usePolling(
     (signal) => listWorkers({ limit: 200, signal }),
     [],

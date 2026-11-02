@@ -11,16 +11,16 @@ import type {
   ProjectDetail,
   ProjectList,
   SpecDocument,
-  Task,
-  TaskCreateRequest,
-  TaskDecision,
-  TaskDetail,
-  TaskList,
-  TaskPatchRequest,
-  TaskReviewRequest,
-  TaskReviewResult,
   Worker,
   WorkerListResponse,
+  WorkItem,
+  WorkItemCreateRequest,
+  WorkItemDecision,
+  WorkItemDetail,
+  WorkItemList,
+  WorkItemPatchRequest,
+  WorkItemReviewRequest,
+  WorkItemReviewResult,
 } from './types'
 
 /**
@@ -251,65 +251,62 @@ export function cancelProject(id: string): Promise<Project> {
   return request<Project>('/v1/projects/cancel', { method: 'POST', query: { id } })
 }
 
-export function listTasks(projectId: string, signal?: AbortSignal): Promise<TaskList> {
-  return request<TaskList>('/v1/tasks', {
+export function listWorkItems(projectId: string, signal?: AbortSignal): Promise<WorkItemList> {
+  return request<WorkItemList>('/v1/work-items', {
     query: { project_id: projectId, limit: 200 },
     signal,
   })
 }
 
-export function getTask(id: string, signal?: AbortSignal): Promise<TaskDetail> {
-  return request<TaskDetail>('/v1/tasks', { query: { id }, signal })
+export function getWorkItem(id: string, signal?: AbortSignal): Promise<WorkItemDetail> {
+  return request<WorkItemDetail>('/v1/work-items', { query: { id }, signal })
 }
 
-/** 在任务草稿/任务评审/待完成阶段新增一张卡。 */
-export function createTask(projectId: string, body: TaskCreateRequest): Promise<TaskDetail> {
-  return request<TaskDetail>('/v1/tasks', {
-    method: 'POST',
-    query: { project_id: projectId },
+/** 在草稿/评审/待完成阶段新增一张工作项。 */
+export function createWorkItem(body: WorkItemCreateRequest): Promise<WorkItemDetail> {
+  return request<WorkItemDetail>('/v1/work-items', { method: 'POST', body })
+}
+
+/** 修改工作项的标题/正文/优先级；后端不校验 If-Match。 */
+export function updateWorkItem(workId: string, body: WorkItemPatchRequest): Promise<WorkItemDetail> {
+  return request<WorkItemDetail>('/v1/work-items', {
+    method: 'PATCH',
+    query: { work_id: workId },
     body,
   })
 }
 
-/** 修改卡片的标题/正文/优先级；后端不校验 If-Match。 */
-export function updateTask(taskId: string, body: TaskPatchRequest): Promise<TaskDetail> {
-  return request<TaskDetail>('/v1/tasks', { method: 'PATCH', query: { id: taskId }, body })
-}
-
-/** 删除未领取的待办卡（204 无响应体）。 */
-export function deleteTask(taskId: string): Promise<void> {
-  return request<void>('/v1/tasks', { method: 'DELETE', query: { id: taskId } })
+/** 删除未领取的 blocked 工作项（204 无响应体）。 */
+export function deleteWorkItem(workId: string): Promise<void> {
+  return request<void>('/v1/work-items', { method: 'DELETE', query: { work_id: workId } })
 }
 
 /**
- * 任务批次评审：approve 把 backlog 卡置为 ready 并推进项目；
+ * 工作项批次评审：approve 把 blocked 卡置为 queued 并推进项目；
  * reject 只记录驳回原因（必填），卡片与项目状态不变。
  */
-export function reviewTasks(
+export function reviewWorkItems(
   projectId: string,
   decision: 'approve' | 'reject',
   reason?: string,
-): Promise<TaskReviewResult> {
-  const body: TaskReviewRequest = reason === undefined ? {} : { reason }
-  return request<TaskReviewResult>('/v1/tasks/review', {
+): Promise<WorkItemReviewResult> {
+  const body: WorkItemReviewRequest = { project_id: projectId, decision }
+  if (reason !== undefined) body.reason = reason
+  return request<WorkItemReviewResult>('/v1/work-items/review', {
     method: 'POST',
-    query: { project_id: projectId, decision },
     body,
   })
 }
 
-/** 任务裁决；必须带 If-Match（version）。 */
-export function decideTask(
-  id: string,
-  decision: TaskDecision,
+/** 工作项裁决：approve → accepted，reject → queued；不需要 If-Match。 */
+export function decideWorkItem(
+  workId: string,
+  decision: WorkItemDecision,
   reason: string,
-  version: number,
-): Promise<TaskDetail> {
-  return request<TaskDetail>('/v1/tasks/decide', {
+): Promise<WorkItemDetail> {
+  return request<WorkItemDetail>('/v1/work-items/decide', {
     method: 'POST',
-    query: { id },
-    body: { decision, reason },
-    version,
+    body: { work_id: workId, decision, reason },
   })
 }
 
@@ -382,9 +379,9 @@ const ERROR_LABELS: Record<string, string> = {
   conflict: '数据冲突，编号可能重复或数据已发生变化，请核对后重试。',
   material_required: '缺少所需资料，请补充后再提交。',
   too_large: '提交内容超过大小限制，请缩小后重试。',
-  lease_lost: '任务租约已失效，请重新确认任务归属。',
+  lease_lost: '工作项租约已失效，请重新确认工作项归属。',
   worker_unknown: '执行节点尚未注册或已失效，请重新连接。',
-  worker_busy: '执行节点正在处理其他任务，请稍后重试。',
+  worker_busy: '执行节点正在处理其他工作项，请稍后重试。',
   method_not_allowed: '当前请求方式不受支持，请刷新页面后重试。',
   internal: '服务暂时异常，请稍后重试。',
   unauthorized: '身份信息无效，请检查身份配置。',
@@ -399,10 +396,10 @@ export function apiErrorSummary(error: ApiError): string {
 
 export function errorDetailMessage(detail: unknown): string {
   const fields: Record<string, string> = {
-    product_id: '产品编号', project_id: '项目编号', task_id: '任务编号', spec_id: '方案编号',
+    product_id: '产品编号', project_id: '项目编号', work_id: '工作项编号', spec_id: '方案编号',
     id: '编号', title: '标题', name: '名称', git_url: '代码仓库地址',
     description: '描述', license: '许可证', requirement_md: '需求正文',
-    body_md: '正文', reason: '原因', decision: '处理方式', status: '状态',
+    body_md: '正文', reason: '原因', decision: '处理方式', state: '状态',
     version: '版本', material_id: '资料编号', priority: '优先级',
   }
   if (!detail || typeof detail !== 'object') return '请检查提交内容。'
@@ -441,8 +438,8 @@ export function isProject(value: Project | { items: Project[] }): value is Proje
   return typeof (value as Project).project_id === 'string'
 }
 
-export function isTask(value: Task | { items: Task[] }): value is Task {
-  return typeof (value as Task).task_id === 'string'
+export function isWorkItem(value: WorkItem | { items: WorkItem[] }): value is WorkItem {
+  return typeof (value as WorkItem).work_id === 'string'
 }
 
 /** 状态分档文案（401/409/422/429 单独成档，网络失败给可读提示）。 */
