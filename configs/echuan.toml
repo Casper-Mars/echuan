@@ -1,0 +1,44 @@
+# echuan v2 本地开发配置样例（宿主直接运行 ./echuan 时使用）
+#
+# 生效优先级：环境变量（ECHUAN_*） > 本文件 > 内置默认值。
+# 默认读取 ./echuan.toml，可用 -config 指定其他路径；文件不存在时全部走默认值。
+# 解析器支持 flat 的 key = "value" / 123 / true 与 # 注释；[section] 行会被忽略。
+
+# HTTP 监听地址
+listen = "127.0.0.1:8721"
+
+# 数据目录（SQLite 库、运行期数据），支持 ~ 展开
+data_dir = "~/echuan-v2-data"
+
+# SQLite 读连接池大小（写池固定为 1）
+read_pool_size = 4
+
+# 任务租约有效期，超过未续租则租约失效（Go duration 语法）
+lease_ttl = "90s"
+
+# 单个任务允许的最大尝试次数
+max_attempts = 3
+
+# claim 长轮询超时
+poll_timeout = "25s"
+
+# 评审超过该小时数未处理视为 stale
+review_stale_hours = 72
+
+# 单个素材允许的最大字节数（默认 20 MiB）
+material_max_bytes = 20971520
+
+# Worker 存活时间：注册后超过该时长未心跳即视为离线（Go duration 语法）
+worker_ttl = "45s"
+
+# Worker 心跳间隔，需显著小于 worker_ttl
+heartbeat_interval = "15s"
+
+# Worker 注册时 metadata 允许的最大字节数（默认 8 KiB）
+worker_metadata_max_bytes = 8192
+
+# 离线 Worker 状态的保留时长（默认 1 小时，需大于 worker_ttl，Go duration 语法）
+worker_retention = "1h"
+
+# 日志级别：debug / info / warn / error
+log_level = "info"

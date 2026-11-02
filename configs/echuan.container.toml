@@ -1,0 +1,43 @@
+# echuan v2 容器配置（只读挂载到 /etc/echuan/echuan.toml）
+#
+# 生效优先级：环境变量（ECHUAN_*） > 本文件 > 内置默认值。
+# 容器内监听必须为 0.0.0.0，否则宿主机端口映射无法访问。
+# 数据目录固定为 /data，由 docker-compose.yml 绑定到宿主机 ~/echuan-v2-data。
+
+listen = "0.0.0.0:8720"
+
+# SQLite 库、objects 的根目录（容器内路径）
+data_dir = "/data"
+
+# SQLite 读连接池大小（写池固定为 1）
+read_pool_size = 4
+
+# 任务租约有效期（Go duration 语法）
+lease_ttl = "90s"
+
+# 单个任务允许的最大尝试次数
+max_attempts = 3
+
+# claim 长轮询超时
+poll_timeout = "25s"
+
+# 评审超过该小时数未处理视为 stale
+review_stale_hours = 72
+
+# 单个素材允许的最大字节数（20 MiB）
+material_max_bytes = 20971520
+
+# Worker 存活时间：注册后超过该时长未心跳即视为离线（Go duration 语法）
+worker_ttl = "45s"
+
+# Worker 心跳间隔，需显著小于 worker_ttl
+heartbeat_interval = "15s"
+
+# Worker 注册时 metadata 允许的最大字节数（默认 8 KiB）
+worker_metadata_max_bytes = 8192
+
+# 离线 Worker 状态的保留时长（默认 1 小时，需大于 worker_ttl，Go duration 语法）
+worker_retention = "1h"
+
+# 日志级别：debug / info / warn / error
+log_level = "info"

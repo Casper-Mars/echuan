@@ -1,0 +1,97 @@
+# echuan 生产部署编排（单服务）
+#
+# 常用命令：
+#   docker compose build
+#   docker compose up -d
+#   docker compose logs -f --tail=100
+#   docker compose down
+#
+# 可覆盖变量见 .env.example（复制为 .env 后生效）。
+#
+# v2 基线：宿主端口默认 8721（容器内仍是 8720），数据目录默认 ~/echuan-v2-data，
+# 项目名 / 容器名 / 镜像名统一带 -v2 后缀，便于与 v1 并行部署互不干扰。
+
+name: ${COMPOSE_PROJECT_NAME:-echuan-v2}
+
+services:
+  echuan:
+    image: ${ECHUAN_IMAGE:-echuan-v2:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${ECHUAN_VERSION:-dev}
+        COMMIT: ${ECHUAN_COMMIT:-none}
+        # 构建期依赖源（默认值即国内镜像；切回官方见 docs/deploy.md 第 3.5 节）。
+        GOPROXY: ${DOCKER_BUILD_GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}
+        NPM_REGISTRY: ${DOCKER_BUILD_NPM_REGISTRY:-https://registry.npmmirror.com}
+        APK_MIRROR: ${DOCKER_BUILD_APK_MIRROR:-mirrors.aliyun.com}
+        # 基础镜像仓库前缀，默认空 = Docker Hub 官方镜像（可命中 daemon 加速器）。
+        IMAGE_MIRROR: ${DOCKER_BUILD_IMAGE_MIRROR:-}
+        NODE_IMAGE: ${DOCKER_BUILD_NODE_IMAGE:-node:22-alpine}
+        GO_IMAGE: ${DOCKER_BUILD_GO_IMAGE:-golang:1.26-alpine}
+        RUNTIME_IMAGE: ${DOCKER_BUILD_RUNTIME_IMAGE:-alpine:3.20}
+        # Docker Desktop 会把全局代理注入构建容器。默认清空（直连），
+        # 需要代理的环境在 .env 里设置 DOCKER_BUILD_*_PROXY。
+        HTTP_PROXY: ${DOCKER_BUILD_HTTP_PROXY:-}
+        HTTPS_PROXY: ${DOCKER_BUILD_HTTPS_PROXY:-}
+        http_proxy: ${DOCKER_BUILD_HTTP_PROXY:-}
+        https_proxy: ${DOCKER_BUILD_HTTPS_PROXY:-}
+        ALL_PROXY: ${DOCKER_BUILD_ALL_PROXY:-}
+        all_proxy: ${DOCKER_BUILD_ALL_PROXY:-}
+    container_name: ${ECHUAN_CONTAINER_NAME:-echuan-v2}
+    restart: unless-stopped
+
+    # 仅本机可访问；公网入口请放在宿主机反向代理之后。
+    # 宿主 8721 → 容器 8720：容器内监听地址保持 v1 不变，端口隔离只在部署层做。
+    ports:
+      - "127.0.0.1:${ECHUAN_PORT:-8721}:8720"
+
+    # 默认 UID/GID 10001；Linux 宿主机请让数据目录属主与其一致。
+    user: "${ECHUAN_UID:-10001}:${ECHUAN_GID:-10001}"
+
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 留空时配置文件生效；非空时覆盖 TOML（ECHUAN_* 优先级最高）。
+      ECHUAN_LOG_LEVEL: ${ECHUAN_LOG_LEVEL:-}
+
+    volumes:
+      # 数据库 / objects / workspaces 全部落在宿主机目录，删容器不丢数据。
+      - "${ECHUAN_DATA_DIR:-${HOME}/echuan-v2-data}:/data"
+      # 配置只读挂载；容器启动参数见 Dockerfile 的 CMD。
+      - "./configs/echuan.container.toml:/etc/echuan/echuan.toml:ro"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 探针前用 env -u 剥离代理变量：Docker Desktop 会把宿主代理注入容器，
+    # busybox wget 走代理且不认 NO_PROXY，会把 127.0.0.1 的健康检查打成 502。
+    # exec 形式直接调 env（不经 shell），与 Dockerfile 的 HEALTHCHECK 保持一致。
+    healthcheck:
+      test:
+        - CMD
+        - env
+        - -u
+        - HTTP_PROXY
+        - -u
+        - HTTPS_PROXY
+        - -u
+        - ALL_PROXY
+        - -u
+        - http_proxy
+        - -u
+        - https_proxy
+        - -u
+        - all_proxy
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1:8720/readyz
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
