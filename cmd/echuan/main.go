@@ -91,13 +91,11 @@ func run() error {
 	projects.SetMaxAttempts(cfg.MaxAttempts)
 	materialService := app.NewMaterialService(st, materials)
 
-	// Tasks are reachable through the board and the single-card endpoints; the
-	// attempt budget is the same configuration the plan path uses.
-	tasks := app.NewTaskService(st)
-	tasks.SetMaxAttempts(cfg.MaxAttempts)
-	// Reports are material kind=3; the same writer that owns
-	// data_dir/objects appends the version chain behind tasks.report_material_id.
-	tasks.SetMaterialWriter(materials)
+	// Work items are reachable through the board, the worker queue and the
+	// single-card endpoints; the attempt budget is the same configuration the
+	// plan path uses.
+	workItems := app.NewWorkItemService(st)
+	workItems.SetMaxAttempts(cfg.MaxAttempts)
 
 	// Pull mode: workers claim a card, hold a lease and renew it. The reclaimer
 	// returns expired leases to the queue even when nobody is claiming.
@@ -129,7 +127,7 @@ func run() error {
 	go reclaimer.Run(reclaimCtx)
 
 	handler := api.Chain(
-		api.NewRouter(logger, web.Handler(), checks, products, projects, tasks, claims, workers, materialService, inboxService),
+		api.NewRouter(logger, web.Handler(), checks, products, projects, workItems, claims, workers, materialService, inboxService),
 		api.Recover(logger),
 		api.RequestID(),
 		api.UnifiedErrors(),

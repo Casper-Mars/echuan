@@ -57,14 +57,13 @@ func newProjectTestServerWithMaxAttempts(t *testing.T, maxAttempts int) (http.Ha
 	if maxAttempts > 0 {
 		projects.SetMaxAttempts(maxAttempts)
 	}
-	tasks := app.NewTaskService(st)
+	workItems := app.NewWorkItemService(st)
 	if maxAttempts > 0 {
-		tasks.SetMaxAttempts(maxAttempts)
+		workItems.SetMaxAttempts(maxAttempts)
 	}
-	tasks.SetMaterialWriter(writer)
 	h := Chain(
 		NewRouter(logger, nil, nil, app.NewProductService(st), projects,
-			tasks, app.NewClaimService(st, logger, 90*time.Second),
+			workItems, app.NewClaimService(st, logger, 90*time.Second),
 			nil, app.NewMaterialService(st, writer), nil),
 		Recover(logger),
 		RequestID(),
@@ -148,8 +147,8 @@ func TestCreateProjectHTTP(t *testing.T) {
 	if detail.Spec != nil {
 		t.Errorf("spec = %+v, want null", *detail.Spec)
 	}
-	if detail.TaskStats.Total != 0 || detail.TaskStats.Done != 0 {
-		t.Errorf("task_stats = %+v, want zeros", detail.TaskStats)
+	if detail.WorkItemTotal != 0 || detail.WorkItemDone != 0 {
+		t.Errorf("work_item stats = %d/%d, want zeros", detail.WorkItemTotal, detail.WorkItemDone)
 	}
 }
 
@@ -445,8 +444,10 @@ func TestDeleteProjectHTTPConflict(t *testing.T) {
 		t.Fatalf("lookup project: %v", err)
 	}
 	if _, err := st.Write().ExecContext(context.Background(), `
-		INSERT INTO tasks (task_id, project_id, seq_no, title, body_md, status, create_time, update_time)
-		VALUES ('APP-1-T0001', ?, 1, '任务', '正文', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		INSERT INTO work_items (work_id, project_id, seq_no, kind, title, body_md, state,
+		                        max_attempts, version, create_time, update_time)
+		VALUES ('w_APP1T0001', ?, 1, 'dev', '任务', '正文', 'blocked', 3, 1,
+		        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 		projectID); err != nil {
 		t.Fatalf("insert task: %v", err)
 	}

@@ -207,14 +207,14 @@ type Material struct {
 	CreateTime time.Time
 }
 
-// TaskStats summarises the tasks of one project.
+// WorkItemStats summarises the work items of one project.
 //
-// ByStatus is only filled in by the detail endpoint (the list stays a single
-// query); Done counts tasks whose status is TaskStatusDone.
-type TaskStats struct {
-	Total    int64
-	Done     int64
-	ByStatus map[int]int64
+// ByState is only filled in by the detail endpoint (the list stays a single
+// query); Done counts items whose state is "accepted".
+type WorkItemStats struct {
+	Total   int64
+	Done    int64
+	ByState map[string]int64
 }
 
 // Project is one requirement being tracked to completion.
@@ -237,7 +237,7 @@ type Project struct {
 	TasksReviewRejectedAt string
 	RequirementMaterialID int64
 	SpecMaterialID        int64
-	TaskStats             TaskStats
+	WorkItemStats         WorkItemStats
 	CreateTime            time.Time
 	UpdateTime            time.Time
 }

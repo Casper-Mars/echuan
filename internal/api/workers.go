@@ -20,10 +20,6 @@ const defaultWorkerListLimit = 50
 //
 //	POST /v1/workers/heartbeat   register, refresh and receive work
 //	GET  /v1/workers             list the registry, or fetch one with ?id=
-//
-// It is separate from tasksHandler and claimHandler because the subject is the
-// worker, not the card: a heartbeat is one round trip that may also register
-// and dispatch.
 type workersHandler struct {
 	service *app.WorkerService
 	logger  *slog.Logger
@@ -36,40 +32,33 @@ func newWorkersHandler(service *app.WorkerService, logger *slog.Logger) *workers
 // workerHeartbeatRequest is the POST /v1/workers/heartbeat body.
 //
 // worker_id is empty on the very first call (the server mints one). state
-// defaults to idle. metadata is kept raw so the service can decide whether it
-// is a JSON object and whether it fits the configured cap; a null or an absent
-// document both reach the service as an empty slice, which means "not
-// supplied".
+// defaults to idle. kinds is mandatory and replaces the stored declaration.
 type workerHeartbeatRequest struct {
 	WorkerID string          `json:"worker_id"`
 	State    string          `json:"state"`
+	Kinds    []string        `json:"kinds"`
 	Metadata json.RawMessage `json:"metadata"`
 }
 
-// workerResponse is the wire representation of one worker (§4.3).
-//
-// current_task_id is the business task id the worker holds, null when it holds
-// none; that pointer — not state — is what makes a worker occupied.
+// workerResponse is the wire representation of one worker.
 type workerResponse struct {
 	WorkerID            string          `json:"worker_id"`
 	Presence            string          `json:"presence"`
 	State               string          `json:"state"`
-	CurrentTaskID       *string         `json:"current_task_id"`
+	Kinds               []string        `json:"kinds"`
+	CurrentWorkItemID   *string         `json:"current_work_item_id"`
 	Metadata            json.RawMessage `json:"metadata"`
 	FirstSeen           string          `json:"first_seen"`
 	LastSeen            string          `json:"last_seen"`
-	HeartbeatIntervalMS int             `json:"heartbeat_interval_ms"`
-	LeaseTTLSeconds     int             `json:"lease_ttl_seconds"`
+	HeartbeatIntervalMS int64           `json:"heartbeat_interval_ms"`
+	LeaseTTLSeconds     int64           `json:"lease_ttl_seconds"`
 }
 
-// workerCommandResponse is one instruction returned to the worker. task, lease
-// and context are present exactly when kind is run_task and reuse the pull-mode
-// claim DTOs so a worker parses one payload shape however it got the card.
+// workerCommandResponse is one instruction returned to the worker. dispatch is
+// present exactly when kind is "dispatch".
 type workerCommandResponse struct {
-	Kind    string                `json:"kind"`
-	Task    *claimedTaskResponse  `json:"task,omitempty"`
-	Lease   *claimLeaseResponse   `json:"lease,omitempty"`
-	Context *claimContextResponse `json:"context,omitempty"`
+	Kind     string            `json:"kind"`
+	Dispatch *dispatchResponse `json:"dispatch,omitempty"`
 }
 
 // workerHeartbeatResponse is the 200 body of POST /v1/workers/heartbeat.
@@ -79,8 +68,7 @@ type workerHeartbeatResponse struct {
 	Commands []workerCommandResponse `json:"commands"`
 }
 
-// workerListResponse is the list envelope; next_cursor is omitted on the last
-// page.
+// workerListResponse is the list envelope.
 type workerListResponse struct {
 	Items      []workerResponse `json:"items"`
 	NextCursor *string          `json:"next_cursor,omitempty"`
@@ -97,6 +85,7 @@ func (h *workersHandler) heartbeat(w http.ResponseWriter, r *http.Request) {
 	result, err := h.service.Heartbeat(r.Context(), app.HeartbeatInput{
 		WorkerID: req.WorkerID,
 		State:    req.State,
+		Kinds:    req.Kinds,
 		Metadata: req.Metadata,
 		Actor:    ActorFromContext(r.Context()),
 	})
@@ -107,17 +96,20 @@ func (h *workersHandler) heartbeat(w http.ResponseWriter, r *http.Request) {
 
 	WithSubject(r.Context(), result.Worker.WorkerID)
 	writeJSON(w, http.StatusOK, workerHeartbeatResponse{
-		Worker:   h.toWorkerResponse(result.Worker),
-		Commands: h.toWorkerCommands(result.Commands),
+		Worker:   toWorkerResponse(result.Worker),
+		Commands: toWorkerCommands(result.Commands),
 	})
 }
 
-// listOrGetWorker handles GET /v1/workers: ?id= selects the detail form,
-// otherwise the registry is listed with limit/cursor.
+// listOrGetWorker handles GET /v1/workers.
 func (h *workersHandler) listOrGetWorker(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
+	if id := strings.TrimSpace(query.Get("id")); id != "" {
+		h.getWorker(w, r, id)
+		return
+	}
 	if query.Has("id") {
-		h.getWorker(w, r, query.Get("id"))
+		writeDomainError(w, r, h.logger, invalidField("id", "is required"))
 		return
 	}
 	h.listWorkers(w, r)
@@ -125,11 +117,6 @@ func (h *workersHandler) listOrGetWorker(w http.ResponseWriter, r *http.Request)
 
 // getWorker handles GET /v1/workers?id=w_xxx.
 func (h *workersHandler) getWorker(w http.ResponseWriter, r *http.Request, workerID string) {
-	workerID = strings.TrimSpace(workerID)
-	if workerID == "" {
-		writeDomainError(w, r, h.logger, invalidField("id", "is required"))
-		return
-	}
 	WithSubject(r.Context(), workerID)
 
 	snapshot, err := h.service.GetWorker(r.Context(), workerID)
@@ -137,7 +124,7 @@ func (h *workersHandler) getWorker(w http.ResponseWriter, r *http.Request, worke
 		writeDomainError(w, r, h.logger, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.toWorkerResponse(snapshot))
+	writeJSON(w, http.StatusOK, toWorkerViewResponse(snapshot))
 }
 
 // listWorkers handles GET /v1/workers?limit=&cursor=.
@@ -164,72 +151,77 @@ func (h *workersHandler) listWorkers(w http.ResponseWriter, r *http.Request) {
 		afterID = id
 	}
 
-	page, err := h.service.ListWorkers(r.Context(), afterID, limit)
+	items, next, err := h.service.ListWorkers(r.Context(), afterID, limit)
 	if err != nil {
 		writeDomainError(w, r, h.logger, err)
 		return
 	}
 
-	items := make([]workerResponse, 0, len(page.Items))
-	for _, snapshot := range page.Items {
-		items = append(items, h.toWorkerResponse(snapshot))
+	response := workerListResponse{Items: make([]workerResponse, 0, len(items))}
+	for _, item := range items {
+		response.Items = append(response.Items, toWorkerViewResponse(item))
 	}
-	response := workerListResponse{Items: items}
-	if page.NextID != 0 {
-		next := encodeWorkerCursor(page.NextID)
-		response.NextCursor = &next
+	if next != nil {
+		cursor := encodeWorkerCursor(*next)
+		response.NextCursor = &cursor
 	}
 	writeJSON(w, http.StatusOK, response)
 }
 
-// toWorkerResponse maps the read model to the wire DTO. The two timing fields
-// come from the service configuration so every response reports the same
-// values the worker must honour.
-func (h *workersHandler) toWorkerResponse(snapshot app.WorkerSnapshot) workerResponse {
+// toWorkerResponse maps a heartbeat snapshot to the wire DTO.
+func toWorkerResponse(snapshot app.WorkerSnapshot) workerResponse {
 	metadata := snapshot.Metadata
 	if len(metadata) == 0 {
-		// The column defaults to '{}'; an empty document would otherwise
-		// encode as invalid JSON.
 		metadata = json.RawMessage("{}")
 	}
 	return workerResponse{
 		WorkerID:            snapshot.WorkerID,
 		Presence:            snapshot.Presence,
 		State:               snapshot.State,
-		CurrentTaskID:       snapshot.CurrentTaskID,
+		Kinds:               snapshot.Kinds,
+		CurrentWorkItemID:   snapshot.CurrentWorkItemID,
 		Metadata:            metadata,
 		FirstSeen:           snapshot.FirstSeen.UTC().Format(time.RFC3339Nano),
 		LastSeen:            snapshot.LastSeen.UTC().Format(time.RFC3339Nano),
-		HeartbeatIntervalMS: int(h.service.HeartbeatInterval() / time.Millisecond),
-		LeaseTTLSeconds:     int(h.service.LeaseTTL() / time.Second),
+		HeartbeatIntervalMS: snapshot.HeartbeatIntervalMS,
+		LeaseTTLSeconds:     snapshot.LeaseTTLSeconds,
+	}
+}
+
+// toWorkerViewResponse maps a registry row to the wire DTO. The two timing
+// fields carry the same service configuration the heartbeat payload reports.
+func toWorkerViewResponse(view app.WorkerView) workerResponse {
+	metadata := view.Metadata
+	if len(metadata) == 0 {
+		metadata = json.RawMessage("{}")
+	}
+	return workerResponse{
+		WorkerID:            view.WorkerID,
+		Presence:            view.Presence,
+		State:               view.State,
+		Kinds:               view.Kinds,
+		CurrentWorkItemID:   view.CurrentWorkItemID,
+		Metadata:            metadata,
+		FirstSeen:           view.FirstSeen.UTC().Format(time.RFC3339Nano),
+		LastSeen:            view.LastSeen.UTC().Format(time.RFC3339Nano),
+		HeartbeatIntervalMS: view.HeartbeatIntervalMS,
+		LeaseTTLSeconds:     view.LeaseTTLSeconds,
 	}
 }
 
 // toWorkerCommands maps the command list, keeping it non-nil so it encodes as
 // [] rather than null.
-func (h *workersHandler) toWorkerCommands(commands []app.WorkerCommand) []workerCommandResponse {
+func toWorkerCommands(commands []app.WorkerCommand) []workerCommandResponse {
 	out := make([]workerCommandResponse, 0, len(commands))
 	for _, command := range commands {
-		out = append(out, toWorkerCommandResponse(command))
+		response := workerCommandResponse{Kind: command.Kind}
+		if command.Dispatch != nil {
+			dispatch := toDispatchResponse(*command.Dispatch)
+			response.Dispatch = &dispatch
+		}
+		out = append(out, response)
 	}
 	return out
-}
-
-func toWorkerCommandResponse(command app.WorkerCommand) workerCommandResponse {
-	response := workerCommandResponse{Kind: command.Kind}
-	if command.Task != nil {
-		task := toClaimedTaskResponse(*command.Task)
-		response.Task = &task
-	}
-	if command.Lease != nil {
-		lease := toClaimLeaseResponse(*command.Lease)
-		response.Lease = &lease
-	}
-	if command.Context != nil {
-		context := toClaimContextResponse(*command.Context)
-		response.Context = &context
-	}
-	return response
 }
 
 // encodeWorkerCursor renders the opaque cursor as base64url("i:<physical id>").

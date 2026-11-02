@@ -139,6 +139,11 @@ func NewWorkerID(now time.Time) (string, error) {
 	return WorkerIDPrefix + id, nil
 }
 
+// NewWorkID returns "w_" followed by a ULID. Work items and workers share the
+// prefix by design: both are opaque ids on the wire and the two namespaces are
+// never mixed in one field.
+func NewWorkID(now time.Time) (string, error) { return NewWorkerID(now) }
+
 // DecodeULIDMillis reports the 48-bit millisecond timestamp carried by a
 // Crockford-rendered ULID (the format NewULID produces).
 func DecodeULIDMillis(id string) (int64, error) {

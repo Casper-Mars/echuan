@@ -16,68 +16,30 @@ import (
 	"github.com/Casper-Mars/echuan/internal/store"
 )
 
-// Worker registration and heartbeat (tech design v0.6 §4.1 / §4.3).
+// Worker registry and heartbeat dispatch (tech design v0.8 §2.1 / §4.1).
 //
-// A heartbeat is a worker's single round trip to the control plane: it
-// registers on the first call, refreshes liveness, renews the lease it holds,
-// and — when it has nothing to do — receives the next card. The eight steps of
-// §4.1 all run inside one write transaction, so two heartbeats of the same
-// worker or a heartbeat racing the background reclaimer can never dispatch the
-// same card twice: the write pool is a single connection and the DSN sets
-// _txlock=immediate, which serialises the whole step list.
-//
-// The transaction is also why the dispatch is safe without a second
-// "is it still free?" read: store.ClaimNextTask picks and updates the card in
-// one statement, store.BindTask re-checks the worker pointer under the same
-// write lock, and both roll back together with everything else if anything in
-// the eight steps fails.
-//
-// Occupancy is decided by the pointer pair (workers.current_task_id and
-// workers.current_lease_id) and never by the declared state:
-//
-//   - a worker that still holds a card keeps renewing the lease no matter what
-//     state it declares — idle means "do not hand me a new card", not "drop the
-//     card I am working on";
-//   - a heartbeat that loses its own pointer (the lease was reclaimed or could
-//     no longer be renewed) never dispatches in that same round. The client is
-//     told about the loss and only the next heartbeat may take a new card,
-//     which is what stops one worker from holding two cards at once.
+// One row per registered worker. The pointer pair (current_work_item_id,
+// current_lease_id) is what makes a worker busy. worker_kinds declares the
+// kinds a worker can take and is the only dispatch input: the queue SQL filters
+// by it, so a worker that declared nothing claims nothing.
 
-// CommandRunTask is the only command a heartbeat can carry: execute the task
-// attached to it (tech design v0.6 §4.3).
-const CommandRunTask = "run_task"
+const (
+	defaultWorkerTTL              = time.Hour
+	defaultWorkerMetadataMaxBytes = 64 * 1024
+)
 
-// defaultWorkerTTL mirrors platform.DefaultConfig().WorkerTTL so a service
-// built without an explicit configuration still reports presence sensibly.
-const defaultWorkerTTL = 45 * time.Second
-
-// defaultWorkerHeartbeatInterval mirrors
-// platform.DefaultConfig().HeartbeatInterval.
+// defaultWorkerHeartbeatInterval is the cadence reported to workers.
 const defaultWorkerHeartbeatInterval = 15 * time.Second
 
-// defaultWorkerMetadataMaxBytes mirrors
-// platform.DefaultConfig().WorkerMetadataMaxBytes.
-const defaultWorkerMetadataMaxBytes = 8192
-
-// WorkerServiceOptions is the subset of the configuration the worker use cases
-// need. Zero values fall back to the defaults above.
+// WorkerServiceOptions configures the registry.
 type WorkerServiceOptions struct {
-	// LeaseTTL is the lease duration handed out on dispatch and renewal. It
-	// should match the claim service's TTL: both write tasks.lease_until.
-	LeaseTTL time.Duration
-	// WorkerTTL is how long a worker stays "active" after its last heartbeat.
-	WorkerTTL time.Duration
-	// HeartbeatInterval is the cadence workers are told to heartbeat at. It is
-	// reported back on every heartbeat so a worker never has to hard-code it.
+	LeaseTTL          time.Duration
+	WorkerTTL         time.Duration
 	HeartbeatInterval time.Duration
-	// MetadataMaxBytes caps the free-form metadata document.
-	MetadataMaxBytes int64
+	MetadataMaxBytes  int64
 }
 
-// WorkerService implements registration, heartbeat and worker-side dispatch.
-//
-// It deliberately does not own HTTP concerns (Task-05 maps the results) and it
-// does not touch the pull-mode claim endpoint (Task-06).
+// WorkerService implements registration, heartbeat renewal and dispatch.
 type WorkerService struct {
 	store             *store.Store
 	logger            *slog.Logger
@@ -133,106 +95,89 @@ func (s *WorkerService) WorkerTTL() time.Duration { return s.workerTTL }
 // HeartbeatInterval returns the heartbeat cadence reported to workers.
 func (s *WorkerService) HeartbeatInterval() time.Duration { return s.heartbeatInterval }
 
-// HeartbeatInput is the body of POST /v1/workers/heartbeat (§4.1).
+// heartbeatIntervalMS renders the heartbeat cadence for the wire.
+func (s *WorkerService) heartbeatIntervalMS() int64 { return s.heartbeatInterval.Milliseconds() }
+
+// leaseTTLSeconds renders the lease duration for the wire.
+func (s *WorkerService) leaseTTLSeconds() int64 { return int64(s.leaseTTL / time.Second) }
+
+// HeartbeatInput is the body of POST /v1/workers/heartbeat.
 //
-// WorkerID is empty on the very first call; the server mints a w_-prefixed id
-// and the worker must reuse it afterwards. State defaults to idle. Metadata is
-// the raw JSON document as received: nil/blank means "not supplied", which
-// leaves the stored document untouched, while a supplied document replaces it.
+// WorkerID is empty on the very first call; the server mints a w_-prefixed id.
+// Kinds is mandatory on every call and replaces the stored declaration
+// wholesale. Metadata is the raw JSON document as received: nil/blank means
+// "not supplied", which leaves the stored document untouched.
 type HeartbeatInput struct {
 	WorkerID string
 	State    string
+	Kinds    []string
 	Metadata []byte
 	Actor    string
 }
 
 // WorkerSnapshot is the worker part of a heartbeat response.
-//
-// CurrentTaskID is the business task id the worker holds, nil when idle. State
-// is the persisted value, i.e. the client's last declaration. A worker that
-// declares idle while a card is still bound keeps both the pointer and a live
-// lease (§4.1 step 5 renews any held card); only a lost lease or a report
-// releases it. The pointer, not State, is what makes a worker occupied.
-// Presence is derived from last_seen and the configured TTL and is never
-// stored.
 type WorkerSnapshot struct {
-	WorkerID      string
-	Metadata      json.RawMessage
-	State         string
-	Presence      string
-	CurrentTaskID *string
-	FirstSeen     time.Time
-	LastSeen      time.Time
+	WorkerID            string
+	Metadata            json.RawMessage
+	State               string
+	Kinds               []string
+	Presence            string
+	CurrentWorkItemID   *string
+	FirstSeen           time.Time
+	LastSeen            time.Time
+	HeartbeatIntervalMS int64
+	LeaseTTLSeconds     int64
 }
 
-// WorkerCommand is one instruction returned to the worker. Task/Lease/Context
-// are set exactly when Kind is CommandRunTask; they reuse the pull-mode claim
-// types so a worker parses one payload shape no matter how it got the card.
+// WorkerCommand is one instruction returned to the worker. Dispatch is set
+// exactly when Kind is CommandDispatch.
 type WorkerCommand struct {
-	Kind    string
-	Task    *ClaimedTask
-	Lease   *ClaimLease
-	Context *ClaimContext
+	Kind     string
+	Dispatch *Dispatch
 }
 
-// HeartbeatResult is the body of a 200 heartbeat response. Commands is always
-// a non-nil slice: "nothing to do" is an empty array, not null.
+// HeartbeatResult is the body of a 200 heartbeat response. Commands is always a
+// non-nil slice: "nothing to do" is an empty array, not null.
 type HeartbeatResult struct {
 	Worker   WorkerSnapshot
 	Commands []WorkerCommand
 }
 
 // Heartbeat registers, refreshes and possibly dispatches work for one worker.
-//
-// The eight steps of §4.1 map to the transaction body below, in order:
-//
-//  1. validate state and metadata;
-//  2. mint a worker id or reject an unknown one (worker_unknown);
-//  3. upsert metadata/state/last_seen (first_seen on the insert);
-//  4. reclaim expired leases and release their worker pointers;
-//  5. keep or release the held card and renew its lease whenever it is held;
-//  6. a busy worker gets no new card;
-//  7. an idle free worker gets the next claimable card — unless it just lost
-//     its own pointer in this round (reclaim or failed renewal), in which case
-//     the dispatch waits for the next heartbeat;
-//  8. read the worker back and return the snapshot plus the commands.
 func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (HeartbeatResult, error) {
 	now := s.clock.Now().UTC()
 	updateTime := formatTimestamp(now)
 
 	var (
 		result     HeartbeatResult
-		reclaimed  []store.ReclaimedTask
+		reclaimed  []store.ReclaimedWorkItem
 		workerID   string
 		registered bool
 
 		// leaseLost is set when this heartbeat released the pointer because the
-		// lease was gone (reclaimed in step 4, or no longer renewable in step 5).
-		// It gates step 7 for this round only.
+		// lease was gone. It gates dispatch for this round only.
 		leaseLost bool
 
-		cleared       bool
-		clearedTaskID string
+		cleared   bool
+		clearedID string
+		kinds     []string
 
-		renewedTaskID  string
+		renewedWorkID  string
 		renewedLeaseID string
 		renewedUntil   time.Time
 
-		dispatched *ClaimResult
+		dispatched *Dispatch
 	)
 
 	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
-		// 1. Request validation. It runs inside the transaction only because
-		// the design puts the whole sequence there; it touches no rows.
-		state, metadata, err := s.validateHeartbeat(in)
+		state, normalizedKinds, metadata, err := s.validateHeartbeat(in)
 		if err != nil {
 			return err
 		}
-		actor := actorOrDefault(in.Actor)
+		kinds = normalizedKinds
 
 		// 2. Identify the worker: an empty id registers a new one, a non-empty
-		// id must already exist. A client cannot pick its own id, which is why
-		// an unknown one is an error instead of an implicit insert.
+		// id must already exist.
 		workerID = strings.TrimSpace(in.WorkerID)
 		if workerID == "" {
 			generated, err := platform.NewWorkerID(now)
@@ -248,75 +193,60 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 			return err
 		}
 
-		// 3. Register or refresh. The upsert never touches the pointer pair;
-		// only the steps below own the binding.
+		// 3. Register or refresh. The upsert replaces worker_kinds in the same
+		// transaction; the pointer pair is left to the steps below.
 		if _, err := store.UpsertWorker(ctx, tx, store.WorkerUpsert{
 			WorkerID:     workerID,
 			MetadataJSON: metadata,
 			State:        state,
+			Kinds:        kinds,
 			LastSeen:     store.FormatWorkerTime(now),
 			UpdateTime:   updateTime,
 		}); err != nil {
 			return err
 		}
 
-		// The sweep below releases the pointer of every worker whose card it
-		// reclaimed, so read the pointer first: this heartbeat has to know that
-		// it lost a card, not just that it currently owns none.
 		beforeReclaim, err := store.GetWorker(ctx, tx, workerID)
 		if err != nil {
 			return err
 		}
 
-		// 4. Reclaim expired leases. reclaimExpired also releases the pointer of
-		// each worker that held a reclaimed card, so this step and the claim /
-		// background sweeps share one implementation.
-		reclaimed, err = reclaimExpired(ctx, tx, now)
+		// 4. Reclaim expired leases, which also releases the pointer of every
+		// worker that held a reclaimed card.
+		reclaimed, err = reclaimExpiredWorkItems(ctx, tx, now)
 		if err != nil {
 			return err
 		}
 
-		// Step 4 may have cleared this very worker's pointer, so the row read
-		// above is stale: re-read before deciding what it holds.
 		worker, err := store.GetWorker(ctx, tx, workerID)
 		if err != nil {
 			return err
 		}
-		if beforeReclaim.CurrentTaskID != nil && worker.CurrentTaskID == nil {
-			// The card this worker was holding was reclaimed in step 4. It is
-			// free again, but not in this round: step 7 waits for the next
-			// heartbeat, otherwise a worker whose lease just lapsed would take a
-			// second card while the agent is still working on the first.
+		if beforeReclaim.CurrentWorkItemID != nil && worker.CurrentWorkItemID == nil {
 			leaseLost = true
 		}
 
 		// 5. Keep or release the held card. Occupancy is the pointer pair, never
 		// the declared state: a worker that still holds a card keeps renewing
-		// the lease even when it says idle — idle only means "do not hand me a
-		// new card". A release without a report means the lease is gone, and
-		// step 7 must not dispatch in that same round.
-		var heldTaskID *string
-		if worker.CurrentTaskID != nil {
-			task, taskErr := store.GetTaskByID(ctx, tx, *worker.CurrentTaskID)
-			if taskErr != nil && !store.IsNotFound(taskErr) {
-				return taskErr
+		// the lease even when it says idle.
+		var heldWorkID *string
+		if worker.CurrentWorkItemID != nil {
+			row, rowErr := store.GetWorkItemByID(ctx, tx, *worker.CurrentWorkItemID)
+			if rowErr != nil && !store.IsNotFound(rowErr) {
+				return rowErr
 			}
-			held := taskErr == nil && workerHoldsTask(worker, task)
+			held := rowErr == nil && workerHoldsWorkItem(worker, row)
 			if !held {
-				// The card was reported, reclaimed or re-leased elsewhere: the
-				// pointer is stale. Clearing frees the slot; a reported card may
-				// hand over to the next one in this same heartbeat, a lost lease
-				// may not (leaseLost is already set in that case).
-				if taskErr == nil {
-					clearedTaskID = task.TaskID
+				if rowErr == nil {
+					clearedID = row.WorkID
 				}
-				if _, err := store.ClearTaskByTaskID(ctx, tx, *worker.CurrentTaskID, updateTime); err != nil {
+				if _, err := store.ClearWorkItemByWorkItemID(ctx, tx, *worker.CurrentWorkItemID, updateTime); err != nil {
 					return err
 				}
 				cleared = true
 			} else {
-				until, ok, err := store.HeartbeatLease(ctx, tx, store.HeartbeatRequest{
-					TaskID:     task.TaskID,
+				until, ok, err := store.HeartbeatLease(ctx, tx, store.WorkItemHeartbeatRequest{
+					WorkID:     row.WorkID,
 					LeaseID:    *worker.CurrentLeaseID,
 					Now:        formatLeaseTime(now),
 					Until:      formatLeaseTime(now.Add(s.leaseTTL)),
@@ -326,12 +256,8 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 					return err
 				}
 				if !ok {
-					// Defensive: step 4 already swept expired leases, so a live
-					// binding should renew. Treat a miss as a lost lease rather
-					// than keep a pointer we cannot prove; the next heartbeat may
-					// take a new card.
-					clearedTaskID = task.TaskID
-					if _, err := store.ClearTaskByTaskID(ctx, tx, *worker.CurrentTaskID, updateTime); err != nil {
+					clearedID = row.WorkID
+					if _, err := store.ClearWorkItemByWorkItemID(ctx, tx, *worker.CurrentWorkItemID, updateTime); err != nil {
 						return err
 					}
 					cleared = true
@@ -341,40 +267,37 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 					if err != nil {
 						return err
 					}
-					renewedTaskID = task.TaskID
+					renewedWorkID = row.WorkID
 					renewedLeaseID = *worker.CurrentLeaseID
 					renewedUntil = parsed
-					heldTaskID = &task.TaskID
+					heldWorkID = &row.WorkID
 				}
 			}
 		}
 
 		// 6./7. Dispatch. A busy worker never receives a second card; an idle
 		// worker without a card takes the next claimable one — unless it just
-		// lost its own pointer (reclaim or failed renewal), in which case the
-		// next card waits for the following heartbeat so that one worker can
-		// never hold two cards.
+		// lost its own pointer in this round.
 		commands := make([]WorkerCommand, 0, 1)
-		if heldTaskID == nil && state == domain.WorkerStateIdle && !leaseLost {
-			claim, err := s.dispatch(ctx, tx, workerID, actor, now)
+		if heldWorkID == nil && state == domain.WorkerStateIdle && !leaseLost {
+			dispatch, err := s.dispatch(ctx, tx, workerID, now)
 			if err != nil {
 				return err
 			}
-			if claim != nil {
-				dispatched = claim
-				taskID := claim.Task.ID
-				heldTaskID = &taskID
-				commands = append(commands, WorkerCommand{
-					Kind:    CommandRunTask,
-					Task:    &claim.Task,
-					Lease:   &claim.Lease,
-					Context: &claim.Context,
-				})
+			if dispatch != nil {
+				dispatched = dispatch
+				workID := dispatch.WorkID
+				heldWorkID = &workID
+				commands = append(commands, WorkerCommand{Kind: CommandDispatch, Dispatch: dispatch})
 			}
 		}
 
 		// 8. Snapshot of the row as it now stands (dispatch binds it).
 		final, err := store.GetWorker(ctx, tx, workerID)
+		if err != nil {
+			return err
+		}
+		storedKinds, err := store.ListWorkerKinds(ctx, tx, workerID)
 		if err != nil {
 			return err
 		}
@@ -388,13 +311,16 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 		}
 		result = HeartbeatResult{
 			Worker: WorkerSnapshot{
-				WorkerID:      final.WorkerID,
-				Metadata:      json.RawMessage(final.MetadataJSON),
-				State:         final.State,
-				Presence:      domain.Presence(lastSeen, now, s.workerTTL),
-				CurrentTaskID: heldTaskID,
-				FirstSeen:     firstSeen,
-				LastSeen:      lastSeen,
+				WorkerID:            final.WorkerID,
+				Metadata:            json.RawMessage(final.MetadataJSON),
+				State:               final.State,
+				Kinds:               storedKinds,
+				Presence:            domain.Presence(lastSeen, now, s.workerTTL),
+				CurrentWorkItemID:   heldWorkID,
+				FirstSeen:           firstSeen,
+				LastSeen:            lastSeen,
+				HeartbeatIntervalMS: s.heartbeatIntervalMS(),
+				LeaseTTLSeconds:     s.leaseTTLSeconds(),
 			},
 			Commands: commands,
 		}
@@ -404,73 +330,92 @@ func (s *WorkerService) Heartbeat(ctx context.Context, in HeartbeatInput) (Heart
 		return HeartbeatResult{}, err
 	}
 
-	// Logging happens only after the commit: a rolled-back heartbeat must not
-	// leave lines about a registration, a renewal or a dispatch that never was.
 	logReclaimed(s.logger, reclaimed)
 	if registered {
-		s.logger.Info("worker registered",
-			"worker_id", workerID,
-			"state", result.Worker.State,
-		)
+		s.logger.Info("worker registered", "worker_id", workerID, "state", result.Worker.State)
 	}
 	if cleared {
-		s.logger.Info("worker pointer cleared",
-			"worker_id", workerID,
-			"task_id", clearedTaskID,
-		)
+		s.logger.Info("worker pointer cleared", "worker_id", workerID, "work_id", clearedID)
 	}
 	if leaseLost {
 		s.logger.Info("worker lost its lease; dispatch deferred to the next heartbeat",
-			"worker_id", workerID,
-		)
+			"worker_id", workerID)
 	}
 	if !renewedUntil.IsZero() {
 		s.logger.Debug("worker lease renewed",
 			"worker_id", workerID,
-			"task_id", renewedTaskID,
+			"work_id", renewedWorkID,
 			"lease_id", renewedLeaseID,
 			"lease_until", renewedUntil.Format(time.RFC3339Nano),
 		)
 	}
 	if dispatched != nil {
-		s.logger.Info("worker dispatched task",
+		s.logger.Info("worker dispatched work item",
 			"worker_id", workerID,
-			"task_id", dispatched.Task.ID,
-			"project_id", dispatched.Task.ProjectID,
+			"work_id", dispatched.WorkID,
+			"kind", dispatched.Kind,
+			"project_id", dispatched.WorkItem.ProjectID,
 			"product", dispatched.Context.Product.ID,
-			"attempt", dispatched.Task.Attempt,
+			"attempt", dispatched.WorkItem.Attempt,
 			"lease_id", dispatched.Lease.LeaseID,
-			"lease_until", dispatched.Lease.Until.Format(time.RFC3339Nano),
 		)
 	}
 	return result, nil
 }
 
-// validateHeartbeat applies step 1 of §4.1 and returns the normalized state and
-// metadata document. An empty metadata document means "not supplied".
-func (s *WorkerService) validateHeartbeat(in HeartbeatInput) (string, string, error) {
+// validateHeartbeat applies step 1 and returns the normalized state, kinds and
+// metadata document.
+func (s *WorkerService) validateHeartbeat(in HeartbeatInput) (string, []string, string, error) {
 	state := strings.TrimSpace(in.State)
 	switch state {
 	case "":
 		state = domain.WorkerStateIdle
 	case domain.WorkerStateIdle, domain.WorkerStateBusy:
 	default:
-		return "", "", invalidField("state", "must be idle or busy")
+		return "", nil, "", invalidField("state", "must be idle or busy")
+	}
+
+	kinds, err := normalizeKinds(in.Kinds)
+	if err != nil {
+		return "", nil, "", err
 	}
 
 	metadata, err := s.normalizeMetadata(in.Metadata)
 	if err != nil {
-		return "", "", err
+		return "", nil, "", err
 	}
-	return state, metadata, nil
+	return state, kinds, metadata, nil
+}
+
+// normalizeKinds validates the mandatory kind declaration.
+//
+// kinds is required, must contain at least one value and every value must be
+// one of the four schema kinds. Duplicates are removed while keeping the
+// request order, so worker_kinds stores exactly the union the client meant.
+func normalizeKinds(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, invalidField("kinds", "is required and must not be empty")
+	}
+	kinds := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, value := range raw {
+		value = strings.TrimSpace(value)
+		if value == "" || !store.IsValidWorkItemKind(value) {
+			return nil, invalidField("kinds", fmt.Sprintf("unsupported kind %q", value))
+		}
+		if _, dup := seen[value]; dup {
+			continue
+		}
+		seen[value] = struct{}{}
+		kinds = append(kinds, value)
+	}
+	if len(kinds) == 0 {
+		return nil, invalidField("kinds", "is required and must not be empty")
+	}
+	return kinds, nil
 }
 
 // normalizeMetadata validates the metadata document and returns it trimmed.
-//
-// A metadata document is free-form, but it must be a JSON object: the column is
-// documented as an object and an array or a bare string would make every reader
-// special-case it. The size cap is checked first so an oversized body is
-// answered with 413 before any parsing work is done.
 func (s *WorkerService) normalizeMetadata(raw []byte) (string, error) {
 	doc := bytes.TrimSpace(raw)
 	if len(doc) == 0 {
@@ -483,29 +428,20 @@ func (s *WorkerService) normalizeMetadata(raw []byte) (string, error) {
 			Actual: int64(len(doc)),
 		}
 	}
-	// A leading '{' plus json.Valid rejects every non-object: arrays, strings,
-	// numbers, null and malformed documents (including trailing garbage). It
-	// also avoids allocating a decode map for a document the store only ever
-	// copies verbatim.
 	if doc[0] != '{' || !json.Valid(doc) {
 		return "", invalidField("metadata", "must be a JSON object")
 	}
 	return string(doc), nil
 }
 
-// dispatch takes the next claimable card of any product and binds it to the
-// worker (steps 7 of §4.1). A nil result means the queue is empty.
-//
-// The task row, the lease columns and the worker pointer are written by three
-// statements inside the caller's transaction; there is no window in which the
-// card is in progress without an owner or owned by a worker that was not told.
-func (s *WorkerService) dispatch(ctx context.Context, tx *sql.Tx, workerID, actor string, now time.Time) (*ClaimResult, error) {
+// dispatch takes the next claimable card and binds it to the worker.
+func (s *WorkerService) dispatch(ctx context.Context, tx *sql.Tx, workerID string, now time.Time) (*Dispatch, error) {
 	updateTime := formatTimestamp(now)
 
-	task, claimed, err := store.ClaimNextTask(ctx, tx, store.ClaimNextRequest{
+	row, claimed, err := store.ClaimNextWorkItem(ctx, tx, store.ClaimNextRequest{
+		WorkerID:   workerID,
 		LeaseID:    platform.NewLeaseID(),
 		LeaseUntil: formatLeaseTime(now.Add(s.leaseTTL)),
-		Actor:      actor,
 		UpdateTime: updateTime,
 	})
 	if err != nil {
@@ -515,159 +451,136 @@ func (s *WorkerService) dispatch(ctx context.Context, tx *sql.Tx, workerID, acto
 		return nil, nil
 	}
 
-	// The response carries the product snapshot, so resolve the card's project
-	// and then its product. store.Project only exposes the product's business
-	// id (the physical foreign key stays inside the store), and both rows exist
-	// by foreign key.
-	project, err := store.GetProjectByProjectID(ctx, tx, task.ProjectCode)
-	if err != nil {
-		return nil, err
-	}
-	product, err := store.GetProductByProductID(ctx, tx, project.ProductCode)
-	if err != nil {
-		return nil, err
-	}
-
-	claim, err := buildClaimResult(ctx, tx, task, product, s.leaseTTL, now)
+	dispatch, err := buildDispatch(ctx, tx, row, s.leaseTTL, now)
 	if err != nil {
 		return nil, err
 	}
 
 	var leaseID string
-	if task.LeaseID != nil {
-		leaseID = *task.LeaseID
+	if row.LeaseID != nil {
+		leaseID = *row.LeaseID
 	}
-	if err := store.BindTask(ctx, tx, workerID, task.ID, leaseID, updateTime); err != nil {
-		// The unique index on current_task_id is the authority: a stale pointer
-		// on another worker can make a card that looks ready already owned. The
-		// caller maps this to 409 worker_busy; the transaction rolls back, so
-		// the claim itself is undone too.
+	if err := store.BindWorkItem(ctx, tx, workerID, row.ID, leaseID, updateTime); err != nil {
 		if errors.Is(err, store.ErrUniqueViolation) {
 			return nil, &domain.WorkerBusyError{
 				WorkerID: workerID,
-				TaskID:   task.TaskID,
-				Reason:   "the card is already bound to another worker",
+				WorkID:   row.WorkID,
+				Reason:   "the work item is already bound to another worker",
 			}
 		}
 		return nil, err
 	}
-	return claim, nil
+	return dispatch, nil
 }
 
-// workerHoldsTask reports whether the worker's pointer pair still describes the
-// live lease of that task. Status 2 plus a matching lease id is the whole
-// proof: a report, a reclaim or a re-lease breaks at least one of them.
-func workerHoldsTask(worker store.Worker, task store.Task) bool {
-	return task.Status == domain.TaskInProgress &&
-		task.LeaseID != nil &&
-		worker.CurrentLeaseID != nil &&
-		*task.LeaseID == *worker.CurrentLeaseID
+// workerHoldsWorkItem reports whether the worker's pointer pair still describes
+// the live lease of that card.
+func workerHoldsWorkItem(worker store.Worker, row store.WorkItem) bool {
+	if worker.CurrentWorkItemID == nil || *worker.CurrentWorkItemID != row.ID {
+		return false
+	}
+	if worker.CurrentLeaseID == nil || row.LeaseID == nil || *worker.CurrentLeaseID != *row.LeaseID {
+		return false
+	}
+	if row.State != store.WorkItemStateLeased || row.WorkerID == nil || *row.WorkerID != worker.WorkerID {
+		return false
+	}
+	return true
 }
 
-// WorkerPage is one page of the worker registry. NextID is the physical id of
-// the last returned row and is zero on the last page; it is what the HTTP layer
-// turns into an opaque cursor.
-type WorkerPage struct {
-	Items  []WorkerSnapshot
-	NextID int64
-}
-
-// ListWorkers returns one page of the registry ordered by last_seen DESC.
-//
-// The ordering is the store's (keyset on last_seen, id); the API layer must not
-// re-sort. "Online first" is a presentation concern of the operator UI
-// (Task-10), so the page only reports the derived presence of each row.
-//
-// limit+1 rows are read to learn whether another page exists, exactly like
-// ListProducts. A worker whose pointer names a task that no longer exists is
-// reported with a nil CurrentTaskID: the maintenance sweep owns clearing the
-// column, and a dangling pointer must not make the listing fail.
-func (s *WorkerService) ListWorkers(ctx context.Context, afterID int64, limit int) (WorkerPage, error) {
+// ListWorkers returns one page of the registry.
+func (s *WorkerService) ListWorkers(ctx context.Context, afterID int64, limit int) ([]WorkerView, *int64, error) {
 	if limit < 1 || limit > maxListLimit {
-		return WorkerPage{}, invalidField("limit", fmt.Sprintf("must be between 1 and %d", maxListLimit))
+		return nil, nil, invalidField("limit", fmt.Sprintf("must be between 1 and %d", maxListLimit))
 	}
-	if afterID < 0 {
-		return WorkerPage{}, invalidField("cursor", "is invalid")
-	}
-
-	db := s.store.Read()
-	rows, err := store.ListWorkers(ctx, db, afterID, limit+1)
+	rows, err := store.ListWorkers(ctx, s.store.Read(), afterID, limit+1)
 	if err != nil {
-		return WorkerPage{}, err
+		return nil, nil, err
+	}
+	var next *int64
+	if len(rows) > limit {
+		rows = rows[:limit]
+		id := rows[len(rows)-1].ID
+		next = &id
 	}
 
+	workers := make([]WorkerView, 0, len(rows))
 	now := s.clock.Now().UTC()
-	page := WorkerPage{Items: make([]WorkerSnapshot, 0, min(len(rows), limit))}
-	for i, row := range rows {
-		if i == limit {
-			page.NextID = rows[limit-1].ID
-			break
-		}
-		snapshot, err := s.snapshotFromRow(ctx, db, row, now)
+	for _, row := range rows {
+		view, err := s.workerView(ctx, row, now)
 		if err != nil {
-			return WorkerPage{}, err
+			return nil, nil, err
 		}
-		page.Items = append(page.Items, snapshot)
+		workers = append(workers, view)
 	}
-	return page, nil
+	return workers, next, nil
 }
 
-// GetWorker returns one worker by business id. A missing row is the domain
-// not_found error (404 at the HTTP layer), not worker_unknown: worker_unknown
-// is the heartbeat telling a worker its own id is stale.
-func (s *WorkerService) GetWorker(ctx context.Context, workerID string) (WorkerSnapshot, error) {
+// GetWorker returns one registered worker.
+func (s *WorkerService) GetWorker(ctx context.Context, workerID string) (WorkerView, error) {
 	workerID = strings.TrimSpace(workerID)
 	if workerID == "" {
-		return WorkerSnapshot{}, invalidField("id", "is required")
+		return WorkerView{}, invalidField("worker_id", "is required")
 	}
-	db := s.store.Read()
-	row, err := store.GetWorker(ctx, db, workerID)
+	row, err := store.GetWorker(ctx, s.store.Read(), workerID)
 	if err != nil {
 		if store.IsNotFound(err) {
-			return WorkerSnapshot{}, &domain.NotFoundError{Resource: "worker", Key: workerID}
+			return WorkerView{}, &domain.NotFoundError{Resource: "worker", Key: workerID}
 		}
-		return WorkerSnapshot{}, err
+		return WorkerView{}, err
 	}
-	return s.snapshotFromRow(ctx, db, row, s.clock.Now().UTC())
+	return s.workerView(ctx, row, s.clock.Now().UTC())
 }
 
-// snapshotFromRow renders one persisted row as the read model the API exposes.
-//
-// CurrentTaskID is resolved from the physical pointer to the business task id;
-// occupancy is decided by the pointer alone (a worker that declares idle while
-// still holding a card stays occupied, §4.1 step 5), never by State.
-func (s *WorkerService) snapshotFromRow(ctx context.Context, q store.Querier, row store.Worker, now time.Time) (WorkerSnapshot, error) {
+// WorkerView is one registry row as the API renders it.
+type WorkerView struct {
+	WorkerID          string
+	Metadata          json.RawMessage
+	State             string
+	Kinds             []string
+	Presence          string
+	CurrentWorkItemID *string
+	FirstSeen         time.Time
+	LastSeen          time.Time
+	// HeartbeatIntervalMS and LeaseTTLSeconds mirror the heartbeat payload so
+	// registry reads expose the same server configuration.
+	HeartbeatIntervalMS int64
+	LeaseTTLSeconds     int64
+}
+
+func (s *WorkerService) workerView(ctx context.Context, row store.Worker, now time.Time) (WorkerView, error) {
+	kinds, err := store.ListWorkerKinds(ctx, s.store.Read(), row.WorkerID)
+	if err != nil {
+		return WorkerView{}, err
+	}
 	firstSeen, err := parseTimestamp(row.FirstSeen)
 	if err != nil {
-		return WorkerSnapshot{}, err
+		return WorkerView{}, err
 	}
 	lastSeen, err := parseTimestamp(row.LastSeen)
 	if err != nil {
-		return WorkerSnapshot{}, err
+		return WorkerView{}, err
 	}
-
-	var currentTaskID *string
-	if row.CurrentTaskID != nil {
-		task, taskErr := store.GetTaskByID(ctx, q, *row.CurrentTaskID)
-		switch {
-		case taskErr == nil:
-			id := task.TaskID
-			currentTaskID = &id
-		case store.IsNotFound(taskErr):
-			// The pointer outlived its task. Report free capacity instead of a
-			// dangling id; the sweep clears the column.
-		default:
-			return WorkerSnapshot{}, taskErr
+	var current *string
+	if row.CurrentWorkItemID != nil {
+		item, err := store.GetWorkItemByID(ctx, s.store.Read(), *row.CurrentWorkItemID)
+		if err != nil && !store.IsNotFound(err) {
+			return WorkerView{}, err
+		}
+		if err == nil && item.State == store.WorkItemStateLeased {
+			current = &item.WorkID
 		}
 	}
-
-	return WorkerSnapshot{
-		WorkerID:      row.WorkerID,
-		Metadata:      json.RawMessage(row.MetadataJSON),
-		State:         row.State,
-		Presence:      domain.Presence(lastSeen, now, s.workerTTL),
-		CurrentTaskID: currentTaskID,
-		FirstSeen:     firstSeen,
-		LastSeen:      lastSeen,
+	return WorkerView{
+		WorkerID:            row.WorkerID,
+		Metadata:            json.RawMessage(row.MetadataJSON),
+		State:               row.State,
+		Kinds:               kinds,
+		Presence:            domain.Presence(lastSeen, now, s.workerTTL),
+		CurrentWorkItemID:   current,
+		FirstSeen:           firstSeen,
+		LastSeen:            lastSeen,
+		HeartbeatIntervalMS: s.heartbeatIntervalMS(),
+		LeaseTTLSeconds:     s.leaseTTLSeconds(),
 	}, nil
 }

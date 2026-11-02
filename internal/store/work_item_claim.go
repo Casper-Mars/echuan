@@ -117,6 +117,9 @@ func ClaimWorkItem(ctx context.Context, tx *sql.Tx, req ClaimRequest) (WorkItem,
 // scope. It is what a worker heartbeat uses: the worker is handed the next card
 // of any product, because its registration is not bound to one product.
 type ClaimNextRequest struct {
+	// WorkID optionally restricts the attempt to one business id. Empty means
+	// "any claimable card"; a set id that is not claimable yields no work.
+	WorkID     string
 	WorkerID   string
 	LeaseID    string
 	LeaseUntil string
@@ -130,8 +133,15 @@ type ClaimNextRequest struct {
 // Only the scope predicate differs: productAnyScope instead of a product
 // filter. ok is false when the queue is empty.
 func ClaimNextWorkItem(ctx context.Context, tx *sql.Tx, req ClaimNextRequest) (WorkItem, bool, error) {
-	query := fmt.Sprintf(claimableWorkItemSQL, productAnyScope, "")
-	args := []any{req.WorkerID, req.LeaseID, req.LeaseUntil, req.WorkerID, req.UpdateTime}
+	filter := ""
+	args := []any{req.WorkerID}
+	if req.WorkID != "" {
+		filter = "AND w.work_id = ?"
+		args = append(args, req.WorkID)
+	}
+	args = append(args, req.LeaseID, req.LeaseUntil, req.WorkerID, req.UpdateTime)
+
+	query := fmt.Sprintf(claimableWorkItemSQL, productAnyScope, filter)
 	return runClaim(ctx, tx, query, args, "next work item")
 }
 
