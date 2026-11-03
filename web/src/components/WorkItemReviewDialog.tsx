@@ -167,7 +167,7 @@ function RejectForm({
             rows={4}
             value={reason}
             onChange={(event) => setReason(event.target.value)}
-            placeholder="请说明工作项清单需要修改的地方"
+            placeholder="请说明开发任务清单需要修改的地方"
             autoFocus
             disabled={submitting}
           />
