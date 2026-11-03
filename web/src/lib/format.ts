@@ -18,7 +18,7 @@ export const WORK_ITEM_KINDS = ['requirement', 'design', 'breakdown', 'dev'] as 
 const WORK_ITEM_KIND_LABELS: Record<(typeof WORK_ITEM_KINDS)[number], string> = {
   requirement: '需求',
   design: '方案',
-  breakdown: '拆分',
+  breakdown: '拆解',
   dev: '开发',
 }
 

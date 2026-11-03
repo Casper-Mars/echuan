@@ -378,8 +378,8 @@ describe('echuan_project_get：项目全景', () => {
     // 任务统计数字
     expect(text).toContain('共 12 个')
     expect(text).toContain('已完成 6 个')
-    expect(text).toContain('排队中 3')
-    expect(text).toContain('执行中 2')
+    expect(text).toContain('待开发 3')
+    expect(text).toContain('开发中 2')
 
     // reason
     expect(text).toContain('等待人工确认方案')

@@ -326,7 +326,7 @@ export function createProjectListTool(options: EchuanToolOptions): ToolDefinitio
       },
       status: {
         type: 'integer',
-        description: '项目状态数字（可选，单个整数，例如 1=方案评审、4=开发中）',
+        description: '项目状态数字（可选，单个整数，例如 1=需求评审、4=开发任务草稿）',
       },
       limit: {
         // 用 number 接收，非整数由 createListTool 本地拒绝并给出可读文案。
