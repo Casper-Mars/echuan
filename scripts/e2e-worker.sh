@@ -7,7 +7,7 @@
 #   2  产品 / 项目 / 需求 / 方案 / 批量拆解 / 驳回 + 审批；旧 /v1/tasks 端点 404
 #   3  首次心跳注册（kinds 必填，state=busy 不派单）
 #   4  第二次心跳 dispatch 派单；单 worker 单租约并发（并发 claim 全部 409 worker_busy）
-#   5  租约：busy 心跳续租、显式 lease 续租、idle 不续租
+#   5  租约：busy 心跳续租、显式 lease 续租、持卡 idle 仍续租（契约）
 #   6  报告（material_id + lease_id）→ submitted；验收 → accepted，项目自动 completed
 #   7  平台重启后 worker 注册表与心跳仍可用
 #   8  停止心跳 → offline（worker_ttl）→ 保留期清理（worker_retention）
@@ -344,7 +344,7 @@ pass "4/9 心跳返回 dispatch（$WORK_ID，requirement），单 worker 单租�
 
 STEP="5/9 租约续期"
 say ""
-say "== 5/9 busy 心跳续租、显式 lease 续租、idle 不续租 =="
+say "== 5/9 busy 心跳续租、显式 lease 续租、持卡 idle 仍续租（契约） =="
 lease_until() {
   http_get "/v1/work-items?id=$WORK_ID"
   require_code 200 "读取工作项租约"
@@ -369,6 +369,16 @@ NEW_LEASE="$(jqr '.lease_id')"
 L3="$(lease_until)"
 [[ "$L3" == "$RENEWED_UNTIL" ]] || fail "显式续租响应与详情租约不一致：$RENEWED_UNTIL / $L3"
 
+# 契约：占用只看指针，与 state 无关；持卡发 idle 也必须续租。
+# lease_until 是固定宽度的毫秒 UTC 时间戳（.000Z），用「首轮 idle 心跳前的
+# now + TTL - 2s」做硬断言，2s 余量用于吸收秒级取整与请求耗时。
+LEASE_TTL_SECONDS=90  # 与 write_config 的 lease_ttl 保持一致
+lease_epoch() {
+  # .000Z 截到秒后交给 jq 的 fromdateiso8601，避免依赖 GNU/BSD date 差异。
+  jq -nr --arg ts "${1%%.*}Z" '$ts | fromdateiso8601'
+}
+
+IDLE_T0="$(date -u +%s)"
 sleep 1.1
 http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$wid,state:"idle",kinds:["requirement","design","breakdown","dev"]}')"
 require_code 200 "idle 心跳 1"
@@ -377,17 +387,12 @@ http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$
 require_code 200 "idle 心跳 2"
 L4="$(lease_until)"
 [[ "$(jqr '.worker.current_work_item_id')" == "$WORK_ID" ]] || fail "idle 声明不应丢掉已持有的卡"
-# 平台实现按「持有指针即续租」处理（app/worker.go 步骤 5），与 openapi
-# 「持卡却发 idle 时只保留指针、不续租」的文字不一致。此处只断言不倒退，
-# 并把实际行为留痕；契约文本差异记入回归报告的 DIFF 清单。
-[[ "$L4" > "$L3" || "$L4" == "$L3" ]] || fail "idle 心跳后租约不应倒退：$L3 -> $L4"
-if [[ "$L4" == "$L3" ]]; then
-  IDLE_LEASE="未续租"
-else
-  IDLE_LEASE="仍续租（与 openapi 文字不一致）"
-fi
-say "lease_until: $L1 -> $L2 -> $L3（idle 后 $L4，$IDLE_LEASE）"
-pass "5/9 busy 心跳与显式 lease 均续租，idle 心跳保留指针（$IDLE_LEASE）"
+[[ "$L4" > "$L3" ]] || fail "持卡 idle 心跳必须续租（lease_until 应递增）：$L3 -> $L4"
+L4_EPOCH="$(lease_epoch "$L4")"
+IDLE_MIN=$((IDLE_T0 + LEASE_TTL_SECONDS - 2))
+[[ "$L4_EPOCH" -ge "$IDLE_MIN" ]] || fail "持卡 idle 心跳未按契约续租：lease_until=$L4（epoch $L4_EPOCH）早于 now+TTL-2s（$IDLE_MIN）"
+say "lease_until: $L1 -> $L2 -> $L3（idle 后 $L4，仍续租，契约满足）"
+pass "5/9 busy 心跳与显式 lease 均续租，持卡 idle 心跳亦续租（契约）"
 
 # --- 6. 阶段推进 ------------------------------------------------------------
 

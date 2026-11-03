@@ -5,7 +5,7 @@
 # 覆盖链路：
 #   S1  独立 docker compose 栈起平台（固定端口 18720，数据落临时目录）
 #   S1  独立 docker compose 栈起平台（固定端口 18720，数据落临时目录）
-#   S2  播种产品 / 项目 / 两张工作项（需求评审 → 方案评审 → 计划评审全链路）
+#   S2  播种产品 / 项目 / 两张工作项（需求评审 → 方案评审 → 开发任务评审全链路）
 #   S3  pnpm pack → 装进临时 dsh profile → profile 自身能 --help 退出
 #   S4  dsh 后台启动（ACP 长驻）→ 平台注册出 w_ 前缀 worker（kinds=dev）
 #   S5  平台 dispatch → 插件把工作项投递给根 agent（日志证据）

@@ -294,7 +294,7 @@ export function WorkItemsPage() {
 
                     {reviewReason && (
                       <div className="review-banner" role="status">
-                        <strong>工作项清单已驳回：</strong>
+                        <strong>开发任务评审已驳回：</strong>
                         <span className="review-banner-reason">{reviewReason}</span>
                         <span className="review-banner-meta">
                           操作人 {project?.last_actor || '—'} · {formatDateTime(rejectedAt)}
