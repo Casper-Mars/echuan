@@ -166,28 +166,28 @@ const PROJECT_STATUS_LABELS: Record<string, string> = {
   '1': '需求评审',
   '2': '方案草稿',
   '3': '方案评审',
-  '4': '计划草稿',
+  '4': '开发任务草稿',
   '5': '开发任务评审',
-  '6': '待收尾',
+  '6': '待完成',
   '7': '已完成',
   '8': '已取消',
 }
 
 /** 工作项状态（`WorkItem.state`）的中文名。 */
 const WORK_ITEM_STATE_LABELS: Record<string, string> = {
-  blocked: '阻塞',
-  queued: '排队中',
-  leased: '执行中',
+  blocked: '待评审',
+  queued: '待开发',
+  leased: '开发中',
   submitted: '待验收',
-  accepted: '已验收',
-  failed: '失败',
+  accepted: '已完成',
+  failed: '已失败',
   cancelled: '已取消',
 }
 
 /** 工作项类别（`kind`）的中文名。 */
 const WORK_ITEM_KIND_LABELS: Record<string, string> = {
   requirement: '需求',
-  design: '设计',
+  design: '方案',
   breakdown: '拆解',
   dev: '开发',
 }
@@ -337,7 +337,7 @@ export function formatInbox(res: InboxResponse): string {
 }
 
 /**
- * 工作项统计 → `共 N 个｜已完成 M 个｜按状态：排队中 3 / 执行中 2`。
+ * 工作项统计 → `共 N 个｜已完成 M 个｜按状态：待开发 3 / 开发中 2`。
  *
  * 平台项目详情把统计拆成 `work_item_total` / `work_item_done` /
  * `work_item_by_state` 三个字段，这里只做投影。

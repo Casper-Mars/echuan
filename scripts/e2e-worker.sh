@@ -567,7 +567,7 @@ require_code 200 "验收工作项"
 # 拆解计划生成的 dev 子项同样可被 claim / 报告 / 验收；结清后项目 completed。
 dispatch_next "心跳派发拆解生成的 dev 子项"
 [[ "$NEXT_KIND" == "dev" ]] || fail "dispatch.kind 应为 dev，实际 $NEXT_KIND"
-[[ "$NEXT_WORK" != "$DEV_WORK_ID" ]] || fail "第二张 dev 不应是已验收的 $DEV_WORK_ID"
+[[ "$NEXT_WORK" != "$DEV_WORK_ID" ]] || fail "第二张 dev 不应是已完成的 $DEV_WORK_ID"
 PLAN_DEV_LEASE="$NEXT_LEASE"
 http_post "/v1/work-items/report" "$(jq -nc \
   --arg wid "$NEXT_WORK" --arg mid "$SPEC_MATERIAL_ID" --arg lease "$PLAN_DEV_LEASE" \

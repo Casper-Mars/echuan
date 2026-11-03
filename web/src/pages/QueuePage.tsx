@@ -34,7 +34,7 @@ interface KindStat {
   earliestLease: number | null
 }
 
-/** 跨项目拉取排队/执行中的工作项，并同时拉执行节点。 */
+/** 跨项目拉取排队/开发中的工作项，并同时拉执行节点。 */
 async function fetchQueue(signal: AbortSignal): Promise<QueueSnapshot> {
   const [pending, workerPage] = await Promise.all([
     (async () => {
@@ -81,11 +81,11 @@ function leaseText(until: number | null, now: number): { text: string; overdue: 
 }
 
 /**
- * 派单队列：按 kind 固定四张卡片展示排队数、执行中数、在线 worker 数与租约剩余。
+ * 派单队列：按 kind 固定四张卡片展示排队数、开发中数、在线 worker 数与租约剩余。
  *
  * - 跨项目拉 state=queued,leased（分页拉全，最多 10 页防护），5s 轮询；
  * - 在线 worker 以服务端 presence=active 为准；
- * - 某 kind 无在线 worker 且仍有排队/执行中时高亮，提示队列会静默卡住。
+ * - 某 kind 无在线 worker 且仍有排队/开发中时高亮，提示队列会静默卡住。
  */
 export function QueuePage() {
   const { data, error, loading, refreshing, lastUpdated, refresh } = usePolling(
@@ -143,8 +143,8 @@ export function QueuePage() {
           <h1>派单队列</h1>
           <p className="muted">
             {data
-              ? `共 ${totals.queued} 个排队、${totals.leased} 个执行中`
-              : '按类型查看排队、执行中与租约剩余'}
+              ? `共 ${totals.queued} 个排队、${totals.leased} 个开发中`
+              : '按类型查看排队、开发中与租约剩余'}
           </p>
         </div>
         <div className="page-head-actions">
@@ -193,7 +193,7 @@ export function QueuePage() {
                     <dd>{stat.queued}</dd>
                   </div>
                   <div className="queue-stat">
-                    <dt>执行中数</dt>
+                    <dt>开发中数</dt>
                     <dd>{stat.leased}</dd>
                   </div>
                   <div className="queue-stat">

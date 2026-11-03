@@ -628,7 +628,7 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
 /** kind 的中文名（只用于派单消息，不参与任何判断）。 */
 const KIND_LABELS: Record<string, string> = {
   requirement: '需求',
-  design: '设计',
+  design: '方案',
   breakdown: '拆解',
   dev: '开发',
 }
