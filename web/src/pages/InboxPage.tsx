@@ -21,7 +21,7 @@ interface GroupDef {
 const GROUPS: GroupDef[] = [
   { key: 'requirement_review', label: '需求评审', kind: 'project', state: 'requirement_review' },
   { key: 'spec_review', label: '方案评审', kind: 'project', state: 'spec_review' },
-  { key: 'tasks_review', label: '计划评审', kind: 'project', state: 'tasks_review' },
+  { key: 'tasks_review', label: '开发任务评审', kind: 'project', state: 'tasks_review' },
   { key: 'submitted', label: '工作项待验收', kind: 'work_item', state: 'submitted' },
   { key: 'failed', label: '工作项失败待处理', kind: 'work_item', state: 'failed' },
 ]

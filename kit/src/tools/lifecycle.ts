@@ -420,7 +420,7 @@ export function renderPlanSubmitted(value: PlanSubmittedValue): TextContent[] {
     const state = item.state === undefined ? '' : `｜${item.state}`
     lines.push(`- ${seq}${item.work_id}：${item.title}（优先级 ${priority}，依赖 ${depends}${kind}${state}）`)
   }
-  lines.push('下一步：等待计划评审；通过后 worker 用 `echuan_work_claim` 领卡。')
+  lines.push('下一步：等待开发任务评审；通过后 worker 用 `echuan_work_claim` 领卡。')
   return [textBlock(lines.join('\n'))]
 }
 

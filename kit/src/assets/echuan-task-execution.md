@@ -21,7 +21,7 @@
 
 - `requirement`：派单 `inputs` 已带需求物料时直接用它汇报，不要重复写一版；确实没有才写。
 - `design`：已有方案要改时用 `echuan_spec_revise` 在原链上修订，不要新建第二条方案链。
-- `breakdown` 的 `plan.items` 每项：`seq_no`（计划内 1..N）、`title`、`body_md`，可选 `priority`（0..99）、`depends_on`（计划内序号，如 `[1]`）、`project_id`（传了必须等于当前项目）。平台会把 plan 落成 kind=4 物料、回填 `result_material_id`，并在同一事务里生成 blocked 状态的 dev 卡；计划评审通过后才会放行。
+- `breakdown` 的 `plan.items` 每项：`seq_no`（计划内 1..N）、`title`、`body_md`，可选 `priority`（0..99）、`depends_on`（计划内序号，如 `[1]`）、`project_id`（传了必须等于当前项目）。平台会把 plan 落成 kind=4 物料、回填 `result_material_id`，并在同一事务里生成 blocked 状态的 dev 卡；开发任务评审通过后才会放行。
 - 阶段卡报告被 400 / 409 拒绝时，卡仍在你手里：按 `details` 里的 `field` / `reason` 补资料或修 plan，再用**同一个 `lease_id`** 重报；不要重新领卡，不要手工建卡绕过平台。
 - `409 plan already submitted for breakdown item` 表示这批卡已经生成，不要重复提交；成功一次即止，等评审结论。
 

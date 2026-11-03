@@ -233,10 +233,10 @@ export function ProjectsPage() {
         <div className="list">
           {projects.map((project) => {
             const stale = isPendingProjectStatus(project.status) && isPendingStale(project.update_time)
-            // 工作项草稿去拆解，工作项评审去评审；其余状态仍进同一张工作项看板。
+            // 开发任务草稿去拆解，开发任务评审去评审；其余状态仍进同一张工作项看板。
             const boardEntry =
               project.status === 4 ? '去拆解 →' : project.status === 5 ? '去评审 →' : '工作项看板 →'
-            // 驳回字段只可能落在工作项评审(5)/待完成(6)；任一存在都直接展示。
+            // 驳回字段只可能落在开发任务评审(5)/待完成(6)；任一存在都直接展示。
             const taskReviewReason = project.tasks_review_reason
             return (
               <article
@@ -296,7 +296,7 @@ export function ProjectsPage() {
                   </p>
                   {taskReviewReason && (
                     <p className="row-reason row-reason-rejected">
-                      工作项清单已驳回：{taskReviewReason}
+                      开发任务评审已驳回：{taskReviewReason}
                       <span className="muted">
                         {' '}· {project.last_actor || '—'} ·{' '}
                         {formatDateTime(project.tasks_review_rejected_at)}

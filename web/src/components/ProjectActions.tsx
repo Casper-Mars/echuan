@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { cancelProject, getProject, submitProject } from '../api/client'
 import type { Project, ProjectDecision } from '../api/types'
-import { isPendingProjectStatus, projectStatusLabel } from '../lib/format'
+import { isDecidableProjectStatus, projectStatusLabel } from '../lib/format'
 import { ConfirmDialog } from './ConfirmDialog'
 import { DecisionDialog } from './DecisionDialog'
 import type { ReviewedMaterial } from './ReviewedMaterial'
@@ -23,7 +23,8 @@ interface ProjectActionButtonsProps {
  */
 export function ProjectActionButtons({ project, onAction, className }: ProjectActionButtonsProps) {
   const canSubmit = project.status === 0 || project.status === 2
-  const canDecide = isPendingProjectStatus(project.status)
+  // 开发任务评审（5）的决策在工作项看板完成，不能走项目级批准/驳回。
+  const canDecide = isDecidableProjectStatus(project.status)
   const canCancel = project.status >= 0 && project.status <= 6
 
   if (!canSubmit && !canDecide && !canCancel) return null

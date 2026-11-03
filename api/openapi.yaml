@@ -1070,9 +1070,11 @@ paths:
             `state=idle` 但仍持卡仍算占用。
           - **派单条件**：`state=idle` **且** 指针为空才会被派单；
             `state=busy` 即使无卡也不会被派单。
-          - **续租条件**：指针非空 **且** `state=busy` 才会续租；
-            持卡却发 `state=idle` 时只保留指针、不续租，卡在租约到期后
-            由回收流程释放。
+          - **续租条件**：只要指针 `current_work_item_id` 非空就续租
+            （`lease_until = now + lease_ttl`），与 `state` 无关；持卡却发
+            `state=idle` 也照常续租。原因：agent 在调 tool 期间同样会上报
+            `idle`，但此时它仍在处理任务，`state` 不足以判定「是否在处理」，
+            因此不能用 `state` 决定是否续租；`idle` 只是「是否派新卡」的开关。
         - `kinds` 必填、非空，取值 `requirement/design/breakdown/dev`；每次心跳
           覆盖该 worker 已存的 kind 声明，平台只按声明的 kind 派单。
         - 空闲且未持卡的 worker 拿到下一张可领卡：`commands` 出现一条 `kind=dispatch`，

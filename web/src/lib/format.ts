@@ -5,8 +5,8 @@ const PROJECT_STATUS: Record<number, string> = {
   1: '需求评审',
   2: '方案草稿',
   3: '方案评审',
-  4: '工作项草稿',
-  5: '工作项评审',
+  4: '开发任务草稿',
+  5: '开发任务评审',
   6: '待完成',
   7: '已完成',
   8: '已取消',
@@ -132,14 +132,33 @@ export const PROJECT_STATUS_OPTIONS: { status: number; label: string }[] = Objec
   .sort((a, b) => a - b)
   .map((status) => ({ status, label: projectStatusLabel(status) }))
 
-/** 需要人工决策的项目状态：需求评审 / 方案评审 / 工作项评审。 */
+/**
+ * 需要人工决策的项目状态：需求评审 / 方案评审 / 开发任务评审。
+ *
+ * 用于「待决策 / 超时滞留」判定：开发任务评审也在等人工处理，收件箱与
+ * 列表标红都要把它算进来，因此这里保持 [1, 3, 5]。
+ */
 export const PROJECT_PENDING_STATUSES = [1, 3, 5] as const
+
+/**
+ * 项目级「批准 / 驳回」可用的状态：需求评审 / 方案评审。
+ *
+ * 与 PROJECT_PENDING_STATUSES 的区别：开发任务评审（5）虽然同样待人工处理，
+ * 但它的决策对象是工作项批次，入口在工作项看板（全部通过 / 全部驳回），
+ * 调项目级 POST /v1/projects/decide 只会得到 409 invalid_state。
+ */
+export const PROJECT_DECIDABLE_STATUSES = [1, 3] as const
 
 /** 待决策超过 72 小时视为滞留（阈值可在此统一调整）。 */
 export const PENDING_STALE_MS = 72 * 60 * 60 * 1000
 
 export function isPendingProjectStatus(status: number): boolean {
   return (PROJECT_PENDING_STATUSES as readonly number[]).includes(status)
+}
+
+/** 项目级「批准 / 驳回」是否可用（不含开发任务评审的批次决策）。 */
+export function isDecidableProjectStatus(status: number): boolean {
+  return (PROJECT_DECIDABLE_STATUSES as readonly number[]).includes(status)
 }
 
 /** 基于 update_time 判断待决策是否已滞留超阈值。 */
