@@ -89,7 +89,7 @@ describe('正常路径：覆盖 poll / kinds / worker_id / 派单目标 / inflig
     expect(text).toContain('worker.kinds：dev、design')
     expect(text).toContain('worker_id：w_TE****')
     expect(text).not.toContain(WORKER_ID)
-    expect(text).toContain('派单目标：agent agent-root（running）')
+    expect(text).toContain('派单目标：按项目会话投递（当前 root agent：agent-root，running）')
     expect(text).toContain('inflight：2 条')
     expect(text).toContain('工作项 w_01M5Z4AAAA｜kind=dev')
     expect(text).toContain('剩余 ')
@@ -121,7 +121,7 @@ describe('降级路径：缺服务 / 空集合都不抛错', () => {
     delete (deps as { agents?: unknown }).agents
     const { text } = await run(optionsWith(deps))
 
-    expect(text).toContain('派单目标：无法判定（agents 服务缺失）')
+    expect(text).toContain('派单目标：按项目会话投递（agents 服务缺失，无法列出当前 agent）')
     // 其余段落仍完整。
     expect(text).toContain('inflight：2 条')
   })

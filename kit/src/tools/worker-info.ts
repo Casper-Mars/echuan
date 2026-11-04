@@ -10,7 +10,7 @@
  *   `agents.roots()`）；
  * - **服务缺失只降级**：`agents` 缺失只标注「无法判定」，不抛错。
  *
- * 一个 worker 只有一个 agent：这里展示的派单目标固定是 `agents.roots()[0]`，
+ * 派单按项目会话投递（sessionId = 项目号）；这里展示当前 root agents，便于诊断。
  * 与心跳循环的投递目标完全一致。
  *
  * 输出与只读工具一致：`textBlock` + `TextValue`（规范值就是模型要读的那段文本）。
@@ -107,7 +107,7 @@ function renderWorkerInfo(deps: WorkerInfoDeps): string {
       : `worker_id：${maskWorkerId(id)}`,
   )
 
-  // 3) 派单目标：一个 worker 一个 agent，固定看 roots()[0]。
+  // 3) 派单目标：按项目会话投递；展示当前 root agents 便于诊断。
   lines.push(`派单目标：${describeTarget(deps.agents)}`)
 
   // 4) inflight。
@@ -123,18 +123,18 @@ function renderWorkerInfo(deps: WorkerInfoDeps): string {
 
 /** 派单目标一行：取第一个 root agent；服务缺失 / 为空都只标注，不抛错。 */
 function describeTarget(agents: WorkerInfoDeps['agents']): string {
-  if (agents === undefined) return '无法判定（agents 服务缺失）'
+  if (agents === undefined) return '按项目会话投递（agents 服务缺失，无法列出当前 agent）'
   const roots = safeCall(() => agents.roots())
   if (roots === undefined) return '无法判定（读取 agents.roots() 失败）'
   const agent = roots.find(item => item !== undefined && item !== null)
   if (agent === undefined) {
-    return '本进程暂无 agent（下一轮心跳会重试投递）'
+    return '按项目会话投递（本进程暂无 agent，下一轮心跳会重试）'
   }
   const status = typeof agent.status === 'string' && agent.status !== ''
     ? agent.status
     : '状态未知'
   const agentId = typeof agent.id === 'string' && agent.id !== '' ? agent.id : '编号未知'
-  return `agent ${agentId}（${status}）`
+  return `按项目会话投递（当前 root agent：${agentId}，${status}）`
 }
 
 /** inflight 一行：工作项 / kind / 租约到期 / 剩余秒数（过期标注）。 */

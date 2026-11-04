@@ -31,6 +31,7 @@
  * 都在 `apply` 内**惰性 import**，避免拖慢 `--help` 这类快速退出场景下的插件激活。
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import {
   Config,
   WORKER_METADATA_MAX_BYTES,
@@ -78,8 +79,8 @@ export const name = 'echuan'
  * 依赖服务。
  *
  * - `tools` / `skills`：后续阶段注册工具与技能指南；
- * - `agents`：本进程的 agent 注册表。一个 worker 只有一个 agent，心跳投递固定取
- *   `ctx.agents.roots()[0]`，不按项目建会话，也不做任何分支判断。
+ * - `agents`：本进程的 agent 注册表。派单按 `project_id` ensureSession 后投给
+ *   该会话的 agent；会话 id 即项目号，cwd 取会话数最多的 workspace。
  *
  * 三者由 `@deepseek-ai/dsh-base` 提供；缺任一则本插件保持未激活，而不是抛错。
  */
@@ -279,19 +280,26 @@ export function apply(ctx: Context, config?: ConfigInput): void {
     // 保证 `--help` 快路径不加载 HTTP / dsh-llm 依赖。
     void (async () => {
       try {
-        const [clientModule, workerModule] = await Promise.all([
+        const [clientModule, workerModule, sessionModule] = await Promise.all([
           import('./client.js'),
           import('./worker.js'),
+          import('./session.js'),
         ])
         if (disposed) return
 
         const client: WorkerClient = clientModule.createWorkerClient(resolved)
+        const ensureProjectSession = sessionModule.createSessionEnsurer(ctx, {
+          warn: message => warn(message),
+          info: message => log(message),
+        })
         const nextLoop = workerModule.createWorkerLoop({
           config: resolved,
           client,
-          // 惰性读取：`ctx.agents` 只在真正心跳/投递时访问。
-          // 一个 worker 一个 agent：固定取 roots()[0]，不数数量、不建项目会话。
+          // 兼容回退：仅在 ensureSession 未提供时才使用。
           agents: { roots: () => ctx.agents.roots() },
+          // 项目级会话：sessionId = 项目号，cwd 取会话数最多的 workspace。
+          // 服务每次调用时惰性读取，避免插件加载早期服务未就绪。
+          ensureSession: async projectId => (await ensureProjectSession(projectId))?.agent as Agent | undefined,
           logger: toRuntimeLogger(log, warn),
         })
         loop = nextLoop

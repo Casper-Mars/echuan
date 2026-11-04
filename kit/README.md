@@ -7,7 +7,7 @@
 插件**只做三件事**：
 
 1. **定时心跳**：上报 `state`（`busy` = 手里有未交付的 work item，`idle` = 没有）、`kinds`（本 worker 能做的类别）与 metadata，并带上平台下发的 `worker_id`（仅存内存）。
-2. **投递派单**：把心跳回包里的 `dispatch` 直接投给**本进程唯一的 agent**（`ctx.agents.roots()[0]`）。不按项目建会话、不做任何分支判断：一个 worker 一个 agent，需要隔离就拆 worker。
+2. **投递派单**：把心跳回包里的 `dispatch` 先按 `project_id` 找/建**项目会话**（sessionId = 项目号，cwd 取会话数最多的 workspace），再投给该会话的 agent。不做 kind → agent 的分流；需要角色 / 模型隔离就拆 worker。
 3. **提供 23 个工具**（默认全量；可用 `exclude` 按 agent 裁剪，见「配置」）：
    - 生命周期写：`echuan_project_create`（建项目）、`echuan_project_requirement_write`（写需求）、`echuan_project_submit`（提交评审）、`echuan_spec_create`（建方案）、`echuan_spec_revise`（修订方案）、`echuan_plan_submit`（批量建卡）
    - 工作项写：`echuan_work_claim`（领卡）、`echuan_work_renew`（续租）、`echuan_work_report`（交报告）
@@ -151,7 +151,8 @@ dsh plugin --profile <name> add ./dsh-echuan-1.0.0.tgz
 - `worker.poll.enable=false` 是默认值：不建定时器、零请求；**手动领卡需要先注册**（见上一条）。
 - `metadata` 序列化后超过 8KiB 时插件**不启动心跳循环**并 warn 一条（不是截断），避免每轮都被平台拒。
 - `exclude` 默认 `[]`（不排除，全量 23 个）；工具名写错或含空白项时**插件激活直接失败**（`TypeError`，错误里列出未知项与合法名单），不会静默少注册。
-- **一个 worker 一个 agent**：派单固定投给 `ctx.agents.roots()[0]`。不按项目建会话、不做任何分支判断；`roots()` 为空时只 warn 一条、本轮跳过、下一轮重试。需要多角色并行就拆成多个 worker。
+- **一个 worker 一个身份，一个项目一个会话**：派单按 `project_id` ensureSession，sessionId = 项目号，cwd 取会话数最多的 workspace；拿到该会话的 agent 再投递。会话未就绪时只 warn 一条、本轮跳过、下一轮重试。不做 kind → agent 的分流；需要多角色 / 多模型并行就拆成多个 worker。
+- **agentOptions 与 create/resume 同源**：provider/model 取 `agentDefaultModel`，否则恢复出的会话没有模型，首轮 turn 会在 `{{model}}` 插值处失败。
 - 真实例子：本机起好平台后，把 `enable` 改成 `true` 并声明 `kinds`，`baseUrl` 保持 `http://127.0.0.1:8720`，重启 dsh 即可。
 
 ### 按 agent 裁剪工具（exclude）

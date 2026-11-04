@@ -6,7 +6,8 @@
  *
  * 覆盖：
  * - 首轮心跳延迟 5s、首次注册字段、kinds 上报、间隔重排；
- * - dispatch 直接投给 `agents.roots()[0]`（不数数量、不建项目会话、无 agent 时跳过）；
+ * - dispatch 先按 project_id ensureSession，再投给该会话的 agent；
+ * - 兼容回退：未接 ensureSession 时投给 `agents.roots()[0]`；
  * - state 与 inflight（workId / kind / leaseUntil）、current_work_item_id；
  * - 409 worker_unknown 退避、网络失败不崩、poll 关闭 / kinds 为空 / metadata 超限；
  * - `work_id + lease_id` 去重与有界 LRU。
@@ -198,6 +199,8 @@ function setup(
     agents?: readonly Agent[]
     now?: () => number
     deliver?: WorkerLoopOptions['deliver']
+    ensureSession?: WorkerLoopOptions['ensureSession']
+    ensureTimeoutMs?: number
   } = {},
 ): LoopHarness {
   const metadata = options.metadata ?? { host: 'build-01', os: 'linux' }
@@ -222,6 +225,8 @@ function setup(
     timer: scheduler.api,
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.deliver === undefined ? {} : { deliver: options.deliver }),
+    ...(options.ensureSession === undefined ? {} : { ensureSession: options.ensureSession }),
+    ...(options.ensureTimeoutMs === undefined ? {} : { ensureTimeoutMs: options.ensureTimeoutMs }),
   })
   return { config, platform, scheduler, lines, loop }
 }
@@ -404,6 +409,95 @@ describe('dispatch 投递', () => {
 
     expect(first.followup).toHaveBeenCalledTimes(1)
     expect(second.followup).not.toHaveBeenCalled()
+  })
+
+  it('有 ensureSession：按 project_id 找项目会话，投给该会话的 agent', async () => {
+    const fallback = buildAgent('idle', 'agent-root')
+    const projectAgent = buildAgent('idle', 'agent-APP-1')
+    const asked: string[] = []
+    const harness = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand()], 5_000)),
+      {
+        agents: [fallback.agent],
+        ensureSession: async (projectId) => {
+          asked.push(projectId)
+          return projectAgent.agent
+        },
+      },
+    )
+    await startAndBeat(harness.loop, harness.scheduler)
+
+    expect(asked).toEqual(['APP-1'])
+    expect(projectAgent.followup).toHaveBeenCalledTimes(1)
+    expect(fallback.followup).not.toHaveBeenCalled()
+    expect(harness.loop.inflight).toHaveLength(1)
+    expect(harness.lines.some(line => line.includes('给项目 APP-1 的 agent'))).toBe(true)
+  })
+
+  it('ensureSession 返回空：不投递、不写 inflight，下一轮重试', async () => {
+    const projectAgent = buildAgent('idle', 'agent-APP-1')
+    let attempts = 0
+    const harness = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand()], 5_000)),
+      {
+        agents: [buildAgent('idle', 'agent-root').agent],
+        ensureSession: async () => {
+          attempts += 1
+          return attempts === 1 ? undefined : projectAgent.agent
+        },
+      },
+    )
+    await startAndBeat(harness.loop, harness.scheduler)
+    expect(attempts).toBe(1)
+    expect(projectAgent.followup).not.toHaveBeenCalled()
+    expect(harness.loop.inflight).toHaveLength(0)
+    expect(harness.lines.some(line => line.includes('未能就绪'))).toBe(true)
+
+    await harness.scheduler.advance(5_000)
+    expect(attempts).toBe(2)
+    expect(projectAgent.followup).toHaveBeenCalledTimes(1)
+  })
+
+  it('ensureSession 抛错：warn + 本轮跳过 + 下一轮重试', async () => {
+    const projectAgent = buildAgent('idle', 'agent-APP-1')
+    let attempts = 0
+    const harness = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand()], 5_000)),
+      {
+        agents: [buildAgent('idle', 'agent-root').agent],
+        ensureSession: async () => {
+          attempts += 1
+          if (attempts === 1) throw new Error('workspace boom')
+          return projectAgent.agent
+        },
+      },
+    )
+    await startAndBeat(harness.loop, harness.scheduler)
+    expect(attempts).toBe(1)
+    expect(projectAgent.followup).not.toHaveBeenCalled()
+    expect(harness.loop.inflight).toHaveLength(0)
+    expect(harness.lines.some(line => line.includes('ensure 失败'))).toBe(true)
+
+    await harness.scheduler.advance(5_000)
+    expect(attempts).toBe(2)
+    expect(projectAgent.followup).toHaveBeenCalledTimes(1)
+  })
+
+  it('ensureSession 超时：按未就绪处理，不投递、不写 inflight', async () => {
+    const projectAgent = buildAgent('idle', 'agent-APP-1')
+    const harness = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand()], 5_000)),
+      {
+        agents: [buildAgent('idle', 'agent-root').agent],
+        ensureSession: () => new Promise<Agent>(() => {}),
+        ensureTimeoutMs: 50,
+      },
+    )
+    await startAndBeat(harness.loop, harness.scheduler)
+    await harness.scheduler.advance(100)
+    expect(projectAgent.followup).not.toHaveBeenCalled()
+    expect(harness.loop.inflight).toHaveLength(0)
+    expect(harness.lines.some(line => line.includes('ensure 超时'))).toBe(true)
   })
 
   it('renderDispatchMessage 首行严格是【驿传派单】，仓库一行等于 git_url', () => {

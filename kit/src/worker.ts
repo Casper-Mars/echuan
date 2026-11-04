@@ -14,9 +14,9 @@
  * 4. 间隔只认回包 `heartbeat_interval_ms`，缺失/非法回落 15s；间隔会变，因此用
  *    `setTimeout` 链（每轮结束再排下一轮），不用 `setInterval`；R-03：合法值夹紧到
  *    [{@link MIN_HEARTBEAT_INTERVAL_MS}, {@link MAX_HEARTBEAT_INTERVAL_MS}]；
- * 5. 回包 `commands` 里的 `dispatch` 指令直接投给**本 worker 唯一的 agent**：
- *    `ctx.agents.roots()[0]`。只看 `roots()[0]`、不按项目建会话、不因多个 root 丢弃；
- *    `roots()` 为空时 warn 一条、本轮跳过、下一轮重试。S-01：按
+ * 5. 回包 `commands` 里的 `dispatch` 指令先按 `project_id` ensureSession：会话 id 即
+ *    项目号，cwd 取会话数最多的 workspace；拿到该会话的 agent 再投递。会话未就绪时
+ *    warn 一条、本轮跳过、下一轮重试（不写 inflight）。S-01：按
  *    `work_id + lease_id` 在内存里记住最近投递过的派单（LRU，容量
  *    {@link MAX_REMEMBERED_DELIVERIES}），重复下发只投一次，不落盘；
  * 6. inflight 记录「已投递但未报告」的派单（`workId` / `kind` / `leaseUntil`）：
@@ -85,6 +85,9 @@ export const WORKER_UNKNOWN_LOG_EVERY = 10
 
 /** S-01：内存里最多记住多少条已投递派单（`work_id:lease_id`）。 */
 export const MAX_REMEMBERED_DELIVERIES = 200
+
+/** 单条派单 `ensureSession` 的超时（毫秒）；超时按「本轮未就绪」处理。 */
+export const DEFAULT_ENSURE_TIMEOUT_MS = 10_000
 
 /**
  * 插件标识：派单消息的 `source.kind` 由它派生（`plugin:<name>`）。
@@ -161,13 +164,25 @@ export interface WorkerAgentRegistry {
 /** 投递出口：默认用 `createUserMessage` + `agent.followup`，单测可替换。 */
 export type WorkerDeliver = (agent: Agent, text: string) => void
 
+/**
+ * 项目会话 ensure：输入项目号，返回该会话的 agent；无法就绪时返回 `undefined`。
+ *
+ * 生产环境接 `createSessionEnsurer(ctx)`（sessionId = 项目号，cwd 取会话数最多
+ * 的 workspace，agentOptions 取 agentDefaultModel）。
+ */
+export type WorkerEnsureSession = (projectId: string) => Promise<Agent | undefined>
+
 export interface WorkerLoopOptions {
   /** 已归一化的配置（读取 `worker.kinds` / `worker.metadata` / `worker.poll.enable`）。 */
   config: ResolvedConfig
   /** worker 心跳客户端（`createWorkerClient` 的返回值）。 */
   client: WorkerClient
-  /** 本进程 agent 注册表；生产环境传 `{ roots: () => ctx.agents.roots() }`。 */
+  /** 本进程 agent 注册表；仅在未提供 `ensureSession` 时作为兼容回退。 */
   agents: WorkerAgentRegistry
+  /** 项目会话 ensure；生产环境必须提供。缺省时回退到 `agents.roots()[0]`。 */
+  ensureSession?: WorkerEnsureSession
+  /** 单条 `ensureSession` 的超时（毫秒），默认 {@link DEFAULT_ENSURE_TIMEOUT_MS}。 */
+  ensureTimeoutMs?: number
   /** 日志出口。 */
   logger: Logger
   /** 定时器实现，默认 `globalThis`；单测注入假时钟。 */
@@ -228,6 +243,11 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
   const logger = options.logger ?? consoleLogger
   const timer = options.timer ?? defaultTimer
   const deliver = options.deliver ?? defaultDeliver
+  const ensureSession = options.ensureSession
+  const ensureTimeoutMs = options.ensureTimeoutMs !== undefined
+    && Number.isFinite(options.ensureTimeoutMs) && options.ensureTimeoutMs > 0
+    ? options.ensureTimeoutMs
+    : DEFAULT_ENSURE_TIMEOUT_MS
   const now = options.now ?? Date.now
   const kinds: readonly WorkerKind[] = config.worker.kinds
   const fallbackIntervalMs =
@@ -477,15 +497,6 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
     const dispatches = commands.filter(isDispatchCommand)
     if (dispatches.length === 0) return
 
-    const agent = pickAgent()
-    if (agent === undefined) {
-      logger.warn(
-        `[dsh-echuan] 本进程没有可用 agent（agents.roots() 为空），`
-          + `跳过本轮 ${dispatches.length} 条派单；下一轮心跳重试`,
-      )
-      return
-    }
-
     for (const command of dispatches) {
       const key = deliveryKey(command)
       if (deliveredKeys.has(key)) {
@@ -497,13 +508,57 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
       }
 
       const dispatch = command.dispatch
+      const projectId = dispatch.work_item.project_id
+      let agent: Agent | undefined
+
+      if (ensureSession !== undefined) {
+        const outcome = await settleWithTimeout(
+          ensureSession(projectId),
+          ensureTimeoutMs,
+          timer,
+        )
+        if (outcome.status === 'timeout') {
+          logger.warn(
+            `[dsh-echuan] 工作项 ${dispatch.work_id} 的项目会话 ${projectId} ensure 超时`
+              + `（${ensureTimeoutMs}ms），本轮跳过投递；下一轮心跳重试`,
+          )
+          continue
+        }
+        if (outcome.status === 'error') {
+          logger.warn(
+            `[dsh-echuan] 工作项 ${dispatch.work_id} 的项目会话 ${projectId} ensure 失败`
+              + `（${describeError(outcome.error)}），本轮跳过投递；下一轮心跳重试`,
+          )
+          continue
+        }
+        agent = outcome.value
+        if (agent === undefined || agent === null) {
+          logger.warn(
+            `[dsh-echuan] 工作项 ${dispatch.work_id} 的项目会话 ${projectId} 未能就绪`
+              + '（ensureSession 返回空），本轮跳过投递；下一轮心跳重试',
+          )
+          continue
+        }
+      } else {
+        // 兼容回退：未接项目会话时仍投本进程第一个 root agent。
+        agent = pickAgent()
+        if (agent === undefined) {
+          logger.warn(
+            `[dsh-echuan] 本进程没有可用 agent（agents.roots() 为空），`
+              + `跳过本轮 ${dispatches.length} 条派单；下一轮心跳重试`,
+          )
+          return
+        }
+      }
+
+      if (disposed) return
       try {
         deliver(agent, renderDispatchMessage(dispatch))
         rememberDelivery(key)
         setInflight(dispatch)
         logger.info(
-          `[dsh-echuan] 已投递工作项 ${dispatch.work_id}（kind=${dispatch.kind}）给 agent`
-            + `${agent.id === undefined ? '' : ` ${agent.id}`}`,
+          `[dsh-echuan] 已投递工作项 ${dispatch.work_id}（kind=${dispatch.kind}）`
+            + `给项目 ${projectId} 的 agent${agent.id === undefined ? '' : ` ${agent.id}`}`,
         )
       } catch (err) {
         logger.warn(
@@ -723,6 +778,40 @@ function isDispatchCommand(command: WorkerCommand): command is DispatchCommand {
 
 function isWorkerUnknown(err: unknown): boolean {
   return err instanceof EchuanApiError && err.code === 'worker_unknown'
+}
+
+type SettledWithTimeout<T> =
+  | { status: 'ok'; value: T }
+  | { status: 'error'; error: unknown }
+  | { status: 'timeout' }
+
+/**
+ * 给一段 Promise 套超时：超时后立即 settle 为 `timeout`，并清掉定时器。
+ *
+ * 超时后底层 Promise 仍可能 later resolve/reject：`then` 的两个回调在创建时就
+ * 已挂上，late reject 会被吞掉（不产生 unhandledRejection），也不会再触发投递。
+ */
+function settleWithTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  timer: WorkerTimerApi,
+): Promise<SettledWithTimeout<T>> {
+  return new Promise<SettledWithTimeout<T>>(resolve => {
+    let settled = false
+    let handle: unknown
+    const finish = (result: SettledWithTimeout<T>): void => {
+      if (settled) return
+      settled = true
+      timer.clearTimeout(handle)
+      handle = undefined
+      resolve(result)
+    }
+    handle = timer.setTimeout(() => finish({ status: 'timeout' }), ms)
+    promise.then(
+      value => finish({ status: 'ok', value }),
+      error => finish({ status: 'error', error: error as unknown }),
+    )
+  })
 }
 
 function describeError(err: unknown): string {
