@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { getWorkItem, materialDownloadUrl } from '../api/client'
 import { usePolling } from '../hooks/usePolling'
 import {
@@ -9,6 +10,7 @@ import {
 } from '../lib/format'
 import { ErrorNotice, LoadingState } from './States'
 import { Markdown } from './Markdown'
+import { MaterialReader } from './MaterialReader'
 import { WorkItemActions } from './WorkItemActions'
 
 /**
@@ -27,6 +29,7 @@ export function WorkItemDetailDrawer({
     (signal) => getWorkItem(workId, signal),
     [workId],
   )
+  const [reading, setReading] = useState(false)
 
   if (!data) {
     return (
@@ -115,13 +118,18 @@ export function WorkItemDetailDrawer({
             <p className="mono muted ellipsis" title={data.result.sha256}>
               内容校验值：{data.result.sha256}
             </p>
-            <a
-              className="action action-primary"
-              href={materialDownloadUrl(data.result.material_id)}
-              download
-            >
-              下载结果资料
-            </a>
+            <div className="report-actions">
+              <button
+                type="button"
+                className="action action-primary"
+                onClick={() => setReading(true)}
+              >
+                阅读
+              </button>
+              <a className="action" href={materialDownloadUrl(data.result.material_id)} download>
+                下载结果资料
+              </a>
+            </div>
           </div>
         ) : (
           <p className="muted">尚未提交结果资料</p>
@@ -142,6 +150,10 @@ export function WorkItemDetailDrawer({
           </div>
         )}
       </section>
+
+      {reading && data.result && (
+        <MaterialReader material={data.result} onClose={() => setReading(false)} />
+      )}
     </div>
   )
 }

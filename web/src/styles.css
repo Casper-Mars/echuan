@@ -1013,6 +1013,13 @@ button {
   width: 80vw;
 }
 
+/* 窄屏（手机/小平板）回落满宽，避免 80vw 下正文过窄。 */
+@media (max-width: 767px) {
+  .modal-xlarge {
+    width: 100%;
+  }
+}
+
 /* 阅读弹窗内正文不再单独限高，滚动统一交给 .modal-body，避免双层滚动条。 */
 .modal-xlarge .markdown {
   max-height: none;
@@ -1406,6 +1413,13 @@ button {
   gap: 10px;
   flex-wrap: wrap;
   font-size: 0.84rem;
+}
+
+.report-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .chips {
