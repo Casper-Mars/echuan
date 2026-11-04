@@ -32,7 +32,7 @@ export function ProductsPage() {
       <header className="page-head">
         <div>
           <h1>产品</h1>
-          <p className="muted">选择一个产品，查看其需求项目与工作项看板。</p>
+          <p className="muted">选择一个产品，查看其需求项目与开发任务看板。</p>
         </div>
         <div className="page-head-actions">
           <RefreshBar

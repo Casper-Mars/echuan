@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { createWorkItem, errorMessage, updateWorkItem } from '../api/client'
-import type { WorkItem, WorkItemKind } from '../api/types'
-import { WORK_ITEM_KINDS, workItemKindLabel } from '../lib/format'
+import type { WorkItem } from '../api/types'
+import { workItemKindLabel } from '../lib/format'
 import { Modal } from './Modal'
 
 interface WorkItemFormDialogProps {
@@ -16,7 +16,7 @@ interface WorkItemFormDialogProps {
 
 /**
  * 新增/编辑工作项的最小表单。
- * 新增可选择 kind（默认 dev）；编辑只改标题、正文、优先级。
+ * 新建固定 kind=dev（开发任务看板入口）；编辑只改标题、正文、优先级，类型只读展示。
  * 只在草稿/评审/待完成阶段由看板打开；权限判断由父级负责。
  */
 export function WorkItemFormDialog({
@@ -26,7 +26,6 @@ export function WorkItemFormDialog({
   onClose,
   onSaved,
 }: WorkItemFormDialogProps) {
-  const [kind, setKind] = useState<WorkItemKind>(item?.kind ?? 'dev')
   const [title, setTitle] = useState(item?.title ?? '')
   const [body, setBody] = useState(item?.body_md ?? '')
   const [priority, setPriority] = useState(String(item?.priority ?? 0))
@@ -58,7 +57,7 @@ export function WorkItemFormDialog({
       if (mode === 'create') {
         await createWorkItem({
           project_id: projectId,
-          kind,
+          kind: 'dev',
           title: trimmedTitle,
           body_md: trimmedBody,
           priority: parsedPriority,
@@ -81,26 +80,13 @@ export function WorkItemFormDialog({
 
   return (
     <Modal
-      title={mode === 'create' ? '添加工作项' : `编辑工作项 ${item?.work_id ?? ''}`}
+      title={mode === 'create' ? '添加开发任务' : `编辑开发任务 ${item?.work_id ?? ''}`}
       onClose={onClose}
       closeDisabled={submitting}
     >
       <form className="dialog-form" onSubmit={submit}>
         {mode === 'create' ? (
-          <label className="field">
-            <span>类型</span>
-            <select
-              value={kind}
-              onChange={(event) => setKind(event.target.value as WorkItemKind)}
-              disabled={submitting}
-            >
-              {WORK_ITEM_KINDS.map((value) => (
-                <option key={value} value={value}>
-                  {workItemKindLabel(value)}
-                </option>
-              ))}
-            </select>
-          </label>
+          <p className="muted dialog-hint">类型：开发（固定）</p>
         ) : (
           <p className="muted dialog-hint">
             类型：{item ? workItemKindLabel(item.kind) : '—'}（编辑时不可修改）

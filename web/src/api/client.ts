@@ -254,10 +254,22 @@ export function cancelProject(id: string): Promise<Project> {
   return request<Project>('/v1/projects/cancel', { method: 'POST', query: { id } })
 }
 
-export function listWorkItems(projectId: string, signal?: AbortSignal): Promise<WorkItemList> {
+/**
+ * 项目内工作项列表。默认只拉 kind=dev（开发任务看板）；
+ * 需要阶段工作项时显式传入 kinds（如评审弹窗查 breakdown 计划资料）。
+ */
+export function listWorkItems(
+  projectId: string,
+  options: { kinds?: WorkItemKind[]; signal?: AbortSignal } = {},
+): Promise<WorkItemList> {
+  const kinds = options.kinds ?? ['dev']
   return request<WorkItemList>('/v1/work-items', {
-    query: { project_id: projectId, limit: 200 },
-    signal,
+    query: {
+      project_id: projectId,
+      kind: kinds.length > 0 ? kinds.join(',') : undefined,
+      limit: 200,
+    },
+    signal: options.signal,
   })
 }
 

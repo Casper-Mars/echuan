@@ -16,7 +16,7 @@ function decode(value: string): string {
 }
 
 /**
- * 内容区顶部面包屑：产品 → 项目 → 工作项；收件箱 / 派单队列 / Worker 页单独一层。
+ * 内容区顶部面包屑：产品 → 项目 → 开发任务；收件箱 / 派单队列 / Worker 页单独一层。
  * 标识从 hash 路由解析（HashRouter 下 location.pathname 即 hash 路径），
  * 产品层优先显示名称，缺失时回落产品编号。
  */
@@ -46,7 +46,7 @@ export function Breadcrumbs() {
     crumbs = [
       { label: productName ?? decodedProduct, to: '/products' },
       { label: decodedProject, to: `/products/${encodeURIComponent(decodedProduct)}/projects` },
-      { label: '工作项' },
+      { label: '开发任务' },
     ]
   } else if (projectsMatch) {
     const decodedProduct = decode(projectsMatch[1])

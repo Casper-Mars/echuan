@@ -1,13 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import {
-  ApiError,
-  deleteWorkItem,
-  getProject,
-  listWorkItems,
-  listWorkers,
-} from '../api/client'
-import type { WorkItem, WorkItemKind, WorkItemState } from '../api/types'
+import { ApiError, deleteWorkItem, getProject, listWorkItems } from '../api/client'
+import type { WorkItem, WorkItemState } from '../api/types'
 import { itemsOf } from '../api/types'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useDrawer } from '../components/DrawerContext'
@@ -25,7 +19,6 @@ import { usePolling } from '../hooks/usePolling'
 import { useWorkerPresence } from '../hooks/useWorkerPresence'
 import {
   WORK_ITEM_BOARD_COLUMNS,
-  WORK_ITEM_KINDS,
   WORK_ITEM_STATE_COLUMNS,
   WORK_ITEM_TRAILING_COLUMNS,
   formatDateTime,
@@ -38,16 +31,12 @@ import type { WorkItemActionRequest } from '../components/WorkItemActions'
 /** 只有草稿(4)/评审(5)/待完成(6) 允许加卡。 */
 const ADD_WORK_ITEM_STATUSES = new Set([4, 5, 6])
 
-const ALL_KINDS: WorkItemKind[] = [...WORK_ITEM_KINDS]
-
-/** 阶段工作项：项目停在 0/2/4 时，必须存在声明该 kind 的在线 worker 才能继续。 */
-const PHASE_KINDS: WorkItemKind[] = ['requirement', 'design', 'breakdown']
-
 /**
- * 工作项看板：blocked（待评审）非空时单独成列并带整批评审；
+ * 开发任务看板：只展示 kind=dev 的工作项。
+ * blocked（待评审）非空时单独成列并带整批评审；
  * 待开发/开发中/待验收/已完成四列常驻；已失败/已取消仅非空显示。
- * 页头提供 kind 四类多选与 state 下拉筛选，筛选只作用于已拉取的列表，
- * 列计数随筛选结果变化。卡片显式展示 kind 徽标。
+ * 页头只保留 state 下拉筛选，筛选只作用于已拉取的列表，列计数随筛选结果变化。
+ * 卡片显式展示 kind 徽标。
  */
 export function WorkItemsPage() {
   const navigate = useNavigate()
@@ -59,13 +48,12 @@ export function WorkItemsPage() {
   const [editing, setEditing] = useState<WorkItem | null>(null)
   const [deleting, setDeleting] = useState<WorkItem | null>(null)
   const [review, setReview] = useState<'approve' | 'reject' | null>(null)
-  const [kinds, setKinds] = useState<WorkItemKind[]>(ALL_KINDS)
   const [stateFilter, setStateFilter] = useState<'all' | WorkItemState>('all')
 
   const { data, error, loading, refreshing, lastUpdated, refresh } = usePolling(
     async (signal) => {
       const [items, project] = await Promise.all([
-        listWorkItems(projectId, signal),
+        listWorkItems(projectId, { signal }),
         getProject(projectId, signal),
       ])
       return { items, project }
@@ -87,11 +75,9 @@ export function WorkItemsPage() {
   const filteredItems = useMemo(
     () =>
       items.filter(
-        (item) =>
-          kinds.includes(item.kind) &&
-          (stateFilter === 'all' || item.state === stateFilter),
+        (item) => stateFilter === 'all' || item.state === stateFilter,
       ),
-    [items, kinds, stateFilter],
+    [items, stateFilter],
   )
 
   // 执行者在线状态单独轮询：worker 拉取失败不影响看板本身。
@@ -100,33 +86,6 @@ export function WorkItemsPage() {
     [filteredItems],
   )
   const { presenceOf, known: workersKnown } = useWorkerPresence(executorIds)
-
-  // 阶段 worker 覆盖检查：只拉 worker 列表首屏（200 条）判断是否存在声明了
-  // requirement/design/breakdown 且在线（presence=active）的 worker。拉取失败时
-  // data 保持 null，告警静默降级，不影响看板本身。
-  const { data: workersPage } = usePolling(
-    (signal) => listWorkers({ limit: 200, signal }),
-    [],
-  )
-
-  const missingPhaseKinds = useMemo(() => {
-    if (!workersPage || !project) return [] as WorkItemKind[]
-    const onlineKinds = new Set<WorkItemKind>()
-    for (const worker of workersPage.items) {
-      if (worker.presence !== 'active') continue
-      for (const kind of worker.kinds) onlineKinds.add(kind)
-    }
-    const waiting = new Set<WorkItemKind>()
-    for (const item of items) {
-      if (
-        (item.state === 'blocked' || item.state === 'queued') &&
-        PHASE_KINDS.includes(item.kind)
-      ) {
-        waiting.add(item.kind)
-      }
-    }
-    return PHASE_KINDS.filter((kind) => waiting.has(kind) && !onlineKinds.has(kind))
-  }, [items, project, workersPage])
 
   const done = filteredItems.filter((item) => item.state === 'accepted').length
   const backlog = items.filter((item) => item.state === 'blocked')
@@ -144,21 +103,15 @@ export function WorkItemsPage() {
     ),
   ]
 
-  const toggleKind = (kind: WorkItemKind) => {
-    setKinds((current) =>
-      current.includes(kind) ? current.filter((value) => value !== kind) : [...current, kind],
-    )
-  }
-
   return (
     <section className="page">
       <header className="page-head">
         <div>
-          <h1>工作项看板</h1>
+          <h1>开发任务看板</h1>
           <p className="muted">
             产品 <span className="code">{productId}</span> · 项目{' '}
             <span className="code">{projectId}</span>
-            {project ? ` · ${project.title}` : ''} · 共 {filteredItems.length} 个工作项，已完成{' '}
+            {project ? ` · ${project.title}` : ''} · 共 {filteredItems.length} 个开发任务，已完成{' '}
             {done} 个
           </p>
           {project && (
@@ -185,54 +138,21 @@ export function WorkItemsPage() {
             title={
               canAddWorkItem
                 ? undefined
-                : '仅草稿、评审、待完成阶段可以添加工作项'
+                : '仅草稿、评审、待完成阶段可以添加开发任务'
             }
           >
-            添加工作项
+            添加开发任务
           </button>
         </div>
       </header>
 
       <ErrorNotice error={error} onRetry={refresh} />
 
-      {missingPhaseKinds.length > 0 && project && (
-        <div className="phase-worker-banner" role="status">
-          <strong>暂无在线阶段 worker：</strong>
-          {missingPhaseKinds.map((kind) => workItemKindLabel(kind)).join('、')}
-          {`；项目停在 ${projectStatusLabel(project.status)}，请先启动对应 worker`}
-        </div>
-      )}
-
       <div className="filter-bar">
-        <span className="filter-label muted">类型</span>
-        <div className="kind-filter" role="group" aria-label="工作项类型筛选">
-          <button
-            type="button"
-            className={kinds.length === ALL_KINDS.length ? 'filter-chip is-active' : 'filter-chip'}
-            aria-pressed={kinds.length === ALL_KINDS.length}
-            onClick={() => setKinds(ALL_KINDS)}
-          >
-            全部
-          </button>
-          {WORK_ITEM_KINDS.map((kind) => {
-            const active = kinds.includes(kind)
-            return (
-              <button
-                key={kind}
-                type="button"
-                className={`filter-chip kind-${kind}${active ? ' is-active' : ''}`}
-                aria-pressed={active}
-                onClick={() => toggleKind(kind)}
-              >
-                {workItemKindLabel(kind)}
-              </button>
-            )
-          })}
-        </div>
         <label className="filter-select">
           <span className="muted">状态</span>
           <select
-            aria-label="工作项状态筛选"
+            aria-label="开发任务状态筛选"
             value={stateFilter}
             onChange={(event) => setStateFilter(event.target.value as 'all' | WorkItemState)}
           >
@@ -246,9 +166,9 @@ export function WorkItemsPage() {
         </label>
       </div>
 
-      {!data && loading && <LoadingState label="正在加载工作项…" />}
+      {!data && loading && <LoadingState label="正在加载开发任务…" />}
       {!data && !loading && error && (
-        <EmptyState title="工作项加载失败" hint="页面会自动重试；也可以点击上方“重试”。" />
+        <EmptyState title="开发任务加载失败" hint="页面会自动重试；也可以点击上方“重试”。" />
       )}
 
       {data && (

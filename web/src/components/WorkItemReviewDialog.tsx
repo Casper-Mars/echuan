@@ -35,7 +35,8 @@ export function WorkItemReviewDialog({
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    listWorkItems(project.project_id)
+    // 显式查 breakdown：listWorkItems 默认只返回 dev，计划资料在拆解卡上。
+    listWorkItems(project.project_id, { kinds: ['breakdown'] })
       .then(async (page) => {
         if (cancelled) return
         const breakdown = page.items.find((item) => item.kind === 'breakdown' && item.result_material_id)
