@@ -457,6 +457,24 @@ describe('URL 与请求头', () => {
     expect(bodyOf(calls[0]!.init)).not.toHaveProperty('material_id')
   })
 
+  it('reportWorkItem：summary_md 走 JSON body，不出现 material_id', async () => {
+    const { calls, fetchImpl } = createFetch(() => jsonResponse({ id: 'APP-1-T0001' }))
+    const client = createClient(config, { fetchImpl })
+
+    await client.reportWorkItem({
+      work_id: 'w_01M5Z4ABCDEF',
+      summary_md: '# 改了什么\n- 实现登录\n',
+      lease_id: 'l_1',
+    })
+
+    expect(bodyOf(calls[0]!.init)).toEqual({
+      work_id: 'w_01M5Z4ABCDEF',
+      summary_md: '# 改了什么\n- 实现登录\n',
+      lease_id: 'l_1',
+    })
+    expect(bodyOf(calls[0]!.init)).not.toHaveProperty('material_id')
+  })
+
   it('breakdown report：material_id 与 plan 都不传时本地拒绝、零请求', async () => {
     const { calls, fetchImpl } = createFetch(() => jsonResponse({}))
     const client = createClient(config, { fetchImpl })

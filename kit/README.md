@@ -44,7 +44,7 @@
 |---|---|---|---|
 | `echuan_work_claim` | `POST /v1/work-items/claim` | 无必填；可选 `work_id`（只领指定卡） | 成功返回 `dispatch`（`work_id` / `kind` / `inputs` / `work_item` / `lease` / `context`）；204 = 当前无活 |
 | `echuan_work_renew` | `POST /v1/work-items/lease` | `work_id`、`lease_id` | 新 `lease_id`、`until`、`ttl_seconds` |
-| `echuan_work_report` | `POST /v1/work-items/report` | `work_id`、`lease_id`，以及 `material_id` / `plan` 二选一（非 breakdown 必须 `material_id`；breakdown 必须 `plan`） | 平台把工作项转为 `submitted`；breakdown 的 plan 落成 kind=4 物料并回填 `result_material_id`；物料不存在 404、租约失效/重复提交 409、plan 业务校验失败 400 原样透出 |
+| `echuan_work_report` | `POST /v1/work-items/report` | `work_id`、`lease_id`，以及 `material_id` / `summary_md` / `plan`：非 breakdown 用 `material_id` 或 `summary_md`（二选一），breakdown 必须 `plan` | 平台把工作项转为 `submitted`；`summary_md` 落成 kind=3 报告物料，breakdown 的 plan 落成 kind=4 物料，均回填 `result_material_id`；物料不存在 404、租约失效/重复提交 409、plan 业务校验失败 400 原样透出 |
 
 `echuan_work_claim` 的 `worker_id` **不在工具参数里**：它只来自心跳循环的内存（平台契约必填）。`worker.poll.enable=false` 或首轮心跳尚未成功时，领卡会在本地拒绝、零请求。
 
@@ -56,9 +56,10 @@
 |---|---|---|
 | `requirement` | 缺需求时 `echuan_project_requirement_write` 写入（已有需求物料可直接复用） | `echuan_work_report(work_id, material_id, lease_id)` |
 | `design` | `echuan_spec_create` 建方案；修订用 `echuan_spec_revise` | `echuan_work_report(work_id, material_id, lease_id)` |
+| `dev` | 代码卡交付四段式正文，直接传 `summary_md`（平台落 kind=3 物料；已有物料可改传 `material_id`） | `echuan_work_report(work_id, lease_id, summary_md)` |
 | `breakdown` | 直接提交 `plan.items`（`seq_no` / `title` / `body_md`，可选 `priority` / `depends_on` / `project_id`） | `echuan_work_report(work_id, lease_id, plan={items:[...]})` |
 
-`breakdown` 的 plan 由平台在同一事务里落成 kind=4 物料（`result_material_id`）并生成 blocked 的 dev 卡；400 / 409 后卡仍是 leased，按 `details` 修正后用同一 `lease_id` 重报，不要重新领卡或重复提交。
+`summary_md` 由平台在同一事务里落成 kind=3 报告物料并回填 `result_material_id`；`breakdown` 的 plan 落成 kind=4 物料并生成 blocked 的 dev 卡。400 / 409 后卡仍是 leased，按 `details` 修正后用同一 `lease_id` 重报，不要重新领卡或重复提交。
 
 列表工具的参数（都只发 GET，不缓存、不落盘）：
 
@@ -242,7 +243,7 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 | `echuan_work_claim` 报 `409 worker_busy` | 该 worker 已持有卡 | 先 `echuan_work_report` 交掉当前卡，不要并发抢卡 |
 | 续租/报告报 `409 lease_lost` | 租约过期或被回收 | 立即停止该卡，旧结果不可再提交，重新 `echuan_work_claim` |
 | `/v1/workers` 显示 `presence=offline` | 插件停了 / 心跳关了 / 超过 45s 没心跳 | 确认 `worker.poll.enable=true`、`kinds` 非空、进程在跑、网络通 |
-| 报告被拒 `422 material_required` | 非 breakdown 卡没有可用的 `material_id` | 先把报告正文作为物料提交并拿到 `material_id`，再调 `echuan_work_report`；breakdown 卡改用 `plan` 参数 |
+| 报告被拒 `422 material_required` | 非 breakdown 卡既没有 `material_id` 也没有 `summary_md` | 直接传 `summary_md`（平台落报告物料），或传已有物料的 `material_id`；breakdown 卡改用 `plan` 参数 |
 
 ## 已知行为（实测）
 

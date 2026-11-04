@@ -19,6 +19,7 @@ import (
 type reportWorkItemRequest struct {
 	WorkID     string          `json:"work_id"`
 	MaterialID string          `json:"material_id"`
+	SummaryMD  string          `json:"summary_md"`
 	LeaseID    string          `json:"lease_id"`
 	Plan       json.RawMessage `json:"plan"`
 }
@@ -80,6 +81,7 @@ func (h *workItemsHandler) reportWorkItem(w http.ResponseWriter, r *http.Request
 	detail, err := h.service.ReportWorkItem(r.Context(), app.ReportWorkItemInput{
 		WorkID:     req.WorkID,
 		MaterialID: req.MaterialID,
+		SummaryMD:  req.SummaryMD,
 		LeaseID:    req.LeaseID,
 		Plan:       plan,
 		Actor:      ActorFromContext(r.Context()),

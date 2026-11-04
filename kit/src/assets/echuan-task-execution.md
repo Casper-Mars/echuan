@@ -20,6 +20,7 @@
 | `breakdown` | 把方案拆成 dev 卡，直接交 `plan`（不传 `material_id`） | `echuan_work_report(work_id, lease_id, plan={items:[...]})` |
 
 - `requirement`：派单 `inputs` 已带需求物料时直接用它汇报，不要重复写一版；确实没有才写。
+- `dev` 代码卡：交付时直接传 `summary_md`（四段式正文），平台在同一事务里落成 `kind=3` 报告物料并回填 `result_material_id`；不需要单独创建物料，也没有这样的工具。
 - `design`：已有方案要改时用 `echuan_spec_revise` 在原链上修订，不要新建第二条方案链。
 - `breakdown` 的 `plan.items` 每项：`seq_no`（计划内 1..N）、`title`、`body_md`，可选 `priority`（0..99）、`depends_on`（计划内序号，如 `[1]`）、`project_id`（传了必须等于当前项目）。平台会把 plan 落成 kind=4 物料、回填 `result_material_id`，并在同一事务里生成 blocked 状态的 dev 卡；开发任务评审通过后才会放行。
 - 阶段卡报告被 400 / 409 拒绝时，卡仍在你手里：按 `details` 里的 `field` / `reason` 补资料或修 plan，再用**同一个 `lease_id`** 重报；不要重新领卡，不要手工建卡绕过平台。
@@ -165,9 +166,9 @@ gh pr create --repo "$FORK" --base "feature/<project_id>" --head "task/<work_id>
 - 没有 `gh` 时，给出 compare 链接与目标 base/head，由人创建。
 - 任务分支在合并前不要删，方便 review 与追溯。
 
-任何一次交付都必须调 `echuan_work_report(work_id, material_id, lease_id)`：平台按「已有物料 + 有效租约」把工作项转为待验收。只在会话里说一句「做完了」不算交付，平台侧看不到。只有 `breakdown` 例外：用 `echuan_work_report(work_id, lease_id, plan={items:[...]})`，不要为了交计划去手工造 `material_id`。
+任何一次交付都必须调 `echuan_work_report`：非 breakdown 卡传 `summary_md`（平台落成 `kind=3` 报告物料；若已有物料则传 `material_id`），breakdown 卡传 `plan`。平台按「报告 / 物料 + 有效租约」把工作项转为待验收。只在会话里说一句「做完了」不算交付，平台侧看不到。不要为了交报告去手工造 `material_id`。
 
-报告正文作为物料提交（`material_id` 由平台返回或派单方提供），内容固定下列四段，缺一段视为未完成：
+报告正文用 `summary_md` 提交（或引用已有 `material_id`），内容固定下列四段，缺一段视为未完成：
 
 1. **改了什么**：列出改动的文件或模块，以及行为上的变化，一条一句，不要写「优化了一下」这种空话。
 2. **怎么自检**：写实际执行过的命令（构建、类型检查、测试）与结果，贴关键输出行；没跑过的命令不要写。
@@ -267,7 +268,7 @@ gh pr create --repo "$UPSTREAM" --base "$BASE" \
 | 建工作区 | `git worktree add ../wt-<work_id> -b task/<work_id> "origin/feature/<project_id>"`，一卡一个 |
 | 开工前 | `echuan_project_get` → 需要全文再 `echuan_material_get` |
 | 单卡细节 | `echuan_work_get`（`project_id` 缺失也用它补齐） |
-| 交付完成 | commit → `git push -u origin task/<work_id>` → `ls-remote` 校验 → 任务 PR（`--base feature/<project_id>`，不得省略）→ `echuan_work_report`（material_id + 四段式） |
+| 交付完成 | commit → `git push -u origin task/<work_id>` → `ls-remote` 校验 → 任务 PR（`--base feature/<project_id>`，不得省略）→ `echuan_work_report`（summary_md + 四段式） |
 | 项目最后一张卡 | 建合并 PR `feature/<project_id>` → 默认分支，链接写进报告待人工合并；不合并、不删分支 |
 | 推送失败/无权限 | 不算交付，按第 5 节汇报卡在哪 |
 | 做不下去 | 同样 `echuan_work_report`，写清卡在哪、缺什么、谁决策 |

@@ -20,7 +20,11 @@ import (
 type ReportWorkItemInput struct {
 	WorkID     string
 	MaterialID string
-	LeaseID    string
+	// SummaryMD is the report body for non-breakdown cards. The service writes
+	// it as a kind=3 material in the report transaction, so callers do not need
+	// a separate material-creation endpoint. Mutually exclusive with MaterialID.
+	SummaryMD string
+	LeaseID   string
 	// Plan is required for breakdown cards and rejected for every other kind.
 	// Its items become dev cards in the same transaction as the report.
 	Plan  *BreakdownPlan
@@ -95,6 +99,9 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 			if in.Plan == nil {
 				return invalidField("plan", "is required for breakdown work items")
 			}
+			if strings.TrimSpace(in.SummaryMD) != "" {
+				return invalidField("summary_md", "is not allowed for breakdown work items")
+			}
 			// The duplicate guard runs before the lease guard so a replayed
 			// success is answered with the stable conflict instead of a
 			// lease_lost that hides what actually happened.
@@ -119,8 +126,15 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 				return verr
 			}
 			planItems = items
-		} else if strings.TrimSpace(in.MaterialID) == "" {
-			return invalidField("material_id", "is required")
+		} else {
+			materialIDText := strings.TrimSpace(in.MaterialID)
+			summaryMD := strings.TrimSpace(in.SummaryMD)
+			switch {
+			case materialIDText == "" && summaryMD == "":
+				return invalidField("material_id", "material_id or summary_md is required")
+			case materialIDText != "" && summaryMD != "":
+				return invalidField("summary_md", "summary_md and material_id are mutually exclusive")
+			}
 		}
 
 		var materialID *int64
@@ -148,6 +162,25 @@ func (s *WorkItemService) ReportWorkItem(ctx context.Context, in ReportWorkItemI
 			})
 			if err != nil {
 				return materialWriteError("plan", err)
+			}
+			materialID = &written.Material.ID
+		}
+		// Non-breakdown cards may deliver a report body directly. The material
+		// is written in this transaction (kind=3) and becomes result_material_id,
+		// mirroring how a breakdown plan becomes a kind=4 material.
+		if row.Kind != phaseKindBreakdown && strings.TrimSpace(in.MaterialID) == "" &&
+			strings.TrimSpace(in.SummaryMD) != "" {
+			if s.materials == nil {
+				return invalidField("summary_md", "material writer is not configured")
+			}
+			written, err = s.materials.Write(ctx, tx, material.WriteInput{
+				Kind:       domain.MaterialKindReport,
+				Title:      "任务报告：" + row.Title,
+				Body:       []byte(in.SummaryMD),
+				UploadedBy: actor,
+			})
+			if err != nil {
+				return materialWriteError("summary_md", err)
 			}
 			materialID = &written.Material.ID
 		}

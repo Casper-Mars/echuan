@@ -314,6 +314,18 @@ function optionalText(value: unknown, field: string): string | undefined {
 }
 
 /** 必填字符串：保留原文，只拒绝全空白。 */
+function optionalBody(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') {
+    throw new EchuanValidationError(
+      `${field} 必须是字符串。下一步：检查调用参数后重试。`,
+      'invalid_argument',
+      field,
+    )
+  }
+  return value.trim() === '' ? undefined : value
+}
+
 function requiredText(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new EchuanValidationError(
@@ -416,9 +428,10 @@ export function createReportTool(options: EchuanToolOptions): ToolDefinition {
     name: 'echuan_work_report',
     description:
       '交付一张租约中的 work item（POST /v1/work-items/report），平台把状态转为 submitted。'
-      + 'work_id / lease_id 必填；material_id 与 plan 至少提供一个：'
-      + '非 breakdown 卡必须传 material_id（已有报告物料）；breakdown 卡必须传 plan'
-      + '（material_id 可省略），平台会把计划落成 kind=4 物料并回填 result_material_id。'
+      + 'work_id / lease_id 必填；material_id、summary_md 与 plan 至少提供一个：'
+      + '非 breakdown 卡用 material_id（已有报告物料）或 summary_md（报告正文，平台落成 kind=3 物料）'
+      + '二选一；breakdown 卡必须传 plan（material_id 可省略，summary_md 不允许），'
+      + '平台会把计划落成 kind=4 物料并回填 result_material_id。'
       + 'plan.items 每项含 seq_no / title / body_md，可选 priority / depends_on'
       + '（1-based 计划内序号）/ project_id。物料不存在 404，租约失效或重复提交 409，'
       + 'plan 业务校验失败 400，均原样透出且不重试。',
@@ -426,7 +439,12 @@ export function createReportTool(options: EchuanToolOptions): ToolDefinition {
       work_id: { type: 'string', required: true, description: '工作项编号（必填）' },
       material_id: {
         type: 'string',
-        description: '已有交付物料的 material_id；非 breakdown 必填，breakdown 可省略',
+        description: '已有交付物料的 material_id；非 breakdown 与 summary_md 二选一，breakdown 可省略',
+      },
+      summary_md: {
+        type: 'string',
+        description: '报告正文（Markdown，四段式）。非 breakdown 未提供 material_id 时必填；'
+          + '平台落成 kind=3 物料并回填 result_material_id；与 material_id 互斥，breakdown 不要传',
       },
       lease_id: { type: 'string', required: true, description: '当前有效的租约 id（必填）' },
       plan: {
@@ -469,11 +487,28 @@ export function createReportTool(options: EchuanToolOptions): ToolDefinition {
         const work_id = requiredText(args.work_id, 'work_id')
         const lease_id = requiredText(args.lease_id, 'lease_id')
         const material_id = optionalText(args.material_id, 'material_id')
+        const summary_md = optionalBody(args.summary_md, 'summary_md')
         const plan = requireReportPlan(args.plan)
-        if (material_id === undefined && plan === undefined) {
+        if (material_id !== undefined && summary_md !== undefined) {
           throw new EchuanValidationError(
-            'material_id 与 plan 至少提供一个：非 breakdown 卡用 material_id 交报告，'
-              + 'breakdown 卡用 plan 提拆分计划。下一步：补齐参数后重试，本次没有发出请求。',
+            'material_id 与 summary_md 互斥：已有物料传 material_id，报告正文传 summary_md。'
+              + '下一步：二选一后重试，本次没有发出请求。',
+            'invalid_argument',
+            'summary_md',
+          )
+        }
+        if (plan !== undefined && summary_md !== undefined) {
+          throw new EchuanValidationError(
+            'breakdown 卡只交 plan，不要传 summary_md。下一步：去掉 summary_md 后重试，本次没有发出请求。',
+            'invalid_argument',
+            'summary_md',
+          )
+        }
+        if (material_id === undefined && summary_md === undefined && plan === undefined) {
+          throw new EchuanValidationError(
+            'material_id、summary_md 与 plan 至少提供一个：非 breakdown 卡用 material_id'
+              + '（已有物料）或 summary_md（平台落报告物料）交报告，breakdown 卡用 plan 提拆分计划。'
+              + '下一步：补齐参数后重试，本次没有发出请求。',
             'invalid_argument',
             'material_id',
           )
@@ -483,9 +518,11 @@ export function createReportTool(options: EchuanToolOptions): ToolDefinition {
           work_id: string
           lease_id: string
           material_id?: string
+          summary_md?: string
           plan?: ReportPlanInput
         }
         if (material_id !== undefined) input.material_id = material_id
+        if (summary_md !== undefined) input.summary_md = summary_md
         if (plan !== undefined) input.plan = plan
 
         const result = await client.reportWorkItem(input)

@@ -32,7 +32,7 @@ export const ECHUAN_SKILL_NAME = 'echuan-task-execution'
  */
 export const ECHUAN_SKILL_DESCRIPTION =
   '驿传（echuan）work item 的执行流程指南：拿到 Worker 派单后如何直接开工、开工前该读哪些上下文'
-  + '（echuan_project_get / echuan_material_get）、完成后如何用 echuan_work_report 交付（material_id + 四段式，含 git 交付）、'
+  + '（echuan_project_get / echuan_material_get）、完成后如何用 echuan_work_report 交付（summary_md 或 material_id + 四段式，含 git 交付）、'
   + '卡住时如何汇报、手动领卡何时用 echuan_work_renew 续租，以及验收/返工/取消/改状态等门禁禁区。'
   + '收到 echuan work item 派单、需要按驿传流程开工或汇报时加载。'
 

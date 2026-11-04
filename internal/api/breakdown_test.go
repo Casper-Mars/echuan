@@ -200,6 +200,12 @@ func TestBreakdownReportHTTPValidation(t *testing.T) {
 			map[string]any{"seq_no": 1, "title": "一", "body_md": "# 一", "priority": 10},
 			map[string]any{"seq_no": 3, "title": "三", "body_md": "# 三", "priority": 10},
 		}}}, "plan.items[1].seq_no", "must be between 1 and 2"},
+		{"summary on breakdown", map[string]any{
+			"summary_md": "# 报告",
+			"plan": map[string]any{"items": []any{
+				map[string]any{"seq_no": 1, "title": "一", "body_md": "# 一", "priority": 10},
+			}},
+		}, "summary_md", "not allowed"},
 	}
 
 	for _, tc := range cases {
@@ -374,6 +380,86 @@ func TestBreakdownReportHTTPSuccess(t *testing.T) {
 	if body := decodeError(t, rec); body.Code != "conflict" ||
 		!strings.Contains(body.Message, "plan already submitted for breakdown item") {
 		t.Errorf("duplicate body = %+v, want conflict/plan already submitted", body)
+	}
+}
+
+// TestWorkReportWithSummaryMD covers the non-breakdown delivery path: the
+// caller sends only summary_md, the platform writes a kind=3 report material in
+// the same transaction, and result_material_id points at it.
+func TestWorkReportWithSummaryMD(t *testing.T) {
+	e := newBreakdownHTTPEnv(t)
+
+	// Drive the project through breakdown so the first dev card is claimable.
+	plan := map[string]any{"plan": map[string]any{"items": []any{
+		map[string]any{"seq_no": 1, "project_id": e.projectID, "title": "实现登录",
+			"body_md": "# 实现登录\n", "priority": 10},
+	}}}
+	rec := doJSON(t, e.handler, http.MethodPost, "/v1/work-items/report", e.reportBody(plan))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("report breakdown = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, e.handler, http.MethodPost, "/v1/work-items/review",
+		map[string]any{"project_id": e.projectID, "decision": "approve"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("review approve = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, e.handler, http.MethodPost, "/v1/work-items/claim",
+		map[string]any{"worker_id": e.workerID})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("claim dev = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var claimed claimResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &claimed); err != nil {
+		t.Fatalf("decode dispatch: %v", err)
+	}
+	workID, leaseID := claimed.Dispatch.WorkID, claimed.Dispatch.Lease.LeaseID
+
+	// Neither material_id nor summary_md is rejected locally by the platform.
+	rec = doJSON(t, e.handler, http.MethodPost, "/v1/work-items/report",
+		map[string]any{"work_id": workID, "lease_id": leaseID})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty report = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	requireDetail(t, decodeError(t, rec), "material_id", "material_id or summary_md")
+
+	// Both fields are ambiguous and rejected before the material write.
+	rec = doJSON(t, e.handler, http.MethodPost, "/v1/work-items/report",
+		map[string]any{"work_id": workID, "lease_id": leaseID,
+			"material_id": e.materialID, "summary_md": "# 报告"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("both report fields = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	requireDetail(t, decodeError(t, rec), "summary_md", "mutually exclusive")
+
+	summary := "# 改了什么\n- 实现登录\n\n# 怎么自检\n- go test ./...\n"
+	rec = doJSON(t, e.handler, http.MethodPost, "/v1/work-items/report",
+		map[string]any{"work_id": workID, "lease_id": leaseID, "summary_md": summary})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("report dev = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var reported workItemDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &reported); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if reported.State != "submitted" {
+		t.Errorf("state = %q, want submitted", reported.State)
+	}
+	if reported.Result == nil || reported.Result.Kind != 3 {
+		t.Fatalf("result = %+v, want a kind=3 report material", reported.Result)
+	}
+	if reported.ResultMaterialID == nil || *reported.ResultMaterialID != reported.Result.MaterialID {
+		t.Errorf("result_material_id = %v, result = %+v", reported.ResultMaterialID, reported.Result)
+	}
+	if reported.Result.Title != "任务报告：实现登录" {
+		t.Errorf("result.title = %q", reported.Result.Title)
+	}
+
+	rec = doJSON(t, e.handler, http.MethodGet, "/v1/materials?id="+reported.Result.MaterialID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download report material = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); body != summary {
+		t.Errorf("report body = %q, want %q", body, summary)
 	}
 }
 

@@ -137,8 +137,8 @@ const CODE_HINTS: Record<string, string> = {
     '下一步：租约已失效（过期 / 被回收 / lease_id 不匹配），立即停止执行这张卡，旧结果不可再提交；'
     + '重新调用 `echuan_work_claim` 领卡后再继续。',
   material_required:
-    '下一步：把报告正文写成物料并拿到 material_id 后，用 `echuan_work_report` 的 `material_id` 提交，'
-    + '不要原样重试。',
+    '下一步：用 `echuan_work_report` 的 `summary_md` 直接提交报告正文（平台会落成物料），'
+    + '或传入已有物料的 `material_id`；不要原样重试。',
   too_large:
     '下一步：缩小请求体（精简 metadata、缩短报告或分段提交）后重试；不要原样重发。',
   rate_limited:

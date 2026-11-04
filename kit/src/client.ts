@@ -392,8 +392,10 @@ export interface ReportPlanInput {
 
 export interface ReportWorkItemInput {
   work_id: string
-  /** 已存在的 material_id。非 breakdown 必填；breakdown 可用 plan 代替。 */
+  /** 已存在的 material_id。非 breakdown 与 summary_md 二选一；breakdown 可用 plan 代替。 */
   material_id?: string
+  /** 报告正文。非 breakdown 未提供 material_id 时必填；平台落成 kind=3 物料并回填 result_material_id。 */
+  summary_md?: string
   lease_id: string
   /** breakdown 卡的计划；平台会落成 kind=4 物料并回填 result_material_id。 */
   plan?: ReportPlanInput
@@ -930,17 +932,35 @@ export function createClient(
       const work_id = requireNonEmpty(input?.work_id, 'work_id')
       const lease_id = requireNonEmpty(input?.lease_id, 'lease_id')
       const material_id = optionalNonEmpty(input?.material_id, 'material_id')
+      const summary_md = optionalBodyText(input?.summary_md, 'summary_md')
       const plan = input?.plan ?? undefined
-      if (material_id === undefined && plan === undefined) {
+      if (material_id !== undefined && summary_md !== undefined) {
         throw new EchuanValidationError(
-          'material_id 与 plan 至少提供一个：非 breakdown 卡用 material_id 交报告，'
-            + 'breakdown 卡用 plan 提拆分计划。下一步：补齐参数后重试，不要发空报告。',
+          'material_id 与 summary_md 互斥：已有物料传 material_id，报告正文传 summary_md。'
+            + '下一步：二选一后重试，不要同时提交。',
+          'invalid_argument',
+          'summary_md',
+        )
+      }
+      if (plan !== undefined && summary_md !== undefined) {
+        throw new EchuanValidationError(
+          'breakdown 卡只交 plan，不要传 summary_md。下一步：去掉 summary_md 后重试。',
+          'invalid_argument',
+          'summary_md',
+        )
+      }
+      if (material_id === undefined && summary_md === undefined && plan === undefined) {
+        throw new EchuanValidationError(
+          'material_id、summary_md 与 plan 至少提供一个：非 breakdown 卡用 material_id'
+            + '（已有物料）或 summary_md（平台落报告物料）交报告，breakdown 卡用 plan 提拆分计划。'
+            + '下一步：补齐参数后重试，不要发空报告。',
           'invalid_argument',
           'material_id',
         )
       }
       const body: Record<string, unknown> = { work_id, lease_id }
       if (material_id !== undefined) body.material_id = material_id
+      if (summary_md !== undefined) body.summary_md = summary_md
       if (plan !== undefined) body.plan = plan
       return requestJson<WorkItemDetail>(ctx, {
         method: 'POST',
@@ -1367,6 +1387,19 @@ function requireNonEmpty(value: unknown, field: string): string {
 }
 
 /** 可选非空字符串：undefined / 全空白统一视为「未提供」。 */
+/** 正文类可选字段：只拒绝全空白，保留原始换行与缩进。 */
+function optionalBodyText(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') {
+    throw new EchuanValidationError(
+      `${field} 必须是字符串，收到 ${typeof value}。下一步：检查调用参数后重试。`,
+      'invalid_argument',
+      field,
+    )
+  }
+  return value.trim() === '' ? undefined : value
+}
+
 function optionalNonEmpty(value: unknown, field: string): string | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'string') {

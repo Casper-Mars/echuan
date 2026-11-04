@@ -956,13 +956,16 @@ paths:
   /v1/work-items/report:
     post:
       operationId: reportWorkItem
-      summary: 用已有 material 交付一张租约中的 work item
+      summary: 交付一张租约中的 work item（material_id / summary_md / plan）
       description: |
         报告完成后工作项进入 `submitted`。若该卡是阶段工作项，同一事务内还会
         推进项目：requirement 0→1（需需求指针）、design 2→3（需至少一份方案）、
         breakdown 4→5；前置不足返回 409 `invalid_state` 并整体回滚，租约保留。
 
-        `kind=breakdown` 的报告必须携带 `plan`（可省略 `material_id`）：计划通过
+        非 breakdown 卡必须提供 `material_id` 或 `summary_md`（二选一）：前者引用
+        已有物料，后者由平台在同一事务里落成 `kind=3` 报告物料并回填
+        `result_material_id`。`kind=breakdown` 的报告必须携带 `plan`（可省略
+        `material_id`，不允许 `summary_md`）：计划通过
         结构校验后，同一事务内生成 N 条 `kind=dev`、`state=blocked`、
         `parent_id` 指向该 breakdown 的子项，并写入依赖边。计划门批准前子项不可
         claim，批准后统一转 `queued`。同一 breakdown 重复报告返回 409
@@ -2303,7 +2306,10 @@ components:
           type: string
         material_id:
           type: string
-          description: 结果资料。`kind=breakdown` 时可省略（结果为空，由 plan 承担交付）。
+          description: 结果资料。非 breakdown 卡与 `summary_md` 二选一；`kind=breakdown` 时可省略（由 plan 承担交付）。
+        summary_md:
+          type: string
+          description: 报告正文。非 breakdown 卡未提供 `material_id` 时必填；平台落一条 `kind=3` 物料并回填 `result_material_id`。与 `material_id` 互斥。
         lease_id:
           type: string
         plan:

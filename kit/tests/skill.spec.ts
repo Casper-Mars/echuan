@@ -312,14 +312,14 @@ describe('分支模型正/反向断言', () => {
 })
 
 describe('报告口径与正文一致（四段 + material_id）', () => {
-  it('正文四段齐全，且报告以 material_id 交付', () => {
+  it('正文四段齐全，且报告以 summary_md 交付', () => {
     expect(content).toContain('四段')
     expect(content).toContain('改了什么')
     expect(content).toContain('怎么自检')
     expect(content).toContain('git 交付')
     expect(content).toContain('遗留风险')
-    expect(content).toContain('material_id')
-    expect(content).toContain('echuan_work_report(work_id, material_id, lease_id)')
+    expect(content).toContain('summary_md')
+    expect(content).toContain('echuan_work_report')
   })
 
   it('技能 description / whenToUse 与正文同为四段口径，不含旧口径表述', () => {

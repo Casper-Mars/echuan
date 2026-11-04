@@ -293,6 +293,44 @@ describe('echuan_work_report：material_id 本地校验', () => {
     })
   }
 
+  it('只传 summary_md：body 携带 summary_md，不出现 material_id', async () => {
+    const platform = createPlatform(() => jsonResponse({ work_id: WORK_ID, state: 'submitted' }))
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
+
+    const summary = '# 改了什么\n- 实现登录\n\n# 怎么自检\n- pnpm test\n'
+    const { value, text } = await runTool(tool!, {
+      work_id: WORK_ID,
+      summary_md: summary,
+      lease_id: 'l_9f8b7b09ff971dd1',
+    })
+    expectValidOutput(tool!, value)
+
+    expect(platform.calls).toHaveLength(1)
+    expect(platform.calls[0]!.url).toBe('http://platform.test/v1/work-items/report')
+    expect(parsedBody(platform.calls[0])).toEqual({
+      work_id: WORK_ID,
+      summary_md: summary,
+      lease_id: 'l_9f8b7b09ff971dd1',
+    })
+    expect(parsedBody(platform.calls[0])).not.toHaveProperty('material_id')
+    expect(text).toContain('工作项已提交待验收')
+  })
+
+  it('material_id 与 summary_md 同时传 → 本地拒绝、零请求', async () => {
+    const platform = createPlatform(() => jsonResponse({ work_id: WORK_ID }))
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
+
+    const error = await failureOf(runTool(tool!, {
+      work_id: WORK_ID,
+      material_id: 'M_report_1',
+      summary_md: '# 报告',
+      lease_id: 'l_1',
+    }))
+
+    expect(error.message).toContain('互斥')
+    expect(platform.calls).toHaveLength(0)
+  })
+
   it('正常提交：POST /v1/work-items/report（无 query），render 说「工作项已提交待验收」', async () => {
     const platform = createPlatform(() => jsonResponse({ work_id: WORK_ID, state: 'submitted' }))
     const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
@@ -392,7 +430,23 @@ describe('echuan_work_report：breakdown plan 与 material_id 二选一', () => 
     }))
 
     expect(error.message).toContain('material_id')
+    expect(error.message).toContain('summary_md')
     expect(error.message).toContain('plan')
+    expect(platform.calls).toHaveLength(0)
+  })
+
+  it('plan 与 summary_md 同时传 → 本地拒绝、零请求', async () => {
+    const platform = createPlatform(() => jsonResponse(reportResponse))
+    const tool = toolsFor(platform.fetchImpl, WORKER_ID).get('echuan_work_report')
+
+    const error = await failureOf(runTool(tool!, {
+      work_id: WORK_ID,
+      lease_id: 'l_9f8b',
+      summary_md: '# 报告',
+      plan: { items: [{ seq_no: 1, title: '卡', body_md: '# 卡' }] },
+    }))
+
+    expect(error.message).toContain('summary_md')
     expect(platform.calls).toHaveLength(0)
   })
 
