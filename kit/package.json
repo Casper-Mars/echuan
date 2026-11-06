@@ -2,7 +2,6 @@
   "name": "dsh-echuan",
   "version": "0.1.0",
   "description": "驿传（echuan）平台接入工具包：把平台 HTTP 契约接入 dsh（Cordis 4）Agent",
-  "private": true,
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "engines": {
