@@ -214,7 +214,7 @@ function SpecReader({ id, editable, onClose, onEdit }: {
     return () => controller.abort()
   }, [id, materialId])
   return (
-    <Modal title={data?.title ?? '技术方案全文'} onClose={onClose} wide>
+    <Modal title={data?.title ?? '技术方案全文'} onClose={onClose} xlarge>
       <ErrorNotice error={error} />
       {!data && !error && <LoadingState label="正在加载方案全文…" />}
       {data && <div className="detail">
