@@ -2,8 +2,13 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"testing"
+	"time"
 
+	"github.com/Casper-Mars/echuan/internal/domain"
+	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/store"
 )
 
@@ -39,7 +44,7 @@ func (e *projectTestEnv) projectState(t *testing.T, projectID string) projectSta
 	return state
 }
 
-// createProject creates one requirement-draft project and returns its id.
+// createProject creates one project in requirement_review and returns its id.
 func (e *projectTestEnv) createProject(t *testing.T, productID, title string) string {
 	t.Helper()
 	detail, err := e.service.CreateProject(context.Background(), CreateProjectInput{
@@ -52,6 +57,76 @@ func (e *projectTestEnv) createProject(t *testing.T, productID, title string) st
 		t.Fatalf("CreateProject(%s): %v", title, err)
 	}
 	return detail.Project.ProjectID
+}
+
+// createLegacyDraftProject inserts the state the pre-#18 create path produced:
+// requirement_draft(0) plus the queued requirement stage card, and — when body
+// is non-empty — a requirement v1 material with the project pointer attached.
+//
+// CreateProject no longer produces this state (it writes requirement_review and
+// enqueues nothing), but legacy drafts and requirement-reject returns still
+// live here, so the report/settle paths keep needing it. The fixture writes the
+// row and the card in one transaction on purpose: a draft without its card is
+// exactly the inconsistency the enqueue-on-create rule used to prevent.
+func (e *projectTestEnv) createLegacyDraftProject(t *testing.T, productID, title, body string) domain.ProjectDetail {
+	t.Helper()
+	ctx := context.Background()
+	var projectID string
+
+	err := e.store.Tx(ctx, func(tx *sql.Tx) error {
+		product, err := store.GetProductByProductID(ctx, tx, productID)
+		if err != nil {
+			return err
+		}
+		seq, err := store.NextSeqNo(ctx, tx, "projects", "product_id", product.ID)
+		if err != nil {
+			return err
+		}
+		ts := formatTimestamp(time.Now().UTC())
+		projectID = fmt.Sprintf("%s-%d", product.ProductID, seq)
+
+		id, err := store.CreateProject(ctx, tx, store.NewProject{
+			ProjectID:             projectID,
+			ProductID:             product.ID,
+			SeqNo:                 seq,
+			Title:                 title,
+			RequirementMaterialID: nil,
+			Status:                domain.StatusRequirementDraft,
+			Version:               1,
+			CreateTime:            ts,
+			UpdateTime:            ts,
+		})
+		if err != nil {
+			return err
+		}
+
+		if body != "" {
+			written, err := e.writer.Write(ctx, tx, material.WriteInput{
+				Kind:       domain.MaterialKindRequirement,
+				Title:      title,
+				Body:       []byte(body),
+				UploadedBy: "pm",
+			})
+			if err != nil {
+				return err
+			}
+			if err := store.AttachRequirementPointer(ctx, tx, id, written.Material.ID); err != nil {
+				return err
+			}
+		}
+
+		enqueuer := phaseEnqueuer{now: func() time.Time { return time.Now().UTC() }, maxAttempts: defaultWorkItemMaxAttempts}
+		return enqueuer.ensure(ctx, tx, id, projectID, title, phaseKindRequirement)
+	})
+	if err != nil {
+		t.Fatalf("create legacy draft project %q: %v", title, err)
+	}
+
+	detail, err := e.service.GetProject(ctx, projectID)
+	if err != nil {
+		t.Fatalf("GetProject(%s): %v", projectID, err)
+	}
+	return detail
 }
 
 // insertWorkItem inserts one card with an explicit state/version and returns

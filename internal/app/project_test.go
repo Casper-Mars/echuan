@@ -144,14 +144,22 @@ func TestCreateProjectStoresRequirement(t *testing.T) {
 	if detail.Project.ProjectID != "APP-1" || detail.Project.SeqNo != 1 {
 		t.Errorf("project = %s (seq %d), want APP-1 (seq 1)", detail.Project.ProjectID, detail.Project.SeqNo)
 	}
-	if detail.Project.Status != domain.StatusRequirementDraft {
-		t.Errorf("status = %d, want %d (requirement_draft)", detail.Project.Status, domain.StatusRequirementDraft)
+	if detail.Project.Status != domain.StatusRequirementReview {
+		t.Errorf("status = %d, want %d (requirement_review)", detail.Project.Status, domain.StatusRequirementReview)
 	}
 	if detail.Project.Version != 1 {
 		t.Errorf("version = %d, want 1", detail.Project.Version)
 	}
 	if detail.Project.RequirementMaterialID == 0 {
 		t.Error("requirement_material_id was not backfilled")
+	}
+	// The project enters the review with its document attached, so no stage
+	// card asks a worker to write what the request already carried.
+	if detail.Project.WorkItemStats.Total != 0 {
+		t.Errorf("work_item_total = %d, want 0", detail.Project.WorkItemStats.Total)
+	}
+	if got := env.count(t, "SELECT COUNT(*) FROM work_items WHERE kind = ?", phaseKindRequirement); got != 0 {
+		t.Errorf("requirement work items = %d, want 0", got)
 	}
 
 	if detail.Requirement == nil {
@@ -367,6 +375,16 @@ func TestDeleteProjectBranches(t *testing.T) {
 		}
 		return detail
 	}
+	// Projects are born in requirement_review, which the delete whitelist does
+	// not accept (D2: no whitelist widening). Cancelling first is the documented
+	// way to remove a project created by mistake, so the cases below start from
+	// a cancelled project.
+	cancel := func(t *testing.T, projectID string) {
+		t.Helper()
+		if _, err := env.service.CancelProject(ctx, projectID, "human:pm", ""); err != nil {
+			t.Fatalf("CancelProject(%s): %v", projectID, err)
+		}
+	}
 	wantConflict := func(t *testing.T, err error) {
 		t.Helper()
 		var conflict *domain.ConflictError
@@ -375,8 +393,14 @@ func TestDeleteProjectBranches(t *testing.T) {
 		}
 	}
 
-	t.Run("draft without children", func(t *testing.T) {
+	t.Run("fresh project is not deletable", func(t *testing.T) {
+		detail := mustCreate("新建即评审")
+		wantConflict(t, env.service.DeleteProject(ctx, detail.Project.ProjectID))
+	})
+
+	t.Run("cancelled without children", func(t *testing.T) {
 		detail := mustCreate("可删")
+		cancel(t, detail.Project.ProjectID)
 		if err := env.service.DeleteProject(ctx, detail.Project.ProjectID); err != nil {
 			t.Fatalf("DeleteProject: %v", err)
 		}
@@ -388,6 +412,7 @@ func TestDeleteProjectBranches(t *testing.T) {
 	t.Run("with tasks", func(t *testing.T) {
 		detail := mustCreate("有任务")
 		env.insertTask(t, detail.Project.ProjectID, 1)
+		cancel(t, detail.Project.ProjectID)
 		wantConflict(t, env.service.DeleteProject(ctx, detail.Project.ProjectID))
 	})
 
@@ -398,6 +423,7 @@ func TestDeleteProjectBranches(t *testing.T) {
 			detail.Project.RequirementMaterialID, env.physicalProjectID(t, detail.Project.ProjectID)); err != nil {
 			t.Fatalf("set spec: %v", err)
 		}
+		cancel(t, detail.Project.ProjectID)
 		wantConflict(t, env.service.DeleteProject(ctx, detail.Project.ProjectID))
 	})
 
@@ -410,7 +436,7 @@ func TestDeleteProjectBranches(t *testing.T) {
 		wantConflict(t, env.service.DeleteProject(ctx, detail.Project.ProjectID))
 	})
 
-	t.Run("cancelled without children", func(t *testing.T) {
+	t.Run("forced cancelled state", func(t *testing.T) {
 		detail := mustCreate("已取消")
 		if _, err := env.store.Write().ExecContext(ctx,
 			"UPDATE projects SET status = 8 WHERE id = ?", env.physicalProjectID(t, detail.Project.ProjectID)); err != nil {
@@ -562,13 +588,15 @@ func TestListProjectsFiltersAndPagination(t *testing.T) {
 		}
 	}
 
-	draft := domain.StatusRequirementDraft
-	drafts, err := env.service.ListProjects(ctx, "APP", &draft, 0, 50)
+	// Every project created above starts in requirement_review; the status
+	// filter still narrows by the stored status.
+	review := domain.StatusRequirementReview
+	reviewing, err := env.service.ListProjects(ctx, "APP", &review, 0, 50)
 	if err != nil {
-		t.Fatalf("ListProjects(status=0): %v", err)
+		t.Fatalf("ListProjects(status=1): %v", err)
 	}
-	if len(drafts.Items) != 3 {
-		t.Errorf("draft projects = %d, want 3", len(drafts.Items))
+	if len(reviewing.Items) != 3 {
+		t.Errorf("requirement_review projects = %d, want 3", len(reviewing.Items))
 	}
 
 	developing := domain.StatusTasksDraft
@@ -709,6 +737,8 @@ func TestCreateProjectValidation(t *testing.T) {
 		{name: "missing title", in: CreateProjectInput{ProductID: "APP", RequirementMD: "b"}, field: "title"},
 		{name: "blank title", in: CreateProjectInput{ProductID: "APP", Title: "  ", RequirementMD: "b"}, field: "title"},
 		{name: "long title", in: CreateProjectInput{ProductID: "APP", Title: strings.Repeat("标", 201), RequirementMD: "b"}, field: "title"},
+		{name: "missing requirement", in: CreateProjectInput{ProductID: "APP", Title: "t"}, field: "requirement_md"},
+		{name: "blank requirement", in: CreateProjectInput{ProductID: "APP", Title: "t", RequirementMD: " \n\t "}, field: "requirement_md"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -721,12 +751,27 @@ func TestCreateProjectValidation(t *testing.T) {
 			for _, field := range validation.Fields {
 				if field.Field == tc.field {
 					found = true
+					if tc.field == "requirement_md" && field.Reason != "is required" {
+						t.Errorf("reason = %q, want is required", field.Reason)
+					}
 				}
 			}
 			if !found {
 				t.Errorf("details = %+v, want a detail for %q", validation.Fields, tc.field)
 			}
 		})
+	}
+
+	// A rejected create leaves the store untouched: no project, no material, no
+	// object file.
+	if got := env.count(t, "SELECT COUNT(*) FROM projects"); got != 0 {
+		t.Errorf("projects = %d, want 0", got)
+	}
+	if got := env.count(t, "SELECT COUNT(*) FROM materials"); got != 0 {
+		t.Errorf("materials = %d, want 0", got)
+	}
+	if got := countObjectFiles(t, env.dataDir); got != 0 {
+		t.Errorf("object files = %d, want 0", got)
 	}
 }
 
@@ -735,21 +780,25 @@ func TestCreateProjectWithoutRequirement(t *testing.T) {
 	env.createProduct(t, "APP")
 	ctx := context.Background()
 
-	detail, err := env.service.CreateProject(ctx, CreateProjectInput{
-		ProductID: "APP", Title: "无需求项目", RequirementMD: "  \n",
-	})
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
+	// requirement_md is part of the create contract: the missing and the
+	// whitespace-only body produce the same single field error.
+	for _, body := range []string{"", "   ", "\n\n", "\t\t"} {
+		_, err := env.service.CreateProject(ctx, CreateProjectInput{
+			ProductID: "APP", Title: "无需求项目", RequirementMD: body,
+		})
+		var validation *domain.ValidationError
+		if !errors.As(err, &validation) {
+			t.Fatalf("CreateProject(requirement_md=%q) err = %v, want ValidationError", body, err)
+		}
+		if len(validation.Fields) != 1 || validation.Fields[0].Field != "requirement_md" ||
+			validation.Fields[0].Reason != "is required" {
+			t.Errorf("CreateProject(requirement_md=%q) details = %+v, want requirement_md/is required",
+				body, validation.Fields)
+		}
 	}
-	if detail.Project.Status != domain.StatusRequirementDraft || detail.Project.Version != 1 {
-		t.Errorf("project = status %d version %d, want requirement_draft/1",
-			detail.Project.Status, detail.Project.Version)
-	}
-	if detail.Project.RequirementMaterialID != 0 {
-		t.Errorf("requirement_material_id = %d, want 0 (NULL)", detail.Project.RequirementMaterialID)
-	}
-	if detail.Requirement != nil {
-		t.Errorf("requirement = %+v, want nil", *detail.Requirement)
+
+	if got := env.count(t, "SELECT COUNT(*) FROM projects"); got != 0 {
+		t.Errorf("projects = %d, want 0", got)
 	}
 	if got := env.count(t, "SELECT COUNT(*) FROM materials"); got != 0 {
 		t.Errorf("materials rows = %d, want 0", got)
@@ -758,9 +807,11 @@ func TestCreateProjectWithoutRequirement(t *testing.T) {
 		t.Errorf("object files = %d, want 0", got)
 	}
 
-	// A project without a requirement cannot be submitted; the reason is the
-	// exact string the web client shows before it ever sends the request.
-	_, err = env.service.SubmitProject(ctx, detail.Project.ProjectID, "alice")
+	// The legacy draft state — no requirement pointer yet — still refuses to
+	// enter review; the reason is the exact string the web client shows before
+	// it ever sends the request.
+	draft := env.createLegacyDraftProject(t, "APP", "无需求草稿", "")
+	_, err := env.service.SubmitProject(ctx, draft.Project.ProjectID, "alice")
 	var invalid *domain.InvalidStateError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("SubmitProject err = %v, want InvalidStateError", err)
@@ -768,7 +819,7 @@ func TestCreateProjectWithoutRequirement(t *testing.T) {
 	if invalid.Reason != "请先上传需求文档" {
 		t.Errorf("reason = %q, want 请先上传需求文档", invalid.Reason)
 	}
-	if state := env.projectState(t, detail.Project.ProjectID); state.Status != domain.StatusRequirementDraft {
+	if state := env.projectState(t, draft.Project.ProjectID); state.Status != domain.StatusRequirementDraft {
 		t.Errorf("status after rejected submit = %d, want requirement_draft", state.Status)
 	}
 }
@@ -778,12 +829,7 @@ func TestWriteRequirementFromNilPointer(t *testing.T) {
 	env.createProduct(t, "APP")
 	ctx := context.Background()
 
-	created, err := env.service.CreateProject(ctx, CreateProjectInput{
-		ProductID: "APP", Title: "无需求项目",
-	})
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
+	created := env.createLegacyDraftProject(t, "APP", "无需求项目", "")
 	if created.Requirement != nil {
 		t.Fatal("requirement should be nil before the first upload")
 	}
