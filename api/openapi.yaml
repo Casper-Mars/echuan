@@ -464,6 +464,18 @@ paths:
     post:
       operationId: decideProject
       summary: 审批项目评审门
+      description: |
+        对当前评审门给出 `approve` 或 `reject`：`reject` 必须带 `reason`，
+        且请求必须带 `If-Match`，版本过期返回 409 `invalid_version`。
+
+        需求阶段驳回（`requirement_review`(1) → `requirement_draft`(0)）会在
+        同一事务内补一张需求返工卡（kind=requirement、state=queued、
+        priority=990、标题 `需求撰写：<项目标题>`），与状态迁移同事务且幂等：
+        该项目已有活跃的 requirement 卡时复用，不会重复创建。
+
+        `spec_review`(3) → `spec_draft`(2) 的驳回只回退状态；`tasks_review`(5) 的
+        计划批次驳回（见 `/v1/work-items/review`）只写入 `tasks_review_reason` 与
+        `tasks_review_rejected_at`，不移动状态。两者都不产生任何阶段工作项。
       tags: [projects]
       parameters:
         - $ref: "#/components/parameters/Actor"
