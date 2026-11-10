@@ -156,16 +156,18 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
       setError('所选文件内容为空，请换一个文件或清空选择。')
       return
     }
+    // 需求正文必填：create 模式无文件或文件内容为空时正文为空，就地提示且不发请求。
+    if (mode === 'create' && !body.trim()) {
+      setError('需求正文不能为空。')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
       if (props.mode === 'create') {
-        // 需求可选：没有选择文件时不发送 requirement_md，后端创建为需求待提交。
-        await createProject(
-          body.trim()
-            ? { product_id: props.productId, title: title.trim(), requirement_md: body }
-            : { product_id: props.productId, title: title.trim() },
-        )
+        // 需求正文必填：上面已拦截空正文，这里恒定携带 requirement_md，
+        // 后端创建即落「需求评审」，不存在没有需求正文的项目。
+        await createProject({ product_id: props.productId, title: title.trim(), requirement_md: body })
       } else if (props.mode === 'title') {
         await updateProjectTitle(props.project.project_id, title.trim())
       } else {
@@ -219,7 +221,7 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
         )}
         {mode !== 'title' && (
           <div className="field">
-            <span>{mode === 'create' ? '需求文档（可选，.md / .markdown，最大 20 MiB）' : '选择新文件上传新版本（.md / .markdown，最大 20 MiB）'}</span>
+            <span>{mode === 'create' ? '需求文档（必填，.md / .markdown，最大 20 MiB）' : '选择新文件上传新版本（.md / .markdown，最大 20 MiB）'}</span>
             <input
               type="file"
               accept=".md,.markdown"
@@ -239,7 +241,7 @@ export function ProjectFormDialog(props: ProjectFormDialogProps) {
             ) : (
               <span className="muted">
                 {mode === 'create'
-                  ? '不选择也可以创建；项目会落在「需求待提交」，之后可在项目详情里上传首版。'
+                  ? '需求正文必填：请选择 .md 文件，创建后项目直接进入「需求评审」。'
                   : materialId
                     ? '不选择新文件时，保存会沿用当前文档正文。'
                     : '尚无需求文档，需选择 .md 文件后才能保存。'}
