@@ -132,9 +132,8 @@ func TestProjectPackageWithoutRequirement(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	projectID := detail.Project.ProjectID
-	if _, err := env.service.SubmitProject(context.Background(), projectID, "pm"); err != nil {
-		t.Fatalf("SubmitProject: %v", err)
-	}
+	// Create lands in requirement_review: the approval is the only transition
+	// needed to reach spec_draft.
 	version := env.projectState(t, projectID).Version
 	if _, err := env.service.Decide(context.Background(), DecideInput{
 		Kind: DecideKindProject, ID: projectID, Decision: domain.DecisionApprove,
@@ -170,16 +169,11 @@ func TestProjectPackageWithoutRequirement(t *testing.T) {
 func TestProjectPackageEmpty(t *testing.T) {
 	env := newProjectTestEnv(t)
 	env.createProduct(t, "APP")
-	detail, err := env.service.CreateProject(context.Background(), CreateProjectInput{
-		ProductID:  "APP",
-		Title:      "空项目",
-		UploadedBy: "pm",
-	})
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
+	// A project with neither requirement nor spec can only be a legacy draft:
+	// create now requires a requirement body.
+	draft := env.createLegacyDraftProject(t, "APP", "空项目", "")
 
-	pkg, err := env.service.ProjectPackage(context.Background(), detail.Project.ProjectID)
+	pkg, err := env.service.ProjectPackage(context.Background(), draft.Project.ProjectID)
 	if err != nil {
 		t.Fatalf("ProjectPackage: %v", err)
 	}

@@ -35,12 +35,9 @@ func TestDecisionEndpointsRejectAgents(t *testing.T) {
 	projectID := detail.ProjectID
 	requirementID := detail.Requirement.MaterialID
 
-	submitted := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id="+projectID, nil,
-		map[string]string{HeaderActor: gateHumanActor})
-	if submitted.Code != http.StatusOK {
-		t.Fatalf("submit = %d (body %s)", submitted.Code, submitted.Body.String())
-	}
-	version := decodeProjectFromResponse(t, submitted).Version
+	// Create lands in requirement_review at version 1, so the If-Match the
+	// decision endpoints need is available without a submit call.
+	version := detail.Version
 
 	// ---- agent is rejected before any state is read or written -----------
 	for _, target := range []string{
@@ -178,9 +175,7 @@ func TestGateDecisionHistoryHTTP(t *testing.T) {
 	projectID := detail.ProjectID
 	requirementID := detail.Requirement.MaterialID
 
-	submitted := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id="+projectID, nil,
-		map[string]string{HeaderActor: gateHumanActor})
-	version := decodeProjectFromResponse(t, submitted).Version
+	version := detail.Version
 	decided := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id="+projectID,
 		map[string]any{"decision": "reject", "reason": "缺少验收标准"},
 		map[string]string{"If-Match": strconv.Itoa(version), HeaderActor: gateHumanActor})

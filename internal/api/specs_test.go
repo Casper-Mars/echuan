@@ -21,24 +21,23 @@ func decodeSpecSubmit(t *testing.T, rec interface{ Bytes() []byte }) specSubmitR
 	return response
 }
 
-// acceptHTTPProject moves a freshly created project to spec_draft: submit the
-// requirement, then approve it.
+// acceptHTTPProject moves a freshly created project to spec_draft. Create lands
+// in requirement_review, so approving the requirement is the only call needed.
 func acceptHTTPProject(t *testing.T, env *materialServerEnv, projectID string) projectResponse {
 	t.Helper()
-	rec := doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/submit?id="+projectID, nil,
-		map[string]string{HeaderActor: "pm"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("submit status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	current := doJSON(t, env.handler, http.MethodGet, "/v1/projects?id="+projectID, nil)
+	if current.Code != http.StatusOK {
+		t.Fatalf("read project status = %d (body %s)", current.Code, current.Body.String())
 	}
-	project := decodeProjectFromResponse(t, rec)
+	created := decodeProjectDetail(t, current)
 
-	rec = doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/decide?id="+projectID,
+	rec := doJSONHeaders(t, env.handler, http.MethodPost, "/v1/projects/decide?id="+projectID,
 		map[string]any{"decision": "approve"},
-		map[string]string{"If-Match": strconv.Itoa(project.Version)})
+		map[string]string{"If-Match": strconv.Itoa(created.Version)})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("approve status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
-	project = decodeProjectFromResponse(t, rec)
+	project := decodeProjectFromResponse(t, rec)
 	if project.Status != domain.StatusSpecDraft {
 		t.Fatalf("status = %d, want spec_draft", project.Status)
 	}

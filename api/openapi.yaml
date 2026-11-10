@@ -1793,7 +1793,7 @@ components:
     ProjectCreateRequest:
       type: object
       additionalProperties: false
-      required: [product_id, title]
+      required: [product_id, title, requirement_md]
       properties:
         product_id:
           type: string
@@ -1802,9 +1802,10 @@ components:
         requirement_md:
           type: string
           description: |
-            需求正文（可选）。缺失或空白时项目直接创建为 `requirement_draft`(0) / 需求待提交，
-            `requirement` 为 null，`requirement_material_id` 为空；之后可通过 `POST /v1/projects/requirement`
-            上传首版。提供时按 Markdown 原样保存，大小受 `material_max_bytes` 限制（默认 20 MiB）。
+            需求正文（必填，去空白后不得为空；缺失或纯空白返回 400 `invalid_argument`，
+            `details[].field=requirement_md`，消息 `is required`）。正文按 Markdown 原样保存为需求 v1，
+            项目创建即进入 `requirement_review`(1) / 需求评审，`requirement.material_id` 非 null，
+            不再产生需求阶段工作项。大小受 `material_max_bytes` 限制（默认 20 MiB），超限返回 413 `too_large`。
     ProjectPatchRequest:
       type: object
       additionalProperties: false
