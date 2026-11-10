@@ -31,20 +31,17 @@ func newBreakdownFixture(t *testing.T) *breakdownFixture {
 	detail := f.createProject(t, "拆分项目", "# 需求\n\n正文\n")
 	projectID := detail.Project.ProjectID
 
-	workerID, dispatch := f.register(t, phaseKindRequirement, phaseKindDesign, phaseKindBreakdown, "dev")
-	if dispatch == nil || dispatch.Kind != phaseKindRequirement {
-		t.Fatalf("first dispatch = %+v, want requirement", dispatch)
-	}
-	if _, err := f.report(t, dispatch, detail.Requirement.MaterialID); err != nil {
-		t.Fatalf("report requirement: %v", err)
-	}
+	// Create already lands in requirement_review without a stage card, so the
+	// pipeline starts at the approval that enqueues the design card.
 	if approved := f.approve(t, projectID); approved.Status != domain.StatusSpecDraft {
 		t.Fatalf("status = %d, want spec_draft", approved.Status)
 	}
 
-	design := f.claim(t, workerID)
-	if design.Kind != phaseKindDesign {
-		t.Fatalf("claimed kind = %q, want design", design.Kind)
+	// The idle registration heartbeat leases the design card the approval just
+	// enqueued, so it is already the design dispatch the fixture walks next.
+	workerID, design := f.register(t, phaseKindDesign, phaseKindBreakdown, "dev")
+	if design == nil || design.Kind != phaseKindDesign {
+		t.Fatalf("first dispatch = %+v, want design", design)
 	}
 	spec, _, err := f.env.service.SaveSpec(context.Background(), projectID, "", "agent:cto",
 		titlePtr("方案"), "# 方案\n\n正文\n", 0, false)

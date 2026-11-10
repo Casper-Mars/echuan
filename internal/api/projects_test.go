@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +103,17 @@ func decodeProjectList(t *testing.T, rec *httptest.ResponseRecorder) projectList
 	return page
 }
 
+// fieldReason returns the reason recorded for one field, or "" when the error
+// body carries no detail for it.
+func fieldReason(body ErrorBody, field string) string {
+	for _, detail := range body.Details {
+		if detail.Field == field {
+			return detail.Reason
+		}
+	}
+	return ""
+}
+
 const httpRequirement = "# 需求\n\n- 中文与 emoji 🚀 都要原样保存\n"
 
 func TestCreateProjectHTTP(t *testing.T) {
@@ -126,8 +136,11 @@ func TestCreateProjectHTTP(t *testing.T) {
 	if detail.ID != "APP-1" || detail.ProjectID != "APP-1" || detail.ProductID != "APP" {
 		t.Errorf("ids = %q/%q/%q, want APP-1/APP-1/APP", detail.ID, detail.ProjectID, detail.ProductID)
 	}
-	if detail.Status != 0 || detail.StatusName != "requirement_draft" {
-		t.Errorf("status = %d (%s), want 0 (requirement_draft)", detail.Status, detail.StatusName)
+	if detail.Status != 1 || detail.StatusName != "requirement_review" {
+		t.Errorf("status = %d (%s), want 1 (requirement_review)", detail.Status, detail.StatusName)
+	}
+	if detail.Version != 1 {
+		t.Errorf("version = %d, want 1", detail.Version)
 	}
 	if detail.Reason != nil {
 		t.Errorf("reason = %v, want null", *detail.Reason)
@@ -147,10 +160,102 @@ func TestCreateProjectHTTP(t *testing.T) {
 	if detail.Spec != nil {
 		t.Errorf("spec = %+v, want null", *detail.Spec)
 	}
-	// A fresh project owns exactly one card: the queued "requirement writing"
-	// stage item the state machine enqueues with the row. Nothing is done yet.
-	if detail.WorkItemTotal != 1 || detail.WorkItemDone != 0 {
-		t.Errorf("work_item stats = %d/%d, want 1/0", detail.WorkItemTotal, detail.WorkItemDone)
+	// The project enters the review already carrying its requirement, so no
+	// stage card is enqueued: nothing is pending and nothing is done.
+	if detail.WorkItemTotal != 0 || detail.WorkItemDone != 0 {
+		t.Errorf("work_item stats = %d/%d, want 0/0", detail.WorkItemTotal, detail.WorkItemDone)
+	}
+}
+
+// TestCreateProjectRequirementNoWorkItemNoExtraVersion is the #18 regression
+// guard at the HTTP boundary: a created project owns zero requirement work
+// items (nothing left to write), and its requirement chain holds exactly the v1
+// the request carried.
+func TestCreateProjectRequirementNoWorkItemNoExtraVersion(t *testing.T) {
+	const title = "登录页改版"
+	const body = "# 需求\n\n保留验证码登录\n"
+
+	h, st := newProjectTestServer(t)
+	seedProduct(t, st, "APP")
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/projects", map[string]any{
+		"product_id": "APP", "title": title, "requirement_md": body,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	created := decodeProjectDetail(t, rec)
+	if created.Requirement == nil {
+		t.Fatal("requirement = null, want the v1 summary")
+	}
+	if created.Status != 1 || created.StatusName != "requirement_review" || created.Version != 1 {
+		t.Errorf("project = status %d (%s) version %d, want 1 (requirement_review) version 1",
+			created.Status, created.StatusName, created.Version)
+	}
+
+	// AC4: no requirement card is dispatched for the new project.
+	items := doJSON(t, h, http.MethodGet, "/v1/work-items?project_id="+created.ProjectID+"&kind=requirement", nil)
+	if items.Code != http.StatusOK {
+		t.Fatalf("list requirement work items: status = %d (body %s)", items.Code, items.Body.String())
+	}
+	var list workItemListResponse
+	if err := json.Unmarshal(items.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode work items %q: %v", items.Body.String(), err)
+	}
+	if list.Items == nil || len(list.Items) != 0 {
+		t.Errorf("requirement work items = %+v, want an empty array", list.Items)
+	}
+	var cards int64
+	if err := st.Read().QueryRowContext(context.Background(),
+		"SELECT COUNT(*) FROM work_items WHERE kind = 'requirement'").Scan(&cards); err != nil {
+		t.Fatalf("count requirement work items: %v", err)
+	}
+	if cards != 0 {
+		t.Errorf("requirement work items in the store = %d, want 0", cards)
+	}
+	var all int64
+	if err := st.Read().QueryRowContext(context.Background(),
+		"SELECT COUNT(*) FROM work_items").Scan(&all); err != nil {
+		t.Fatalf("count work items: %v", err)
+	}
+	if all != 0 {
+		t.Errorf("work items after create = %d, want 0", all)
+	}
+
+	// AC5: the requirement chain is exactly one version, titled and bodied the
+	// way the request asked.
+	chainRec := doJSON(t, h, http.MethodGet, "/v1/projects/materials?id="+created.ProjectID+"&kind=1", nil)
+	if chainRec.Code != http.StatusOK {
+		t.Fatalf("requirement chain: status = %d (body %s)", chainRec.Code, chainRec.Body.String())
+	}
+	chain := decodeChain(t, chainRec)
+	if len(chain.Items) != 1 || chain.Items[0].Version != 1 {
+		t.Fatalf("requirement chain = %+v, want exactly v1", chain.Items)
+	}
+	if chain.Items[0].MaterialID != created.Requirement.MaterialID || chain.Count != 1 {
+		t.Errorf("chain head = %+v (count %d), want %s and count 1",
+			chain.Items[0], chain.Count, created.Requirement.MaterialID)
+	}
+	if chain.Items[0].Title != title {
+		t.Errorf("requirement title = %q, want %q", chain.Items[0].Title, title)
+	}
+	if chain.Items[0].PreviousMaterialID != nil {
+		t.Errorf("previous_material_id = %v, want null for v1", *chain.Items[0].PreviousMaterialID)
+	}
+	download := doJSON(t, h, http.MethodGet, "/v1/materials?id="+created.Requirement.MaterialID, nil)
+	if download.Code != http.StatusOK {
+		t.Fatalf("download requirement: status = %d (body %s)", download.Code, download.Body.String())
+	}
+	if got := download.Body.String(); got != body {
+		t.Errorf("requirement body = %q, want %q", got, body)
+	}
+	var materials int64
+	if err := st.Read().QueryRowContext(context.Background(),
+		"SELECT COUNT(*) FROM materials").Scan(&materials); err != nil {
+		t.Fatalf("count materials: %v", err)
+	}
+	if materials != 1 {
+		t.Errorf("materials = %d, want 1 (only the first requirement version)", materials)
 	}
 }
 
@@ -170,36 +275,51 @@ func TestCreateProjectHTTPValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("missing requirement creates draft", func(t *testing.T) {
+	t.Run("missing requirement", func(t *testing.T) {
 		rec := doJSON(t, h, http.MethodPost, "/v1/projects", map[string]any{
 			"product_id": "APP", "title": "无需求项目",
 		})
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
 		}
-		detail := decodeProjectDetail(t, rec)
-		if detail.Status != 0 || detail.StatusName != "requirement_draft" {
-			t.Errorf("status = %d (%s), want 0 (requirement_draft)", detail.Status, detail.StatusName)
+		body := decodeError(t, rec)
+		if body.Code != "invalid_argument" {
+			t.Errorf("code = %q, want invalid_argument", body.Code)
 		}
-		if detail.Requirement != nil {
-			t.Errorf("requirement = %+v, want null", *detail.Requirement)
+		requireFieldDetail(t, body, "requirement_md")
+		if reason := fieldReason(body, "requirement_md"); reason != "is required" {
+			t.Errorf("requirement_md reason = %q, want is required", reason)
 		}
-		if detail.Spec != nil {
-			t.Errorf("spec = %+v, want null", *detail.Spec)
-		}
+	})
 
-		// The draft can be read back, and submit hits the 409 gate with the
-		// exact message the web client pre-checks.
-		submit := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id="+detail.ProjectID, nil, nil)
-		if submit.Code != http.StatusConflict {
-			t.Fatalf("submit status = %d, want 409 (body %s)", submit.Code, submit.Body.String())
+	t.Run("blank requirement", func(t *testing.T) {
+		for name, blank := range map[string]string{
+			"spaces":   "   ",
+			"newlines": "\n\n",
+			"tabs":     "\t\t",
+		} {
+			t.Run(name, func(t *testing.T) {
+				rec := doJSON(t, h, http.MethodPost, "/v1/projects", map[string]any{
+					"product_id": "APP", "title": "空白需求", "requirement_md": blank,
+				})
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+				}
+				body := decodeError(t, rec)
+				if body.Code != "invalid_argument" {
+					t.Errorf("code = %q, want invalid_argument", body.Code)
+				}
+				requireFieldDetail(t, body, "requirement_md")
+			})
 		}
-		body := decodeError(t, submit)
-		if body.Code != "invalid_state" {
-			t.Errorf("submit code = %q, want invalid_state", body.Code)
+		// No request above may leave a project behind.
+		var projects int64
+		if err := st.Read().QueryRowContext(context.Background(),
+			"SELECT COUNT(*) FROM projects").Scan(&projects); err != nil {
+			t.Fatalf("count projects: %v", err)
 		}
-		if body.Message != "请先上传需求文档" {
-			t.Errorf("submit message = %q, want 请先上传需求文档", body.Message)
+		if projects != 0 {
+			t.Errorf("projects = %d, want 0", projects)
 		}
 	})
 
@@ -291,9 +411,15 @@ func TestListProjectsHTTP(t *testing.T) {
 	})
 
 	t.Run("status filter", func(t *testing.T) {
-		rec := doJSON(t, h, http.MethodGet, "/v1/projects?product_id=APP&status=0", nil)
+		// Created projects sit in requirement_review now; the filter is the
+		// stored status, so 1 returns them and 0 returns none of them.
+		rec := doJSON(t, h, http.MethodGet, "/v1/projects?product_id=APP&status=1", nil)
 		if page := decodeProjectList(t, rec); len(page.Items) != 3 {
-			t.Errorf("draft items = %d, want 3", len(page.Items))
+			t.Errorf("requirement_review items = %d, want 3", len(page.Items))
+		}
+		rec = doJSON(t, h, http.MethodGet, "/v1/projects?product_id=APP&status=0", nil)
+		if page := decodeProjectList(t, rec); len(page.Items) != 0 {
+			t.Errorf("draft items = %d, want 0", len(page.Items))
 		}
 		rec = doJSON(t, h, http.MethodGet, "/v1/projects?product_id=APP&status=4", nil)
 		if page := decodeProjectList(t, rec); len(page.Items) != 0 {
@@ -405,6 +531,15 @@ func TestDeleteProjectHTTP(t *testing.T) {
 		"product_id": "APP", "title": "可删", "requirement_md": "需求",
 	}); rec.Code != http.StatusCreated {
 		t.Fatalf("create: status = %d", rec.Code)
+	}
+
+	// The delete whitelist is unchanged (requirement_draft/cancelled only), so a
+	// project created by mistake goes through cancel first.
+	if rec := doJSON(t, h, http.MethodDelete, "/v1/projects?id=APP-1", nil); rec.Code != http.StatusConflict {
+		t.Fatalf("delete while in review: status = %d, want 409 (body %s)", rec.Code, rec.Body.String())
+	}
+	if rec := doJSON(t, h, http.MethodPost, "/v1/projects/cancel?id=APP-1", nil); rec.Code != http.StatusOK {
+		t.Fatalf("cancel: status = %d (body %s)", rec.Code, rec.Body.String())
 	}
 
 	rec := doJSON(t, h, http.MethodDelete, "/v1/projects?id=APP-1", nil)
@@ -543,15 +678,9 @@ func TestProjectDetailOmitsBodies(t *testing.T) {
 	}); rec.Code != http.StatusCreated {
 		t.Fatalf("create project: status = %d (body %s)", rec.Code, rec.Body.String())
 	}
-	submit := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/submit?id=APP-1", nil,
-		map[string]string{HeaderActor: "pm"})
-	if submit.Code != http.StatusOK {
-		t.Fatalf("submit project: status = %d (body %s)", submit.Code, submit.Body.String())
-	}
-	submitted := decodeProjectFromResponse(t, submit)
 	if rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/decide?id=APP-1",
 		map[string]any{"decision": "approve"},
-		map[string]string{"If-Match": strconv.Itoa(submitted.Version)}); rec.Code != http.StatusOK {
+		map[string]string{"If-Match": "1"}); rec.Code != http.StatusOK {
 		t.Fatalf("approve requirement: status = %d (body %s)", rec.Code, rec.Body.String())
 	}
 	if rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/specs?id=APP-1",

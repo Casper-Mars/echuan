@@ -464,6 +464,18 @@ paths:
     post:
       operationId: decideProject
       summary: 审批项目评审门
+      description: |
+        对当前评审门给出 `approve` 或 `reject`：`reject` 必须带 `reason`，
+        且请求必须带 `If-Match`，版本过期返回 409 `invalid_version`。
+
+        需求阶段驳回（`requirement_review`(1) → `requirement_draft`(0)）会在
+        同一事务内补一张需求返工卡（kind=requirement、state=queued、
+        priority=990、标题 `需求撰写：<项目标题>`），与状态迁移同事务且幂等：
+        该项目已有活跃的 requirement 卡时复用，不会重复创建。
+
+        `spec_review`(3) → `spec_draft`(2) 的驳回只回退状态；`tasks_review`(5) 的
+        计划批次驳回（见 `/v1/work-items/review`）只写入 `tasks_review_reason` 与
+        `tasks_review_rejected_at`，不移动状态。两者都不产生任何阶段工作项。
       tags: [projects]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -1793,7 +1805,7 @@ components:
     ProjectCreateRequest:
       type: object
       additionalProperties: false
-      required: [product_id, title]
+      required: [product_id, title, requirement_md]
       properties:
         product_id:
           type: string
@@ -1802,9 +1814,10 @@ components:
         requirement_md:
           type: string
           description: |
-            需求正文（可选）。缺失或空白时项目直接创建为 `requirement_draft`(0) / 需求待提交，
-            `requirement` 为 null，`requirement_material_id` 为空；之后可通过 `POST /v1/projects/requirement`
-            上传首版。提供时按 Markdown 原样保存，大小受 `material_max_bytes` 限制（默认 20 MiB）。
+            需求正文（必填，去空白后不得为空；缺失或纯空白返回 400 `invalid_argument`，
+            `details[].field=requirement_md`，消息 `is required`）。正文按 Markdown 原样保存为需求 v1，
+            项目创建即进入 `requirement_review`(1) / 需求评审，`requirement.material_id` 非 null，
+            不再产生需求阶段工作项。大小受 `material_max_bytes` 限制（默认 20 MiB），超限返回 413 `too_large`。
     ProjectPatchRequest:
       type: object
       additionalProperties: false

@@ -211,6 +211,7 @@ describe('echuan_product_create：建产品后立即建项目', () => {
     const project = await run(tools.get('echuan_project_create'), {
       product_id: 'APPX',
       title: '新项目',
+      requirement_md: '# 需求正文',
     }) as { kind: string; project_id: string }
     expect(project).toMatchObject({ kind: 'project_created', project_id: 'APPX-1' })
     expect(platform.calls).toHaveLength(2)

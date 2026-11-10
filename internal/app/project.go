@@ -86,10 +86,15 @@ func (s *ProjectService) SetMaxAttempts(n int) {
 	}
 }
 
-// CreateProject inserts a project and stores its requirement in one
-// transaction: project row → kind=1 material → requirement_material_id
-// backfill. A failure at any step rolls everything back, and the object file
-// created by this request is removed when the transaction did not commit.
+// CreateProject inserts a project in requirement_review and stores its
+// requirement in one transaction: project row → kind=1 material →
+// requirement_material_id backfill. A failure at any step rolls everything
+// back, and the object file created by this request is removed when the
+// transaction did not commit.
+//
+// The requirement is mandatory, so the project starts in requirement_review(1)
+// and no requirement stage card is enqueued: the body the card would ask for
+// already exists.
 func (s *ProjectService) CreateProject(ctx context.Context, in CreateProjectInput) (domain.ProjectDetail, error) {
 	normalized, fields := s.validateCreateProject(in)
 	if len(fields) > 0 {
@@ -131,7 +136,7 @@ func (s *ProjectService) CreateProject(ctx context.Context, in CreateProjectInpu
 			SeqNo:                 seq,
 			Title:                 normalized.Title,
 			RequirementMaterialID: nil,
-			Status:                domain.StatusRequirementDraft,
+			Status:                domain.StatusRequirementReview,
 			Version:               1,
 			CreateTime:            ts,
 			UpdateTime:            ts,
@@ -144,34 +149,27 @@ func (s *ProjectService) CreateProject(ctx context.Context, in CreateProjectInpu
 			return err
 		}
 
-		// The requirement is optional at create time: an empty body means the
-		// project lands in requirement_draft with no pointer, and the first
-		// version can be uploaded later through WriteRequirement.
-		if strings.TrimSpace(normalized.RequirementMD) != "" {
-			written, err = s.materials.Write(ctx, tx, material.WriteInput{
-				Kind:       domain.MaterialKindRequirement,
-				Title:      normalized.Title,
-				Body:       []byte(normalized.RequirementMD),
-				UploadedBy: normalized.UploadedBy,
-			})
-			if err != nil {
-				return materialWriteError("requirement_md", err)
-			}
-
-			if err := store.AttachRequirementPointer(ctx, tx, id, written.Material.ID); err != nil {
-				return err
-			}
+		// The requirement is part of the create contract: the body was already
+		// validated as non-blank, so it is always written as version 1.
+		written, err = s.materials.Write(ctx, tx, material.WriteInput{
+			Kind:       domain.MaterialKindRequirement,
+			Title:      normalized.Title,
+			Body:       []byte(normalized.RequirementMD),
+			UploadedBy: normalized.UploadedBy,
+		})
+		if err != nil {
+			return materialWriteError("requirement_md", err)
 		}
 
-		// The project lands in requirement_draft with the card that says who
-		// still has to write the requirement: the stage is now real work
-		// instead of an empty waiting state. Same transaction as the project
-		// insert, so no project can exist without its card.
-		enqueuer := phaseEnqueuer{now: s.now, maxAttempts: s.maxAttempts}
-		if err := enqueuer.ensure(ctx, tx, id, projectID, normalized.Title, phaseKindRequirement); err != nil {
+		if err := store.AttachRequirementPointer(ctx, tx, id, written.Material.ID); err != nil {
 			return err
 		}
 
+		// No requirement stage card is enqueued here: the project enters
+		// requirement_review(1) with its document already attached, so the
+		// writer card the old draft state needed would be busywork. The
+		// approve 1→2 path settles a missing card as a no-op and still creates
+		// the design card.
 		out, err = s.detail(ctx, tx, id)
 		return err
 	})
@@ -473,13 +471,12 @@ func (s *ProjectService) validateCreateProject(in CreateProjectInput) (CreatePro
 		})
 	}
 
-	// requirement_md is optional: a missing or blank body creates the project
-	// in requirement_draft with requirement_material_id = NULL. A supplied body
-	// is still validated like any other requirement write.
-	if strings.TrimSpace(in.RequirementMD) != "" {
-		if _, bodyFields := s.validateRequirementBody("requirement_md", in.RequirementMD); len(bodyFields) > 0 {
-			fields = append(fields, bodyFields...)
-		}
+	// requirement_md is mandatory: a missing or blank body is rejected, because
+	// a project is created straight into requirement_review and its first
+	// requirement version is written in the same transaction. A body is
+	// validated exactly like any other requirement write.
+	if _, bodyFields := s.validateRequirementBody("requirement_md", in.RequirementMD); len(bodyFields) > 0 {
+		fields = append(fields, bodyFields...)
 	}
 	in.UploadedBy = actorOrDefault(in.UploadedBy)
 

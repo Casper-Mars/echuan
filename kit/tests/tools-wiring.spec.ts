@@ -108,8 +108,9 @@ const respondByPath: Responder = (call) => {
           project_id: 'APP-3',
           product_id: 'APP',
           title: '新项目',
-          status: 0,
-          status_name: '需求草稿',
+          // 建项即入需求评审：1 = requirement_review（不是 0 需求草稿）。
+          status: 1,
+          status_name: '需求评审',
           version: 1,
         })
       }
@@ -310,11 +311,12 @@ const WIRING_CASES: WiringCase[] = [
   },
   {
     name: 'echuan_project_create',
-    args: { product_id: 'APP', title: '新项目' },
+    // requirement_md 已是必填（契约 ProjectCreateRequest.required 含该字段）。
+    args: { product_id: 'APP', title: '新项目', requirement_md: '# 需求正文' },
     method: 'POST',
     path: '/v1/projects',
     query: {},
-    bodyKeys: ['product_id', 'title'],
+    bodyKeys: ['product_id', 'requirement_md', 'title'],
   },
   {
     name: 'echuan_project_requirement_write',

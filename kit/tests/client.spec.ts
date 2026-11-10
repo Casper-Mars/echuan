@@ -487,6 +487,46 @@ describe('URL 与请求头', () => {
   })
 })
 
+describe('建项：requirement_md 必填且正文原样发送', () => {
+  type CreateArgs = Parameters<ReturnType<typeof createClient>['createProject']>[0]
+
+  it('缺 requirement_md / 纯空白：本地拒绝（点名 requirement_md）、零请求', async () => {
+    const { calls, fetchImpl } = createFetch(() => jsonResponse({ project_id: 'APP-1' }))
+    const client = createClient(config, { fetchImpl })
+
+    // 故意绕过类型（老调用方仍按「可选」传参）：运行时必须被本地校验拦下。
+    const missing = { product_id: 'APP', title: '新项目' } as unknown as CreateArgs
+    const blank = { product_id: 'APP', title: '新项目', requirement_md: '   \n\t ' } as CreateArgs
+
+    const missingErr = await client.createProject(missing).catch((err: unknown) => err)
+    expect(missingErr).toBeInstanceOf(EchuanValidationError)
+    expect((missingErr as EchuanValidationError).field).toBe('requirement_md')
+    expect((missingErr as EchuanValidationError).message).toContain('requirement_md')
+
+    await expect(client.createProject(blank)).rejects.toThrow(/requirement_md/)
+
+    expect(calls).toHaveLength(0)
+  })
+
+  it('合法正文：body 含 requirement_md，且不 trim 原文', async () => {
+    const { calls, fetchImpl } = createFetch(() => jsonResponse({ project_id: 'APP-1', status: 1 }))
+    const client = createClient(config, { fetchImpl })
+
+    const requirement_md = '\n\n# 需求正文\n\n- 第一条\n'
+    await client.createProject({ product_id: 'APP', title: '新项目', requirement_md })
+
+    expect(calls).toHaveLength(1)
+    const url = new URL(calls[0]!.url)
+    expect(url.pathname).toBe('/v1/projects')
+    expect(bodyOf(calls[0]!.init)).toEqual({
+      product_id: 'APP',
+      title: '新项目',
+      requirement_md,
+    })
+    expect(headerOf(calls[0]!.init, 'content-type')).toBe('application/json')
+  })
+})
+
 describe('方法集合：恰好 20 个，无审批类动作', () => {
   it('TOOL_METHODS 长度为 20，客户端对象键与之一致', () => {
     const client = createClient(config, { fetchImpl: createFetch(() => jsonResponse({})).fetchImpl })

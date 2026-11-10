@@ -146,30 +146,74 @@ func (f *phaseFixture) singlePhaseItem(t *testing.T, projectID, kind string) sto
 	return items[0]
 }
 
-// TestCreateProjectEnqueuesRequirement is acceptance 1.
-func TestCreateProjectEnqueuesRequirement(t *testing.T) {
+// TestCreateProjectEntersRequirementReview pins the create contract: the
+// project enters requirement_review with its document attached and enqueues no
+// requirement stage card, and approving 1→2 settles nothing but still creates
+// the design card (settlePhaseWorkItem treats "no active card" as a no-op).
+func TestCreateProjectEntersRequirementReview(t *testing.T) {
 	f := newPhaseFixture(t)
 	detail := f.createProject(t, "登录改版", "# 需求\n\n正文\n")
+	projectID := detail.Project.ProjectID
 
-	if detail.Project.Status != domain.StatusRequirementDraft {
-		t.Fatalf("status = %d, want requirement_draft", detail.Project.Status)
+	if detail.Project.Status != domain.StatusRequirementReview {
+		t.Fatalf("status = %d, want requirement_review", detail.Project.Status)
 	}
-	item := f.singlePhaseItem(t, detail.Project.ProjectID, phaseKindRequirement)
-	if item.State != store.WorkItemStateQueued {
-		t.Errorf("state = %q, want queued", item.State)
-	}
-	if item.Priority != 990 {
-		t.Errorf("priority = %d, want 990", item.Priority)
-	}
-	wantTitle := "需求撰写：登录改版"
-	if item.Title != wantTitle {
-		t.Errorf("title = %q, want %q", item.Title, wantTitle)
-	}
-	if item.BodyMD == "" {
-		t.Error("body is empty, want the stage description")
+	if items := f.phaseItems(t, projectID, phaseKindRequirement); len(items) != 0 {
+		t.Fatalf("requirement items = %d (%+v), want 0", len(items), items)
 	}
 	if detail.Requirement == nil {
 		t.Fatal("requirement material is missing")
+	}
+
+	approved := f.approve(t, projectID)
+	if approved.Status != domain.StatusSpecDraft {
+		t.Fatalf("status after approve = %d, want spec_draft", approved.Status)
+	}
+	if items := f.phaseItems(t, projectID, phaseKindRequirement); len(items) != 0 {
+		t.Errorf("requirement items after approve = %d, want 0 (nothing to settle)", len(items))
+	}
+	design := f.singlePhaseItem(t, projectID, phaseKindDesign)
+	if design.State != store.WorkItemStateQueued {
+		t.Errorf("design state = %q, want queued", design.State)
+	}
+}
+
+// TestPhaseReportAdvancedLegacyDraft covers the 0→1 report path, which the
+// create endpoint no longer reaches: a legacy draft (or a requirement-reject
+// return) still owns its requirement card, and reporting it moves the project
+// into review.
+func TestPhaseReportAdvancedLegacyDraft(t *testing.T) {
+	f := newPhaseFixture(t)
+	detail := f.env.createLegacyDraftProject(t, "APP", "登录改版", "# 需求\n\n正文\n")
+	projectID := detail.Project.ProjectID
+
+	workerID, dispatch := f.register(t, phaseKindRequirement)
+	if dispatch == nil || dispatch.Kind != phaseKindRequirement {
+		t.Fatalf("first dispatch = %+v, want the requirement card", dispatch)
+	}
+	if item := f.singlePhaseItem(t, projectID, phaseKindRequirement); item.State != store.WorkItemStateLeased {
+		t.Errorf("requirement state = %q, want leased", item.State)
+	}
+	if item := f.singlePhaseItem(t, projectID, phaseKindRequirement); item.Priority != 990 {
+		t.Errorf("priority = %d, want 990", item.Priority)
+	}
+	card := f.singlePhaseItem(t, projectID, phaseKindRequirement)
+	if card.Title != "需求撰写：登录改版" {
+		t.Errorf("title = %q, want 需求撰写：登录改版", card.Title)
+	}
+	if card.BodyMD == "" {
+		t.Error("body is empty, want the stage description")
+	}
+	if _, err := f.report(t, dispatch, detail.Requirement.MaterialID); err != nil {
+		t.Fatalf("report requirement: %v", err)
+	}
+	_ = workerID
+
+	if state := f.env.projectState(t, projectID); state.Status != domain.StatusRequirementReview {
+		t.Fatalf("status after report = %d, want requirement_review", state.Status)
+	}
+	if item := f.singlePhaseItem(t, projectID, phaseKindRequirement); item.State != store.WorkItemStateSubmitted {
+		t.Errorf("requirement state = %q, want submitted", item.State)
 	}
 }
 
@@ -178,7 +222,7 @@ func TestCreateProjectEnqueuesRequirement(t *testing.T) {
 // stale replay cannot create a second design card.
 func TestPhaseReportAdvancesProject(t *testing.T) {
 	f := newPhaseFixture(t)
-	detail := f.createProject(t, "登录改版", "# 需求\n\n正文\n")
+	detail := f.env.createLegacyDraftProject(t, "APP", "登录改版", "# 需求\n\n正文\n")
 	projectID := detail.Project.ProjectID
 
 	workerID, dispatch := f.register(t, phaseKindRequirement)
@@ -230,7 +274,9 @@ func TestPhaseReportAdvancesProject(t *testing.T) {
 // report must fail as a whole, leaving the project and the lease untouched.
 func TestPhaseReportWithoutRequirementRollsBack(t *testing.T) {
 	f := newPhaseFixture(t)
-	project := f.createProject(t, "无需求项目", "")
+	// A legacy draft without a requirement pointer still owns its stage card;
+	// the create endpoint can no longer produce this state.
+	project := f.env.createLegacyDraftProject(t, "APP", "无需求项目", "")
 	// A second project supplies a real material for the doomed report.
 	donor := f.createProject(t, "供料项目", "# 需求\n\n供料\n")
 
@@ -282,17 +328,20 @@ func TestDesignAndBreakdownReportsAdvance(t *testing.T) {
 	detail := f.createProject(t, "全链路", "# 需求\n\n正文\n")
 	projectID := detail.Project.ProjectID
 
-	workerID, dispatch := f.register(t, phaseKindRequirement, phaseKindDesign, phaseKindBreakdown)
-	if _, err := f.report(t, dispatch, detail.Requirement.MaterialID); err != nil {
-		t.Fatalf("report requirement: %v", err)
+	// The project is born in requirement_review, so the pipeline starts at the
+	// approval that opens spec_draft: no requirement card has to be reported.
+	if detail.Project.Status != domain.StatusRequirementReview {
+		t.Fatalf("create status = %d, want requirement_review", detail.Project.Status)
 	}
 	if approved := f.approve(t, projectID); approved.Status != domain.StatusSpecDraft {
 		t.Fatalf("status = %d, want spec_draft", approved.Status)
 	}
 
-	designDispatch := f.claim(t, workerID)
-	if designDispatch.Kind != phaseKindDesign {
-		t.Fatalf("claimed kind = %q, want design", designDispatch.Kind)
+	// The approval enqueued the design card, so the idle registration heartbeat
+	// leases it and the claim path is only needed for the later stages.
+	workerID, designDispatch := f.register(t, phaseKindDesign, phaseKindBreakdown)
+	if designDispatch == nil || designDispatch.Kind != phaseKindDesign {
+		t.Fatalf("first dispatch = %+v, want design", designDispatch)
 	}
 	// Without a spec the report must roll back and keep the lease.
 	before := f.env.projectState(t, projectID)
@@ -371,10 +420,11 @@ func TestDesignAndBreakdownReportsAdvance(t *testing.T) {
 
 // TestGateApprovalSettlesBypassedCard covers the manual-submit path: the stage
 // card is still queued when the human approves the gate, and closing it keeps
-// the project able to reach completed later.
+// the project able to reach completed later. The state comes from a legacy
+// draft: create itself no longer leaves a card behind.
 func TestGateApprovalSettlesBypassedCard(t *testing.T) {
 	f := newPhaseFixture(t)
-	detail := f.createProject(t, "手工推进", "# 需求\n\n正文\n")
+	detail := f.env.createLegacyDraftProject(t, "APP", "手工推进", "# 需求\n\n正文\n")
 	projectID := detail.Project.ProjectID
 
 	if _, err := f.env.service.SubmitProject(context.Background(), projectID, "human:pm"); err != nil {

@@ -74,8 +74,8 @@ export interface ProjectList {
 export interface ProjectCreateRequest {
   product_id: string
   title: string
-  /** 需求正文，可选；缺失时后端创建为「需求待提交」。 */
-  requirement_md?: string
+  /** 需求正文，必填；创建即进入需求评审。 */
+  requirement_md: string
 }
 
 export interface SpecDocument {

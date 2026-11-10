@@ -16,7 +16,8 @@ func titlePtr(v string) *string { return &v }
 
 // newSpecReviewProject creates one project and approves its requirement, so the
 // project sits in spec_draft (status 2) — the state a spec is normally written
-// and submitted in.
+// and submitted in. Create already lands in requirement_review, so the approval
+// is the only transition the fixture needs.
 func (e *projectTestEnv) newSpecReviewProject(t *testing.T, title string) string {
 	t.Helper()
 	e.createProduct(t, "APP")
@@ -30,8 +31,8 @@ func (e *projectTestEnv) newSpecReviewProject(t *testing.T, title string) string
 		t.Fatalf("CreateProject: %v", err)
 	}
 	projectID := detail.Project.ProjectID
-	if _, err := e.service.SubmitProject(context.Background(), projectID, "pm"); err != nil {
-		t.Fatalf("SubmitProject(%s): %v", projectID, err)
+	if state := e.projectState(t, projectID); state.Status != domain.StatusRequirementReview {
+		t.Fatalf("create status = %d, want requirement_review", state.Status)
 	}
 	version := e.projectState(t, projectID).Version
 	if _, err := e.service.Decide(context.Background(), DecideInput{
@@ -425,8 +426,9 @@ func TestSubmitSpecConcurrent(t *testing.T) {
 	}
 
 	// The pointer moving only forward is not enough: the project version must
-	// have advanced once per submission on top of create/submit/approve.
-	wantVersion := 1 /* create */ + 1 /* submit */ + 1 /* approve */ + submissions
+	// have advanced once per submission on top of create/approve. Create lands
+	// in requirement_review directly, so there is no submit bump any more.
+	wantVersion := 1 /* create */ + 1 /* approve */ + submissions
 	if state := env.projectState(t, projectID); state.Version != wantVersion {
 		t.Errorf("project version = %d, want %d", state.Version, wantVersion)
 	}
