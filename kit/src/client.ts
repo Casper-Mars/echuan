@@ -404,8 +404,11 @@ export interface ReportWorkItemInput {
 export interface CreateProjectInput {
   product_id: string
   title: string
-  /** 首版需求正文（可选；缺失/空白时项目建为 requirement_draft）。 */
-  requirement_md?: string
+  /**
+   * 首版需求正文（**必填**，契约 `ProjectCreateRequest.required` 含 `requirement_md`）：
+   * 去空白后不得为空，正文按 Markdown 原样发送；建项即进入 `requirement_review`(1)。
+   */
+  requirement_md: string
 }
 
 export interface WriteRequirementInput {
@@ -972,14 +975,12 @@ export function createClient(
     async createProject(input) {
       const product_id = requireNonEmpty(input?.product_id, 'product_id')
       const title = requireNonEmpty(input?.title, 'title')
-      const body: Record<string, unknown> = { product_id, title }
-      if (input?.requirement_md !== undefined && input.requirement_md.trim() !== '') {
-        body.requirement_md = input.requirement_md
-      }
+      // 需求正文必填：只 trim 用于「是否为空」判断，发出去的仍是原文。
+      const requirement_md = requireNonBlank(input?.requirement_md, 'requirement_md')
       return requestJson<ProjectDetail>(ctx, {
         method: 'POST',
         path: '/v1/projects',
-        body,
+        body: { product_id, title, requirement_md },
       })
     },
 
