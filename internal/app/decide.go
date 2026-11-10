@@ -238,18 +238,39 @@ func (s *ProjectService) validateSubmitPrecondition(ctx context.Context, tx *sql
 
 // applyProjectSideEffects performs the writes that accompany one transition.
 //
-// Cancel cancels every unfinished card. An approved review gate does two
-// things: it closes the stage card that produced the approved artifact (a
-// reported card becomes accepted, a bypassed one is cancelled) and enqueues the
-// next stage's card, both in the same transaction as the status write. The
-// task-batch review (5→6) lives in the work-item service because it is driven by
-// the batch endpoint, not by a project decision.
+// Cancel cancels every unfinished card. A rejected requirement gate (1→0) sends
+// the project back to requirement_draft, so it enqueues the requirement card
+// that owns that stage; every other gate keeps its draft card-free on purpose
+// (spec 3→2, and the plan-batch reject that only records an objection). An
+// approved review gate does two things: it closes the stage card that produced
+// the approved artifact (a reported card becomes accepted, a bypassed one is
+// cancelled) and enqueues the next stage's card, all in the same transaction as
+// the status write. The task-batch review (5→6) lives in the work-item service
+// because it is driven by the batch endpoint, not by a project decision.
 func (s *ProjectService) applyProjectSideEffects(ctx context.Context, tx *sql.Tx, row store.Project, action string, decision domain.Decision, reason, actor, updateTime string) error {
 	if action == domain.ProjectActionCancel {
 		_, err := store.CancelUnfinishedWorkItems(ctx, tx, row.ID, updateTime)
 		return err
 	}
-	if action != domain.ProjectActionDecide || decision != domain.DecisionApprove {
+	if action != domain.ProjectActionDecide {
+		return nil
+	}
+
+	enqueuer := phaseEnqueuer{now: s.now, maxAttempts: s.maxAttempts}
+
+	if decision == domain.DecisionReject {
+		// Only the requirement gate returns to a producing stage: 1→0 leaves
+		// the project in requirement_draft with nobody to pick it up, which is
+		// exactly what the rework card exists to prevent. ensure() is the whole
+		// idempotency layer: an already active requirement card (reported, or
+		// left over from a legacy draft) is kept instead of duplicated.
+		if row.Status != domain.StatusRequirementReview {
+			return nil
+		}
+		return enqueuer.ensure(ctx, tx, row.ID, row.ProjectID, row.Title, phaseKindRequirement)
+	}
+
+	if decision != domain.DecisionApprove {
 		return nil
 	}
 
@@ -266,6 +287,5 @@ func (s *ProjectService) applyProjectSideEffects(ctx context.Context, tx *sql.Tx
 	if err := settlePhaseWorkItem(ctx, tx, row.ID, settledKind, s.now()); err != nil {
 		return err
 	}
-	enqueuer := phaseEnqueuer{now: s.now, maxAttempts: s.maxAttempts}
 	return enqueuer.ensure(ctx, tx, row.ID, row.ProjectID, row.Title, nextKind)
 }
