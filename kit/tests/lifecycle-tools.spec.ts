@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { createClient, type FetchLike } from '../src/client.js'
 import { resolveConfig } from '../src/config.js'
+import { renderProjectCreated } from '../src/tools/lifecycle.js'
 import { createAllEchuanTools } from '../src/tools/index.js'
 import type { EchuanToolOptions } from '../src/tools/index.js'
 
@@ -91,7 +92,7 @@ async function failureOf(promise: Promise<unknown>): Promise<Error> {
 // 1. 完整链路
 // ---------------------------------------------------------------------------
 
-describe('生命周期链路：项目 0 → 1 → 2 → 3 → 5，id 逐步串联', () => {
+describe('生命周期链路：建项即需求评审(1) → 提交(1) → 方案(2/3) → 批量建卡(5)，id 逐步串联', () => {
   it('建项目 → 写需求 → 提交 → 建方案 → 提交 → 批量建卡', async () => {
     let requirementWritten = false
     let specCreated = false
@@ -99,12 +100,13 @@ describe('生命周期链路：项目 0 → 1 → 2 → 3 → 5，id 逐步串�
     const platform = createPlatform((request) => {
       switch (`${request.method} ${request.url.pathname}`) {
         case 'POST /v1/projects':
+          // 建项请求体必带 requirement_md，平台直接建为需求评审（1 = requirement_review）。
           return json({
             project_id: 'APP-9',
             product_id: 'APP',
             title: '新项目',
-            status: 0,
-            status_name: '需求草稿',
+            status: 1,
+            status_name: '需求评审',
             version: 1,
           }, 201)
         case 'POST /v1/projects/requirement':
@@ -156,9 +158,11 @@ describe('生命周期链路：项目 0 → 1 → 2 → 3 → 5，id 逐步串�
     const created = await call(tools, 'echuan_project_create', {
       product_id: 'APP',
       title: '新项目',
+      requirement_md: '# 需求正文',
     }) as { project_id: string; status: number }
     expect(created.project_id).toBe('APP-9')
-    expect(created.status).toBe(0)
+    // 建项即入需求评审：1 = requirement_review（不再是 0 需求草稿）。
+    expect(created.status).toBe(1)
 
     const written = await call(tools, 'echuan_project_requirement_write', {
       project_id: created.project_id,
@@ -453,6 +457,100 @@ describe('生命周期写工具：必填入参本地校验', () => {
     }))
 
     expect(platform.calls).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 5b. 建项：requirement_md 必填（建项即入需求评审，不再需要 submit）
+// ---------------------------------------------------------------------------
+
+const PROJECT_CREATED_PAYLOAD = {
+  project_id: 'APP-7',
+  product_id: 'APP',
+  title: '新项目',
+  // 1 = requirement_review（api/openapi.yaml ProjectPatchRequest.status 枚举）。
+  status: 1,
+  status_name: '需求评审',
+  version: 1,
+}
+
+describe('echuan_project_create：requirement_md 必填，缺失/纯空白在本地拦下', () => {
+  it('AC1 只传 product_id / title：参数校验点名 requirement_md，且零请求', async () => {
+    const platform = createPlatform(() => json(PROJECT_CREATED_PAYLOAD, 201))
+    const tools = toolsFor(platform.fetchImpl)
+
+    const err = await failureOf(call(tools, 'echuan_project_create', {
+      product_id: 'APP',
+      title: '新项目',
+    }))
+
+    // 工具已把 requirement_md 声明为 required:true，dsh 的参数校验在 execute 之前
+    // 就拒绝（`invalid arguments: missing required property "requirement_md"`），
+    // 因此这里断言的是「参数校验错误 + 文案点名 requirement_md」。
+    expect(err.message).toContain('requirement_md')
+    expect(err.message).toMatch(/invalid argument|invalid_argument|required/)
+    // 关键：不是只看文案——假平台必须一条请求都没收到。
+    expect(platform.calls).toHaveLength(0)
+  })
+
+  it('AC2 requirement_md 为 "   \\n"：同样点名 requirement_md 且零请求', async () => {
+    const platform = createPlatform(() => json(PROJECT_CREATED_PAYLOAD, 201))
+    const tools = toolsFor(platform.fetchImpl)
+
+    const err = await failureOf(call(tools, 'echuan_project_create', {
+      product_id: 'APP',
+      title: '新项目',
+      requirement_md: '   \n',
+    }))
+
+    expect(err.message).toContain('requirement_md')
+    expect(err.message).toContain('[invalid_argument]')
+    expect(platform.calls).toHaveLength(0)
+  })
+
+  it('AC3 合法正文：body 含原样 requirement_md，返回 project_id 与 requirement_review(1)', async () => {
+    const platform = createPlatform(() => json(PROJECT_CREATED_PAYLOAD, 201))
+    const tools = toolsFor(platform.fetchImpl)
+
+    // 前后带空白 / 换行：只用于判空，发出去的必须是原文。
+    const requirement_md = '\n# 需求正文\n\n- 第一条\n\n'
+    const value = await call(tools, 'echuan_project_create', {
+      product_id: 'APP',
+      title: '新项目',
+      requirement_md,
+    }) as { kind: string; project_id: string; status?: number; status_name?: string }
+
+    expect(platform.calls).toHaveLength(1)
+    const request = platform.calls[0]!
+    expect(`${request.method} ${request.url.pathname}`).toBe('POST /v1/projects')
+    expect(request.body?.requirement_md).toBe(requirement_md)
+    expect(request.body?.requirement_md).not.toBe(requirement_md.trim())
+    expect(request.body).toEqual({ product_id: 'APP', title: '新项目', requirement_md })
+
+    expect(value.kind).toBe('project_created')
+    expect(value.project_id).toBe('APP-7')
+    expect(value.status).toBe(1)
+    expect(value.status_name).toBe('需求评审')
+  })
+
+  it('工具描述与返回提示：建项即入需求评审，不再要求先 submit', async () => {
+    const platform = createPlatform(() => json(PROJECT_CREATED_PAYLOAD, 201))
+    const definition = toolsFor(platform.fetchImpl).get('echuan_project_create')!
+
+    expect(definition.description).toContain('requirement_review')
+    expect(definition.description).not.toContain('后续写需求')
+
+    const text = renderProjectCreated({
+      kind: 'project_created',
+      project_id: 'APP-7',
+      title: '新项目',
+      status: 1,
+      status_name: '需求评审',
+      version: 1,
+    }).map(block => block.text).join('\n')
+    expect(text).toContain('requirement_review')
+    expect(text).toContain('无需再调')
+    expect(text).toContain('echuan_spec_create')
   })
 })
 
