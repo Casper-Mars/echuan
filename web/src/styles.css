@@ -583,6 +583,7 @@ button {
   cursor: pointer;
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
   transition: border-color 0.15s, transform 0.15s;
+  min-width: 0;
 }
 
 .board-card:hover {
@@ -590,10 +591,25 @@ button {
   transform: translateY(-1px);
 }
 
+.board-card .card-head {
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.board-card .code,
+.board-card .mono {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
+}
+
 .board-card-title {
   font-size: 0.9rem;
   font-weight: 550;
   margin: 6px 0 8px;
+  overflow-wrap: anywhere;
 }
 
 .board-card-foot {
@@ -1424,7 +1440,8 @@ button {
 .chain-item {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px 12px;
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1432,6 +1449,10 @@ button {
   font-size: 0.86rem;
   color: var(--muted);
   box-shadow: var(--shadow-soft);
+}
+
+.chain-item > * {
+  min-width: 0;
 }
 
 .chain-item.is-current {
@@ -1454,11 +1475,17 @@ button {
 }
 
 .chain-title {
-  flex: 1 1 auto;
+  flex: 1 1 180px;
   min-width: 0;
   color: var(--text);
   font-size: 1.05rem;
   font-weight: 600;
+}
+
+.chain-item .ghost,
+.chain-item .action,
+.chain-item .link {
+  margin-left: auto;
 }
 
 .chip-current {
