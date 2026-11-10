@@ -2,12 +2,14 @@
 #
 # scripts/e2e-worker.sh — 平台 v2（work item）全链路验收
 #
-# 覆盖：
+# 覆盖（新契约见方案 §5.2/§5.3、§7.1/§7.2、§8）：
 #   1  临时目录 / TOML / 随机端口 / 空数据目录一键启动（全新库自动迁移）
-#   2  产品 / 项目 / 需求 / 方案 / 批量拆解 / 驳回 + 审批；旧 /v1/tasks 端点 404
+#   2  产品 / 项目（创建即 requirement_review，创建期无需求阶段卡）；需求评审驳回
+#      1→0 同事务补需求返工卡；旧 /v1/tasks 端点 404
 #   3  首次心跳注册（kinds 必填，state=busy 不派单）
-#   4  第二次心跳 dispatch 派单；单 worker 单租约并发（并发 claim 全部 409 worker_busy）
-#   5  租约：busy 心跳续租、显式 lease 续租、持卡 idle 仍续租（契约）
+#   4  心跳 dispatch 派发需求返工卡 → 上报返工回到评审 → 批准 1→2 派发方案阶段卡；
+#      单 worker 单租约并发（并发 claim 全部 409 worker_busy）
+#   5  租约（持方案阶段卡）：busy 心跳续租、显式 lease 续租、持卡 idle 仍续租（契约）
 #   6  报告（material_id + lease_id）→ submitted；验收 → accepted，项目自动 completed
 #   7  平台重启后 worker 注册表与心跳仍可用
 #   8  停止心跳 → offline（worker_ttl）→ 保留期清理（worker_retention）
@@ -230,13 +232,15 @@ say "监听: $BASE"
 curl -fsS --max-time 2 "$BASE/healthz" >/dev/null 2>&1 || fail "全新库启动后 /healthz 不可用"
 pass "1/9 空数据目录一键启动成功（state.db 自动创建，/readyz 与 /healthz 正常）"
 
-# --- 2. 阶段工作项自动入队 --------------------------------------------------
-# 项目一落地就带一条 queued 的 requirement 阶段项（优先 990），0/2/4 不再
-# 是空转等待：谁写需求/方案/拆解，由工作项表达。
+# --- 2. 建项新契约 + 需求评审驳回轮 ------------------------------------------
+# 新契约（方案 §5.2/§7.1）：创建项目必须带需求，创建即 requirement_review(1)，
+# 创建期不产生需求阶段卡 —— 卡要写的那份正文已经在建项请求里了。
+# 驳回契约（方案 §5.3/§7.2 D3）：需求评审驳回 1→0 在同一事务补一张需求返工卡
+# （queued / priority 990），否则 requirement_draft 无人接手。
 
-STEP="2/9 建产品/项目/阶段项"
+STEP="2/9 建产品/项目/需求驳回"
 say ""
-say "== 2/9 建产品、项目与阶段工作项（自动入队）=="
+say "== 2/9 建产品、项目（创建即需求评审，无需求阶段卡）；驳回 1→0 补返工卡 =="
 PRODUCT_ID="E2E$RANDOM"
 http_post "/v1/products" "$(jq -nc \
   --arg id "$PRODUCT_ID" \
@@ -250,21 +254,24 @@ http_post "/v1/projects" "$(jq -nc \
 require_code 201 "创建项目"
 PROJECT_ID="$(jqr '.project_id')"
 PROJECT_VERSION="$(jqr '.version')"
+CREATE_VERSION="$PROJECT_VERSION"
 REQ_MATERIAL_ID="$(jqr '.requirement.material_id')"
 [[ "$PROJECT_ID" == "$PRODUCT_ID-1" ]] || fail "项目 id 应形如 <product_id>-1，实际 $PROJECT_ID"
-[[ "$(jqr '.status_name')" == "requirement_draft" ]] || fail "新建项目应为 requirement_draft，实际 $(jqr '.status_name')"
+# 建项断言（新契约）：创建即需求评审、需求正文随建项落库、不排队任何工作项。
+[[ "$(jqr '.status_name')" == "requirement_review" ]] \
+  || fail "新建项目应为 requirement_review（带需求创建即进入需求评审），实际 $(jqr '.status_name')"
+[[ "$(jqr '.status')" == "1" ]] || fail "新建项目 status 应为 1（requirement_review），实际 $(jqr '.status')"
 [[ -n "$REQ_MATERIAL_ID" && "$REQ_MATERIAL_ID" != "null" ]] || fail "创建响应缺少 requirement.material_id"
-say "项目: $PROJECT_ID (version=$PROJECT_VERSION) 需求物料: $REQ_MATERIAL_ID"
+[[ "$(jqr '.work_item_total')" == "0" ]] \
+  || fail "创建期不应生成任何工作项，实际 work_item_total=$(jqr '.work_item_total')"
+say "项目: $PROJECT_ID (status=requirement_review, version=$PROJECT_VERSION) 需求物料: $REQ_MATERIAL_ID"
 
-# 验收 1：状态 0，且恰有一条 kind=requirement 的 queued 活跃项。
+# 建项不产生需求阶段卡：活跃项必须 0 条。
 http_get "/v1/work-items?project_id=$PROJECT_ID&kind=requirement"
 require_code 200 "列出需求阶段项"
-[[ "$(jqr '.items|length')" == "1" ]] || fail "requirement 阶段项应恰有 1 条，实际 $(jqr '.items|length')"
-WORK_ID="$(jqr '.items[0].work_id')"
-[[ "$(jqr '.items[0].state')" == "queued" ]] || fail "需求阶段项应为 queued，实际 $(jqr '.items[0].state')"
-[[ "$(jqr '.items[0].priority')" == "990" ]] || fail "需求阶段项 priority 应为 990，实际 $(jqr '.items[0].priority')"
-[[ "$(jqr '.items[0].title')" == "需求撰写：E2E 验收项目" ]] || fail "需求阶段项标题不符：$(jqr '.items[0].title')"
-say "需求阶段项: $WORK_ID (queued, priority 990)"
+[[ "$(jqr '.items|length')" == "0" ]] \
+  || fail "创建期不应有 requirement 阶段项（需求正文随建项写入），实际 $(jqr '.items|length')"
+say "需求阶段项: 0 条（建项期不排队）"
 
 # v2 只保留 /v1/work-items；旧 /v1/tasks 必须已经不存在。
 http_get "/v1/tasks"
@@ -273,7 +280,42 @@ http_post "/v1/tasks/review?project_id=$PROJECT_ID" '{"decision":"approve"}'
 require_code 404 "旧 /v1/tasks/review 端点应 404"
 http_post "/v1/tasks/report?id=x" '{}'
 require_code 404 "旧 /v1/tasks/report 端点应 404"
-pass "2/9 项目为 requirement_draft，自动带一条 queued 需求阶段项（$WORK_ID）；旧 /v1/tasks 全 404"
+
+# 需求评审驳回：1 → 0，同事务补一张需求返工卡（方案 §5.3 / §7.2 D3）。
+REJECT_REASON="E2E 需求缺少验收标准"
+http_post "/v1/projects/decide?id=$PROJECT_ID" \
+  "$(jq -nc --arg r "$REJECT_REASON" '{decision:"reject",reason:$r}')" \
+  -H "If-Match: $PROJECT_VERSION"
+require_code 200 "需求评审驳回"
+[[ "$(jqr '.status_name')" == "requirement_draft" ]] \
+  || fail "驳回后应落回 requirement_draft（待返工的需求草稿），实际 $(jqr '.status_name')"
+[[ "$(jqr '.status')" == "0" ]] || fail "驳回后 status 应为 0，实际 $(jqr '.status')"
+[[ "$(jqr '.reason')" == "$REJECT_REASON" ]] || fail "驳回原因未落到项目，实际 $(jqr '.reason')"
+[[ "$(jqr '.material_id')" == "$REQ_MATERIAL_ID" ]] \
+  || fail "驳回响应 material_id 应指向被审需求版本，实际 $(jqr '.material_id')"
+PROJECT_VERSION="$(jqr '.version')"
+say "驳回: status=requirement_draft reason=$REJECT_REASON version=$PROJECT_VERSION"
+
+http_get "/v1/work-items?project_id=$PROJECT_ID&kind=requirement"
+require_code 200 "列出驳回补出的需求返工卡"
+[[ "$(jqr '.items|length')" == "1" ]] || fail "驳回后应恰有 1 条需求返工卡，实际 $(jqr '.items|length')"
+REQ_WORK_ID="$(jqr '.items[0].work_id')"
+[[ "$(jqr '.items[0].state')" == "queued" ]] || fail "需求返工卡应为 queued，实际 $(jqr '.items[0].state')"
+[[ "$(jqr '.items[0].priority')" == "990" ]] || fail "需求返工卡 priority 应为 990，实际 $(jqr '.items[0].priority')"
+[[ "$(jqr '.items[0].title')" == "需求撰写：E2E 验收项目" ]] || fail "需求返工卡标题不符：$(jqr '.items[0].title')"
+say "需求返工卡: $REQ_WORK_ID (queued, priority 990)"
+
+# 幂等：用驳回前的旧 If-Match 重放驳回 → 409 invalid_version，且不补第二张卡。
+http_post "/v1/projects/decide?id=$PROJECT_ID" \
+  "$(jq -nc --arg r "$REJECT_REASON" '{decision:"reject",reason:$r}')" \
+  -H "If-Match: $CREATE_VERSION"
+require_code 409 "重复驳回"
+[[ "$HTTP_BODY" == *invalid_version* ]] || fail "重复驳回应返回 invalid_version，实际 $HTTP_BODY"
+http_get "/v1/work-items?project_id=$PROJECT_ID&kind=requirement"
+require_code 200 "重复驳回后复核需求返工卡"
+[[ "$(jqr '.items|length')" == "1" ]] || fail "重复驳回不应补第二张返工卡，实际 $(jqr '.items|length')"
+say "重复驳回：409 invalid_version，返工卡仍为 1 条"
+pass "2/9 创建即 requirement_review 且需求阶段活跃卡 0 条；驳回 1→0 补出唯一返工卡（$REQ_WORK_ID, queued 990）；旧 /v1/tasks 全 404"
 
 # --- 3. 首次心跳注册 --------------------------------------------------------
 # 故意带 state=busy：注册的同时不派卡，让第 4 步的派单断言落在第二次心跳上。
@@ -295,23 +337,23 @@ WORKER_ID="$(jqr '.worker.worker_id')"
 say "worker_id: $WORKER_ID"
 pass "3/9 注册成功并拿到 w_ 前缀 id（$WORKER_ID）"
 
-# --- 4. 第二次心跳派发 dispatch ---------------------------------------------
+# --- 4. 心跳派发：返工卡 → 回到评审 → 批准 1→2 → 派发方案卡 -------------------
 
 STEP="4/9 派发 dispatch"
 say ""
-say "== 4/9 第二次心跳（state=idle）→ dispatch 需求阶段项 =="
+say "== 4/9 派发需求返工卡 → 返工回到评审 → 批准 1→2 → 派发方案阶段卡 =="
 dispatch_next "第二次心跳"
-[[ "$NEXT_WORK" == "$WORK_ID" ]] || fail "应派发需求阶段项 $WORK_ID，实际 $NEXT_WORK"
+[[ "$NEXT_WORK" == "$REQ_WORK_ID" ]] || fail "应派发需求返工卡 $REQ_WORK_ID，实际 $NEXT_WORK"
 [[ "$NEXT_KIND" == "requirement" ]] || fail "dispatch.kind 应为 requirement，实际 $NEXT_KIND"
 [[ "$(jqr '.commands[0].dispatch.protocol')" == "v2" ]] || fail "dispatch.protocol 应为 v2"
 [[ "$(jqr '.commands[0].dispatch.lease.ttl_seconds')" == "90" ]] || fail "dispatch lease ttl_seconds 应为 90"
-[[ "$(jqr '.worker.current_work_item_id')" == "$WORK_ID" ]] || fail "worker.current_work_item_id 应指向 $WORK_ID"
-# 需求阶段还没有方案：spec_version 为 0 是预期值（dev 派发时再断言 ≥1）。
+[[ "$(jqr '.worker.current_work_item_id')" == "$REQ_WORK_ID" ]] || fail "worker.current_work_item_id 应指向 $REQ_WORK_ID"
+# 返工卡属于需求阶段，此时还没有方案：spec_version 为 0 是预期值（dev 派发时再断言 ≥1）。
 [[ "$(jqr '.commands[0].dispatch.context.spec_version')" == "0" ]] \
   || fail "需求阶段 spec_version 应为 0，实际 $(jqr '.commands[0].dispatch.context.spec_version')"
 DISPATCHED="$NEXT_WORK"
-LEASE_ID="$NEXT_LEASE"
-say "派发工作项: $DISPATCHED 租约: $LEASE_ID"
+REWORK_LEASE="$NEXT_LEASE"
+say "派发需求返工卡: $DISPATCHED 租约: $REWORK_LEASE"
 
 # 单 worker 单租约并发：同一 worker 同时发两个 claim，必须都 409 worker_busy，
 # 不能出现第二张卡或第二个租约。
@@ -333,20 +375,83 @@ CODE_B="$(tail -1 "$CLAIM_B")"
 [[ "$CODE_A" == "409" && "$CODE_B" == "409" ]] || fail "并发 claim 应双 409 worker_busy，实际 $CODE_A / $CODE_B"
 grep -q 'worker_busy' "$CLAIM_A" || fail "并发 claim A 未返回 worker_busy"
 grep -q 'worker_busy' "$CLAIM_B" || fail "并发 claim B 未返回 worker_busy"
-http_get "/v1/work-items?id=$WORK_ID"
+http_get "/v1/work-items?id=$REQ_WORK_ID"
 require_code 200 "并发 claim 后复核工作项"
 [[ "$(jqr '.state')" == "leased" ]] || fail "并发 claim 后工作项应仍为 leased，实际 $(jqr '.state')"
-[[ "$(jqr '.lease.lease_id')" == "$LEASE_ID" ]] || fail "并发 claim 不应更换租约"
+[[ "$(jqr '.lease.lease_id')" == "$REWORK_LEASE" ]] || fail "并发 claim 不应更换租约"
 say "并发 claim：409 + 409（worker_busy），租约未变"
-pass "4/9 心跳返回 dispatch（$WORK_ID，requirement），单 worker 单租约并发守卫生效"
 
-# --- 5. 租约续期 ------------------------------------------------------------
+# 返工：上报返工卡（material_id + lease_id）→ 项目 0 回到 1 requirement_review。
+http_post "/v1/work-items/report" "$(jq -nc \
+  --arg wid "$REQ_WORK_ID" --arg mid "$REQ_MATERIAL_ID" --arg lease "$REWORK_LEASE" \
+  '{work_id:$wid,material_id:$mid,lease_id:$lease}')"
+require_code 200 "提交需求返工报告"
+[[ "$(jqr '.state')" == "submitted" ]] || fail "返工报告后工作项状态应为 submitted，实际 $(jqr '.state')"
+[[ "$(jqr '.worker_id')" == "null" ]] || fail "返工报告后工作项 worker_id 应为 null"
+[[ "$(jqr '.lease')" == "null" ]] || fail "返工报告后工作项 lease 应为 null"
+[[ "$(jqr '.result_material_id')" == "$REQ_MATERIAL_ID" ]] || fail "返工报告后 result_material_id 应指向提交的物料"
+
+http_get "/v1/projects?id=$PROJECT_ID"
+require_code 200 "返工上报后读取项目"
+[[ "$(jqr '.status_name')" == "requirement_review" ]] \
+  || fail "返工上报后项目应回到 requirement_review，实际 $(jqr '.status_name')"
+[[ "$(jqr '.reason')" == "null" ]] || fail "返工上报后驳回原因应被清空，实际 $(jqr '.reason')"
+PROJECT_VERSION="$(jqr '.version')"
+REQ_REVIEW_VERSION="$PROJECT_VERSION"
+say "返工上报：项目回到 requirement_review (version=$PROJECT_VERSION)"
+
+# 需求评审通过：直接 1 → 2，返工卡结清为 accepted，方案卡自动 queued/980。
+http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' \
+  -H "If-Match: $PROJECT_VERSION"
+require_code 200 "需求评审通过"
+[[ "$(jqr '.status_name')" == "spec_draft" ]] || fail "需求通过后应为 spec_draft，实际 $(jqr '.status_name')"
+[[ "$(jqr '.material_id')" == "$REQ_MATERIAL_ID" ]] || fail "需求审批响应 material_id 应指向被审需求版本，实际 $(jqr '.material_id')"
+PROJECT_VERSION="$(jqr '.version')"
+
+http_get "/v1/work-items?project_id=$PROJECT_ID&kind=design"
+require_code 200 "列出方案阶段项"
+[[ "$(jqr '.items|length')" == "1" ]] || fail "批准后应恰有 1 条 design 活跃项，实际 $(jqr '.items|length')"
+DESIGN_WORK_ID="$(jqr '.items[0].work_id')"
+[[ "$(jqr '.items[0].state')" == "queued" ]] || fail "design 阶段项应为 queued，实际 $(jqr '.items[0].state')"
+[[ "$(jqr '.items[0].priority')" == "980" ]] || fail "design 阶段项 priority 应为 980，实际 $(jqr '.items[0].priority')"
+say "方案阶段项: $DESIGN_WORK_ID (queued, priority 980)"
+
+# 返工卡随门禁批准结清：reported 的卡变 accepted，不会把项目卡在 pending_done。
+http_get "/v1/work-items?id=$REQ_WORK_ID"
+require_code 200 "复核返工卡结清"
+[[ "$(jqr '.state')" == "accepted" ]] || fail "需求评审通过后返工卡应 accepted，实际 $(jqr '.state')"
+
+# 验收 4：旧 version 重复批准 → 409 invalid_version，且不新增活跃阶段项。
+http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' \
+  -H "If-Match: $REQ_REVIEW_VERSION"
+require_code 409 "重复批准"
+[[ "$HTTP_BODY" == *invalid_version* ]] || fail "重复批准应返回 invalid_version，实际 $HTTP_BODY"
+http_get "/v1/work-items?project_id=$PROJECT_ID&kind=design"
+require_code 200 "重复批准后复核方案阶段项"
+[[ "$(jqr '.items|length')" == "1" ]] || fail "重复批准不应新增 design 阶段项，实际 $(jqr '.items|length')"
+say "重复批准：409 invalid_version，design 阶段项仍为 1 条"
+
+# 派发方案阶段卡：第 5 步的续租与第 6 步的上报都持有这张卡。
+dispatch_next "心跳派发方案卡"
+[[ "$NEXT_WORK" == "$DESIGN_WORK_ID" ]] || fail "应派发方案阶段项 $DESIGN_WORK_ID，实际 $NEXT_WORK"
+[[ "$NEXT_KIND" == "design" ]] || fail "dispatch.kind 应为 design，实际 $NEXT_KIND"
+[[ "$(jqr '.worker.current_work_item_id')" == "$DESIGN_WORK_ID" ]] || fail "worker.current_work_item_id 应指向 $DESIGN_WORK_ID"
+# 方案卡刚入队、方案正文还没写：spec_version 仍为 0。
+[[ "$(jqr '.commands[0].dispatch.context.spec_version')" == "0" ]] \
+  || fail "方案卡派发时 spec_version 应为 0，实际 $(jqr '.commands[0].dispatch.context.spec_version')"
+LEASE_WORK_ID="$DESIGN_WORK_ID"
+LEASE_ID="$NEXT_LEASE"
+DISPATCHED="$DESIGN_WORK_ID"
+say "派发方案阶段卡: $DISPATCHED 租约: $LEASE_ID"
+pass "4/9 返工卡派发并上报回到评审，批准 1→2 后派发方案阶段卡（$DESIGN_WORK_ID, design）；并发 claim 双 409 生效"
+
+# --- 5. 租约续期（持方案阶段卡） ---------------------------------------------
 
 STEP="5/9 租约续期"
 say ""
 say "== 5/9 busy 心跳续租、显式 lease 续租、持卡 idle 仍续租（契约） =="
 lease_until() {
-  http_get "/v1/work-items?id=$WORK_ID"
+  http_get "/v1/work-items?id=$LEASE_WORK_ID"
   require_code 200 "读取工作项租约"
   jqr '.lease.until'
 }
@@ -360,7 +465,7 @@ L2="$(lease_until)"
 
 sleep 1.1
 http_post "/v1/work-items/lease" \
-  "$(jq -nc --arg wid "$WORK_ID" --arg lid "$LEASE_ID" '{work_id:$wid,lease_id:$lid}')"
+  "$(jq -nc --arg wid "$LEASE_WORK_ID" --arg lid "$LEASE_ID" '{work_id:$wid,lease_id:$lid}')"
 require_code 200 "显式续租"
 RENEWED_UNTIL="$(jqr '.until')"
 NEW_LEASE="$(jqr '.lease_id')"
@@ -386,68 +491,22 @@ sleep 1.1
 http_post "/v1/workers/heartbeat" "$(jq -nc --arg wid "$WORKER_ID" '{worker_id:$wid,state:"idle",kinds:["requirement","design","breakdown","dev"]}')"
 require_code 200 "idle 心跳 2"
 L4="$(lease_until)"
-[[ "$(jqr '.worker.current_work_item_id')" == "$WORK_ID" ]] || fail "idle 声明不应丢掉已持有的卡"
+[[ "$(jqr '.worker.current_work_item_id')" == "$LEASE_WORK_ID" ]] || fail "idle 声明不应丢掉已持有的卡"
 [[ "$L4" > "$L3" ]] || fail "持卡 idle 心跳必须续租（lease_until 应递增）：$L3 -> $L4"
 L4_EPOCH="$(lease_epoch "$L4")"
 IDLE_MIN=$((IDLE_T0 + LEASE_TTL_SECONDS - 2))
 [[ "$L4_EPOCH" -ge "$IDLE_MIN" ]] || fail "持卡 idle 心跳未按契约续租：lease_until=$L4（epoch $L4_EPOCH）早于 now+TTL-2s（$IDLE_MIN）"
 say "lease_until: $L1 -> $L2 -> $L3（idle 后 $L4，仍续租，契约满足）"
-pass "5/9 busy 心跳与显式 lease 均续租，持卡 idle 心跳亦续租（契约）"
+pass "5/9 持方案阶段卡时 busy 心跳与显式 lease 均续租，持卡 idle 心跳亦续租（契约）"
 
 # --- 6. 阶段推进 ------------------------------------------------------------
 
 STEP="6/9 阶段推进"
 say ""
-say "== 6/9 需求报告 → 1 → 审批 2 + 方案项 → … → 拆解 → 6 → completed =="
+say "== 6/9 方案报告 → 3 → 审批 4 + 拆解项 → 5 → 批次 → 6 → 开发卡验收 → completed =="
 
-# 6.1 需求阶段报告：0 → 1（验收 2）。
-http_post "/v1/work-items/report" "$(jq -nc \
-  --arg wid "$WORK_ID" --arg mid "$REQ_MATERIAL_ID" --arg lease "$LEASE_ID" \
-  '{work_id:$wid,material_id:$mid,lease_id:$lease}')"
-require_code 200 "提交需求报告"
-[[ "$(jqr '.state')" == "submitted" ]] || fail "报告后工作项状态应为 submitted，实际 $(jqr '.state')"
-[[ "$(jqr '.worker_id')" == "null" ]] || fail "报告后工作项 worker_id 应为 null"
-[[ "$(jqr '.lease')" == "null" ]] || fail "报告后工作项 lease 应为 null"
-[[ "$(jqr '.result_material_id')" == "$REQ_MATERIAL_ID" ]] || fail "报告后 result_material_id 应指向提交的物料"
-
-http_get "/v1/projects?id=$PROJECT_ID"
-require_code 200 "报告后读取项目"
-[[ "$(jqr '.status_name')" == "requirement_review" ]] || fail "需求报告后项目应为 requirement_review，实际 $(jqr '.status_name')"
-PROJECT_VERSION="$(jqr '.version')"
-REQ_REVIEW_VERSION="$PROJECT_VERSION"
-
-# 6.2 需求评审通过：1 → 2，并自动出现 design 活跃项（验收 3）。
-http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' \
-  -H "If-Match: $PROJECT_VERSION"
-require_code 200 "需求评审通过"
-[[ "$(jqr '.status_name')" == "spec_draft" ]] || fail "需求通过后应为 spec_draft，实际 $(jqr '.status_name')"
-[[ "$(jqr '.material_id')" == "$REQ_MATERIAL_ID" ]] || fail "需求审批响应 material_id 应指向被审需求版本，实际 $(jqr '.material_id')"
-PROJECT_VERSION="$(jqr '.version')"
-
-http_get "/v1/work-items?project_id=$PROJECT_ID&kind=design"
-require_code 200 "列出方案阶段项"
-[[ "$(jqr '.items|length')" == "1" ]] || fail "批准后应恰有 1 条 design 活跃项，实际 $(jqr '.items|length')"
-DESIGN_WORK_ID="$(jqr '.items[0].work_id')"
-[[ "$(jqr '.items[0].state')" == "queued" ]] || fail "design 阶段项应为 queued，实际 $(jqr '.items[0].state')"
-[[ "$(jqr '.items[0].priority')" == "980" ]] || fail "design 阶段项 priority 应为 980，实际 $(jqr '.items[0].priority')"
-say "方案阶段项: $DESIGN_WORK_ID (queued, priority 980)"
-
-# 验收 4：旧 version 重复批准 → 409 invalid_version，且不新增活跃阶段项。
-http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' \
-  -H "If-Match: $REQ_REVIEW_VERSION"
-require_code 409 "重复批准"
-[[ "$HTTP_BODY" == *invalid_version* ]] || fail "重复批准应返回 invalid_version，实际 $HTTP_BODY"
-http_get "/v1/work-items?project_id=$PROJECT_ID&kind=design"
-require_code 200 "重复批准后复核方案阶段项"
-[[ "$(jqr '.items|length')" == "1" ]] || fail "重复批准不应新增 design 阶段项，实际 $(jqr '.items|length')"
-say "重复批准：409 invalid_version，design 阶段项仍为 1 条"
-
-# 6.3 方案阶段报告：2 → 3。
-dispatch_next "心跳派发方案卡"
-[[ "$NEXT_WORK" == "$DESIGN_WORK_ID" ]] || fail "应派发方案阶段项 $DESIGN_WORK_ID，实际 $NEXT_WORK"
-[[ "$NEXT_KIND" == "design" ]] || fail "dispatch.kind 应为 design，实际 $NEXT_KIND"
-DESIGN_LEASE="$NEXT_LEASE"
-
+# 6.1 方案阶段报告：2 → 3（第 4 步派发、第 5 步续租的同一张方案卡）。
+DESIGN_LEASE="$LEASE_ID"
 http_post "/v1/projects/specs?id=$PROJECT_ID" \
   '{"body_md":"# 技术方案\n\n- 心跳注册\n- 派卡与续租\n- 报告\n"}'
 require_code 200 "提交规格"
@@ -466,7 +525,7 @@ require_code 200 "方案报告后读取项目"
 [[ "$(jqr '.status_name')" == "spec_review" ]] || fail "方案报告后项目应为 spec_review，实际 $(jqr '.status_name')"
 PROJECT_VERSION="$(jqr '.version')"
 
-# 6.4 方案评审通过：3 → 4，并自动出现 breakdown 活跃项。
+# 6.2 方案评审通过：3 → 4，并自动出现 breakdown 活跃项。
 http_post "/v1/projects/decide?id=$PROJECT_ID" '{"decision":"approve"}' \
   -H "If-Match: $PROJECT_VERSION"
 require_code 200 "方案评审通过"
@@ -482,7 +541,7 @@ BREAKDOWN_WORK_ID="$(jqr '.items[0].work_id')"
 [[ "$(jqr '.items[0].priority')" == "970" ]] || fail "breakdown 阶段项 priority 应为 970，实际 $(jqr '.items[0].priority')"
 say "拆解阶段项: $BREAKDOWN_WORK_ID (queued, priority 970)"
 
-# 6.5 拆解阶段报告：4 → 5。
+# 6.3 拆解阶段报告：4 → 5。
 dispatch_next "心跳派发拆解卡"
 [[ "$NEXT_WORK" == "$BREAKDOWN_WORK_ID" ]] || fail "应派发拆解阶段项 $BREAKDOWN_WORK_ID，实际 $NEXT_WORK"
 [[ "$NEXT_KIND" == "breakdown" ]] || fail "dispatch.kind 应为 breakdown，实际 $NEXT_KIND"
@@ -510,7 +569,7 @@ require_code 200 "列出拆解生成的 dev 子项"
 [[ "$(jqr '.items[0].state')" == "blocked" ]] || fail "批准前 dev 子项应为 blocked，实际 $(jqr '.items[0].state')"
 [[ "$(jqr '.items[0].parent_id')" == "$BREAKDOWN_WORK_ID" ]] || fail "dev 子项 parent_id 应指向拆解卡，实际 $(jqr '.items[0].parent_id')"
 
-# 6.6 /v1/projects/plans 手工批量建卡入口保留：dev 卡在 tasks_review 落为
+# 6.4 /v1/projects/plans 手工批量建卡入口保留：dev 卡在 tasks_review 落为
 # blocked，与拆解计划生成的子项并存，且同样只能经受计划门批准后 claim。
 http_post "/v1/projects/plans?id=$PROJECT_ID" \
   '{"work_items":[{"title":"E2E 执行卡","body_md":"# 执行\n\n由 e2e-worker.sh 创建。\n","priority":10}]}'
@@ -539,7 +598,7 @@ require_code 200 "批次审批通过"
 [[ "$(jqr '.ready_work_items')" == "2" ]] || fail "批次通过后应有 2 张卡转 queued，实际 $(jqr '.ready_work_items')"
 [[ "$(jqr '.reason // ""')" == "" ]] || fail "审批通过后驳回原因应被清空"
 
-# 6.7 开发卡：报告 → submitted，验收 → accepted，项目自动 completed。
+# 6.5 开发卡：报告 → submitted，验收 → accepted，项目自动 completed。
 dispatch_next "心跳派发开发卡"
 [[ "$NEXT_WORK" == "$DEV_WORK_ID" ]] || fail "应派发开发卡 $DEV_WORK_ID，实际 $NEXT_WORK"
 [[ "$NEXT_KIND" == "dev" ]] || fail "dispatch.kind 应为 dev，实际 $NEXT_KIND"
@@ -582,28 +641,34 @@ http_get "/v1/projects?id=$PROJECT_ID"
 require_code 200 "读取项目"
 [[ "$(jqr '.status_name')" == "completed" ]] || fail "最后一张卡结清后项目应为 completed，实际 $(jqr '.status_name')"
 
-# 6.8 门禁历史：项目级 requirement/spec/plan + 两条工作项验收，共 6 条；
-# 版本绑定不随资料升级改变，计划批次绑定 kind=4 计划物料。
+# 6.6 门禁历史：项目级 requirement（驳回 + 通过）/spec/plan×2 + 两条工作项验收，
+# 共 7 条；版本绑定不随资料升级改变，计划批次绑定 kind=4 计划物料。
 http_get "/v1/gate-decisions?project_id=$PROJECT_ID&limit=100"
 require_code 200 "查询门禁历史"
-[[ "$(jqr '.items|length')" == "6" ]] || fail "门禁历史应恰有 6 条，实际 $(jqr '.items|length')"
+[[ "$(jqr '.items|length')" == "7" ]] || fail "门禁历史应恰有 7 条（需求驳回 + 需求通过各 1），实际 $(jqr '.items|length')"
 [[ "$(jqr '.items[0].subject_type')" == "work_item" ]] || fail "门禁历史应按 id 倒序，首条应为工作项，实际 $(jqr '.items[0].subject_type')"
-[[ "$(jqr '[.items[] | select(.gate=="requirement")] | length')" == "1" ]] || fail "需求门禁应恰有 1 条"
+[[ "$(jqr '[.items[] | select(.gate=="requirement")] | length')" == "2" ]] || fail "需求门禁应恰有 2 条（驳回 + 通过）"
+[[ "$(jqr '[.items[] | select(.gate=="requirement") | .decision] | sort | join(",")')" == "approve,reject" ]] \
+  || fail "需求门禁应驳回与通过各一条，实际 $(jqr '[.items[] | select(.gate=="requirement") | .decision] | join(",")')"
+[[ "$(jqr '[.items[] | select(.gate=="requirement") | .material_id] | all(. == "'"$REQ_MATERIAL_ID"'")')" == "true" ]] \
+  || fail "两条需求门禁都应绑定建项那一版需求物料"
+[[ "$(jqr '[.items[] | select(.gate=="requirement" and .decision=="reject")][0].reason')" == "$REJECT_REASON" ]] \
+  || fail "需求驳回原因应记在门禁历史"
 [[ "$(jqr '[.items[] | select(.gate=="spec")] | length')" == "1" ]] || fail "方案门禁应恰有 1 条"
 [[ "$(jqr '[.items[] | select(.gate=="plan")] | length')" == "2" ]] || fail "计划批次应恰有 2 条（驳回 + 通过）"
 [[ "$(jqr '[.items[] | select(.gate=="plan") | .material_id] | all(. == "'"$PLAN_MATERIAL_ID"'")')" == "true" ]] || fail "计划审批 material_id 应指向 kind=4 计划物料"
 [[ "$(jqr '[.items[] | select(.gate=="dev")] | length')" == "2" ]] || fail "工作项验收应恰有 2 条"
-say "门禁历史: 6 条（requirement/spec/plan×2/dev×2），版本绑定正确"
+say "门禁历史: 7 条（requirement×2/spec/plan×2/dev×2），版本绑定正确"
 
-# 阶段卡在门禁批准时已结清：requirement/design accepted，breakdown accepted，
-# 不会把项目卡在 pending_done。
+# 阶段卡在门禁批准时已结清：requirement（驳回补出来的返工卡）/design accepted，
+# breakdown accepted，不会把项目卡在 pending_done。
 for kind in requirement design breakdown; do
   http_get "/v1/work-items?project_id=$PROJECT_ID&kind=$kind"
   require_code 200 "复核 $kind 阶段项"
   [[ "$(jqr '.items|length')" == "1" ]] || fail "$kind 阶段项历史应恰有 1 条，实际 $(jqr '.items|length')"
   [[ "$(jqr '.items[0].state')" == "accepted" ]] || fail "$kind 阶段项应已 accepted，实际 $(jqr '.items[0].state')"
 done
-pass "6/9 三阶段卡驱动 0→1→2→3→4→5，门禁结清阶段项；开发卡验收后项目 completed"
+pass "6/9 阶段卡驱动 2→3→4→5，批次门禁 5→6；门禁结清阶段项，开发卡验收后项目 completed"
 
 # --- 7. 重启进程后注册表仍在 ------------------------------------------------
 
