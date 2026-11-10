@@ -9,7 +9,7 @@
 1. **定时心跳**：上报 `state`（`busy` = 手里有未交付的 work item，`idle` = 没有）、`kinds`（本 worker 能做的类别）与 metadata，并带上平台下发的 `worker_id`（仅存内存）。
 2. **投递派单**：把心跳回包里的 `dispatch` 先按 `project_id` 找/建**项目会话**（sessionId = 项目号，cwd 取会话数最多的 workspace），再投给该会话的 agent。不做 kind → agent 的分流；需要角色 / 模型隔离就拆 worker。
 3. **提供 23 个工具**（默认全量；可用 `exclude` 按 agent 裁剪，见「配置」）：
-   - 生命周期写：`echuan_project_create`（建项目）、`echuan_project_requirement_write`（写需求）、`echuan_project_submit`（提交评审）、`echuan_spec_create`（建方案）、`echuan_spec_revise`（修订方案）、`echuan_plan_submit`（批量建卡）
+   - 生命周期写：`echuan_project_create`（建项目，`requirement_md` 必填，建项即入需求评审）、`echuan_project_requirement_write`（改写需求正文）、`echuan_project_submit`（草稿提交评审，仅历史草稿项目 / 驳回返工需要）、`echuan_spec_create`（建方案）、`echuan_spec_revise`（修订方案）、`echuan_plan_submit`（批量建卡）
    - 工作项写：`echuan_work_claim`（领卡）、`echuan_work_renew`（续租）、`echuan_work_report`（交报告）
    - 辅助写：`echuan_work_create`（单卡新增）、`echuan_work_update`（改卡）、`echuan_work_delete`（删卡）、`echuan_project_update`（改项目标题）、`echuan_product_create`（建产品）、`echuan_project_package`（下载资料包）
    - 读：`echuan_inbox`（待办）、`echuan_product_list`（产品列表）、`echuan_project_list`（项目列表）、`echuan_work_list`（工作项列表）、`echuan_project_get`（项目详情）、`echuan_work_get`（工作项详情）、`echuan_material_get`（资料）、`echuan_worker_info`（worker 诊断，零 HTTP）
@@ -20,9 +20,9 @@
 
 | 工具 | 端点 | 关键入参 | 返回 / 下一步 |
 |---|---|---|---|
-| `echuan_project_create` | `POST /v1/projects` | `product_id`、`title`、可选 `requirement_md` | `project_id`、状态、`version` |
-| `echuan_project_requirement_write` | `POST /v1/projects/requirement?id=` | `project_id`、`body_md` | 需求物料 `material_id` / 版本 / 字节数 |
-| `echuan_project_submit` | `POST /v1/projects/submit?id=` | `project_id`（无 body） | 新状态；缺需求时平台 409「请先上传需求文档」原样透出 |
+| `echuan_project_create` | `POST /v1/projects` | `product_id`、`title`、`requirement_md`（三者均必填；缺 `requirement_md` 或纯空白由工具本地拒绝，`invalid_argument`、零请求；平台侧同样 400 `invalid_argument`、`details[].field=requirement_md`） | `project_id`、状态（`1` = `requirement_review`，建项即入需求评审）、`version`；无需再调 `echuan_project_submit` |
+| `echuan_project_requirement_write` | `POST /v1/projects/requirement?id=` | `project_id`、`body_md` | 需求物料 `material_id` / 版本 / 字节数；仅历史草稿项目与需求驳回返工后改写正文用 |
+| `echuan_project_submit` | `POST /v1/projects/submit?id=` | `project_id`（无 body） | 仅历史草稿项目（`requirement_draft`）与需求驳回返工后需要；新建项目已在 `requirement_review`，此时调用 409 `invalid_state`；缺需求文档时平台 409「请先上传需求文档」原样透出 |
 | `echuan_spec_create` | `POST /v1/specs` | `project_id`、`title`、`body_md`（均必填） | `spec_id`、`version` |
 | `echuan_spec_revise` | `PATCH /v1/specs?id=` | `spec_id`、`title`、`body_md`（均必填）、必填 `version`（走 `If-Match` 头） | 新 `version`；错版本 409 `invalid_version` 透出 |
 | `echuan_plan_submit` | `POST /v1/projects/plans?id=` | `project_id`、`work_items[]`（`title`/`body_md`，可选 `priority`、`depends_on` 为 1-based 批内序号） | 项目状态 + 新卡列表（含 `work_id` / `kind` / `state`） |
@@ -48,7 +48,7 @@
 
 `echuan_work_claim` 的 `worker_id` **不在工具参数里**：它只来自心跳循环的内存（平台契约必填）。`worker.poll.enable=false` 或首轮心跳尚未成功时，领卡会在本地拒绝、零请求。
 
-**典型调用顺序**：`echuan_project_create` → `echuan_project_requirement_write` → `echuan_project_submit`（需求评审）→ 人工评审通过 → `echuan_spec_create` → `echuan_project_submit`（方案评审）→ 人工评审通过 → `echuan_plan_submit`（批量建卡，项目进入开发任务评审）。
+**典型调用顺序**：`echuan_project_create`（带 `requirement_md`，建项即入需求评审）→ 人工需求评审通过 → `echuan_spec_create` → `echuan_project_submit`（方案评审：`spec_draft` → `spec_review`）→ 人工评审通过 → `echuan_plan_submit`（批量建卡，项目进入开发任务评审）。
 
 **阶段工作项（kind = requirement / design / breakdown）**：这三类卡交付的是平台资料，不是代码，不建 worktree、不开任务 PR。
 
