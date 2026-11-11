@@ -11,11 +11,11 @@
 # v2 基线：宿主端口默认 8721（容器内仍是 8720），数据目录默认 ~/echuan-v2-data，
 # 项目名 / 容器名 / 镜像名统一带 -v2 后缀，便于与 v1 并行部署互不干扰。
 
-name: ${COMPOSE_PROJECT_NAME:-echuan-v2}
+name: ${COMPOSE_PROJECT_NAME:-echuan}
 
 services:
   echuan:
-    image: ${ECHUAN_IMAGE:-echuan-v2:local}
+    image: ${ECHUAN_IMAGE:-echuan:local}
     build:
       context: .
       dockerfile: Dockerfile
