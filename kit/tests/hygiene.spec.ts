@@ -603,7 +603,7 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<string[]> {
     ['echuan_work_claim', {}],
     ['echuan_work_renew', { work_id: 'APP-1-T0001', lease_id: 'l_9f8b' }],
     ['echuan_work_report', { work_id: 'APP-1-T0001', material_id: 'M-REPORT-1', lease_id: 'l_9f8b' }],
-    ['echuan_project_create', { product_id: 'APP', title: '新项目' }],
+    ['echuan_project_create', { product_id: 'APP', title: '新项目', requirement_md: '# 需求正文' }],
     ['echuan_project_requirement_write', { project_id: 'APP-2', body_md: '# 需求正文' }],
     ['echuan_project_submit', { project_id: 'APP-2' }],
     ['echuan_spec_create', { project_id: 'APP-2', title: '方案 A', body_md: '# 方案正文' }],

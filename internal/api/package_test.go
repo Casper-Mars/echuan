@@ -112,14 +112,15 @@ func TestDownloadProjectPackageHeadAndEmpty(t *testing.T) {
 		t.Errorf("HEAD Content-Length = %q, want the zip size", got)
 	}
 
-	// A project with no requirement and no specs yields a valid empty zip.
+	// A project with neither requirement nor spec yields a valid empty zip. That
+	// state can only be a legacy draft now: create requires a requirement body.
 	rec = doJSON(t, env.handler, http.MethodPost, "/v1/projects", map[string]any{
 		"product_id": "APP", "title": "空项目",
 	})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create empty project status = %d (body %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create without requirement status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
 	}
-	emptyID := decodeProjectDetail(t, rec).ProjectID
+	emptyID := insertLegacyDraftProject(t, env.store, "APP-2", "空项目")
 	rec = doJSON(t, env.handler, http.MethodGet, "/v1/projects/package?id="+emptyID, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("empty package status = %d, want 200", rec.Code)

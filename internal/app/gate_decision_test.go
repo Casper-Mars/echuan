@@ -80,9 +80,8 @@ func TestProjectGateDecisionsBindVersions(t *testing.T) {
 	projectID := detail.Project.ProjectID
 	v1 := detail.Requirement.MaterialID
 
-	if _, err := env.service.SubmitProject(context.Background(), projectID, "human:pm"); err != nil {
-		t.Fatalf("SubmitProject: %v", err)
-	}
+	// Create lands in requirement_review, so the reject below is the first gate
+	// verdict the project sees.
 	state := env.projectState(t, projectID)
 	rejected, err := env.service.Decide(context.Background(), DecideInput{
 		Kind:          DecideKindProject,

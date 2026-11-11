@@ -315,20 +315,23 @@ func (e *endpointEnv) planningProject(productID, title string) (string, int) {
 	return projectID, version
 }
 
-// advanceToTasksDraft walks requirement submit/approve and spec submit/approve,
-// leaving the project in tasks_draft.
+// advanceToTasksDraft walks the requirement approval and spec submit/approve,
+// leaving the project in tasks_draft. Create already lands in
+// requirement_review, so only the approval is needed at the first gate.
 func (e *endpointEnv) advanceToTasksDraft(projectID string) int {
 	e.t.Helper()
-	raw, _ := e.call(http.MethodPost, "/v1/projects/submit?id="+projectID, nil, nil, http.StatusOK)
-	submitted := object(e.t, raw)
-	approved := e.decideProject(projectID, intField(e.t, submitted, "version"), "approve", "")
+	// The post-create version depends on any requirement rewrite in between, so
+	// it is read back from the detail endpoint.
+	current, _ := e.call(http.MethodGet, "/v1/projects?id="+projectID, nil, nil, http.StatusOK)
+	version := intField(e.t, object(e.t, current), "version")
+	approved := e.decideProject(projectID, version, "approve", "")
 	if name := stringField(e.t, approved, "status_name"); name != "spec_draft" {
 		e.t.Fatalf("project %s status = %q, want spec_draft", projectID, name)
 	}
 	specRec, _ := e.call(http.MethodPost, "/v1/projects/specs?id="+projectID,
 		map[string]any{"body_md": "# 方案\n"}, nil, http.StatusOK)
 	specVersion := intField(e.t, object(e.t, specRec), "project_version")
-	raw, _ = e.call(http.MethodPost, "/v1/projects/submit?id="+projectID, nil, nil, http.StatusOK)
+	raw, _ := e.call(http.MethodPost, "/v1/projects/submit?id="+projectID, nil, nil, http.StatusOK)
 	resubmitted := object(e.t, raw)
 	approved = e.decideProject(projectID, intField(e.t, resubmitted, "version"), "approve", "")
 	if name := stringField(e.t, approved, "status_name"); name != "tasks_draft" {
@@ -337,13 +340,14 @@ func (e *endpointEnv) advanceToTasksDraft(projectID string) int {
 	return intField(e.t, approved, "version")
 }
 
-// advanceToSpecDraft submits the requirement and approves it, leaving the
-// project in spec_draft.
+// advanceToSpecDraft approves the requirement, leaving the project in
+// spec_draft. Create already put it in requirement_review, so there is no
+// submit step.
 func (e *endpointEnv) advanceToSpecDraft(projectID string) int {
 	e.t.Helper()
-	raw, _ := e.call(http.MethodPost, "/v1/projects/submit?id="+projectID, nil, nil, http.StatusOK)
-	submitted := object(e.t, raw)
-	approved := e.decideProject(projectID, intField(e.t, submitted, "version"), "approve", "")
+	current, _ := e.call(http.MethodGet, "/v1/projects?id="+projectID, nil, nil, http.StatusOK)
+	version := intField(e.t, object(e.t, current), "version")
+	approved := e.decideProject(projectID, version, "approve", "")
 	if name := stringField(e.t, approved, "status_name"); name != "spec_draft" {
 		e.t.Fatalf("project %s status = %q, want spec_draft", projectID, name)
 	}
@@ -443,26 +447,39 @@ func TestContractEndpoints(t *testing.T) {
 	if _, ok := main["requirement"].(map[string]any); !ok {
 		t.Fatal("project detail has no requirement object")
 	}
+	// The create contract is "requirement mandatory, straight into review".
+	if status := intField(t, main, "status"); status != 1 {
+		t.Fatalf("created status = %d, want 1 (requirement_review)", status)
+	}
+	if name := stringField(t, main, "status_name"); name != "requirement_review" {
+		t.Fatalf("created status_name = %q, want requirement_review", name)
+	}
+	if total := intField(t, main, "work_item_total"); total != 0 {
+		t.Errorf("created work_item_total = %d, want 0", total)
+	}
+	// They are now in review, so a submit has no edge to follow.
+	e.call(http.MethodPost, "/v1/projects/submit?id="+mainID, nil, nil, http.StatusConflict)
 
 	e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
 	e.call(http.MethodGet, "/v1/projects?product_id=APP", nil, nil, http.StatusOK)
 	e.call(http.MethodPatch, "/v1/projects?id="+mainID, map[string]any{"title": "契约项目-改"}, nil, http.StatusOK)
 
+	// Deleting is only legal for draft/cancelled projects, so a project created
+	// by mistake goes through cancel first (D2: whitelist unchanged).
 	disposable := e.createDraftProject("APP", "待删除项目", "# 临时\n")
-	e.call(http.MethodDelete, "/v1/projects?id="+stringField(t, disposable, "project_id"), nil, nil, http.StatusNoContent)
+	disposableID := stringField(t, disposable, "project_id")
+	e.call(http.MethodDelete, "/v1/projects?id="+disposableID, nil, nil, http.StatusConflict)
+	e.call(http.MethodPost, "/v1/projects/cancel?id="+disposableID, nil, nil, http.StatusOK)
+	e.call(http.MethodDelete, "/v1/projects?id="+disposableID, nil, nil, http.StatusNoContent)
 
 	raw, _ = e.call(http.MethodPost, "/v1/projects/requirement?id="+mainID,
 		map[string]any{"body_md": "# 需求 v2\n"}, nil, http.StatusOK)
 	if version := intField(t, objectField(t, object(t, raw), "requirement"), "version"); version != 2 {
 		t.Errorf("requirement version = %d, want 2", version)
 	}
-
-	raw, _ = e.call(http.MethodPost, "/v1/projects/submit?id="+mainID, nil, nil, http.StatusOK)
-	submitted := object(t, raw)
-	if name := stringField(t, submitted, "status_name"); name != "requirement_review" {
-		t.Fatalf("after submit status = %q", name)
-	}
-	specGate := e.decideProject(mainID, intField(t, submitted, "version"), "approve", "")
+	// The rewrite bumped the project version; the gate needs that value.
+	requirementWrite := object(t, raw)
+	specGate := e.decideProject(mainID, intField(t, requirementWrite, "version"), "approve", "")
 	if name := stringField(t, specGate, "status_name"); name != "spec_draft" {
 		t.Fatalf("after requirement approval status = %q", name)
 	}
@@ -669,11 +686,12 @@ func TestContractEndpoints(t *testing.T) {
 
 	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
 	completed := object(t, raw)
-	// Two dev cards plus the three stage cards the pipeline created while the
-	// project walked 0 → 6. The stage cards were bypassed by manual submits,
-	// so approving each gate cancelled them; they are counted but not "done".
-	if total := intField(t, completed, "work_item_total"); total != 5 {
-		t.Errorf("work_item_total = %d, want 5", total)
+	// Two dev cards plus the two stage cards the pipeline created while the
+	// project walked 1 → 6 (create enqueues no requirement card). The stage
+	// cards were bypassed by manual submits, so approving each gate cancelled
+	// them; they are counted but not "done".
+	if total := intField(t, completed, "work_item_total"); total != 4 {
+		t.Errorf("work_item_total = %d, want 4", total)
 	}
 	if done := intField(t, completed, "work_item_done"); done != 2 {
 		t.Errorf("work_item_done = %d, want 2", done)
@@ -708,11 +726,11 @@ func TestContractEndpoints(t *testing.T) {
 
 	pending := e.createDraftProject("APP", "待评审项目", "# 待评审\n")
 	pendingID := stringField(t, pending, "project_id")
-	raw, _ = e.call(http.MethodPost, "/v1/projects/submit?id="+pendingID, nil, nil, http.StatusOK)
-	pendingSubmitted := object(t, raw)
+	// A stale If-Match is rejected before any state is read; the project is
+	// already in requirement_review at version 1.
 	e.call(http.MethodPost, "/v1/projects/decide?id="+pendingID,
 		map[string]any{"decision": "approve"},
-		map[string]string{"If-Match": strconv.Itoa(intField(t, pendingSubmitted, "version") + 99)},
+		map[string]string{"If-Match": strconv.Itoa(intField(t, pending, "version") + 99)},
 		http.StatusConflict)
 
 	e.call(http.MethodGet, "/v1/inbox", nil, nil, http.StatusOK)
@@ -1084,4 +1102,57 @@ type failingChecker struct{}
 func (failingChecker) Name() string { return "failing" }
 func (failingChecker) Check(context.Context) error {
 	return errors.New("contract fixture failure")
+}
+
+// TestProjectCreateContractRequiresRequirement pins the #18 create contract in
+// the document itself: requirement_md is required, its description says the
+// project starts in requirement_review, and the 413 too_large response is still
+// documented (material.Writer stays the single size enforcer).
+func TestProjectCreateContractRequiresRequirement(t *testing.T) {
+	doc, err := Load(contractDocPath)
+	if err != nil {
+		t.Fatalf("load %s: %v", contractDocPath, err)
+	}
+
+	schema := doc.Components.Schemas["ProjectCreateRequest"]
+	if schema == nil {
+		t.Fatal("ProjectCreateRequest schema is missing")
+	}
+	required := map[string]bool{}
+	for _, name := range schema.Required {
+		required[name] = true
+	}
+	for _, name := range []string{"product_id", "title", "requirement_md"} {
+		if !required[name] {
+			t.Errorf("ProjectCreateRequest.required = %v, want %q", schema.Required, name)
+		}
+	}
+
+	field := schema.Properties["requirement_md"]
+	if field == nil {
+		t.Fatal("ProjectCreateRequest.requirement_md property is missing")
+	}
+	for _, want := range []string{"必填", "requirement_review", "413"} {
+		if !strings.Contains(field.Description, want) {
+			t.Errorf("requirement_md description = %q, want it to mention %q", field.Description, want)
+		}
+	}
+
+	operation := doc.Paths["/v1/projects"].Post
+	if operation == nil {
+		t.Fatal("POST /v1/projects is missing")
+	}
+	if _, ok := operation.Responses["413"]; !ok {
+		t.Errorf("POST /v1/projects responses = %v, want a documented 413", operation.Responses)
+	}
+
+	// A body without requirement_md no longer satisfies the request schema; the
+	// document and the handler agree on what "required" means.
+	if err := doc.validate(schema, decodeValue(t, []byte(`{"product_id":"APP","title":"t"}`)), "$", 0); err == nil {
+		t.Error("schema accepted a create request without requirement_md")
+	}
+	if err := doc.validate(schema, decodeValue(t, []byte(
+		`{"product_id":"APP","title":"t","requirement_md":"# 需求\n"}`)), "$", 0); err != nil {
+		t.Errorf("schema rejected a legal create request: %v", err)
+	}
 }

@@ -97,6 +97,33 @@ func createProjectWithRequirement(t *testing.T, env *materialServerEnv, requirem
 	return decodeProjectDetail(t, rec)
 }
 
+// insertLegacyDraftProject writes a requirement_draft(0) project row with no
+// requirement pointer, the shape the pre-#18 create path left behind. HTTP
+// tests use it for the read-only paths that still have to cope with legacy
+// drafts, which the create endpoint can no longer produce.
+func insertLegacyDraftProject(t *testing.T, st *store.Store, projectID, title string) string {
+	t.Helper()
+	var productID int64
+	if err := st.Read().QueryRowContext(context.Background(),
+		"SELECT id FROM products WHERE product_id = 'APP'").Scan(&productID); err != nil {
+		t.Fatalf("lookup product: %v", err)
+	}
+	var seq int
+	if err := st.Read().QueryRowContext(context.Background(),
+		"SELECT COALESCE(MAX(seq_no), 0) + 1 FROM projects WHERE product_id = ?",
+		productID).Scan(&seq); err != nil {
+		t.Fatalf("next seq of product: %v", err)
+	}
+	if _, err := st.Write().ExecContext(context.Background(), `
+		INSERT INTO projects (project_id, product_id, seq_no, title, requirement_material_id,
+		                      status, reason, version, create_time, update_time)
+		VALUES (?, ?, ?, ?, NULL, 0, NULL, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		projectID, productID, seq, title); err != nil {
+		t.Fatalf("insert legacy draft %s: %v", projectID, err)
+	}
+	return projectID
+}
+
 func countRows(t *testing.T, st *store.Store, query string, args ...any) int64 {
 	t.Helper()
 	var n int64

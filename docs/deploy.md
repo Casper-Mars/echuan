@@ -484,9 +484,11 @@ curl -fsS -X POST "$BASE/v1/projects" \
       }' | jq
 ```
 
-返回中 `project_id` 为 `APP-1`（产品内自增）。项目状态 `draft`，版本 `1`。
+`requirement_md` **必填**：缺失或纯空白直接返回 400 `invalid_argument`（`details[].field=requirement_md`，消息 `is required`），不会先建出一个没有需求的项目。
 
-追加需求版本（可选）：
+返回中 `project_id` 为 `APP-1`（产品内自增）。项目创建即进入需求评审（`status` 为 `1` = `requirement_review`），版本 `1`，`requirement.material_id` 非空（正文已作为需求 v1 落地），`work_item_total` 为 `0`——**不再产生需求阶段工作项**，也**无需**再调 `/v1/projects/submit`。
+
+改写需求正文（仅历史草稿项目与需求驳回返工场景需要；新建项目已经带齐需求，不用先调它）：
 
 ```bash
 curl -fsS -X POST "$BASE/v1/projects/requirement?id=APP-1" \
@@ -503,9 +505,17 @@ curl -fsS "$BASE/v1/materials?id=$REQ_MATERIAL"
 
 方案同理：取 `.spec.material_id`（最后提交的单份方案）再请求 `/v1/materials`；全部方案当前版走 `GET /v1/projects/package?id=`。详情响应与需求长度无关，可以直接轮询。
 
-### 9.3 提交需求评审
+### 9.3 提交需求评审（仅历史草稿项目 / 驳回返工）
+
+新建项目已经在需求评审，**无需**调本接口：直接对当前版本调 `/v1/projects/decide` 即可（见下）。对新建项目调 `submit` 只会得到 409 `invalid_state`。
+
+在需求阶段，`POST /v1/projects/submit` 只在两种场景需要（方案 / 任务拆分草稿的提交评审同样走这个接口，见 9.4）：
+
+- **历史草稿项目**（`requirement_draft`，状态 `0`）：需求文档已存在，但还没进需求评审；
+- **需求驳回返工后**：需求评审被驳回（`requirement_review` → `requirement_draft`）时，平台会在同一事务里补一张 `queued` 的需求返工卡（`kind=requirement`、`priority=990`）；改写需求正文后用它回到评审。
 
 ```bash
+# 仅适用于上面两种场景；新建项目不要执行这一句
 curl -fsS -X POST "$BASE/v1/projects/submit?id=APP-1" \
   -H 'X-Actor: pm' | jq '.status_name'    # requirement_review
 ```

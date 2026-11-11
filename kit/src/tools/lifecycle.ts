@@ -365,7 +365,9 @@ export function renderProjectCreated(value: ProjectCreatedValue): TextContent[] 
     `- 状态：${statusLine(value.status, value.status_name)}`,
     `- 版本：${value.version === undefined ? '未知' : `v${value.version}`}`,
     '',
-    '下一步：用 `echuan_project_requirement_write` 写需求正文，再用 `echuan_project_submit` 提交评审。',
+    '下一步：首版需求已随建项写入，项目已在需求评审（requirement_review），无需再调'
+      + ' `echuan_project_submit`；评审通过后用 `echuan_spec_create` 建方案，'
+      + '需要改写需求正文时用 `echuan_project_requirement_write`。',
   ].join('\n'))]
 }
 
@@ -428,21 +430,24 @@ export function renderPlanSubmitted(value: PlanSubmittedValue): TextContent[] {
  * 工具定义
  * ------------------------------------------------------------------ */
 
-/** `echuan_project_create`：建项目（可带首版需求）。 */
+/** `echuan_project_create`：建项目（必须带首版需求，建项即入需求评审）。 */
 export function createProjectCreateTool(options: EchuanToolOptions): ToolDefinition {
   const { client } = options
 
   return defineTool({
     name: 'echuan_project_create',
     description:
-      '创建一个驿传（echuan）项目（POST /v1/projects），可同时写入首版需求正文。'
-      + '返回 project_id、状态与版本，后续写需求 / 提交评审都用这个 project_id。',
+      '创建一个驿传（echuan）项目并同时写入首版需求正文（POST /v1/projects）。'
+      + 'requirement_md 必填，建项即进入需求评审（status=1 requirement_review），'
+      + '无需再调 `echuan_project_submit`；返回 project_id、状态与版本。',
     parameters: {
       product_id: { type: 'string', required: true, description: '产品业务 id（必填），例如 APP' },
       title: { type: 'string', required: true, description: '项目标题（必填）' },
       requirement_md: {
         type: 'string',
-        description: '首版需求正文（可选，Markdown）；不传则项目停在需求草稿，稍后用 requirements 工具补写',
+        required: true,
+        description: '首版需求正文（必填，Markdown）；去空白后不得为空，原文原样保存为需求 v1，'
+          + '项目创建即进入需求评审',
       },
     },
     output: {
@@ -454,8 +459,8 @@ export function createProjectCreateTool(options: EchuanToolOptions): ToolDefinit
         const input: CreateProjectInput = {
           product_id: requireText(args.product_id, 'product_id'),
           title: requireText(args.title, 'title'),
+          requirement_md: requireBody(args.requirement_md, 'requirement_md'),
         }
-        if (args.requirement_md !== undefined) input.requirement_md = args.requirement_md
 
         const result = await client.createProject(input)
         if (result.kind === 'empty') {

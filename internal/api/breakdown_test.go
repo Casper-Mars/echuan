@@ -92,16 +92,11 @@ func newBreakdownHTTPEnv(t *testing.T) *breakdownHTTPEnv {
 		t.Fatal("project has no requirement material")
 	}
 
-	dispatch := env.heartbeat(t, "requirement")
-	if _, err := work.ReportWorkItem(context.Background(), app.ReportWorkItemInput{
-		WorkID: dispatch.WorkID, LeaseID: dispatch.Lease.LeaseID,
-		MaterialID: created.Requirement.MaterialID, Actor: "agent:w",
-	}); err != nil {
-		t.Fatalf("report requirement: %v", err)
-	}
+	// Create lands in requirement_review without a stage card, so the pipeline
+	// starts at the approval that enqueues the design card.
 	env.approveProject(t)
 
-	dispatch = env.heartbeat(t, "design")
+	dispatch := env.heartbeat(t, "design")
 	spec, _, err := projects.SaveSpec(context.Background(), env.projectID, "", "agent:cto",
 		strPtr("方案"), "# 方案\n\n正文\n", 0, false)
 	if err != nil {

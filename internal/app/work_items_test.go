@@ -59,8 +59,8 @@ func newWorkItemFixture(t *testing.T) *workItemFixture {
 	}
 }
 
-// tasksDraftProject walks requirement and spec approvals, leaving the project
-// in tasks_draft with one spec material.
+// tasksDraftProject walks the spec approval, leaving the project in tasks_draft
+// with one spec material. The requirement gate is already passed at create time.
 func (e *projectTestEnv) tasksDraftProject(t *testing.T, title string) string {
 	t.Helper()
 	projectID := e.newSpecReviewProject(t, title)
@@ -113,10 +113,11 @@ func TestCreateWorkItemLandsBlockedAndOpensReviewGate(t *testing.T) {
 	if detail.Item.Attempt != 0 || detail.Item.MaxAttempts != defaultWorkItemMaxAttempts {
 		t.Errorf("attempt/max = %d/%d", detail.Item.Attempt, detail.Item.MaxAttempts)
 	}
-	// The requirement, design and breakdown stage cards already took seq 1–3
-	// while the fixture walked to tasks_draft; the first dev card is 4.
-	if detail.Item.SeqNo != 4 {
-		t.Errorf("seq_no = %d, want 4", detail.Item.SeqNo)
+	// The design and breakdown stage cards already took seq 1–2 while the
+	// fixture walked to tasks_draft (create enqueues no requirement card); the
+	// first dev card is 3.
+	if detail.Item.SeqNo != 3 {
+		t.Errorf("seq_no = %d, want 3", detail.Item.SeqNo)
 	}
 	if detail.Item.Kind != "dev" || detail.Item.ProjectID != f.projectID {
 		t.Errorf("kind/project = %q/%q", detail.Item.Kind, detail.Item.ProjectID)

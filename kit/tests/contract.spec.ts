@@ -124,19 +124,26 @@ function findYamlOperation(method: string, requestPath: string): YamlOperation |
 /**
  * 读取某个 operation 的 `requestBody` 契约：
  * - `requestBodyRequired`：requestBody 本身是否 `required: true`；
- * - `schemaRequired`：`content.application/json.schema.required` 的字段名。
+ * - `schemaRequired`：`content.application/json.schema.required` 的字段名；
+ * - `schemaRef`：schema 是 `$ref` 时指向的 `components/schemas` 名字
+ *   （建项走 `$ref: "#/components/schemas/ProjectCreateRequest"`，必填字段在
+ *   那个 schema 里，用 {@link parseSchemaRequired} 读）。
  *
  * 只服务于「请求体必填字段」这类轻量断言（D1/D3 落点），仍不引入 yaml 依赖；
- * 结构若被改写（例如 schema 换成 `$ref`、required 改成多行块），这里会拿不到值，
+ * 结构若被改写（例如 required 改成多行块），这里会拿不到值，
  * 由调用方断言变红，而不是静默通过。
  */
 interface RequestBodyContract {
   requestBodyRequired: boolean
-  schemaRequired: string[]
+  schemaRequired: string[] | undefined
+  schemaRef: string | undefined
 }
 
-function parseRequestBodyContract(operationId: string): RequestBodyContract | undefined {
-  const lines = openapiYaml.split(/\r?\n/)
+function parseRequestBodyContract(
+  operationId: string,
+  yaml: string = openapiYaml,
+): RequestBodyContract | undefined {
+  const lines = yaml.split(/\r?\n/)
   const anchorLine = `      operationId: ${operationId}`
   const start = lines.findIndex(line => line === anchorLine)
   if (start < 0) return undefined
@@ -158,6 +165,7 @@ function parseRequestBodyContract(operationId: string): RequestBodyContract | un
 
   let requestBodyRequired = false
   let schemaRequired: string[] | undefined
+  let schemaRef: string | undefined
   let inRequestBody = false
   let inJsonContent = false
   let inSchema = false
@@ -186,6 +194,11 @@ function parseRequestBodyContract(operationId: string): RequestBodyContract | un
       continue
     }
     if (inSchema) {
+      const refMatch = /^ {14}\$ref:\s*["']#\/components\/schemas\/(\w+)["']\s*$/.exec(line)
+      if (refMatch?.[1] !== undefined) {
+        schemaRef = refMatch[1]
+        continue
+      }
       const requiredMatch = /^ {14}required:\s*\[(.*)\]\s*$/.exec(line)
       if (requiredMatch?.[1] !== undefined) {
         schemaRequired = requiredMatch[1]
@@ -197,8 +210,45 @@ function parseRequestBodyContract(operationId: string): RequestBodyContract | un
     }
   }
 
-  if (schemaRequired === undefined) return undefined
-  return { requestBodyRequired, schemaRequired }
+  // schema 走 $ref 时必填字段在 components/schemas 里，由 parseSchemaRequired 读；
+  // 两种写法都没有 → 返回 undefined，让调用方断言变红。
+  if (schemaRequired === undefined && schemaRef === undefined) return undefined
+  return { requestBodyRequired, schemaRequired, schemaRef }
+}
+
+/**
+ * 读取 `components/schemas/<name>` 的 `required` 字段名列表。
+ *
+ * 只认流式数组写法（`      required: [a, b, c]`，6 空格缩进）。改成多行块、
+ * 换写法或该 schema 消失时返回 `undefined`，由调用方断言变红，不静默通过。
+ */
+function parseSchemaRequired(yaml: string, schemaName: string): string[] | undefined {
+  const lines = yaml.split(/\r?\n/)
+  const componentsStart = lines.findIndex(line => /^components:\s*$/.test(line))
+  if (componentsStart < 0) return undefined
+  const schemasStart = lines.findIndex(
+    (line, index) => index > componentsStart && /^ {2}schemas:\s*$/.test(line),
+  )
+  if (schemasStart < 0) return undefined
+
+  const anchorLine = `    ${schemaName}:`
+  const start = lines.findIndex((line, index) => index > schemasStart && line === anchorLine)
+  if (start < 0) return undefined
+
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index] as string
+    if (line.trim() === '') continue
+    // 下一个 schema 键（4 空格）或回到 components 其他段（<=2 空格）即结束。
+    if (/^ {0,4}\S/.test(line)) break
+    const requiredMatch = /^ {6}required:\s*\[(.*)\]\s*$/.exec(line)
+    if (requiredMatch?.[1] !== undefined) {
+      return requiredMatch[1]
+        .split(',')
+        .map(item => item.trim())
+        .filter(item => item !== '')
+    }
+  }
+  return undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -596,5 +646,121 @@ describe('契约闸门：spec 写操作 requestBody required 含 title', () => {
       const contractRequired = parseRequestBodyContract(operationId)?.schemaRequired ?? []
       expect(toolRequired).toEqual(expect.arrayContaining(contractRequired))
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. 建项请求体 required（requirement_md 必填，与工具参数逐项一致）
+// ---------------------------------------------------------------------------
+
+/**
+ * 建项契约的必填字段在 `components/schemas/ProjectCreateRequest.required`：
+ * `requestBody.content.application/json.schema` 只是 `$ref`，所以这里把
+ * 「operation → $ref → schema.required」整条链路都校验一遍，
+ * 再与 `echuan_project_create` 的参数 `required` 逐项比对。
+ */
+const PROJECT_CREATE_TOOL = 'echuan_project_create'
+const PROJECT_CREATE_SCHEMA = 'ProjectCreateRequest'
+
+/** `echuan_project_create` 注册后的参数 required（排序后）。 */
+function projectCreateToolRequired(): string[] {
+  const anyClient = createClient(config, { fetchImpl: async () => new Response('{}') })
+  const definition = createAllEchuanTools({ client: anyClient, identity: { workerId: undefined } })
+    .find(tool => tool.name === PROJECT_CREATE_TOOL)
+  expect(definition, `${PROJECT_CREATE_TOOL} 未注册`).toBeDefined()
+  const parameters = definition!.parameters as { required?: string[] }
+  return [...(parameters.required ?? [])].sort()
+}
+
+/**
+ * 契约与工具参数不一致时返回第一处问题；`undefined` 表示对齐。
+ *
+ * `yaml` 与 `toolRequired` 都可注入，用例据此**自证会变红**
+ * （改 yaml / 改工具 required 都必须报错），而不是只断言「现在恰好相等」。
+ */
+function projectCreateRequiredIssue(
+  yaml: string,
+  toolRequired: readonly string[],
+): string | undefined {
+  const contract = parseRequestBodyContract('createProject', yaml)
+  if (contract === undefined) return 'createProject 的 requestBody 契约解析失败'
+  if (!contract.requestBodyRequired) return 'createProject 的 requestBody 不再是 required: true'
+  if (contract.schemaRef !== PROJECT_CREATE_SCHEMA) {
+    return `createProject 的 requestBody schema 不再是 $ref ${PROJECT_CREATE_SCHEMA}`
+      + `（实际：${contract.schemaRef ?? '内联 schema'}）`
+  }
+
+  const schemaRequired = parseSchemaRequired(yaml, PROJECT_CREATE_SCHEMA)
+  if (schemaRequired === undefined) return `${PROJECT_CREATE_SCHEMA}.required 解析失败`
+
+  const contractRequired = [...schemaRequired].sort()
+  const sameLength = contractRequired.length === toolRequired.length
+  const sameItems = contractRequired.every((field, index) => field === toolRequired[index])
+  if (!sameLength || !sameItems) {
+    return `${PROJECT_CREATE_SCHEMA}.required=[${contractRequired}] 与工具`
+      + ` ${PROJECT_CREATE_TOOL} 参数 required=[${toolRequired}] 不一致`
+  }
+  if (!contractRequired.includes('requirement_md')) {
+    return `${PROJECT_CREATE_SCHEMA}.required 缺少 requirement_md`
+  }
+  return undefined
+}
+
+describe('契约闸门：建项 requestBody required 与工具参数逐项一致', () => {
+  it(`${PROJECT_CREATE_SCHEMA}.required 含 requirement_md，且与工具 ${PROJECT_CREATE_TOOL} 参数 required 完全一致`, () => {
+    const toolRequired = projectCreateToolRequired()
+
+    // 工具侧：product_id / title / requirement_md 三个必填，一个不多一个不少。
+    expect(toolRequired).toEqual(['product_id', 'requirement_md', 'title'])
+
+    // 契约侧：schema 解析出来必须含 requirement_md。
+    const contractRequired = parseSchemaRequired(openapiYaml, PROJECT_CREATE_SCHEMA)
+    expect(contractRequired, `${PROJECT_CREATE_SCHEMA}.required 解析失败`).toBeDefined()
+    expect(contractRequired).toContain('requirement_md')
+    expect([...(contractRequired ?? [])].sort()).toEqual(toolRequired)
+
+    // 整条链路（$ref → schema.required → 工具参数）无漂移。
+    expect(projectCreateRequiredIssue(openapiYaml, toolRequired)).toBeUndefined()
+  })
+
+  it('漂移自证：契约少 requirement_md 或工具侧少 requirement_md 都会变红', () => {
+    const toolRequired = projectCreateToolRequired()
+
+    // ① 契约把 requirement_md 从 required 里删掉 → 闸门报错。
+    const marker = '      required: [product_id, title, requirement_md]\n'
+    expect(openapiYaml, '契约里应有 ProjectCreateRequest.required 行').toContain(marker)
+    const driftedContract = openapiYaml.replace(marker, '      required: [product_id, title]\n')
+    expect(driftedContract).not.toBe(openapiYaml)
+    const contractIssue = projectCreateRequiredIssue(driftedContract, toolRequired)
+    expect(contractIssue).toBeDefined()
+    expect(String(contractIssue)).toContain('requirement_md')
+
+    // ② 契约删掉整个 required 行 → 解析失败，同样变红。
+    const noRequired = openapiYaml.replace(marker, '')
+    expect(String(projectCreateRequiredIssue(noRequired, toolRequired))).toContain('解析失败')
+
+    // ③ 工具侧把 requirement_md 做成可选（required 少一项）→ 闸门报错。
+    const toolIssue = projectCreateRequiredIssue(openapiYaml, ['product_id', 'title'])
+    expect(toolIssue).toBeDefined()
+    expect(String(toolIssue)).toContain('requirement_md')
+  })
+
+  it('requestBody 不再指向 ProjectCreateRequest 时变红', () => {
+    const marker = '              $ref: "#/components/schemas/ProjectCreateRequest"\n'
+    expect(openapiYaml, 'createProject 的 schema 应为 $ref ProjectCreateRequest').toContain(marker)
+    const toolRequired = projectCreateToolRequired()
+
+    // ① schema 改成指向别的 schema：报「不再是 $ref ProjectCreateRequest」。
+    const repointed = openapiYaml.replace(
+      marker,
+      '              $ref: "#/components/schemas/ProjectPatchRequest"\n',
+    )
+    expect(String(projectCreateRequiredIssue(repointed, toolRequired))).toContain(
+      PROJECT_CREATE_SCHEMA,
+    )
+
+    // ② schema 整块被删：契约解析失败，同样变红（不是静默通过）。
+    const removed = openapiYaml.replace(marker, '')
+    expect(String(projectCreateRequiredIssue(removed, toolRequired))).toContain('解析失败')
   })
 })
