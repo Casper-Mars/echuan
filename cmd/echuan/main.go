@@ -18,6 +18,8 @@ import (
 
 	"github.com/Casper-Mars/echuan/internal/api"
 	"github.com/Casper-Mars/echuan/internal/app"
+	"github.com/Casper-Mars/echuan/internal/im"
+	"github.com/Casper-Mars/echuan/internal/im/feishu"
 	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
@@ -121,6 +123,59 @@ func run() error {
 	// and task decisions on every request, with the stale threshold coming
 	// from configuration (review_stale_hours, default 72).
 	inboxService := app.NewInboxService(st, logger, cfg.ReviewStaleHours)
+
+	// The Feishu bot is an optional module: im.New returns nil when disabled,
+	// so a platform without IM credentials behaves exactly as before. A failure
+	// to start only degrades the card channel; the HTTP API keeps serving.
+	imCfg := im.Config{
+		Enabled:        cfg.IM.Enabled,
+		AppID:          cfg.IM.AppID,
+		AppSecret:      cfg.IM.AppSecret,
+		AllowedChatIDs: cfg.IM.AllowedChatIDs,
+		PollInterval:   cfg.IM.PollInterval,
+		QuietHours:     cfg.IM.QuietHours,
+		MaxCards:       cfg.IM.MaxCards,
+		DocFolderToken: cfg.IM.DocFolderToken,
+	}
+	notifier := im.New(imCfg, logger)
+	if notifier != nil {
+		notifier.SetPoller(im.NewPoller(
+			imCfg,
+			app.NewIMInboxSource(inboxService),
+			app.NewIMSubjectSource(projects, workItems),
+			app.NewIMCardStore(st),
+			notifier.Client(),
+			logger,
+			nil,
+		))
+		if imCfg.DocFolderToken != "" {
+			notifier.SetDocs(im.NewDocs(
+				app.NewIMDocStore(st),
+				app.NewIMMaterialReader(materialService),
+				feishu.NewImporter(imCfg.AppID, imCfg.AppSecret, imCfg.DocFolderToken),
+				logger,
+			))
+		} else {
+			logger.Warn("im doc folder token is empty; cards will carry no full-text link")
+		}
+		notifier.SetActionHandler(im.NewActionHandler(
+			imCfg,
+			app.NewIMActionStore(st),
+			app.NewIMDecider(projects, workItems),
+			logger,
+			nil,
+		))
+		if err := notifier.Start(context.Background()); err != nil {
+			logger.Warn("im runtime failed to start, continuing without it", "error", err)
+		}
+		defer func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := notifier.Close(closeCtx); err != nil {
+				logger.Error("close im runtime", "error", err)
+			}
+		}()
+	}
 
 	reclaimCtx, stopReclaim := context.WithCancel(context.Background())
 	defer stopReclaim()
