@@ -253,6 +253,26 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 - `state` 是**占用声明**，不是 agent 的瞬时运行态：inflight 非空（或上一轮回包 `current_work_item_id` 非空，覆盖手动 `echuan_work_claim` 领的卡）期间**每一轮都上报 `busy`**，所以回合间隙不会被平台当成空闲再派一张卡；只有 `echuan_work_report` 成功（`notifyReported`）或租约过期后才会回到 `idle`。一个 worker 同一时间只持一张卡。
 - 连续 `worker_unknown` 会退避 1s→2s→5s→15s，不会打爆平台。
 
+## 版本兼容性
+
+**声明位置**：`kit/package.json` → `engines.dsh`（当前 `>=0.2.1-rc.2 <0.3.0`）。dsh 安装插件时读它，
+不满足直接拒绝安装并打印不满足项——升级 dsh 后装不上，先看这个字段。
+
+仓库根 `.github/workflows/dsh-compat-kit.yml` 在 **kit 变更合并进 main / 每天 09:00 / 手动触发**时，
+对 npm 上 dsh 的 `latest`（阻塞）与 `next`（仅提示）做三层校验：
+
+1. **安装准入**：按发布形态 `npm pack` 后装进全新 dsh 环境；
+2. **patch 组合**：`dsh --profile <p> --dump-config` 能把 echuan 插件组进配置树；
+3. **运行时装配**：冷启动 profile，断言 23 个工具与 1 个技能真的注册。
+
+不兼容时自动开 issue（label `dsh-compat`），恢复后自动关闭。本地跑同一条路径：
+
+```bash
+cd kit
+pnpm compat                 # 校验 npm latest
+pnpm compat 0.2.2-rc.2      # 校验指定版本
+```
+
 ## 卸载
 
 ```bash

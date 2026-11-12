@@ -1,0 +1,196 @@
+name: kit dsh compatibility
+
+# kit 是 echuan 仓库里的 dsh 插件（`kit/`）：每次合并进 main 都会校验它与当前 dsh
+# 的兼容性；每天巡检一次上游新版本。定时任务发现不兼容时自动开 issue（恢复后自动关闭）。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'kit/**'
+      - '.github/workflows/dsh-compat-kit.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'kit/**'
+      - '.github/workflows/dsh-compat-kit.yml'
+  schedule:
+    # 每天 09:00（Asia/Shanghai）= 01:00 UTC。GitHub cron 一律按 UTC 解释。
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      extra_versions:
+        description: '额外校验的 dsh 版本（空格分隔，例如 0.2.2-rc.2）'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  # 定时任务发现不兼容时要建 / 评论 / 关闭 issue
+  issues: write
+
+concurrency:
+  group: kit-dsh-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: kit
+
+jobs:
+  resolve:
+    name: 解析待校验的 dsh 版本
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      latest: ${{ steps.plan.outputs.latest }}
+      declared: ${{ steps.declared.outputs.range }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - id: declared
+        name: 输出兼容性声明
+        run: |
+          range="$(node -p "require('./package.json').engines?.dsh ?? '未声明'")"
+          echo "声明的 dsh 支持范围：$range"
+          echo "range=$range" >> "$GITHUB_OUTPUT"
+      - id: plan
+        name: 生成 matrix（latest 阻塞 / next 仅提示）
+        env:
+          EXTRA_DSH_VERSIONS: ${{ inputs.extra_versions }}
+        run: node scripts/dsh-versions.mjs --github
+
+  quality:
+    name: 自检（typecheck / test）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: kit/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  compat:
+    name: dsh ${{ matrix.version }}（${{ matrix.target }}）
+    needs: resolve
+    runs-on: ubuntu-latest
+    # next 与手工版本只做预警：上游预发布线的破坏性变更不应卡住 main。
+    continue-on-error: ${{ matrix.blocking == false }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: kit/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - id: check
+        name: 安装 → 组合 → 冷启动三层校验
+        run: bash scripts/dsh-compat.sh '${{ matrix.version }}'
+      # 每个矩阵任务把结论落成 artifact，供 report job 汇总（矩阵内的结果无法直接聚合）
+      - name: 记录结果
+        if: always()
+        run: |
+          mkdir -p out
+          printf '%s|%s|%s\n' '${{ matrix.version }}' '${{ matrix.target }}' '${{ steps.check.outcome }}' > out/result.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compat-result-${{ matrix.version }}
+          path: kit/out/result.txt
+          retention-days: 3
+
+  report:
+    name: 同步兼容性问题 issue
+    needs: [resolve, compat]
+    # 定时巡检自动开 issue；手动触发同样生效（便于事前演练，不强依赖等一周）。
+    # push / PR 的失败已经在页面上看得到，不再造噪音。
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        # 没有 artifact 时不能连累后面的 issue 同步：脚本自己会归为「未知版本」失败
+        continue-on-error: true
+        with:
+          pattern: compat-result-*
+          path: results
+      - name: 汇总并同步 issue
+        working-directory: .
+        env:
+          GH_TOKEN: *** secrets.GITHUB_TOKEN }}
+          # 本 job 没 checkout，gh 无法从 git 推导仓库，必须显式指定
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DECLARED: ${{ needs.resolve.outputs.declared }}
+        run: |
+          set -euo pipefail
+
+          failures=()
+          passes=()
+          # 没有 artifact（例如 resolve 阶段就挂了）时目录不存在，视为一次未知失败
+          if [ -d results ]; then
+            for file in results/*/result.txt; do
+              [ -f "$file" ] || continue
+              IFS='|' read -r version target outcome < "$file"
+              if [ "$outcome" = "success" ]; then
+                passes+=("$version（$target）")
+              else
+                failures+=("$version（$target）")
+              fi
+            done
+          fi
+          if [ "${#failures[@]}" -eq 0 ] && [ "${#passes[@]}" -eq 0 ]; then
+            failures+=("未知版本（解析阶段失败）")
+          fi
+
+          label="dsh-compat"
+          gh label create "$label" --color FBCA04 --description "dsh 版本兼容性巡检" 2>/dev/null || true
+          open_issue="$(gh issue list --label "$label" --state open --json number --jq '.[0].number // empty')"
+
+          if [ "${#failures[@]}" -gt 0 ]; then
+            body="$(printf '%s\n' \
+              "## 定时兼容性巡检未通过（kit / dsh-echuan）" \
+              "" \
+              "- 失败版本：${failures[*]:-未知}" \
+              "- 通过版本：${passes[*]:-无}" \
+              "- 声明范围：\`${DECLARED:-未声明}\`" \
+              "- 运行记录：${RUN_URL}" \
+              "" \
+              "### 怎么处理" \
+              "" \
+              "1. 打开运行记录，看失败在哪一层：「安装准入」被 dsh 拒绝，还是「patch 组合 / 冷启动探针」失败；" \
+              "2. 若只是 manifest 声明落后，本地复现：\`cd kit && pnpm compat <新版本>\`；" \
+              "3. 通过后放宽 \`kit/package.json\` 的 \`engines.dsh\` 上界并同步 README 兼容矩阵；" \
+              "   不通过则按上游 breaking change 改代码，**不要直接改范围蒙过去**；" \
+              "4. 修好后下一次巡检通过时，本 issue 会自动关闭。")"
+            if [ -n "$open_issue" ]; then
+              gh issue comment "$open_issue" --body "$body"
+            else
+              gh issue create \
+                --title "兼容性：kit（dsh-echuan）在 dsh ${failures[0]} 校验未通过" \
+                --label "$label" \
+                --body "$body"
+            fi
+          else
+            # 全部通过：关掉遗留的告警 issue，避免长期挂着假红灯
+            if [ -n "$open_issue" ]; then
+              gh issue comment "$open_issue" --body "已恢复：本次巡检全部通过（${passes[*]}）。运行记录：${RUN_URL}"
+              gh issue close "$open_issue" --reason completed
+            fi
+            echo "全部通过：${passes[*]}"
+          fi
