@@ -132,7 +132,7 @@ jobs:
       - name: 汇总并同步 issue
         working-directory: .
         env:
-          GH_TOKEN: *** secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 本 job 没 checkout，gh 无法从 git 推导仓库，必须显式指定
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
