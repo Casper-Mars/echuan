@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Casper-Mars/echuan/internal/im/card"
@@ -64,6 +65,12 @@ type CardStore interface {
 	Close(ctx context.Context, kind, id string, at time.Time) error
 }
 
+// DocProvider resolves the Feishu document holding a material's full text.
+type DocProvider interface {
+	Cached(ctx context.Context, materialID string) string
+	Ensure(ctx context.Context, materialID, title string) (string, error)
+}
+
 // Messenger is the outbound card channel.
 type Messenger interface {
 	SendCard(ctx context.Context, chatID, cardJSON string) (string, error)
@@ -78,10 +85,14 @@ type Poller struct {
 	subjects SubjectSource
 	store    CardStore
 	msg      Messenger
+	docs     DocProvider
 	logger   *slog.Logger
 	now      func() time.Time
 
 	lastPatch map[string]time.Time
+
+	mu         sync.Mutex
+	docFilling map[string]bool
 }
 
 // NewPoller builds a poller. now is injectable so tests can move the clock.
@@ -101,15 +112,22 @@ func NewPoller(cfg Config, inbox InboxSource, subjects SubjectSource, store Card
 		cfg.MaxCards = 10
 	}
 	return &Poller{
-		cfg:       cfg,
-		inbox:     inbox,
-		subjects:  subjects,
-		store:     store,
-		msg:       msg,
-		logger:    logger,
-		now:       now,
-		lastPatch: map[string]time.Time{},
+		cfg:        cfg,
+		inbox:      inbox,
+		subjects:   subjects,
+		store:      store,
+		msg:        msg,
+		logger:     logger,
+		now:        now,
+		lastPatch:  map[string]time.Time{},
+		docFilling: map[string]bool{},
 	}
+}
+
+// SetDocs attaches the document importer. Without it cards simply carry no
+// "read full text" button.
+func (p *Poller) SetDocs(docs DocProvider) {
+	p.docs = docs
 }
 
 // Run polls until ctx is cancelled.
@@ -211,7 +229,19 @@ func (p *Poller) Tick(ctx context.Context) error {
 			item = &meta
 		}
 
-		raw, err := card.Render(subject, project, item, card.Options{StaleHours: p.cfg.QuietHoursHours()})
+		materialID := ""
+		if project != nil {
+			materialID = project.MaterialID
+		}
+		if item != nil {
+			materialID = item.ReportID
+		}
+		docURL := ""
+		if p.docs != nil && materialID != "" {
+			docURL = p.docs.Cached(ctx, materialID)
+		}
+
+		raw, err := card.Render(subject, project, item, card.Options{DocURL: docURL})
 		if err != nil {
 			p.logger.Warn("im render card failed", "subject", entry.ID, "error", err)
 			continue
@@ -225,22 +255,28 @@ func (p *Poller) Tick(ctx context.Context) error {
 
 		switch {
 		case !known:
-			if err := p.send(ctx, entry, string(raw), version, now); err != nil {
+			messageID, err := p.send(ctx, entry, string(raw), version, now)
+			if err != nil {
 				continue
 			}
 			openCount++
+			p.fillDocLater(ctx, subject, project, item, materialID, messageID, docURL)
 		case rec.Closed:
 			// The item came back (reopened). Send a fresh card rather than
 			// patching a terminal one.
-			if err := p.send(ctx, entry, string(raw), version, now); err != nil {
+			messageID, err := p.send(ctx, entry, string(raw), version, now)
+			if err != nil {
 				continue
 			}
 			openCount++
+			p.fillDocLater(ctx, subject, project, item, materialID, messageID, docURL)
 		case now.Sub(rec.SentAt) > cardTTL:
 			p.logger.Info("im card expired, resending", "subject", entry.ID, "sent_at", rec.SentAt)
-			if err := p.send(ctx, entry, string(raw), version, now); err != nil {
+			messageID, err := p.send(ctx, entry, string(raw), version, now)
+			if err != nil {
 				continue
 			}
+			p.fillDocLater(ctx, subject, project, item, materialID, messageID, docURL)
 		default:
 			if last, ok := p.lastPatch[k]; ok && now.Sub(last) < patchThrottle {
 				continue
@@ -294,18 +330,18 @@ func (p *Poller) closeGone(ctx context.Context, records []CardRecord, present ma
 	return nil
 }
 
-func (p *Poller) send(ctx context.Context, entry InboxEntry, raw string, version int, now time.Time) error {
+func (p *Poller) send(ctx context.Context, entry InboxEntry, raw string, version int, now time.Time) (string, error) {
 	chatID := ""
 	if len(p.cfg.AllowedChatIDs) > 0 {
 		chatID = p.cfg.AllowedChatIDs[0]
 	}
 	if chatID == "" {
-		return fmt.Errorf("no chat id configured")
+		return "", fmt.Errorf("no chat id configured")
 	}
 	messageID, err := p.msg.SendCard(ctx, chatID, raw)
 	if err != nil {
 		p.logger.Warn("im send card failed", "subject", entry.ID, "error", err)
-		return err
+		return "", err
 	}
 	rec := CardRecord{
 		SubjectKind: entry.Kind,
@@ -321,7 +357,53 @@ func (p *Poller) send(ctx context.Context, entry InboxEntry, raw string, version
 		p.logger.Warn("im record card failed", "subject", entry.ID, "error", err)
 	}
 	p.logger.Info("im card sent", "subject", entry.ID, "message_id", messageID)
-	return nil
+	return messageID, nil
+}
+
+// fillDocLater imports the material in the background and patches the card once
+// the document URL is known. The card is sent first so the user is never
+// blocked by a three-call import.
+func (p *Poller) fillDocLater(ctx context.Context, subject card.Subject, project *card.Project, item *card.WorkItem, materialID, messageID, docURL string) {
+	if p.docs == nil || docURL != "" || materialID == "" || messageID == "" {
+		return
+	}
+
+	p.mu.Lock()
+	if p.docFilling[messageID] {
+		p.mu.Unlock()
+		return
+	}
+	p.docFilling[messageID] = true
+	p.mu.Unlock()
+
+	go func() {
+		defer func() {
+			p.mu.Lock()
+			delete(p.docFilling, messageID)
+			p.mu.Unlock()
+		}()
+		defer func() {
+			if rec := recover(); rec != nil {
+				p.logger.Error("im doc fill panicked", "panic", rec)
+			}
+		}()
+
+		url, err := p.docs.Ensure(ctx, materialID, subject.Title)
+		if err != nil {
+			p.logger.Warn("im doc import failed", "subject", subject.ID, "error", err)
+			return
+		}
+		raw, err := card.Render(subject, project, item, card.Options{DocURL: url})
+		if err != nil {
+			p.logger.Warn("im rerender with doc failed", "subject", subject.ID, "error", err)
+			return
+		}
+		if err := p.msg.PatchCard(ctx, messageID, string(raw)); err != nil {
+			p.logger.Warn("im patch with doc failed", "subject", subject.ID, "error", err)
+			return
+		}
+		p.logger.Info("im card updated with doc", "subject", subject.ID, "url", url)
+	}()
 }
 
 // inQuietHours reports whether now falls inside the configured window. A
@@ -390,10 +472,6 @@ func fallbackState(kind string) string {
 	}
 	return card.StateRequirementReview
 }
-
-// QuietHoursHours is a placeholder for the stale-hours option; the poller does
-// not need it yet, but card.Options keeps the field for the app layer.
-func (c Config) QuietHoursHours() int { return 0 }
 
 // sortedKeys is used by tests to keep failure output deterministic.
 func sortedKeys(m map[string]CardRecord) []string {

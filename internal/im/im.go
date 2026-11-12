@@ -62,6 +62,14 @@ func (r *Runtime) Client() *feishu.Client {
 	return r.client
 }
 
+// SetDocs attaches the material → document importer to the poller.
+func (r *Runtime) SetDocs(docs DocProvider) {
+	if r == nil || r.poller == nil {
+		return
+	}
+	r.poller.SetDocs(docs)
+}
+
 // SetActionHandler wires the card callback to the decision handler. It must be
 // called before Start.
 func (r *Runtime) SetActionHandler(h *ActionHandler) {

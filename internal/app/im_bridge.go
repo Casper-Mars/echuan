@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
@@ -255,4 +256,51 @@ func (a *imCards) ActionResult(ctx context.Context, idemKey string) (string, boo
 
 func (a *imCards) SaveAction(ctx context.Context, idemKey, subject, action, result string, at time.Time) error {
 	return store.PutIMActionResult(ctx, a.st.Write(), idemKey, subject, action, result, formatTimestamp(at))
+}
+
+// imMaterials reads material bodies for the document importer.
+type imMaterials struct {
+	svc *MaterialService
+}
+
+// NewIMMaterialReader exposes material bodies to the IM document importer.
+func NewIMMaterialReader(svc *MaterialService) im.MaterialReader {
+	return &imMaterials{svc: svc}
+}
+
+func (m *imMaterials) MaterialMarkdown(ctx context.Context, materialID string) (string, []byte, error) {
+	download, err := m.svc.Download(ctx, materialID)
+	if err != nil {
+		return "", nil, err
+	}
+	defer download.Content.Close()
+
+	content, err := io.ReadAll(io.LimitReader(download.Content, 20<<20))
+	if err != nil {
+		return "", nil, fmt.Errorf("app: read material %s: %w", materialID, err)
+	}
+	return download.Material.Title, content, nil
+}
+
+// imDocs caches material → document mappings.
+type imDocs struct {
+	st *store.Store
+}
+
+// NewIMDocStore exposes the im_doc table to the document importer.
+func NewIMDocStore(st *store.Store) im.DocStore { return &imDocs{st: st} }
+
+func (d *imDocs) CachedDoc(ctx context.Context, materialID string) (string, bool, error) {
+	url, err := store.GetIMDocURL(ctx, d.st.Read(), materialID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return url, true, nil
+}
+
+func (d *imDocs) SaveDoc(ctx context.Context, materialID, docToken, url string, at time.Time) error {
+	return store.PutIMDoc(ctx, d.st.Write(), materialID, docToken, url, formatTimestamp(at))
 }

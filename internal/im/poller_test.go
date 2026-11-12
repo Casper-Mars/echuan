@@ -62,19 +62,22 @@ func (f *fakeStore) Close(_ context.Context, kind, id string, at time.Time) erro
 }
 
 type fakeMessenger struct {
-	sends   []string
-	patches []string
-	nextID  int
+	sends    []string
+	patches  []string
+	payloads []string
+	nextID   int
 }
 
-func (f *fakeMessenger) SendCard(_ context.Context, _, _ string) (string, error) {
+func (f *fakeMessenger) SendCard(_ context.Context, _, cardJSON string) (string, error) {
 	f.sends = append(f.sends, "msg")
+	f.payloads = append(f.payloads, cardJSON)
 	f.nextID++
 	return "om_" + strings.Repeat("x", f.nextID), nil
 }
 
-func (f *fakeMessenger) PatchCard(_ context.Context, messageID, _ string) error {
+func (f *fakeMessenger) PatchCard(_ context.Context, messageID, cardJSON string) error {
 	f.patches = append(f.patches, messageID)
+	f.payloads = append(f.payloads, cardJSON)
 	return nil
 }
 
@@ -267,5 +270,33 @@ func TestInQuietHoursWrapsMidnight(t *testing.T) {
 		if got := p.inQuietHours(tc.at); got != tc.want {
 			t.Errorf("inQuietHours(%s) = %v, want %v", tc.at, got, tc.want)
 		}
+	}
+}
+
+type fakeDocs struct {
+	url string
+}
+
+func (f fakeDocs) Cached(context.Context, string) string { return f.url }
+func (f fakeDocs) Ensure(context.Context, string, string) (string, error) {
+	return f.url, nil
+}
+
+func TestTickLinksCachedDocument(t *testing.T) {
+	ctx := context.Background()
+	inbox := &fakeInbox{entries: []InboxEntry{projectEntry("APP-1", "requirement_review", "2026-01-01T10:00:00Z")}}
+	store := newFakeStore()
+	msg := &fakeMessenger{}
+	p := newTestPoller(t, Config{AllowedChatIDs: []string{"oc_1"}}, inbox, store, msg, testNow)
+	p.SetDocs(fakeDocs{url: "https://example.feishu.cn/docx/abc"})
+
+	if err := p.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(msg.payloads) != 1 {
+		t.Fatalf("payloads = %d, want 1", len(msg.payloads))
+	}
+	if !strings.Contains(msg.payloads[0], "看全文") {
+		t.Error("card must carry the full-text button when a document exists")
 	}
 }

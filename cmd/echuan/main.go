@@ -19,6 +19,7 @@ import (
 	"github.com/Casper-Mars/echuan/internal/api"
 	"github.com/Casper-Mars/echuan/internal/app"
 	"github.com/Casper-Mars/echuan/internal/im"
+	"github.com/Casper-Mars/echuan/internal/im/feishu"
 	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
@@ -147,6 +148,16 @@ func run() error {
 			logger,
 			nil,
 		))
+		if imCfg.DocFolderToken != "" {
+			notifier.SetDocs(im.NewDocs(
+				app.NewIMDocStore(st),
+				app.NewIMMaterialReader(materialService),
+				feishu.NewImporter(imCfg.AppID, imCfg.AppSecret, imCfg.DocFolderToken),
+				logger,
+			))
+		} else {
+			logger.Warn("im doc folder token is empty; cards will carry no full-text link")
+		}
 		notifier.SetActionHandler(im.NewActionHandler(
 			imCfg,
 			app.NewIMActionStore(st),

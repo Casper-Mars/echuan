@@ -90,16 +90,16 @@ func TestV2SchemaTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 4 {
-		t.Errorf("user_version = %d, want 4", version)
+	if version != 5 {
+		t.Errorf("user_version = %d, want 5", version)
 	}
 
 	latest, err := LatestMigrationVersion()
 	if err != nil {
 		t.Fatalf("LatestMigrationVersion: %v", err)
 	}
-	if latest != 4 {
-		t.Errorf("latest embedded migration = %d, want 4", latest)
+	if latest != 5 {
+		t.Errorf("latest embedded migration = %d, want 5", latest)
 	}
 
 	workerColumns := schemaColumns(t, st, "workers")
@@ -399,8 +399,8 @@ func TestV2SchemaRejectsNewerSchema(t *testing.T) {
 	if !errors.As(err, &versionErr) {
 		t.Fatalf("error = %v, want SchemaVersionError", err)
 	}
-	if versionErr.Database != 99 || versionErr.Binary != 4 {
-		t.Errorf("versions = %d/%d, want 99/4", versionErr.Database, versionErr.Binary)
+	if versionErr.Database != 99 || versionErr.Binary != 5 {
+		t.Errorf("versions = %d/%d, want 99/5", versionErr.Database, versionErr.Binary)
 	}
 
 	var tables int
