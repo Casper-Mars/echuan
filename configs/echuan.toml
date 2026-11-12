@@ -42,3 +42,21 @@ worker_retention = "1h"
 
 # 日志级别：debug / info / warn / error
 log_level = "info"
+
+# ---------- 飞书机器人（可选，默认关闭） ----------
+# 注意：本包的 TOML 解析器忽略 [section]，所有 key 必须扁平书写。
+# 开启后平台会内嵌长连接、卡片与文档同步；关闭时平台行为不变。
+im_enabled = false
+# 自建应用凭证；im_app_secret 建议只通过环境变量 ECHUAN_IM_APP_SECRET 注入
+im_app_id = ""
+im_app_secret = ""
+# 卡片操作白名单，逗号分隔的 chat_id（open_id 是应用维度的，不能跨应用复用）
+im_allowed_chat_ids = ""
+# 拉取待办卡片间隔
+im_poll_interval = "30s"
+# 免打扰时段，格式 HH:MM-HH:MM
+im_quiet_hours = "23:00-08:00"
+# 同时维护的卡片上限
+im_max_cards = 10
+# 材料文档落库目录；留空则启动时自动创建
+im_doc_folder_token = ""

@@ -51,6 +51,9 @@ type Config struct {
 	WorkerRetention time.Duration
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string
+	// IM is the optional Feishu bot integration. When IM.Enabled is false the
+	// platform behaves exactly as it did before the integration existed.
+	IM IMConfig
 }
 
 // DefaultConfig returns the configuration used when neither a TOML file nor
@@ -70,6 +73,7 @@ func DefaultConfig() Config {
 		WorkerMetadataMaxBytes: 8192,
 		WorkerRetention:        1 * time.Hour,
 		LogLevel:               "info",
+		IM:                     DefaultIMConfig(),
 	}
 }
 
@@ -117,6 +121,14 @@ var envKeys = map[string]string{
 	"worker_metadata_max_bytes": "ECHUAN_WORKER_METADATA_MAX_BYTES",
 	"worker_retention":          "ECHUAN_WORKER_RETENTION",
 	"log_level":                 "ECHUAN_LOG_LEVEL",
+	"im_enabled":                "ECHUAN_IM_ENABLED",
+	"im_app_id":                 "ECHUAN_IM_APP_ID",
+	"im_app_secret":             "ECHUAN_IM_APP_SECRET",
+	"im_allowed_chat_ids":       "ECHUAN_IM_CHAT_IDS",
+	"im_poll_interval":          "ECHUAN_IM_POLL_INTERVAL",
+	"im_quiet_hours":            "ECHUAN_IM_QUIET_HOURS",
+	"im_max_cards":              "ECHUAN_IM_MAX_CARDS",
+	"im_doc_folder_token":       "ECHUAN_IM_DOC_FOLDER",
 }
 
 // apply assigns raw string values onto cfg. source is only used to build
@@ -199,6 +211,9 @@ func (c *Config) set(key, raw string) error {
 	case "log_level":
 		c.LogLevel = raw
 	default:
+		if strings.HasPrefix(key, "im_") {
+			return c.setIM(key, raw)
+		}
 		// Unknown keys are ignored so that a config file written for a newer
 		// version does not break an older binary.
 	}
@@ -254,6 +269,9 @@ func (c *Config) normalize() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("log_level: must be one of debug, info, warn, error, got %q", c.LogLevel)
+	}
+	if err := c.IM.normalize(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -371,4 +389,130 @@ func stripComment(line string) string {
 		}
 	}
 	return line
+}
+
+// IMConfig is the Feishu bot integration configuration.
+//
+// The keys are flat (im_enabled, im_app_id, ...) because the TOML reader in
+// this package ignores section headers and keeps every key flat: an [im]
+// section would silently drop its keys.
+type IMConfig struct {
+	// Enabled gates the whole integration. False keeps the platform unchanged.
+	Enabled bool
+	// AppID and AppSecret identify the self-built Feishu app. AppSecret should
+	// be injected through the environment, never committed.
+	AppID     string
+	AppSecret string
+	// AllowedChatIDs is the allow-list used to authorise card actions. open_id
+	// is scoped to a single app, so the chat id is the stable identifier.
+	AllowedChatIDs []string
+	// PollInterval is how often the inbox is pulled for new cards.
+	PollInterval time.Duration
+	// QuietHours suppresses proactive cards inside the window ("23:00-08:00").
+	QuietHours string
+	// MaxCards caps how many cards are maintained at once.
+	MaxCards int
+	// DocFolderToken is the Feishu folder holding generated documents. When it
+	// is empty the runtime creates one on startup.
+	DocFolderToken string
+}
+
+// DefaultIMConfig returns the IM defaults: disabled, 30s polling.
+func DefaultIMConfig() IMConfig {
+	return IMConfig{
+		Enabled:      false,
+		PollInterval: 30 * time.Second,
+		QuietHours:   "23:00-08:00",
+		MaxCards:     10,
+	}
+}
+
+// setIM resolves a key prefixed with "im_".
+func (c *Config) setIM(key, raw string) error {
+	switch key {
+	case "im_enabled":
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("im_enabled: invalid boolean %q", raw)
+		}
+		c.IM.Enabled = v
+	case "im_app_id":
+		c.IM.AppID = raw
+	case "im_app_secret":
+		c.IM.AppSecret = raw
+	case "im_allowed_chat_ids":
+		c.IM.AllowedChatIDs = splitList(raw)
+	case "im_poll_interval":
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("im_poll_interval: invalid duration %q", raw)
+		}
+		c.IM.PollInterval = d
+	case "im_quiet_hours":
+		c.IM.QuietHours = raw
+	case "im_max_cards":
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("im_max_cards: invalid integer %q", raw)
+		}
+		c.IM.MaxCards = n
+	case "im_doc_folder_token":
+		c.IM.DocFolderToken = raw
+	}
+	return nil
+}
+
+// normalize validates the IM section only when the integration is enabled: a
+// disabled integration must never block startup because of stale values.
+func (c *IMConfig) normalize() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.AppID == "" {
+		return errors.New("im_app_id: is required when im_enabled is true")
+	}
+	if c.AppSecret == "" {
+		return errors.New("im_app_secret: is required when im_enabled is true")
+	}
+	if len(c.AllowedChatIDs) == 0 {
+		return errors.New("im_allowed_chat_ids: at least one chat id is required when im_enabled is true")
+	}
+	if c.PollInterval <= 0 {
+		return fmt.Errorf("im_poll_interval: must be positive, got %s", c.PollInterval)
+	}
+	if c.MaxCards <= 0 {
+		return fmt.Errorf("im_max_cards: must be positive, got %d", c.MaxCards)
+	}
+	if err := parseTimeOfDayRange(c.QuietHours); err != nil {
+		return fmt.Errorf("im_quiet_hours: %w", err)
+	}
+	return nil
+}
+
+// splitList splits a comma separated value and drops empty entries, so that
+// both "oc_1,oc_2" and "oc_1, oc_2" resolve to the same list.
+func splitList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// parseTimeOfDayRange validates the "HH:MM-HH:MM" quiet-hours format.
+func parseTimeOfDayRange(raw string) error {
+	start, end, ok := strings.Cut(raw, "-")
+	if !ok {
+		return fmt.Errorf(`expected "HH:MM-HH:MM", got %q`, raw)
+	}
+	if _, err := time.Parse("15:04", strings.TrimSpace(start)); err != nil {
+		return fmt.Errorf("invalid start time %q", strings.TrimSpace(start))
+	}
+	if _, err := time.Parse("15:04", strings.TrimSpace(end)); err != nil {
+		return fmt.Errorf("invalid end time %q", strings.TrimSpace(end))
+	}
+	return nil
 }
