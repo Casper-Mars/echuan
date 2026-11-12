@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -15,7 +16,10 @@ func GetIMDocURL(ctx context.Context, q Querier, materialID string) (string, err
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		return "", fmt.Errorf("store: get im doc %s: %w", materialID, rows.Err())
+		if err := rows.Err(); err != nil {
+			return "", fmt.Errorf("store: get im doc %s: %w", materialID, err)
+		}
+		return "", sql.ErrNoRows
 	}
 	var url string
 	if err := rows.Scan(&url); err != nil {
