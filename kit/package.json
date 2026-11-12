@@ -1,12 +1,13 @@
 {
   "name": "dsh-echuan",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "驿传（echuan）平台接入工具包：把平台 HTTP 契约接入 dsh（Cordis 4）Agent",
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "engines": {
     "node": ">=22.19.0",
-    "pnpm": ">=11.7.0"
+    "pnpm": ">=11.7.0",
+    "dsh": ">=0.2.1-rc.2 <0.3.0"
   },
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -36,7 +37,8 @@
     "test": "vitest run",
     "test:ci": "vitest run --reporter=verbose",
     "verify": "pnpm typecheck && pnpm test",
-    "clean": "rm -rf lib coverage"
+    "clean": "rm -rf lib coverage",
+    "compat": "bash scripts/dsh-compat.sh"
   },
   "keywords": [
     "dsh-plugin",
