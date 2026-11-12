@@ -24,3 +24,16 @@ CREATE TABLE im_card (
 );
 
 CREATE INDEX ix_im_card_open ON im_card(closed_at);
+
+-- 幂等：卡片回调会重复投递（用户连点、客户端重试），同一次点击只能生效一次。
+-- idem_key = message_id + action + 渲染时的项目 version。
+CREATE TABLE im_action_log (
+  idem_key    TEXT PRIMARY KEY,
+  subject     TEXT NOT NULL,
+  action      TEXT NOT NULL,
+  result      TEXT NOT NULL,
+  create_time TEXT NOT NULL
+);
+
+-- 回调只带 message_id，必须能反查卡片对应的待办。
+CREATE UNIQUE INDEX ux_im_card_message ON im_card(message_id);

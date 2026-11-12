@@ -19,14 +19,14 @@ type Execer interface {
 // SentAt and RenderedAt are RFC3339Nano UTC text, matching every other
 // timestamp column in this schema.
 type IMCardRow struct {
-	SubjectKind string `db:"subject_kind"`
-	SubjectID   string `db:"subject_id"`
-	ChatID      string `db:"chat_id"`
-	MessageID   string `db:"message_id"`
-	Fingerprint string `db:"fingerprint"`
-	Version     int    `db:"version"`
-	SentAt      string `db:"sent_at"`
-	RenderedAt  string `db:"rendered_at"`
+	SubjectKind string  `db:"subject_kind"`
+	SubjectID   string  `db:"subject_id"`
+	ChatID      string  `db:"chat_id"`
+	MessageID   string  `db:"message_id"`
+	Fingerprint string  `db:"fingerprint"`
+	Version     int     `db:"version"`
+	SentAt      string  `db:"sent_at"`
+	RenderedAt  string  `db:"rendered_at"`
 	ClosedAt    *string `db:"closed_at"`
 }
 
@@ -74,4 +74,18 @@ func CloseIMCard(ctx context.Context, e Execer, kind, id, at string) error {
 		return fmt.Errorf("store: close im card %s/%s: %w", kind, id, err)
 	}
 	return nil
+}
+
+const getIMCardByMessageQuery = `SELECT subject_kind, subject_id, chat_id, message_id,
+       fingerprint, version, sent_at, rendered_at, closed_at
+  FROM im_card WHERE message_id = ?`
+
+// GetIMCardByMessageID resolves the card a callback came from. The callback
+// only carries a message id, so this is the link back to the subject.
+func GetIMCardByMessageID(ctx context.Context, q Querier, messageID string) (IMCardRow, error) {
+	row, err := One[IMCardRow](ctx, q, getIMCardByMessageQuery, messageID)
+	if err != nil {
+		return IMCardRow{}, fmt.Errorf("store: get im card by message %s: %w", messageID, err)
+	}
+	return row, nil
 }

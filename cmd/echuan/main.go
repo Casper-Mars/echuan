@@ -147,6 +147,13 @@ func run() error {
 			logger,
 			nil,
 		))
+		notifier.SetActionHandler(im.NewActionHandler(
+			imCfg,
+			app.NewIMActionStore(st),
+			app.NewIMDecider(projects, workItems),
+			logger,
+			nil,
+		))
 		if err := notifier.Start(context.Background()); err != nil {
 			logger.Warn("im runtime failed to start, continuing without it", "error", err)
 		}

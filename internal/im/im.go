@@ -62,6 +62,15 @@ func (r *Runtime) Client() *feishu.Client {
 	return r.client
 }
 
+// SetActionHandler wires the card callback to the decision handler. It must be
+// called before Start.
+func (r *Runtime) SetActionHandler(h *ActionHandler) {
+	if r == nil || h == nil || r.conn == nil {
+		return
+	}
+	r.conn.SetCardHandler(h.Handle)
+}
+
 // SetPoller attaches the outbound poller. It must be called before Start.
 func (r *Runtime) SetPoller(p *Poller) {
 	if r == nil {

@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/Casper-Mars/echuan/internal/domain"
 	"github.com/Casper-Mars/echuan/internal/im"
 	"github.com/Casper-Mars/echuan/internal/im/card"
 	"github.com/Casper-Mars/echuan/internal/store"
@@ -110,6 +113,9 @@ type imCards struct {
 	st *store.Store
 }
 
+// NewIMActionStore exposes the same table to the card callback handler.
+func NewIMActionStore(st *store.Store) im.ActionStore { return &imCards{st: st} }
+
 // NewIMCardStore exposes the im_card table to the poller.
 func NewIMCardStore(st *store.Store) im.CardStore { return &imCards{st: st} }
 
@@ -161,4 +167,92 @@ func (a *imCards) Put(ctx context.Context, rec im.CardRecord) error {
 
 func (a *imCards) Close(ctx context.Context, kind, id string, at time.Time) error {
 	return store.CloseIMCard(ctx, a.st.Write(), kind, id, formatTimestamp(at))
+}
+
+// imDecider adapts the project and work-item services to im.Decider.
+type imDecider struct {
+	projects *ProjectService
+	items    *WorkItemService
+}
+
+// NewIMDecider exposes the decision paths to the card callback handler.
+func NewIMDecider(projects *ProjectService, items *WorkItemService) im.Decider {
+	return &imDecider{projects: projects, items: items}
+}
+
+func (d *imDecider) ProjectState(ctx context.Context, projectID string) (im.ProjectState, error) {
+	detail, err := d.projects.GetProject(ctx, projectID)
+	if err != nil {
+		return im.ProjectState{}, err
+	}
+	return im.ProjectState{Status: detail.Project.Status, Version: detail.Project.Version}, nil
+}
+
+func (d *imDecider) DecideProject(ctx context.Context, projectID, decision, reason, actor string, expectVersion int) error {
+	version := expectVersion
+	_, err := d.projects.Decide(ctx, DecideInput{
+		Kind:          DecideKindProject,
+		ID:            projectID,
+		Decision:      domain.Decision(decision),
+		Reason:        reason,
+		ExpectVersion: &version,
+		Actor:         actor,
+	})
+	return err
+}
+
+func (d *imDecider) ReviewPlan(ctx context.Context, projectID, decision, reason, actor string) error {
+	_, err := d.items.ReviewWorkItems(ctx, ReviewWorkItemsInput{
+		ProjectID: projectID,
+		Decision:  domain.Decision(decision),
+		Reason:    reason,
+		Actor:     actor,
+	})
+	return err
+}
+
+func (d *imDecider) DecideWorkItem(ctx context.Context, workID, decision, reason, actor string) error {
+	_, err := d.items.DecideWorkItem(ctx, WorkItemDecisionInput{
+		WorkID:   workID,
+		Decision: decision,
+		Reason:   reason,
+		Actor:    actor,
+	})
+	return err
+}
+
+func (a *imCards) CardByMessage(ctx context.Context, messageID string) (im.CardRecord, error) {
+	row, err := store.GetIMCardByMessageID(ctx, a.st.Read(), messageID)
+	if err != nil {
+		return im.CardRecord{}, err
+	}
+	rec := im.CardRecord{
+		SubjectKind: row.SubjectKind,
+		SubjectID:   row.SubjectID,
+		ChatID:      row.ChatID,
+		MessageID:   row.MessageID,
+		Fingerprint: row.Fingerprint,
+		Version:     row.Version,
+		Closed:      row.ClosedAt != nil,
+	}
+	if rec.SentAt, err = time.Parse(time.RFC3339, row.SentAt); err != nil {
+		return im.CardRecord{}, err
+	}
+	rec.RenderedAt = rec.SentAt
+	return rec, nil
+}
+
+func (a *imCards) ActionResult(ctx context.Context, idemKey string) (string, bool, error) {
+	result, err := store.GetIMActionResult(ctx, a.st.Read(), idemKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return result, true, nil
+}
+
+func (a *imCards) SaveAction(ctx context.Context, idemKey, subject, action, result string, at time.Time) error {
+	return store.PutIMActionResult(ctx, a.st.Write(), idemKey, subject, action, result, formatTimestamp(at))
 }
