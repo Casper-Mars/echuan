@@ -39,7 +39,7 @@ services:
         https_proxy: ${DOCKER_BUILD_HTTPS_PROXY:-}
         ALL_PROXY: ${DOCKER_BUILD_ALL_PROXY:-}
         all_proxy: ${DOCKER_BUILD_ALL_PROXY:-}
-    container_name: ${ECHUAN_CONTAINER_NAME:-echuan-v2}
+    container_name: ${ECHUAN_CONTAINER_NAME:-echuan}
     restart: unless-stopped
 
     # 仅本机可访问；公网入口请放在宿主机反向代理之后。
