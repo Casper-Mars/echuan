@@ -126,7 +126,7 @@ func run() error {
 	// The Feishu bot is an optional module: im.New returns nil when disabled,
 	// so a platform without IM credentials behaves exactly as before. A failure
 	// to start only degrades the card channel; the HTTP API keeps serving.
-	notifier := im.New(im.Config{
+	imCfg := im.Config{
 		Enabled:        cfg.IM.Enabled,
 		AppID:          cfg.IM.AppID,
 		AppSecret:      cfg.IM.AppSecret,
@@ -135,8 +135,18 @@ func run() error {
 		QuietHours:     cfg.IM.QuietHours,
 		MaxCards:       cfg.IM.MaxCards,
 		DocFolderToken: cfg.IM.DocFolderToken,
-	}, logger)
+	}
+	notifier := im.New(imCfg, logger)
 	if notifier != nil {
+		notifier.SetPoller(im.NewPoller(
+			imCfg,
+			app.NewIMInboxSource(inboxService),
+			app.NewIMSubjectSource(projects, workItems),
+			app.NewIMCardStore(st),
+			notifier.Client(),
+			logger,
+			nil,
+		))
 		if err := notifier.Start(context.Background()); err != nil {
 			logger.Warn("im runtime failed to start, continuing without it", "error", err)
 		}

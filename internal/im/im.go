@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Casper-Mars/echuan/internal/im/feishu"
@@ -30,8 +31,10 @@ type Runtime struct {
 	logger *slog.Logger
 	client *feishu.Client
 	conn   *feishu.Connection
+	poller *Poller
 	cancel context.CancelFunc
 	done   chan struct{}
+	wg     sync.WaitGroup
 }
 
 // New returns the runtime, or nil when the integration is disabled. Callers
@@ -59,6 +62,14 @@ func (r *Runtime) Client() *feishu.Client {
 	return r.client
 }
 
+// SetPoller attaches the outbound poller. It must be called before Start.
+func (r *Runtime) SetPoller(p *Poller) {
+	if r == nil {
+		return
+	}
+	r.poller = p
+}
+
 // Start launches the long connection and returns immediately: a slow or failed
 // connection must never delay the HTTP listener. Errors surface through the
 // lifecycle callbacks and the connection goroutine.
@@ -74,7 +85,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.cancel = cancel
 	r.done = make(chan struct{})
 
+	r.wg.Add(1)
 	go func() {
+		defer r.wg.Done()
 		defer close(r.done)
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -87,6 +100,19 @@ func (r *Runtime) Start(ctx context.Context) error {
 		}
 		r.logger.Info("im long connection stopped")
 	}()
+
+	if r.poller != nil {
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			defer func() {
+				if rec := recover(); rec != nil {
+					r.logger.Error("im poller panicked", "panic", rec)
+				}
+			}()
+			r.poller.Run(runCtx)
+		}()
+	}
 
 	r.logger.Info("im runtime starting",
 		"app_id", r.cfg.AppID,
@@ -108,13 +134,16 @@ func (r *Runtime) Close(ctx context.Context) error {
 	if r.conn != nil {
 		err = r.conn.Close(ctx)
 	}
-	if r.done != nil {
-		select {
-		case <-r.done:
-		case <-ctx.Done():
-			if err == nil {
-				err = ctx.Err()
-			}
+	waited := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+	case <-ctx.Done():
+		if err == nil {
+			err = ctx.Err()
 		}
 	}
 	r.logger.Info("im runtime stopped")
