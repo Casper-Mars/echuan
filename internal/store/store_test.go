@@ -130,8 +130,8 @@ func TestMigrateCreatesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 3 {
-		t.Errorf("user_version = %d, want 3", version)
+	if version != 4 {
+		t.Errorf("user_version = %d, want 4", version)
 	}
 
 	decisionColumns := schemaColumns(t, st, "gate_decisions")
@@ -186,8 +186,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Migrate: %v", err)
 	}
-	if applied != 3 {
-		t.Errorf("first applied = %d, want 3", applied)
+	if applied != 4 {
+		t.Errorf("first applied = %d, want 4", applied)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first: %v", err)
@@ -211,8 +211,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 3 {
-		t.Errorf("user_version = %d, want 3", version)
+	if version != 4 {
+		t.Errorf("user_version = %d, want 4", version)
 	}
 }
 
@@ -562,7 +562,7 @@ func TestMigrateRejectsNewerSchema(t *testing.T) {
 	if !errors.As(err, &sv) {
 		t.Fatalf("error = %v, want SchemaVersionError", err)
 	}
-	if sv.Database != 99 || sv.Binary != 3 {
+	if sv.Database != 99 || sv.Binary != 4 {
 		t.Errorf("versions = %d/%d, want 99/2", sv.Database, sv.Binary)
 	}
 }
@@ -687,12 +687,12 @@ func TestMigrateUpgradesV1Database(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate(upgrade): %v", err)
 	}
-	if applied != 2 {
-		t.Fatalf("upgrade applied = %d, want 2 (0002 and 0003)", applied)
+	if applied != 3 {
+		t.Fatalf("upgrade applied = %d, want 3 (0002..0004)", applied)
 	}
 	version, err := st.MigrationVersion(ctx)
-	if err != nil || version != 3 {
-		t.Fatalf("post-upgrade version = %d (%v), want 3", version, err)
+	if err != nil || version != 4 {
+		t.Fatalf("post-upgrade version = %d (%v), want 4", version, err)
 	}
 	if !schemaObjects(t, st, "table")["gate_decisions"] {
 		t.Error("gate_decisions missing after the v1 → v2 upgrade")
