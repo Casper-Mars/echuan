@@ -259,15 +259,28 @@ func (s *ProjectService) applyProjectSideEffects(ctx context.Context, tx *sql.Tx
 	enqueuer := phaseEnqueuer{now: s.now, maxAttempts: s.maxAttempts}
 
 	if decision == domain.DecisionReject {
-		// Only the requirement gate returns to a producing stage: 1→0 leaves
-		// the project in requirement_draft with nobody to pick it up, which is
-		// exactly what the rework card exists to prevent. ensure() is the whole
-		// idempotency layer: an already active requirement card (reported, or
-		// left over from a legacy draft) is kept instead of duplicated.
-		if row.Status != domain.StatusRequirementReview {
+		// Both review gates send their producing stage back to work. The card
+		// that reported the rejected artifact is requeued here, in the same
+		// transaction, so the objection reaches the worker without the human
+		// having to reject the card a second time (and without the card showing
+		// up in the inbox next to the gate it already belongs to).
+		//
+		// The requirement gate additionally ensures a card exists: 1→0 lands in
+		// requirement_draft with nobody to pick it up otherwise, and a
+		// requirement submitted through the project API owns no card at all.
+		// ensure() is the whole idempotency layer there — a requeued card is
+		// found and kept instead of duplicated.
+		switch row.Status {
+		case domain.StatusRequirementReview:
+			if err := requeuePhaseWorkItem(ctx, tx, row.ID, phaseKindRequirement, reason, s.now()); err != nil {
+				return err
+			}
+			return enqueuer.ensure(ctx, tx, row.ID, row.ProjectID, row.Title, phaseKindRequirement)
+		case domain.StatusSpecReview:
+			return requeuePhaseWorkItem(ctx, tx, row.ID, phaseKindDesign, reason, s.now())
+		default:
 			return nil
 		}
-		return enqueuer.ensure(ctx, tx, row.ID, row.ProjectID, row.Title, phaseKindRequirement)
 	}
 
 	if decision != domain.DecisionApprove {

@@ -392,3 +392,115 @@ func TestRequirementRejectConcurrentOnlyOneWins(t *testing.T) {
 		t.Errorf("rework = %q/%d, want queued/990", items[0].State, items[0].Priority)
 	}
 }
+
+// TestSpecRejectRequeuesReportedDesignCard is the 3→2 half of the same rule:
+// the design card that reported the spec is sent back to the queue with the
+// objection, so the agent reworks it without a second human verdict.
+func TestSpecRejectRequeuesReportedDesignCard(t *testing.T) {
+	f := newPhaseFixture(t)
+	ctx := context.Background()
+	detail := f.createProject(t, "方案返工", "# 需求\n\n正文\n")
+	projectID := detail.Project.ProjectID
+
+	if approved := f.approve(t, projectID); approved.Status != domain.StatusSpecDraft {
+		t.Fatalf("status = %d, want spec_draft", approved.Status)
+	}
+	_, design := f.register(t, phaseKindDesign)
+	if design == nil || design.Kind != phaseKindDesign {
+		t.Fatalf("dispatch = %+v, want the design card", design)
+	}
+	spec, _, err := f.env.service.SaveSpec(ctx, projectID, "", "agent:cto",
+		titlePtr("方案"), "# 方案\n\n正文\n", 0, false)
+	if err != nil {
+		t.Fatalf("SaveSpec: %v", err)
+	}
+	if _, err := f.report(t, design, spec.Spec.MaterialID); err != nil {
+		t.Fatalf("report design: %v", err)
+	}
+	if state := f.env.projectState(t, projectID); state.Status != domain.StatusSpecReview {
+		t.Fatalf("status after report = %d, want spec_review", state.Status)
+	}
+
+	if _, err := f.reject(t, projectID, "方案缺少接口约定"); err != nil {
+		t.Fatalf("Decide(reject): %v", err)
+	}
+	if state := f.env.projectState(t, projectID); state.Status != domain.StatusSpecDraft {
+		t.Fatalf("status after reject = %d, want spec_draft", state.Status)
+	}
+	items := f.phaseItems(t, projectID, phaseKindDesign)
+	if len(items) != 1 {
+		t.Fatalf("design items = %d, want the same single card", len(items))
+	}
+	if items[0].State != store.WorkItemStateQueued {
+		t.Errorf("design state after reject = %q, want queued", items[0].State)
+	}
+	if items[0].Reason == nil || *items[0].Reason != "方案缺少接口约定" {
+		t.Errorf("design reason = %v, want the objection", items[0].Reason)
+	}
+	if items[0].Attempt != 1 {
+		t.Errorf("design attempt = %d, want 1 (rework keeps the attempt)", items[0].Attempt)
+	}
+}
+
+// TestRequirementRejectRequeuesReportedCard pins the card-driven half of the
+// rework rule for the requirement gate, and that the card-level endpoints no
+// longer split the decision: the gate owns a submitted stage card.
+func TestRequirementRejectRequeuesReportedCard(t *testing.T) {
+	f := newPhaseFixture(t)
+	ctx := context.Background()
+	detail := f.createProject(t, "需求返工", "# 需求\n\n正文\n")
+	projectID := detail.Project.ProjectID
+
+	// Create lands in requirement_review with no card; the first reject is what
+	// enqueues the rework card.
+	if _, err := f.reject(t, projectID, "先退回一版"); err != nil {
+		t.Fatalf("first reject: %v", err)
+	}
+	_, dispatch := f.register(t, phaseKindRequirement)
+	if dispatch == nil || dispatch.Kind != phaseKindRequirement {
+		t.Fatalf("dispatch = %+v, want the requirement card", dispatch)
+	}
+	if _, err := f.report(t, dispatch, detail.Requirement.MaterialID); err != nil {
+		t.Fatalf("report requirement: %v", err)
+	}
+	if state := f.env.projectState(t, projectID); state.Status != domain.StatusRequirementReview {
+		t.Fatalf("status after report = %d, want requirement_review", state.Status)
+	}
+	reported := f.singlePhaseItem(t, projectID, phaseKindRequirement)
+	if reported.State != store.WorkItemStateSubmitted {
+		t.Fatalf("state after report = %q, want submitted", reported.State)
+	}
+
+	// A submitted stage card is not decidable on its own: approve would accept
+	// the artifact without moving the gate, reject would leave the gate waiting
+	// with the card back in the queue.
+	for _, decision := range []string{"approve", "reject"} {
+		_, err := f.work.DecideWorkItem(ctx, WorkItemDecisionInput{
+			WorkID: reported.WorkID, Decision: decision, Reason: "越权", Actor: "human:cto",
+		})
+		var invalid *domain.InvalidStateError
+		if !errors.As(err, &invalid) {
+			t.Errorf("DecideWorkItem(%s) = %v, want invalid_state", decision, err)
+		}
+	}
+
+	if _, err := f.reject(t, projectID, "补验收标准"); err != nil {
+		t.Fatalf("second reject: %v", err)
+	}
+	if state := f.env.projectState(t, projectID); state.Status != domain.StatusRequirementDraft {
+		t.Fatalf("status after reject = %d, want requirement_draft", state.Status)
+	}
+	items := f.phaseItems(t, projectID, phaseKindRequirement)
+	if len(items) != 1 {
+		t.Fatalf("requirement items = %d, want the same single card", len(items))
+	}
+	if items[0].State != store.WorkItemStateQueued {
+		t.Errorf("state after reject = %q, want queued", items[0].State)
+	}
+	if items[0].Reason == nil || *items[0].Reason != "补验收标准" {
+		t.Errorf("reason = %v, want the objection", items[0].Reason)
+	}
+	if items[0].Attempt != 1 {
+		t.Errorf("attempt = %d, want 1 (rework keeps the attempt)", items[0].Attempt)
+	}
+}

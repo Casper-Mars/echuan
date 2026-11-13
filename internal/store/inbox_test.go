@@ -269,3 +269,55 @@ func TestListInboxReason(t *testing.T) {
 		t.Errorf("second row = %+v, want P-2 with reason %q", rows[1], reason)
 	}
 }
+
+// insertInboxStageCard writes one producing-stage card (requirement / design /
+// breakdown) so the de-duplication rule can be exercised.
+func insertInboxStageCard(t *testing.T, st *Store, projectFK int64, workID, kind, state, updateTime string) {
+	t.Helper()
+	if _, err := st.Write().ExecContext(context.Background(), `
+		INSERT INTO work_items (work_id, project_id, kind, seq_no, title, body_md,
+		                        priority, state, attempt, max_attempts, reason,
+		                        version, create_time, update_time)
+		VALUES (?, ?, ?, 1, ?, 'body', 0, ?, 1, 3, NULL, 1, ?, ?)`,
+		workID, projectFK, kind, "阶段卡 "+workID, state, updateTime, updateTime); err != nil {
+		t.Fatalf("insert stage card %s: %v", workID, err)
+	}
+}
+
+// TestListInboxHidesSubmittedStageCards pins the de-duplication rule: a stage
+// card that reported its artifact is settled by its project gate, so listing it
+// would show one pending decision twice. A failed stage card stays visible (no
+// gate opened for it), and dev cards are never filtered.
+func TestListInboxHidesSubmittedStageCards(t *testing.T) {
+	st := openTestStore(t, 1)
+	productFK := seedInboxProduct(t, st)
+
+	// Gate pending: the project row is the single entry, the card is hidden.
+	gateFK := insertInboxProject(t, st, productFK, "P-GATE", 1, 1, "2026-10-01T00:00:00Z", nil)
+	insertInboxStageCard(t, st, gateFK, "W-REQ-SUBMITTED", "requirement",
+		WorkItemStateSubmitted, "2026-10-01T00:00:00Z")
+
+	// Producing stage died: no project gate exists, so the card is the signal.
+	draftFK := insertInboxProject(t, st, productFK, "P-DRAFT", 2, 0, "2026-10-02T00:00:00Z", nil)
+	insertInboxStageCard(t, st, draftFK, "W-DESIGN-FAILED", "design",
+		WorkItemStateFailed, "2026-10-02T00:00:00Z")
+
+	// A dev card is never part of the gate pair and stays listed.
+	devFK := insertInboxProject(t, st, productFK, "P-DEV", 3, 6, "2026-10-03T00:00:00Z", nil)
+	insertInboxWorkItem(t, st, devFK, "W-DEV", 1, WorkItemStateSubmitted, "2026-10-03T00:00:00Z", nil)
+
+	rows, err := ListInbox(context.Background(), st.Read(), 50)
+	if err != nil {
+		t.Fatalf("ListInbox: %v", err)
+	}
+	got := inboxIDs(rows)
+	want := []string{"P-GATE", "W-DESIGN-FAILED", "W-DEV"}
+	if len(got) != len(want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ids = %v, want %v", got, want)
+		}
+	}
+}
