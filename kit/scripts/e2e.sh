@@ -484,7 +484,7 @@ const bad = TOOL_NAMES.filter((name) => stale.includes(name))
 if (bad.length > 0) { console.error(bad.join(',')); process.exit(1) }
 console.log(TOOL_NAMES.length)
 " 2>&1)" || fail "仍存在旧工具名：$TOOL_COUNT"
-[ "$TOOL_COUNT" = "23" ] || fail "工具总数应为 23，实际 $TOOL_COUNT"
+[ "$TOOL_COUNT" = "25" ] || fail "工具总数应为 25，实际 $TOOL_COUNT"
 pass "3b/11 旧工具名已全部移除（8 个 v1 task_* 名称均不存在，共 $TOOL_COUNT 个工具）"
 
 # --- 4. 启动 dsh 并验证注册 -------------------------------------------------
