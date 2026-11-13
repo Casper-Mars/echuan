@@ -5,7 +5,7 @@
  * - 200 / 204 / 各类错误码的可读映射（保留 `code`）；
  * - 超时（含实际耗时）与网络失败；
  * - X-Actor、URL/query 编码、GET 不带 content-type；
- * - 恰好 20 个方法、与 openapi 一一对应；
+ * - 恰好 22 个方法、与 openapi 一一对应；
  * - 不读 env / 不写盘 / 不缓存；
  * - D-01 metadata 预算前置拒绝。
  */
@@ -14,6 +14,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  DELETED_MESSAGE,
   NO_WORK_MESSAGE,
   TOOL_METHODS,
   TOOL_OPERATIONS,
@@ -527,13 +528,137 @@ describe('建项：requirement_md 必填且正文原样发送', () => {
   })
 })
 
-describe('方法集合：恰好 20 个，无审批类动作', () => {
-  it('TOOL_METHODS 长度为 20，客户端对象键与之一致', () => {
+describe('产品改/删：本地不拦参数，原样透传，由平台判定（决策 D2）', () => {
+  it('updateProduct 带 product_id：不抛 EchuanValidationError，body 原样携带该键', async () => {
+    const { calls, fetchImpl } = createFetch(() =>
+      jsonResponse({ id: 'APP', product_id: 'APP', name: '新名字' }),
+    )
+    const client = createClient(config, { fetchImpl })
+
+    // 决策 D2：客户端不做本地校验——带 product_id 也必须真的发出 PATCH，
+    // 而不是在本地抛 EchuanValidationError（与仍本地拦的 updateProject 刻意不同）。
+    const result = await client.updateProduct({
+      id: 'APP',
+      product_id: 'APP',
+      name: '新名字',
+      git_url: 'git@example.com:APP.git',
+    }).catch((err: unknown) => {
+      expect(err, '客户端不应在本地拦下 product_id').not.toBeInstanceOf(EchuanValidationError)
+      throw err
+    })
+
+    expect(result.kind).toBe('ok')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.init.method).toBe('PATCH')
+
+    const url = new URL(calls[0]!.url)
+    expect(url.pathname).toBe('/v1/products')
+    expect(url.searchParams.get('id')).toBe('APP')
+    expect(headerOf(calls[0]!.init, 'content-type')).toBe('application/json')
+
+    const body = bodyOf(calls[0]!.init) as Record<string, unknown>
+    // 原样透传：product_id 既没被丢弃，也没被改写。
+    expect(Object.prototype.hasOwnProperty.call(body, 'product_id')).toBe(true)
+    expect(body).toEqual({
+      product_id: 'APP',
+      name: '新名字',
+      git_url: 'git@example.com:APP.git',
+    })
+  })
+
+  it('updateProduct 带 product_id → 平台 400：转 EchuanApiError，带 code / details[].field / requestId', async () => {
+    const { calls, fetchImpl } = createFetch(() =>
+      errorResponse(400, 'invalid_argument', 'product "APP" patch rejected', {
+        details: [{ field: 'product_id', reason: 'is immutable' }],
+        requestId: 'req-immutable',
+      }),
+    )
+    const client = createClient(config, { fetchImpl })
+
+    const err = await catchApiError(client.updateProduct({ id: 'APP', product_id: 'NEW' }))
+
+    // 平台错误不能被包成「本地校验失败」。
+    expect(err).not.toBeInstanceOf(EchuanValidationError)
+    expect(err.status).toBe(400)
+    expect(err.code).toBe('invalid_argument')
+    expect(err.details.map(detail => detail.field)).toEqual(['product_id'])
+    expect(err.details[0]!.reason).toBe('is immutable')
+    expect(err.requestId).toBe('req-immutable')
+
+    // 只有一次请求：不自动重试。
+    expect(calls).toHaveLength(1)
+    expect(bodyOf(calls[0]!.init)).toEqual({ product_id: 'NEW' })
+  })
+
+  it('deleteProduct 204：返回确定的 DeletedResult（不是「无活」），不抛错、不重试', async () => {
+    const { calls, fetchImpl } = createFetch(() =>
+      jsonResponse(null, 204, { 'x-request-id': 'req-deleted' }),
+    )
+    const client = createClient(config, { fetchImpl })
+
+    const result = await client.deleteProduct({ id: 'APP' })
+
+    expect(result.kind).toBe('deleted')
+    expect(result.status).toBe(204)
+    expect(result.message).toBe(DELETED_MESSAGE)
+    expect(result.message).toContain('已删除')
+    // 与 claim 的 204「无活」刻意不同：删除成功是终态，不是 empty。
+    expect((result.kind as string)).not.toBe('empty')
+    expect(result.requestId).toBe('req-deleted')
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.init.method).toBe('DELETE')
+    const url = new URL(calls[0]!.url)
+    expect(url.pathname).toBe('/v1/products')
+    expect(url.searchParams.get('id')).toBe('APP')
+    // DELETE 不带 body。
+    expect(calls[0]!.init.body).toBeUndefined()
+  })
+
+  it('deleteProduct 空 id：不本地拦截，仍发请求并由平台 400 回 details[].field=id', async () => {
+    const { calls, fetchImpl } = createFetch(() =>
+      errorResponse(400, 'invalid_argument', 'id is required', {
+        details: [{ field: 'id', reason: 'is required' }],
+        requestId: 'req-missing-id',
+      }),
+    )
+    const client = createClient(config, { fetchImpl })
+
+    const err = await catchApiError(client.deleteProduct({ id: '   ' }))
+
+    expect(err).not.toBeInstanceOf(EchuanValidationError)
+    expect(err.code).toBe('invalid_argument')
+    expect(err.details[0]!.field).toBe('id')
+    expect(err.requestId).toBe('req-missing-id')
+    // 请求确实发出去了（本地没有拦空 id）。
+    expect(calls).toHaveLength(1)
+  })
+
+  it('deleteProduct 409（仍有项目）：conflict 原样透出，不自动重试', async () => {
+    const { calls, fetchImpl } = createFetch(() =>
+      errorResponse(409, 'conflict', 'product "APP" still has 2 project(s)', {
+        details: [],
+        requestId: 'req-conflict',
+      }),
+    )
+    const client = createClient(config, { fetchImpl })
+
+    const err = await catchApiError(client.deleteProduct({ id: 'APP' }))
+
+    expect(err.status).toBe(409)
+    expect(err.code).toBe('conflict')
+    expect(err.requestId).toBe('req-conflict')
+    expect(calls).toHaveLength(1)
+  })
+})
+
+describe('方法集合：恰好 22 个，无审批类动作', () => {
+  it('TOOL_METHODS 长度为 22，客户端对象键与之一致', () => {
     const client = createClient(config, { fetchImpl: createFetch(() => jsonResponse({})).fetchImpl })
 
-    expect(TOOL_METHODS).toHaveLength(20)
+    expect(TOOL_METHODS).toHaveLength(22)
     expect(Object.keys(client)).toEqual([...TOOL_METHODS])
-    expect(Object.keys(client)).toHaveLength(20)
+    expect(Object.keys(client)).toHaveLength(22)
     for (const method of TOOL_METHODS) {
       expect(typeof client[method]).toBe('function')
     }
@@ -593,12 +718,12 @@ describe('与 openapi.yaml 一一对应', () => {
     return ops
   }
 
-  it('客户端用到的 20 个 operation 在 yaml 中恰好各命中一次', () => {
+  it('客户端用到的 22 条 operation 在 yaml 中恰好各命中一次', () => {
     const yaml = readFileSync(path.resolve(kitRoot, '..', 'api', 'openapi.yaml'), 'utf8')
     const ops = parseOperations(yaml)
     expect(ops.length).toBeGreaterThan(8)
 
-    expect(TOOL_OPERATIONS).toHaveLength(20)
+    expect(TOOL_OPERATIONS).toHaveLength(22)
     const matched: YamlOperation[] = []
     for (const entry of TOOL_OPERATIONS) {
       const hits = ops.filter(op => op.path === entry.path && op.method === entry.method)
@@ -607,8 +732,8 @@ describe('与 openapi.yaml 一一对应', () => {
       matched.push(hits[0]!)
     }
 
-    expect(matched).toHaveLength(20)
-    expect(new Set(matched.map(op => `${op.method} ${op.path}`)).size).toBe(20)
+    expect(matched).toHaveLength(22)
+    expect(new Set(matched.map(op => `${op.method} ${op.path}`)).size).toBe(22)
   })
 })
 

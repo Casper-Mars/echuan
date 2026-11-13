@@ -6,11 +6,11 @@
  * 直接抛 `TypeError` 让插件激活失败，而不是等到惰性 import 工具层后才变成一条 warning。
  *
  * 语义约定：
- * - `TOOL_NAMES` 始终表示**全集**（23 个 = 15 写 + 8 读），不随 `exclude` 变化；
+ * - `TOOL_NAMES` 始终表示**全集**（25 个 = 17 写 + 8 读），不随 `exclude` 变化；
  * - `exclude` 只是「本进程不注册哪些工具」，不影响工具定义与平台 HTTP 契约。
  */
 
-/** 十五个写工具的名字（顺序即向模型暴露的顺序；不含任何审批动作）。 */
+/** 十七个写工具的名字（顺序即向模型暴露的顺序；不含任何审批动作）。 */
 export const WRITE_TOOL_NAMES = [
   'echuan_work_claim',
   'echuan_work_renew',
@@ -26,6 +26,8 @@ export const WRITE_TOOL_NAMES = [
   'echuan_work_delete',
   'echuan_project_update',
   'echuan_product_create',
+  'echuan_product_update',
+  'echuan_product_delete',
   'echuan_project_package',
 ] as const
 
@@ -41,7 +43,7 @@ export const READ_TOOL_NAMES = [
   'echuan_worker_info',
 ] as const
 
-/** 全部 23 个工具名（15 写 + 8 读）。始终是全集，不受 `exclude` 影响。 */
+/** 全部 25 个工具名（17 写 + 8 读）。始终是全集，不受 `exclude` 影响。 */
 export const TOOL_NAMES = [...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES] as const
 
 /** 合法工具名的查找表（用于 O(1) 判断与错误信息）。 */

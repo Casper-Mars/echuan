@@ -2,7 +2,7 @@
  * 工具名清单与 `exclude` 校验（任务-09）。
  *
  * 这里是「唯一真源」的自检：
- * - 15 写 + 8 读 = 23，顺序与分组固定；
+ * - 17 写 + 8 读 = 25，顺序与分组固定；
  * - `TOOL_NAMES` 始终是全集，不随 `exclude` 变化；
  * - `validateExclude` 的 trim / 去重 / 空白报错 / 未知名称报错；
  * - 清单与 `createAllEchuanTools`（不传 exclude）实际产出的名字逐项一致。
@@ -28,16 +28,27 @@ function toolNames(exclude?: readonly string[]): string[] {
   return createAllEchuanTools(options).map(tool => tool.name)
 }
 
-describe('工具名清单：15 写 + 8 读 = 23', () => {
-  it('分组数量固定：23 / 15 / 8', () => {
-    expect(WRITE_TOOL_NAMES).toHaveLength(15)
+describe('工具名清单：17 写 + 8 读 = 25', () => {
+  it('分组数量固定：25 / 17 / 8', () => {
+    expect(WRITE_TOOL_NAMES).toHaveLength(17)
     expect(READ_TOOL_NAMES).toHaveLength(8)
-    expect(TOOL_NAMES).toHaveLength(23)
+    expect(TOOL_NAMES).toHaveLength(25)
   })
 
   it('全集无重复，且等于「写 + 读」的顺序拼接', () => {
-    expect(new Set(TOOL_NAMES).size).toBe(23)
+    expect(new Set(TOOL_NAMES).size).toBe(25)
     expect([...TOOL_NAMES]).toEqual([...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES])
+  })
+
+  it('两个产品写工具紧跟 echuan_product_create 之后（顺序即暴露顺序）', () => {
+    const names = [...WRITE_TOOL_NAMES]
+    const at = names.indexOf('echuan_product_create')
+    expect(at).toBeGreaterThanOrEqual(0)
+    expect(names.slice(at, at + 3)).toEqual([
+      'echuan_product_create',
+      'echuan_product_update',
+      'echuan_product_delete',
+    ])
   })
 
   it('读集合与写集合无交集', () => {
@@ -53,7 +64,7 @@ describe('工具名清单：15 写 + 8 读 = 23', () => {
     expect(toolNames(['echuan_project_create', 'echuan_plan_submit']))
       .toEqual([...TOOL_NAMES].filter(name => name !== 'echuan_project_create'
         && name !== 'echuan_plan_submit'))
-    expect(TOOL_NAMES).toHaveLength(23)
+    expect(TOOL_NAMES).toHaveLength(25)
   })
 })
 
@@ -99,7 +110,7 @@ describe('validateExclude：报错', () => {
     expect(error).toBeInstanceOf(TypeError)
     const message = (error as Error).message
     expect(message).toContain('echuan_project_create2')
-    // 合法名单以「23 个」开头并包含首尾两个真实工具名。
+    // 合法名单以「25 个」开头并包含首尾两个真实工具名。
     expect(message).toContain(`合法工具名（${TOOL_NAMES.length} 个）`)
     expect(message).toContain('echuan_work_claim')
     expect(message).toContain('echuan_material_get')

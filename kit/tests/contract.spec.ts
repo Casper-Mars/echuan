@@ -6,18 +6,18 @@
  * 多加/少加一个动作），这里必须立刻变红。
  *
  * 覆盖：
- * 1. `TOOL_OPERATIONS` 恰好 20 条，字段与白名单逐项一致（顺序也固定）；
+ * 1. `TOOL_OPERATIONS` 恰好 22 条，字段与白名单逐项一致（顺序也固定）；
  * 2. 每条 `METHOD /path` 在 yaml `paths` 段中真实存在且唯一；
  * 3. 每条 `operationId` 与 yaml 中该 method 的实际值一致；
- * 4. `TOOL_METHODS` 恰好 20 条且与 `TOOL_OPERATIONS` 顺序一一对应；
- * 5. 注册工具数 = 23（15 写 + 8 读）、名字唯一；
+ * 4. `TOOL_METHODS` 恰好 22 条且与 `TOOL_OPERATIONS` 顺序一一对应；
+ * 5. 注册工具数 = 25（17 写 + 8 读）、名字唯一，且 22 条 operation 全部被工具用到；
  * 6. worker 心跳端点 `POST /v1/workers/heartbeat`（heartbeatWorker）也在契约里；
  * 7. 物料读取返回**原始正文**：`content-type` 非 JSON 时不做 JSON 解析。
  *
  * 解析器说明（保持手写，不新增 `yaml` 依赖）
  * ------------------------------------------------
  * 本文件用「按缩进切段」的极简解析器读取 `api/openapi.yaml`，只服务于上面的
- * 20 条 operation 校验。它**假设**契约始终是下面这套固定结构：
+ * 22 条 operation 校验。它**假设**契约始终是下面这套固定结构：
  *
  * 1. 顶层键 `paths:` 独立成行（行首无缩进，冒号后为空）；
  * 2. 二级是 path 键：2 空格缩进 + `/v1/...:`（冒号后为空，不跟其他键值）；
@@ -256,7 +256,7 @@ function parseSchemaRequired(yaml: string, schemaName: string): string[] | undef
 // ---------------------------------------------------------------------------
 
 /**
- * 客户端被允许使用的 20 个 operation，**顺序即 `TOOL_OPERATIONS` 顺序**。
+ * 客户端被允许使用的 22 条 operation，**顺序即 `TOOL_OPERATIONS` 顺序**。
  *
  * 序号/内容与 `api/openapi.yaml` 的 `operationId` 完全一致；多一个、少一个、
  * 换顺序、换路径都会让下面的用例变红。
@@ -276,6 +276,8 @@ const EXPECTED_OPERATIONS = [
   { tool: 'deleteWorkItem', method: 'DELETE', path: '/v1/work-items', operationId: 'deleteWorkItem' },
   { tool: 'updateProject', method: 'PATCH', path: '/v1/projects', operationId: 'updateProject' },
   { tool: 'createProduct', method: 'POST', path: '/v1/products', operationId: 'createProduct' },
+  { tool: 'updateProduct', method: 'PATCH', path: '/v1/products', operationId: 'updateProduct' },
+  { tool: 'deleteProduct', method: 'DELETE', path: '/v1/products', operationId: 'deleteProduct' },
   {
     tool: 'downloadProjectPackage',
     method: 'GET',
@@ -314,16 +316,16 @@ function createPlatform(respond: (url: string) => Response): {
 const config = resolveConfig({ baseUrl: 'http://platform.test' })
 
 // ---------------------------------------------------------------------------
-// 1. 客户端声明的 8 个 operation
+// 1. 客户端声明的 22 条 operation
 // ---------------------------------------------------------------------------
 
-describe('契约闸门：客户端声明的 operation 恰好 20 个', () => {
+describe('契约闸门：客户端声明的 operation 恰好 22 条', () => {
   it('TOOL_OPERATIONS 与白名单逐字段一致（含顺序）', () => {
-    expect(TOOL_OPERATIONS).toHaveLength(20)
+    expect(TOOL_OPERATIONS).toHaveLength(22)
     expect(TOOL_OPERATIONS).toEqual(EXPECTED_OPERATIONS)
   })
 
-  it('operationId 序列稳定，正好是契约里的 20 个动作', () => {
+  it('operationId 序列稳定，正好是契约里的 22 个动作', () => {
     expect(TOOL_OPERATIONS.map(entry => entry.operationId)).toEqual([
       'claimWorkItem',
       'renewWorkItemLease',
@@ -339,6 +341,8 @@ describe('契约闸门：客户端声明的 operation 恰好 20 个', () => {
       'deleteWorkItem',
       'updateProject',
       'createProduct',
+      'updateProduct',
+      'deleteProduct',
       'downloadProjectPackage',
       'listInbox',
       'listOrGetProducts',
@@ -373,8 +377,8 @@ describe('契约闸门：客户端声明的 operation 恰好 20 个', () => {
     }
   })
 
-  it('TOOL_METHODS 恰好 20 条，且与 TOOL_OPERATIONS 顺序一一对应', () => {
-    expect(TOOL_METHODS).toHaveLength(20)
+  it('TOOL_METHODS 恰好 22 条，且与 TOOL_OPERATIONS 顺序一一对应', () => {
+    expect(TOOL_METHODS).toHaveLength(22)
     expect([...TOOL_METHODS]).toEqual(EXPECTED_OPERATIONS.map(entry => entry.tool))
   })
 })
@@ -383,24 +387,24 @@ describe('契约闸门：客户端声明的 operation 恰好 20 个', () => {
 // 2. 注册的工具数
 // ---------------------------------------------------------------------------
 
-describe('契约闸门：注册工具数 = 23', () => {
-  it('createAllEchuanTools 产出 23 个定义，名字唯一且与 TOOL_NAMES 一致', () => {
+describe('契约闸门：注册工具数 = 25', () => {
+  it('createAllEchuanTools 产出 25 个定义，名字唯一且与 TOOL_NAMES 一致', () => {
     const anyClient = createClient(config, { fetchImpl: async () => new Response('{}') })
     const tools = createAllEchuanTools({ client: anyClient, identity: { workerId: undefined } })
 
-    expect(tools).toHaveLength(23)
+    expect(tools).toHaveLength(25)
     expect(tools.map(tool => tool.name)).toEqual([...TOOL_NAMES])
-    expect(new Set(TOOL_NAMES).size).toBe(23)
+    expect(new Set(TOOL_NAMES).size).toBe(25)
   })
 
-  it('15 写 + 8 读的分组没变（写工具不会混进只读集合）', async () => {
+  it('17 写 + 8 读的分组没变（写工具不会混进只读集合）', async () => {
     const { READ_TOOL_NAMES, WRITE_TOOL_NAMES } = await import('../src/tools/index.js')
-    expect([...WRITE_TOOL_NAMES]).toHaveLength(15)
+    expect([...WRITE_TOOL_NAMES]).toHaveLength(17)
     expect([...READ_TOOL_NAMES]).toHaveLength(8)
     expect([...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES]).toEqual([...TOOL_NAMES])
   })
 
-  it('exclude 只裁剪本进程注册集合，契约仍以 TOOL_NAMES 全集（23）为准', () => {
+  it('exclude 只裁剪本进程注册集合，契约仍以 TOOL_NAMES 全集（25）为准', () => {
     const anyClient = createClient(config, { fetchImpl: async () => new Response('{}') })
     const exclude = ['echuan_project_create', 'echuan_plan_submit']
     const tools = createAllEchuanTools({
@@ -409,13 +413,13 @@ describe('契约闸门：注册工具数 = 23', () => {
       exclude,
     })
 
-    // 注册数 = 23 − exclude（这里只是「注册集合」的期望值，不是契约数）。
-    expect(tools).toHaveLength(21)
+    // 注册数 = 25 − exclude（这里只是「注册集合」的期望值，不是契约数）。
+    expect(tools).toHaveLength(23)
     expect(tools.map(tool => tool.name))
       .toEqual([...TOOL_NAMES].filter(name => !exclude.includes(name)))
 
-    // 契约数不随 exclude 变化：TOOL_NAMES 仍是 23，写/读分组不变。
-    expect([...TOOL_NAMES]).toHaveLength(23)
+    // 契约数不随 exclude 变化：TOOL_NAMES 仍是 25，写/读分组不变。
+    expect([...TOOL_NAMES]).toHaveLength(25)
     for (const name of exclude) {
       expect(TOOL_NAMES).toContain(name)
     }
@@ -497,9 +501,12 @@ describe('契约闸门：物料读取返回原始正文', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * 工具名 → operationId。23 个工具共用 20 个 operation：
+ * 工具名 → operationId。25 个工具共用 22 条 operation 的**全部** 22 条：
  * 项目/工作项各由一个 GET 同时承担 list 与 get；`echuan_worker_info` 零 HTTP，
  * 不映射任何 operation（值为 `undefined`）。
+ *
+ * 卡 2 已装配 `echuan_product_update` / `echuan_product_delete`，原先的跨卡临时
+ * 白名单因此删除：22 条映射被 25 个工具全部用到（无「待装配」项）。
  */
 const TOOL_TO_OPERATION = {
   echuan_work_claim: 'claimWorkItem',
@@ -516,6 +523,8 @@ const TOOL_TO_OPERATION = {
   echuan_work_delete: 'deleteWorkItem',
   echuan_project_update: 'updateProject',
   echuan_product_create: 'createProduct',
+  echuan_product_update: 'updateProduct',
+  echuan_product_delete: 'deleteProduct',
   echuan_project_package: 'downloadProjectPackage',
   echuan_inbox: 'listInbox',
   echuan_product_list: 'listOrGetProducts',
@@ -540,9 +549,9 @@ function operationIssue(yaml: string): string | undefined {
   return undefined
 }
 
-describe('契约闸门：23 个工具逐个映射到 20 个 operation', () => {
-  it('TOOL_NAMES 恰好 23 个，除零 HTTP 的 worker_info 外都映射到真实 operation', () => {
-    expect([...TOOL_NAMES]).toHaveLength(23)
+describe('契约闸门：25 个工具逐个映射到 22 条 operation 里的 22 条', () => {
+  it('TOOL_NAMES 恰好 25 个，除零 HTTP 的 worker_info 外都映射到真实 operation', () => {
+    expect([...TOOL_NAMES]).toHaveLength(25)
 
     const known = new Set(EXPECTED_OPERATIONS.map(entry => entry.operationId))
     for (const tool of TOOL_NAMES) {
@@ -560,15 +569,24 @@ describe('契约闸门：23 个工具逐个映射到 20 个 operation', () => {
     }
   })
 
-  it('list 与 get 共用同一个 operation；20 个 operation 全部被用到', () => {
+  it('list 与 get 共用同一个 operation；22 条映射全部被工具装配（无待装配项）', () => {
     expect(TOOL_TO_OPERATION.echuan_project_list).toBe(TOOL_TO_OPERATION.echuan_project_get)
     expect(TOOL_TO_OPERATION.echuan_work_list).toBe(TOOL_TO_OPERATION.echuan_work_get)
 
-    const used = new Set(Object.values(TOOL_TO_OPERATION).filter(value => value !== undefined))
-    expect(used.size).toBe(20)
-    expect([...used].sort()).toEqual(
-      EXPECTED_OPERATIONS.map(entry => entry.operationId).sort(),
-    )
+    // 工具实际用到的 operationId 集合（`echuan_worker_info` 零 HTTP，值为 undefined）。
+    const used = new Set<string>()
+    for (const operationId of Object.values(TOOL_TO_OPERATION)) {
+      if (operationId !== undefined) used.add(operationId)
+    }
+    const declared = EXPECTED_OPERATIONS.map(entry => entry.operationId)
+
+    // 没有「未被工具装配」的 operation：漏接线、客户端多声明一条都会立刻变红。
+    const pending = declared.filter(operationId => !used.has(operationId))
+    expect(pending).toEqual([])
+
+    // 逐项对齐（不是只比数量）：工具用到的正好是契约声明的 22 条。
+    expect(used.size).toBe(declared.length)
+    expect([...used].sort()).toEqual([...declared].sort())
   })
 
   it('删掉任一 operation 后闸门立即变红（含新增的 listOrGetProducts）', () => {

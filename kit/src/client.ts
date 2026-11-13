@@ -6,19 +6,20 @@
  * 2. 每个请求带 `X-Actor`，有 body 时才带 `content-type: application/json`；
  * 3. 按 `config.requestTimeoutMs` 超时，超时/网络失败都转成可读中文错误；
  * 4. 解析成功体与错误体，把平台错误码翻译成「下一步该做什么」；
- * 5. 204 = 「无活」，返回明确结果而不是抛异常。
+ * 5. 204 有两种语义：领取接口的「无活」（{@link NoWorkResult}）与删除接口的「已删除」
+ *    （{@link DeletedResult}），两者都返回明确结果而不是抛异常。
  *
  * 设计约束：
  * - 本文件是 `kit/src` 里**唯一**调用 `fetch(` 的地方；
  * - `fetchImpl` 可注入（默认 `globalThis.fetch`），单测不连真实平台；
  * - 不读环境变量、不写磁盘、不缓存响应、不存业务状态；
- * - 只暴露工具包需要的 20 个客户端方法（{@link TOOL_METHODS}），**没有任何门禁动作**
+ * - 只暴露工具包需要的 22 个客户端方法（{@link TOOL_METHODS}），**没有任何门禁动作**
  *   （accept / decide / cancel / rework / approve / reject 一律不提供）；
  * - 与 `api/openapi.yaml` 一一对应：{@link TOOL_OPERATIONS} 记录每个方法对应的
- *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 14 条确实存在。
+ *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 22 条确实存在。
  *
  * 任务-03 的 worker 注册/心跳方法由 {@link createWorkerClient} 提供，走
- * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 20 个」的断言；
+ * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 22 个」的断言；
  * 两者共用 `requestRaw` / `requestJson`，仍然是全插件唯一的 fetch 出口。
  */
 import {
@@ -114,10 +115,31 @@ export interface NoWorkResult {
 
 export type ApiResult<T> = OkResult<T> | NoWorkResult
 
-/** 204 的统一文案。 */
+/** 204「无活」的统一文案。 */
 export const NO_WORK_MESSAGE =
   '无活：平台当前没有可领取的 work item（HTTP 204）。'
   + '下一步：按退避策略稍后再试，不要把 204 当错误重试。'
+
+/**
+ * 删除成功结果（HTTP 204）：与 {@link NoWorkResult} 的「无活」**语义相反**。
+ *
+ * 领取接口的 204 表示「这次没活，按退避稍后再试」；删除接口的 204 表示
+ * 「已经删掉了，是终态成功，不要重试」（首次 204 后重放同一 DELETE 会得到 404）。
+ * 因此不复用 `ApiResult`，也不返回 `undefined`：调用方看到 `kind === 'deleted'`
+ * 就是确定的成功结果。
+ */
+export interface DeletedResult {
+  kind: 'deleted'
+  /** 平台删除成功恒为 204；非 204 的 2xx 也按终态成功透出，由调用方自行判定。 */
+  status: number
+  message: string
+  requestId?: string
+}
+
+/** 删除成功的统一文案（与 {@link NO_WORK_MESSAGE} 刻意不同：这里是终态成功）。 */
+export const DELETED_MESSAGE =
+  '已删除：平台返回 HTTP 204，资源已移除且不可恢复（同 id 重建会复用编号）。'
+  + '下一步：不要把 204 当「无活」重试——同一删除重放会得到 404。'
 
 // ---------------------------------------------------------------------------
 // 平台数据结构（只声明本工具包实际读取的字段，其余透传）
@@ -490,6 +512,30 @@ export interface CreateProductInput {
   license?: string
 }
 
+/**
+ * 修改产品入参：**全部可选**（`id` 之外）。
+ *
+ * 决策 D2：参数校验全部交平台——客户端不拦空 `id`、不拦 `product_id`、不改写字段、
+ * 不 unset 任何键；传入哪个键就原样进 PATCH body（`product_id` 会被平台以
+ * 400 `product_id: is immutable` 拒绝），`id` 只走 query `?id=`。
+ */
+export interface UpdateProductInput {
+  /** 产品编号，走 query `?id=`；空值不本地拦，由平台 400 `id is required`。 */
+  id: string
+  /** 不可改字段：传了就原样进 body，由平台 400 `is immutable`（不在本地拦）。 */
+  product_id?: string
+  name?: string
+  git_url?: string
+  description?: string
+  license?: string
+}
+
+/** 删除产品入参：只有 `id`，空值同样不本地拦（平台 400 `id is required`）。 */
+export interface DeleteProductInput {
+  /** 产品编号，走 query `?id=`。 */
+  id: string
+}
+
 export interface DownloadProjectPackageInput {
   /** 项目编号，走 query `?id=`。 */
   id: string
@@ -530,7 +576,7 @@ export interface MaterialsQuery {
   id: string
 }
 
-/** 20 个客户端方法的集合（顺序即客户端对象属性顺序）。 */
+/** 22 个客户端方法的集合（顺序即客户端对象属性顺序）。 */
 export const TOOL_METHODS = [
   'claimWorkItem',
   'renewWorkItemLease',
@@ -546,6 +592,8 @@ export const TOOL_METHODS = [
   'deleteWorkItem',
   'updateProject',
   'createProduct',
+  'updateProduct',
+  'deleteProduct',
   'downloadProjectPackage',
   'getInbox',
   'listProducts',
@@ -557,13 +605,14 @@ export const TOOL_METHODS = [
 export type ToolMethodName = (typeof TOOL_METHODS)[number]
 
 /**
- * 20 个方法 ↔ openapi operation 的对应表。
+ * 22 个方法 ↔ openapi operation 的对应表。
  *
  * `tool` 是客户端方法名；`method`/`path`/`operationId` 必须能在
  * `api/openapi.yaml` 的 `paths` 下原样找到（单测解析 yaml 校验）。
  *
- * 注意：23 个工具共用这 20 个 operation（`echuan_worker_info` 零 HTTP）——`listProjects` / `listWorkItems`
- * 各由一个 GET 同时承担「列表」与「按 id 取详情」两种工具语义。
+ * 注意：25 个工具共用这 22 条 operation 的**全部** 22 条（`echuan_worker_info` 零 HTTP）——
+ * `updateProduct` / `deleteProduct` 已由 `echuan_product_update` / `echuan_product_delete` 装配；
+ * `listProjects` / `listWorkItems` 各由一个 GET 同时承担「列表」与「按 id 取详情」两种工具语义。
  */
 export const TOOL_OPERATIONS = [
   { tool: 'claimWorkItem', method: 'POST', path: '/v1/work-items/claim', operationId: 'claimWorkItem' },
@@ -590,6 +639,8 @@ export const TOOL_OPERATIONS = [
   { tool: 'deleteWorkItem', method: 'DELETE', path: '/v1/work-items', operationId: 'deleteWorkItem' },
   { tool: 'updateProject', method: 'PATCH', path: '/v1/projects', operationId: 'updateProject' },
   { tool: 'createProduct', method: 'POST', path: '/v1/products', operationId: 'createProduct' },
+  { tool: 'updateProduct', method: 'PATCH', path: '/v1/products', operationId: 'updateProduct' },
+  { tool: 'deleteProduct', method: 'DELETE', path: '/v1/products', operationId: 'deleteProduct' },
   {
     tool: 'downloadProjectPackage',
     method: 'GET',
@@ -603,7 +654,7 @@ export const TOOL_OPERATIONS = [
   { tool: 'getMaterials', method: 'GET', path: '/v1/materials', operationId: 'downloadMaterial' },
 ] as const
 
-/** 客户端对外的 20 个方法。 */
+/** 客户端对外的 22 个方法。 */
 export interface EchuanClient {
   /**
    * `POST /v1/work-items/claim`（operationId `claimWorkItem`）。
@@ -636,6 +687,20 @@ export interface EchuanClient {
   updateProject(input: UpdateProjectInput): Promise<ApiResult<Project>>
   /** `POST /v1/products`（operationId `createProduct`）。 */
   createProduct(input: CreateProductInput): Promise<ApiResult<Product>>
+  /**
+   * `PATCH /v1/products?id=`（operationId `updateProduct`）。
+   *
+   * 不做本地参数校验（决策 D2）：传入的键原样进 body，`product_id` 由平台
+   * 400 `is immutable` 拒绝；空 `id` 由平台 400 `id is required`。
+   */
+  updateProduct(input: UpdateProductInput): Promise<ApiResult<Product>>
+  /**
+   * `DELETE /v1/products?id=`（operationId `deleteProduct`）。
+   *
+   * 成功是 204，返回 {@link DeletedResult}（**不是**「无活」的 {@link NoWorkResult}，
+   * 也不返回 `undefined`）；非 2xx 仍抛 `EchuanApiError`，不自动重试。
+   */
+  deleteProduct(input: DeleteProductInput): Promise<DeletedResult>
   /** `GET /v1/projects/package?id=`（operationId `downloadProjectPackage`）；返回 zip 字节。 */
   downloadProjectPackage(input: DownloadProjectPackageInput): Promise<BytesResponse>
   /** `GET /v1/inbox`（operationId `listInbox`）。 */
@@ -701,7 +766,7 @@ export interface WorkerHeartbeatPayload {
   [key: string]: unknown
 }
 
-/** worker 心跳客户端；与 20 个客户端方法分开，避免污染 `TOOL_METHODS`。 */
+/** worker 心跳客户端；与 22 个客户端方法分开，避免污染 `TOOL_METHODS`。 */
 export interface WorkerClient {
   /** `POST /v1/workers/heartbeat`（operationId `heartbeatWorker`）。 */
   heartbeat(input: WorkerHeartbeatInput): Promise<ApiResult<WorkerHeartbeatPayload>>
@@ -905,7 +970,7 @@ export async function requestJson<T>(
 // ---------------------------------------------------------------------------
 
 /**
- * 创建客户端。返回对象**恰好**有 {@link TOOL_METHODS} 里的 20 个方法。
+ * 创建客户端。返回对象**恰好**有 {@link TOOL_METHODS} 里的 22 个方法。
  *
  * @param config 已归一化的配置（见 `resolveConfig`）
  * @param options `fetchImpl` 可注入，单测用假 fetch
@@ -1116,6 +1181,34 @@ export function createClient(
       })
     },
 
+    async updateProduct(input) {
+      // 决策 D2：不本地校验、不改写字段——传入的键原样进 body（`product_id` 不拦、不 unset），
+      // `id` 只走 query。空 `id` / 不可变 `product_id` 一律由平台 400 判定。
+      const body: Record<string, unknown> = {}
+      if (input?.product_id !== undefined) body.product_id = input.product_id
+      if (input?.name !== undefined) body.name = input.name
+      if (input?.git_url !== undefined) body.git_url = input.git_url
+      if (input?.description !== undefined) body.description = input.description
+      if (input?.license !== undefined) body.license = input.license
+      return requestJson<Product>(ctx, {
+        method: 'PATCH',
+        path: '/v1/products',
+        query: { id: input?.id },
+        body,
+      })
+    },
+
+    async deleteProduct(input) {
+      // 删除成功是 204：不能用 requestJson（那会把 204 转成「无活」的 NoWorkResult），
+      // 这里走 requestRaw 并返回确定结果 DeletedResult；非 2xx 仍由 requestRaw 转 EchuanApiError。
+      const raw = await requestRaw(ctx, {
+        method: 'DELETE',
+        path: '/v1/products',
+        query: { id: input?.id },
+      })
+      return deletedResult(raw.status, raw.requestId)
+    },
+
     async downloadProjectPackage(input) {
       const id = requireNonEmpty(input?.id, 'id')
       return requestBytes(ctx, {
@@ -1183,7 +1276,7 @@ export function createClient(
 /**
  * 创建 worker 心跳客户端。
  *
- * 与 {@link createClient} 分开：20 个客户端方法的对象键必须**恰好**是
+ * 与 {@link createClient} 分开：22 个客户端方法的对象键必须**恰好**是
  * {@link TOOL_METHODS}（任务-02 有断言），worker 心跳走独立命名空间。
  *
  * 首次注册时请求体里**没有** `worker_id` 键（不是空串、不是 null）；
@@ -1371,6 +1464,12 @@ function emptyResult(requestId: string | undefined): NoWorkResult {
   return requestId === undefined
     ? { kind: 'empty', status: 204, message: NO_WORK_MESSAGE }
     : { kind: 'empty', status: 204, message: NO_WORK_MESSAGE, requestId }
+}
+
+function deletedResult(status: number, requestId: string | undefined): DeletedResult {
+  return requestId === undefined
+    ? { kind: 'deleted', status, message: DELETED_MESSAGE }
+    : { kind: 'deleted', status, message: DELETED_MESSAGE, requestId }
 }
 
 function okResult<T>(status: number, data: T, requestId: string | undefined): OkResult<T> {

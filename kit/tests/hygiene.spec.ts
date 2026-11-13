@@ -9,11 +9,11 @@
  *    一个文件都不允许导入 —— 会话 cwd 就是工作区根目录，不再 create 目录；`config.ts` 不读
  *    `process.env`。模块导入检查同时覆盖单/双引号与 `import(...)` 动态导入形式。
  * 2. 运行时级：把 `globalThis.fetch` 换成一被调用就抛错的哨兵，再跑
- *    ① 23 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
+ *    ① 25 个工具的完整链路 ② worker 心跳链路 → 哨兵必须 0 次调用。
  * 3. 运行时级：用 `vi.mock('node:fs', { spy: true })` 把 `node:fs` 的导出换成
  *    会记账的 spy（具名导入的 `import { writeFileSync }` 也能拦到），跑两轮
  *    worker 心跳 → 0 次写文件（worker_id 只在内存）。监视器先做一次自证
- *    （真的能抓到写入），避免「spy 没挂上」导致的假绿。23 个工具链路里只有
+ *    （真的能抓到写入），避免「spy 没挂上」导致的假绿。25 个工具链路里只有
  *    `echuan_project_package` 允许写 1 次 tmpdir，且失败时 unlink。
  */
 import * as fs from 'node:fs'
@@ -426,6 +426,20 @@ const respondByPath = (call: RecordedCall): Response => {
       if (call.method === 'POST') {
         return json({ product_id: 'APPX', name: '示例产品', git_url: 'git@example.com:APPX.git' })
       }
+      if (call.method === 'PATCH') {
+        return json({
+          product_id: 'APP',
+          name: 'APP 产品',
+          git_url: 'git@example.com:APP.git',
+          description: '平台回包描述',
+          license: 'MIT',
+          project_count: 2,
+          update_time: '2026-11-13T08:00:00.000Z',
+        })
+      }
+      if (call.method === 'DELETE') {
+        return new Response(null, { status: 204 })
+      }
       return json({ items: [] })
     case '/v1/projects':
       if (call.method === 'POST') {
@@ -591,7 +605,7 @@ function createFakeTimer(): FakeTimer {
   }
 }
 
-/** 跑完 23 个工具的完整调用链（`echuan_worker_info` 零 HTTP），返回 package 落盘路径。 */
+/** 跑完 25 个工具的完整调用链（`echuan_worker_info` 零 HTTP），返回 package 落盘路径。 */
 async function runWholeToolChain(fetchImpl: FetchLike): Promise<string[]> {
   const options: EchuanToolOptions = {
     client: createClient(config, { fetchImpl }),
@@ -628,6 +642,8 @@ async function runWholeToolChain(fetchImpl: FetchLike): Promise<string[]> {
       name: '示例产品',
       git_url: 'git@example.com:APPX.git',
     }],
+    ['echuan_product_update', { id: 'APP', description: '新描述' }],
+    ['echuan_product_delete', { id: 'APPX' }],
     ['echuan_project_package', { project_id: 'APP-2' }],
     ['echuan_inbox', { limit: 5 }],
     ['echuan_product_list', { limit: 5 }],
@@ -727,7 +743,7 @@ function installFetchSentinel(): Sentinel {
 }
 
 describe('运行时级：不触达真实 fetch', () => {
-  it('23 个工具完整链路：哨兵 0 次调用，假平台收到 22 个请求（worker_info 零 HTTP）', async () => {
+  it('25 个工具完整链路：哨兵 0 次调用，假平台收到 24 个请求（worker_info 零 HTTP）', async () => {
     const platform = createPlatform(respondByPath)
     const sentinel = installFetchSentinel()
     const savedPaths: string[] = []
@@ -739,7 +755,7 @@ describe('运行时级：不触达真实 fetch', () => {
       for (const saved of savedPaths) fs.unlinkSync(saved)
     }
 
-    expect(platform.calls).toHaveLength(22)
+    expect(platform.calls).toHaveLength(24)
   })
 
   it('worker 心跳两轮（含派单投递）：哨兵 0 次调用', async () => {
@@ -797,7 +813,7 @@ describe('运行时级：不写盘', () => {
     expect(JSON.parse(secondBody)['worker_id']).toBe('w_TEST01ABCDEFGHIJKLMN')
   })
 
-  it('23 个工具完整链路：只有资料包写 1 次 tmpdir，其余 0 次写盘', async () => {
+  it('25 个工具完整链路：只有资料包写 1 次 tmpdir，其余 0 次写盘', async () => {
     const spies = writeSpies()
     const platform = createPlatform(respondByPath)
 
@@ -813,7 +829,7 @@ describe('运行时级：不写盘', () => {
       // flag 必须是 wx（不覆盖已有文件）。
       expect((writeCalls[0]![2] as { flag?: string } | undefined)?.flag).toBe('wx')
       for (const spy of spies.slice(1)) expect(spy.mock.calls).toEqual([])
-      expect(platform.calls).toHaveLength(22)
+      expect(platform.calls).toHaveLength(24)
     } finally {
       for (const saved of savedPaths) fs.unlinkSync(saved)
     }

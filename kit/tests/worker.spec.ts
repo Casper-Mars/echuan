@@ -886,8 +886,8 @@ describe('开关与卸载', () => {
 // ---------------------------------------------------------------------------
 
 describe('客户端与源码约束', () => {
-  it('worker 心跳走独立客户端，TOOL_METHODS 恰好 20 个', () => {
-    expect(TOOL_METHODS).toHaveLength(20)
+  it('worker 心跳走独立客户端，TOOL_METHODS 恰好 22 个', () => {
+    expect(TOOL_METHODS).toHaveLength(22)
   })
 
   it('kit/src 不含任何磁盘写入调用', () => {

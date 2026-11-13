@@ -1,9 +1,10 @@
 /**
- * 五个辅助写工具：work item 增 / 改 / 删、项目改标题、产品创建。
+ * 七个辅助写工具：work item 增 / 改 / 删、项目改标题、产品建 / 改 / 删。
  *
  * 边界（硬约束）：
- * - **没有**审批 / 决策 / 取消动作：只做「建卡、改卡、删卡、改标题、建产品」；
- * - 入参在本地先校验，不合法直接 {@link EchuanValidationError}，**零请求**；
+ * - **没有**审批 / 决策 / 取消动作：只做「建卡、改卡、删卡、改标题、建/改/删产品」；
+ * - 参数校验一律交平台（决策 D2）：产品改 / 删两个工具**不写任何本地守卫**，
+ *   也不在参数 schema 里声明 `required`（框架会拦，那仍是工具侧拦截）；
  * - 不自动重试；平台 400 / 404 / 409 原样透出（含 `details` 的字段原因）；
  * - 不落盘、不缓存。
  */
@@ -11,6 +12,7 @@ import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type {
   CreateProductInput,
   CreateWorkItemInput,
+  UpdateProductInput,
   UpdateProjectInput,
   UpdateWorkItemInput,
   WorkItemDetail,
@@ -70,6 +72,29 @@ export interface ProductCreatedValue {
   product_id: string
   name: string
   git_url: string
+}
+
+/**
+ * 改产品的输出（决策 D4：字段值一律取平台回包，不回声入参）。
+ *
+ * `product_id` 由回包给出；回包连 `product_id` / `id` 都没带时才退回 query 里的
+ * 编号，避免渲染缺主键（正常 200 回包两个字段都在）。
+ */
+export interface ProductUpdatedValue {
+  kind: 'product_updated'
+  product_id: string
+  name?: string
+  git_url?: string
+  description?: string
+  license?: string
+  project_count?: number
+  update_time?: string
+}
+
+/** 删产品的输出：平台 204 没有回包体，编号只能来自本次调用。 */
+export interface ProductDeletedValue {
+  kind: 'product_deleted'
+  product_id: string
 }
 
 /* ------------------------------------------------------------------ *
@@ -139,6 +164,68 @@ const productCreatedSchema = {
     git_url: { type: 'string', required: true },
   },
 } as const
+
+const productUpdatedSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    kind: { type: 'string', const: 'product_updated', required: true },
+    product_id: { type: 'string', required: true },
+    name: optionalString,
+    git_url: optionalString,
+    description: optionalString,
+    license: optionalString,
+    project_count: optionalInteger,
+    update_time: optionalString,
+  },
+} as const
+
+const productDeletedSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    kind: { type: 'string', const: 'product_deleted', required: true },
+    product_id: { type: 'string', required: true },
+  },
+} as const
+
+/* ------------------------------------------------------------------ *
+ * 产品的「四字段恒在」body 组装（决策 D2 / D3）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 产品 PATCH 恒含的四个可改字段（顺序即 body 组装顺序）。
+ *
+ * 决策 D3：一次 PATCH 全量提交四字段，**缺参补 `''`**——空即清空
+ * （`description` / `license`）/ 由平台 400（`name` / `git_url`）。
+ */
+const PRODUCT_PATCH_FIELDS = ['name', 'git_url', 'description', 'license'] as const
+
+/** 取字符串参数；缺失或非字符串一律按 `''`（未传即空，不本地拦）。 */
+function asPatchText(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+/**
+ * 组装产品 PATCH 入参（决策 D2 / D3，**不做任何本地校验**）。
+ *
+ * - 四字段缺失补 `''` 后**无条件**进 body，不存在「只发部分字段」的路径；
+ * - 标识 `id` 只走 query；
+ * - 其余未声明键（例如调用方误传的 `product_id`）原样交给客户端，由平台 400
+ *   `product_id is immutable` 拒绝，工具层不拦、不改写。
+ *   （客户端 `updateProduct` 只按契约字段拼 body，`product_id` 是其中显式支持的一个，
+ *   所以契约外的键不会混进请求体，也不会让工具在本地报错。）
+ */
+function productPatchInput(raw: Record<string, unknown>): UpdateProductInput {
+  const body: Record<string, unknown> = {}
+  for (const field of PRODUCT_PATCH_FIELDS) body[field] = asPatchText(raw[field])
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === 'id') continue
+    if ((PRODUCT_PATCH_FIELDS as readonly string[]).includes(key)) continue
+    body[key] = value
+  }
+  return { id: asPatchText(raw['id']), ...body } as UpdateProductInput
+}
 
 /* ------------------------------------------------------------------ *
  * 本地校验
@@ -262,6 +349,29 @@ export function renderProductCreated(value: ProductCreatedValue): TextContent[] 
     `- 名称：${value.name}`,
     `- 仓库：${value.git_url}`,
     '下一步：用 `echuan_project_create` 带该 product_id 建项目。',
+  ].join('\n'))]
+}
+
+/** 渲染改产品结果：只陈述平台回包值（决策 D4，不回声入参）。 */
+export function renderProductUpdated(value: ProductUpdatedValue): TextContent[] {
+  return [textBlock([
+    `✅ 产品已修改：${value.product_id}`,
+    ...(value.name === undefined ? [] : [`- 名称：${value.name}`]),
+    ...(value.git_url === undefined ? [] : [`- 仓库：${value.git_url}`]),
+    ...(value.description === undefined ? [] : [`- 描述：${value.description}`]),
+    ...(value.license === undefined ? [] : [`- 许可：${value.license}`]),
+    ...(value.project_count === undefined ? [] : [`- 项目数：${value.project_count}`]),
+    ...(value.update_time === undefined ? [] : [`- 更新时间：${value.update_time}`]),
+    '下一步：以上均为平台回包值；下次要保留某字段，请先用 `echuan_product_list` 读回现值再一起传'
+      + '（缺参按空提交，会被清空或由平台 400）。',
+  ].join('\n'))]
+}
+
+/** 渲染删产品结果：204 是终态成功，不是「无活」。 */
+export function renderProductDeleted(value: ProductDeletedValue): TextContent[] {
+  return [textBlock([
+    `✅ 产品已删除：${value.product_id}（HTTP 204，已移除且不可恢复）`,
+    '下一步：用 `echuan_product_list` 确认已查不到；同一删除重放会得到 404，不要当失败重试。',
   ].join('\n'))]
 }
 
@@ -535,6 +645,132 @@ export function createProductCreateTool(options: EchuanToolOptions): ToolDefinit
           name: asString(detail.name) ?? input.name,
           git_url: asString(detail.git_url) ?? input.git_url,
         }
+      } catch (err) {
+        return toToolError(err)
+      }
+    },
+  })
+}
+
+/**
+ * `echuan_product_update`：一次 PATCH 全量提交四个可改字段（决策 D3）。
+ *
+ * 边界（决策 D2 / D4）：
+ * - 参数**一律不声明 `required`**、不写本地校验守卫：空值 / 不可变 `product_id` 全交平台；
+ * - 输出字段值只取平台回包，不回声入参；
+ * - 平台 400 / 404 / 413 / 429 / 5xx 原样透出（含 `details[].field/reason`），不自动重试。
+ */
+export function createProductUpdateTool(options: EchuanToolOptions): ToolDefinition {
+  const { client } = options
+
+  return defineTool({
+    name: 'echuan_product_update',
+    description:
+      '整体修改驿传（echuan）产品（PATCH /v1/products?id=），一次提交 name / git_url / '
+      + 'description / license。product_id 不可修改：工具不提供该入参（产品编号用 id 传入，'
+      + '只走 query `?id=`），误传会被平台 400 `product_id is immutable` 拒绝。'
+      + '缺参或空串一律按空提交：description / license 传空即清空，name / git_url 为空会被平台 400；'
+      + '要保留原值请先 `echuan_product_list` 读回现值再一起传。'
+      + '参数合法性由平台判定，本工具不做本地校验。'
+      + '改 git_url 会影响已有项目按该地址的引用（项目归属 product_id 不变）。',
+    parameters: {
+      id: {
+        type: 'string',
+        description: '产品编号（走 query `?id=`；缺省或空白由平台 400 `id is required`）',
+      },
+      name: {
+        type: 'string',
+        description: '产品名称（可选；缺参或空串按空提交，由平台 400 `name is required`）',
+      },
+      git_url: {
+        type: 'string',
+        description: '代码仓库地址（可选；缺参或空串按空提交，由平台 400 `git_url is required`）',
+      },
+      description: { type: 'string', description: '产品描述（可选；缺参或空串即清空）' },
+      license: { type: 'string', description: '许可证（可选；缺参或空串即清空）' },
+    },
+    output: {
+      schema: productUpdatedSchema,
+      render: (_args, value) => renderProductUpdated(value),
+    },
+    async execute(args) {
+      try {
+        const input = productPatchInput({ ...(args as unknown as Record<string, unknown>) })
+        const result = await client.updateProduct(input)
+        if (result.kind === 'empty') {
+          throw new EchuanValidationError(
+            '平台对改产品返回 204（无内容），没有回包可核对。'
+              + '下一步：先用 `echuan_product_list` 确认现状，不要原样重试。',
+            'unexpected_empty',
+            'product',
+          )
+        }
+        const detail = result.data
+        const name = asString(detail.name)
+        const gitUrl = asString(detail.git_url)
+        const description = asString(detail.description)
+        const license = asString(detail.license)
+        const projectCount = asNumber(detail.project_count)
+        const updateTime = asString(detail.update_time)
+        return {
+          kind: 'product_updated' as const,
+          // D4：取回包；回包两个编号字段都缺时才退回 query 里的编号，只为渲染不缺主键。
+          product_id: asString(detail.product_id) ?? asString(detail.id) ?? input.id,
+          ...(name === undefined ? {} : { name }),
+          ...(gitUrl === undefined ? {} : { git_url: gitUrl }),
+          ...(description === undefined ? {} : { description }),
+          ...(license === undefined ? {} : { license }),
+          ...(projectCount === undefined ? {} : { project_count: projectCount }),
+          ...(updateTime === undefined ? {} : { update_time: updateTime }),
+        }
+      } catch (err) {
+        return toToolError(err)
+      }
+    },
+  })
+}
+
+/**
+ * `echuan_product_delete`：删一个没有项目的产品。
+ *
+ * 边界：
+ * - 参数不声明 `required`、不写本地守卫：空编号由平台 400 `id is required`；
+ * - 204 之外的 2xx（`DeletedResult.status !== 204`）按 `invalid_response` 报事实，不当成功；
+ * - 409（仍有项目）**原样透出**，不强删、不兜底；404 表示不存在或已删除。
+ */
+export function createProductDeleteTool(options: EchuanToolOptions): ToolDefinition {
+  const { client } = options
+
+  return defineTool({
+    name: 'echuan_product_delete',
+    description:
+      '删除一个没有项目的驿传产品（DELETE /v1/products?id=）。'
+      + '删除不可恢复，且同 id（product_id）重建会复用编号；产品仍有项目时平台 409，'
+      + '本工具不会强删，请先处理项目。'
+      + '产品编号用 id 传入（只走 query `?id=`）；参数由平台校验，本工具不做本地校验。',
+    parameters: {
+      id: {
+        type: 'string',
+        description: '产品编号（走 query `?id=`；缺省或空白由平台 400 `id is required`）',
+      },
+    },
+    output: {
+      schema: productDeletedSchema,
+      render: (_args, value) => renderProductDeleted(value),
+    },
+    async execute(args) {
+      try {
+        const productId = asPatchText((args as unknown as Record<string, unknown>)['id'])
+        const result = await client.deleteProduct({ id: productId })
+        if (result.status !== 204) {
+          throw new EchuanValidationError(
+            `平台对删产品返回 ${result.status}（预期 204），没有可核对的删除结果。`
+              + '下一步：先用 `echuan_product_list` 确认产品是否还在，不要原样重试。',
+            'invalid_response',
+            'product',
+          )
+        }
+        return { kind: 'product_deleted' as const, product_id: productId }
       } catch (err) {
         return toToolError(err)
       }
