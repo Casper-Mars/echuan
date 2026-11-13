@@ -2,7 +2,7 @@
  * 工具 → 端点逐项连线（任务-08 B）。
  *
  * 已有测试证明了「工具有什么行为」（render / 错误文案 / 缺参），这里补的是
- * **线怎么接**：23 个工具里 22 个必须各产生**恰好一条**请求（`echuan_worker_info`
+ * **线怎么接**：25 个工具里 24 个必须各产生**恰好一条**请求（`echuan_worker_info`
  * 零 HTTP），method / path / query 键 /
  * body 键与契约表一致；只读工具一律 GET 且无 body；写工具里除资料包下载
  * （GET 二进制）外一律不发 GET（方案修订是 PATCH，且 `If-Match` 走请求头）。
@@ -76,7 +76,7 @@ const CLAIM_PAYLOAD = {
   },
 }
 
-/** 按路径回包，让 22 个会发请求的工具能在同一条链路上跑完。 */
+/** 按路径回包，让 24 个会发请求的工具能在同一条链路上跑完。 */
 const respondByPath: Responder = (call) => {
   switch (call.url.pathname) {
     case '/v1/work-items/claim':
@@ -99,6 +99,20 @@ const respondByPath: Responder = (call) => {
           name: '示例产品',
           git_url: 'git@example.com:APPX.git',
         })
+      }
+      if (call.method === 'PATCH') {
+        return json({
+          product_id: 'APP',
+          name: 'APP 产品',
+          git_url: 'git@example.com:APP.git',
+          description: '平台回包描述',
+          license: 'MIT',
+          project_count: 2,
+          update_time: '2026-11-13T08:00:00.000Z',
+        })
+      }
+      if (call.method === 'DELETE') {
+        return new Response(null, { status: 204 })
       }
       return json({ items: [] })
     case '/v1/projects':
@@ -261,7 +275,7 @@ function bodyKeys(call: RecordedCall): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// 1. 逐项连线：22 个会发请求的工具，每个恰好一条请求
+// 1. 逐项连线：24 个会发请求的工具，每个恰好一条请求
 // ---------------------------------------------------------------------------
 
 interface WiringCase {
@@ -415,6 +429,23 @@ const WIRING_CASES: WiringCase[] = [
     path: '/v1/products',
     query: {},
     bodyKeys: ['git_url', 'name', 'product_id'],
+  },
+  {
+    name: 'echuan_product_update',
+    // 标识走 id；四个可改字段只给 description，验证「缺参补空串、body 恒含四键」。
+    args: { id: 'APP', description: '新描述' },
+    method: 'PATCH',
+    path: '/v1/products',
+    query: { id: 'APP' },
+    bodyKeys: ['description', 'git_url', 'license', 'name'],
+  },
+  {
+    name: 'echuan_product_delete',
+    args: { id: 'APPX' },
+    method: 'DELETE',
+    path: '/v1/products',
+    query: { id: 'APPX' },
+    bodyKeys: [],
   },
   {
     name: 'echuan_project_package',
@@ -592,11 +623,13 @@ const WRITE_TOOLS = [
   'echuan_work_delete',
   'echuan_project_update',
   'echuan_product_create',
+  'echuan_product_update',
+  'echuan_product_delete',
   'echuan_project_package',
 ]
 
 /**
- * 把 23 个工具都调用一遍，返回全部请求（用于方向性断言）。
+ * 把 25 个工具都调用一遍，返回全部请求（用于方向性断言）。
  *
  * `echuan_worker_info` 零 HTTP，调用它不会产生请求。
  */
@@ -630,7 +663,7 @@ describe('工具接线：方向性约束', () => {
     }
   })
 
-  it('15 个写工具里除资料包下载外都不是 GET（PATCH 3 个、DELETE 1 个）', async () => {
+  it('17 个写工具里除资料包下载外都不是 GET（PATCH 4 个、DELETE 2 个）', async () => {
     const platform = createPlatform(respondByPath)
     const tools = toolsFor(platform.fetchImpl)
 
@@ -643,7 +676,7 @@ describe('工具接线：方向性约束', () => {
       }
     }
 
-    expect(platform.calls).toHaveLength(15)
+    expect(platform.calls).toHaveLength(17)
     const downloadCalls = platform.calls.filter(request => request.url.pathname === '/v1/projects/package')
     expect(downloadCalls).toHaveLength(1)
     expect(downloadCalls[0]!.method).toBe('GET')
@@ -651,22 +684,23 @@ describe('工具接线：方向性约束', () => {
       if (request.url.pathname === '/v1/projects/package') continue
       expect(request.method).not.toBe('GET')
     }
-    expect(platform.calls.filter(request => request.method === 'PATCH')).toHaveLength(3)
-    expect(platform.calls.filter(request => request.method === 'DELETE')).toHaveLength(1)
+    expect(platform.calls.filter(request => request.method === 'PATCH')).toHaveLength(4)
+    expect(platform.calls.filter(request => request.method === 'DELETE')).toHaveLength(2)
   })
 
   /**
-   * 22 条客户端 operation 里 `updateProduct` / `deleteProduct` 还没有工具装配
-   * （卡 2 的范围，见 contract.spec.ts 的 PENDING_TOOL_WIRING），因此本轮 23 个工具
-   * 只覆盖 20 个不同端点；卡 2 装配后这里应变为 22 个端点并补两行清单。
+   * 25 个工具跑完一共 24 个请求（`echuan_worker_info` 零 HTTP），method+path 去重后
+   * 正好覆盖客户端声明的 22 条 operation：`updateProduct` / `deleteProduct` 已在卡 2
+   * 装配，因此不再有「待装配」的端点。
    */
-  it('23 个工具跑完一共 22 个请求（worker_info 零 HTTP），共用 20 个 operation', async () => {
+  it('25 个工具跑完一共 24 个请求（worker_info 零 HTTP），共用 22 个 operation', async () => {
     const calls = await runWholeChain()
 
-    expect(calls).toHaveLength(22)
+    expect(calls).toHaveLength(24)
     const endpoints = calls.map(request => `${request.method} ${request.url.pathname}`)
-    expect(new Set(endpoints).size).toBe(20)
+    expect(new Set(endpoints).size).toBe(22)
     expect([...endpoints].sort()).toEqual([
+      'DELETE /v1/products',
       'DELETE /v1/work-items',
       'GET /v1/inbox',
       'GET /v1/materials',
@@ -676,6 +710,7 @@ describe('工具接线：方向性约束', () => {
       'GET /v1/projects/package',
       'GET /v1/work-items',
       'GET /v1/work-items',
+      'PATCH /v1/products',
       'PATCH /v1/projects',
       'PATCH /v1/specs',
       'PATCH /v1/work-items',

@@ -3,7 +3,7 @@
  * 项目全景 / 工作项详情 / 资料正文 / worker 诊断。
  *
  * 全部用假平台（注入 fetch），不连真实平台。覆盖：
- * 1. 23 个工具名（15 写 + 8 读），只读 8 个名字精确匹配；
+ * 1. 25 个工具名（17 写 + 8 读），只读 8 个名字精确匹配；
  * 2. inbox 的汇总、停留时长人话、超时标记、reason 为 null 显示「无」；
  * 3. project 的需求摘要（截断标注）、方案标题/版本、任务统计数字、reason；
  * 4. task 的 attempt_count/max_attempts、报告、reason、正文；
@@ -238,10 +238,10 @@ const PRODUCT_WEB = {
 const PRODUCTS_PAYLOAD = { items: [PRODUCT_APP, PRODUCT_WEB], next_cursor: 'c_products_2' }
 
 // ---------------------------------------------------------------------------
-// 1. 工具集合：23 个（15 写 + 8 读）
+// 1. 工具集合：25 个（17 写 + 8 读）
 // ---------------------------------------------------------------------------
 
-describe('工具集合：23 个（15 写 + 8 读）', () => {
+describe('工具集合：25 个（17 写 + 8 读）', () => {
   it('READ_TOOL_NAMES 精确是 8 个只读工具', () => {
     expect([...READ_TOOL_NAMES]).toEqual([
       'echuan_inbox',
@@ -255,12 +255,12 @@ describe('工具集合：23 个（15 写 + 8 读）', () => {
     ])
   })
 
-  it('注册的 23 个名字 = 15 写 + 8 读，且写工具名未变', () => {
+  it('注册的 25 个名字 = 17 写 + 8 读，且写工具名未变', () => {
     expect([...TOOL_NAMES]).toEqual([
       ...WRITE_TOOL_NAMES,
       ...READ_TOOL_NAMES,
     ])
-    expect(TOOL_NAMES).toHaveLength(23)
+    expect(TOOL_NAMES).toHaveLength(25)
 
     const platform = createPlatform(() => jsonResponse({}))
     const names = [...toolsFor(platform.fetchImpl).keys()]
