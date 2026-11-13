@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -463,7 +464,7 @@ func TestReclaimExpiredWorkItemsIsSingleShot(t *testing.T) {
 		t.Errorf("requeued row = %+v, want queued, attempt 1, nil reason", got)
 	}
 	if got := byID["w_dead"]; got.State != WorkItemStateFailed || got.Attempt != 3 ||
-		got.Reason == nil || *got.Reason != "attempt 用尽" {
+		got.Reason == nil || !strings.Contains(*got.Reason, "3/3 次尝试已用完") {
 		t.Errorf("exhausted row = %+v, want failed, attempt 3, reason 用尽", got)
 	}
 
@@ -661,5 +662,54 @@ func TestClaimNextWorkItemIgnoresProductScope(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatalf("second ClaimNextWorkItem: %v", err)
+	}
+}
+
+// TestReclaimMovesExhaustedQueuedCardToFailed is the self-healing half of the
+// "stuck in queued forever" fix: a queued card whose budget is already spent
+// can never pass the claim predicate, so the sweep fails it instead. Older
+// versions requeued rejected cards without touching the attempt, which is how
+// such rows appeared in the first place.
+func TestReclaimMovesExhaustedQueuedCardToFailed(t *testing.T) {
+	st := openTestStore(t, 1)
+	projectID := seedProjectRow(t, st)
+	ctx := context.Background()
+
+	insertSeededWorkItems(t, st, projectID, []workItemSeed{
+		{workID: "w_stuck", seq: 1, state: WorkItemStateQueued, attempts: 3, max: 3},
+		{workID: "w_fine", seq: 2, state: WorkItemStateQueued, attempts: 1, max: 3},
+	})
+
+	var reclaimed []ReclaimedWorkItem
+	if err := st.Tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		reclaimed, err = ReclaimExpiredWorkItems(ctx, tx, leaseNow, leaseTestTime)
+		return err
+	}); err != nil {
+		t.Fatalf("ReclaimExpiredWorkItems: %v", err)
+	}
+	if len(reclaimed) != 1 || reclaimed[0].WorkID != "w_stuck" {
+		t.Fatalf("reclaimed = %+v, want only w_stuck", reclaimed)
+	}
+	if got := reclaimed[0]; got.State != WorkItemStateFailed ||
+		got.Reason == nil || !strings.Contains(*got.Reason, "3/3 次尝试已用完") {
+		t.Errorf("stuck row = %+v, want failed with the budget note", got)
+	}
+
+	rows, err := ListWorkItemsByProject(ctx, st.Read(), projectID)
+	if err != nil {
+		t.Fatalf("ListWorkItemsByProject: %v", err)
+	}
+	for _, row := range rows {
+		switch row.WorkID {
+		case "w_stuck":
+			if row.State != WorkItemStateFailed {
+				t.Errorf("w_stuck state = %q, want failed", row.State)
+			}
+		case "w_fine":
+			if row.State != WorkItemStateQueued || row.Attempt != 1 {
+				t.Errorf("w_fine = %q/%d, want queued attempt 1 (untouched)", row.State, row.Attempt)
+			}
+		}
 	}
 }

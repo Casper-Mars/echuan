@@ -225,6 +225,13 @@ type ReclaimedWorkItem struct {
 // matches nothing for an item that already moved, so every reclaim is applied
 // exactly once.
 //
+// A second predicate keeps the queue honest: a queued card whose budget is
+// already used up can never be claimed (the queue requires attempt <
+// max_attempts), so the sweep moves it to failed with the same note. That
+// repairs cards left behind by an older requeue-on-reject path, which kept the
+// attempt and parked them in a queue nothing dispatches and the inbox does not
+// show.
+//
 // The reason of a requeued item is cleared: a failed attempt's reason must not
 // linger on a card that is queued again. now and updateTime are rendered by the
 // caller (now in the fixed-width lease layout, updateTime as a regular
@@ -233,15 +240,17 @@ func ReclaimExpiredWorkItems(ctx context.Context, tx *sql.Tx, now, updateTime st
 	rows, err := tx.QueryContext(ctx, `
 		UPDATE work_items
 		   SET state = CASE WHEN attempt >= max_attempts THEN 'failed' ELSE 'queued' END,
-		       reason = CASE WHEN attempt >= max_attempts THEN 'attempt 用尽' ELSE NULL END,
+		       reason = CASE WHEN attempt >= max_attempts
+		                     THEN '本轮 ' || attempt || '/' || max_attempts ||
+		                          ' 次尝试已用完，需人工驳回该卡重开'
+		                     ELSE NULL END,
 		       lease_id = NULL,
 		       lease_until = NULL,
 		       worker_id = NULL,
 		       version = version + 1,
 		       update_time = ?
-		 WHERE state = 'leased'
-		   AND lease_until IS NOT NULL
-		   AND lease_until < ?
+		 WHERE (state = 'leased' AND lease_until IS NOT NULL AND lease_until < ?)
+		    OR (state = 'queued' AND attempt >= max_attempts)
 		RETURNING id, work_id, attempt, state, reason`, updateTime, now)
 	if err != nil {
 		return nil, fmt.Errorf("store: reclaim expired leases: %w", err)
