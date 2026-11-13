@@ -693,6 +693,10 @@ const KIND_LABELS: Record<string, string> = {
  *
  * 只放事实：工作项编号、类别、标题、项目、产品、仓库、租约、输入物料、正文。
  * 不放操作指示——「怎么开工、怎么汇报」由 `echuan-task-execution` 技能负责。
+ *
+ * 唯一的结构性例外是返工块：平台把「这是驳回后重派的」与驳回原因作为字段
+ * 下发（`rework` / `reason`），这里原样前置渲染。否则 agent 只能看到
+ * 「尝试次数：2」这种数字，既不知道是被驳回，也不知道要改什么。
  */
 export function renderDispatchMessage(dispatch: Dispatch): string {
   const { work_item: item, lease, context } = dispatch
@@ -707,8 +711,18 @@ export function renderDispatchMessage(dispatch: Dispatch): string {
     `产品：${context.product.name}（${context.product.id}）`,
     `仓库：${context.product.git_url}`,
     `租约到期：${lease.until}（TTL ${lease.ttl_seconds}s，lease_id=${lease.lease_id}）`,
-    `尝试次数：${item.attempt}，优先级：${item.priority}`,
+    `尝试次数：${item.attempt}${item.max_attempts === undefined ? '' : `/${item.max_attempts}`}，优先级：${item.priority}`,
   ]
+
+  const reason = typeof item.reason === 'string' ? item.reason.trim() : ''
+  if (item.rework === true || reason !== '') {
+    lines.push(
+      '',
+      '【返工】本卡是上一版结果被驳回后重新派单的，不是首次执行。',
+      `驳回原因：${reason === '' ? '（平台未给出原因，按项目最近一次评审意见判断）' : reason}`,
+      '按上面的原因修改，不要从头重做；报告里写明针对该原因改了什么。',
+    )
+  }
 
   lines.push('', '输入物料：')
   if (dispatch.inputs.length === 0) {

@@ -70,6 +70,17 @@ type DispatchWorkItem struct {
 	BodyMD    string
 	Priority  int
 	Attempt   int
+	// MaxAttempts is the budget this card is allowed; Attempt is already
+	// incremented for the current lease, so Attempt=1 is the first try.
+	MaxAttempts int
+	// Reason is the objection that sent this card back (gate rejection or
+	// card rejection). Nil on a first attempt and after a successful report.
+	Reason *string
+	// Rework is true when the dispatch carries an unanswered objection, i.e.
+	// the card is being handed out again to fix something specific. It is a
+	// derived convenience field so a worker does not have to infer intent from
+	// attempt numbers alone (a lease expiry also bumps attempt).
+	Rework bool
 }
 
 // DispatchLease is the freshly issued (or renewed) lease.
@@ -355,11 +366,14 @@ func buildDispatch(ctx context.Context, tx *sql.Tx, row store.WorkItem, ttl time
 		Kind:     row.Kind,
 		Inputs:   dispatchInputs,
 		WorkItem: DispatchWorkItem{
-			ProjectID: row.ProjectCode,
-			Title:     row.Title,
-			BodyMD:    row.BodyMD,
-			Priority:  row.Priority,
-			Attempt:   row.Attempt,
+			ProjectID:   row.ProjectCode,
+			Title:       row.Title,
+			BodyMD:      row.BodyMD,
+			Priority:    row.Priority,
+			Attempt:     row.Attempt,
+			MaxAttempts: row.MaxAttempts,
+			Reason:      row.Reason,
+			Rework:      row.Reason != nil && strings.TrimSpace(*row.Reason) != "",
 		},
 		Lease: DispatchLease{LeaseID: leaseID, Until: until, TTL: ttl},
 		Context: DispatchContext{

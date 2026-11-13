@@ -26,6 +26,14 @@
 - 阶段卡报告被 400 / 409 拒绝时，卡仍在你手里：按 `details` 里的 `field` / `reason` 补资料或修 plan，再用**同一个 `lease_id`** 重报；不要重新领卡，不要手工建卡绕过平台。
 - `409 plan already submitted for breakdown item` 表示这批卡已经生成，不要重复提交；成功一次即止，等评审结论。
 
+## 1.2 返工卡：先读驳回原因
+
+`rework=true`（或 `reason` 非空）：上一版被驳回，本次只改该原因。
+
+- 取回上一版交付物（`echuan_material_get` 看 `result`，dev 卡看本卡提交），只改被指出部分；原因含糊用 `echuan_project_get` 与 `echuan_work_get` 补齐。
+- 报告逐条回应「改了什么、为什么」，「已修复」不算交付。
+- 同一分支、同一张卡（design 用 `echuan_spec_revise`）；`attempt` 接近上限时别整卡重写。
+
 ## 2. 开工前：先判定分支归属，再建 worktree
 
 每张卡都在独立 worktree 里做，且必须基于**项目分支 `feature/<project_id>` 的最新远程提交**。顺序固定，不许跳步。

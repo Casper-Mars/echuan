@@ -391,6 +391,7 @@ export function formatProject(detail: Project): string {
   const projectId = asString(detail.project_id) ?? asString(detail.id) ?? '（编号缺失）'
   const title = orNone(asString(detail.title))
   const status = projectStatusLabel(asNumber(detail.status), asString(detail.status_name))
+  const reason = formatProjectReason(detail)
 
   return [
     `项目 ${projectId}：${title}`,
@@ -400,11 +401,31 @@ export function formatProject(detail: Project): string {
       detail.work_item_done,
       detail.work_item_by_state,
     )}`,
-    `- 原因说明：${orNone(asString(detail.reason))}`,
+    `- 最近一次驳回原因：${reason}`,
     `- 需求：${formatMaterialRef(detail.requirement, '暂无')}`,
     `- 方案：${formatMaterialRef(detail.spec, '暂无')}`,
     '下一步：正文用 `echuan_material_get` 按 `material_id` 取；工作项用 `echuan_work_get` 看。',
   ].join('\n')
+}
+
+/** 草稿态（0/2/4）：项目停在需要产出物的地方，此时 reason 就是待改的东西。 */
+const DRAFT_PROJECT_STATUSES = new Set(['0', '2', '4'])
+
+/**
+ * 项目原因 → 一句能指导动作的话。
+ *
+ * 平台只存了一段自由文本（最近一次驳回意见）。草稿态说明这段文字是在等修改，
+ * 评审态说明它是在等三方判断；两种语义混在一起时 agent 只能看到「原因」两个字，
+ * 不知道该动手还是该等人。这里按状态把两种意思分清楚。
+ */
+function formatProjectReason(detail: Project): string {
+  const reason = asString(detail.reason)?.trim() ?? ''
+  if (reason === '') return '无'
+  const status = asNumber(detail.status)
+  if (status !== undefined && DRAFT_PROJECT_STATUSES.has(String(status))) {
+    return `${reason}（项目当前在草稿态：按该原因修改后重新提交评审）`
+  }
+  return reason
 }
 
 /** `depends_on` → `A、B`；空数组/缺失 → `无`。 */
@@ -445,7 +466,13 @@ export function formatWorkItem(detail: WorkItemDetail): string {
   lines.push(`- 优先级：${asNumber(detail.priority) ?? '未知'}`)
   lines.push(`- 尝试次数：${attempt ?? '未知'}/${maxAttempts ?? '未知'}`)
   lines.push(`- 依赖：${formatDependsOn(detail.depends_on)}`)
-  lines.push(`- 原因说明：${orNone(asString(detail.reason))}`)
+  const reason = asString(detail.reason)?.trim() ?? ''
+  lines.push(`- 原因说明：${reason === '' ? '无' : reason}`)
+  if (reason !== '') {
+    lines.push(
+      `- 返工：是（此前被驳回，当前是第 ${attempt ?? '?'} 次尝试）——只按上面的原因修改，不要整卡重做`,
+    )
+  }
   if (leaseLine !== undefined) lines.push(`- 租约：${leaseLine}`)
   lines.push('', '正文：', body === '' ? '（正文为空）' : truncateText(body, WORK_ITEM_BODY_MAX_CHARS))
   lines.push(

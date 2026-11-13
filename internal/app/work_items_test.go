@@ -298,6 +298,14 @@ func TestHeartbeatKindsReplaceAndGateDispatch(t *testing.T) {
 	if dispatch.WorkItem.Attempt != 1 || dispatch.WorkItem.ProjectID != f.projectID {
 		t.Errorf("work item = %+v", dispatch.WorkItem)
 	}
+	// A first attempt carries no objection and is not a rework.
+	if dispatch.WorkItem.Rework || dispatch.WorkItem.Reason != nil {
+		t.Errorf("first dispatch rework/reason = %v/%v, want false/nil",
+			dispatch.WorkItem.Rework, dispatch.WorkItem.Reason)
+	}
+	if dispatch.WorkItem.MaxAttempts <= 0 {
+		t.Errorf("max_attempts = %d, want the card budget", dispatch.WorkItem.MaxAttempts)
+	}
 	if dispatch.Lease.LeaseID == "" || !dispatch.Lease.Until.After(time.Now()) {
 		t.Errorf("lease = %+v", dispatch.Lease)
 	}
@@ -399,6 +407,61 @@ func TestClaimRejectsUnknownWorker(t *testing.T) {
 	var unknown *domain.WorkerUnknownError
 	if _, err := f.claims.Claim(context.Background(), ClaimInput{WorkerID: "w_unknown"}); !errors.As(err, &unknown) {
 		t.Errorf("Claim = %v, want worker_unknown", err)
+	}
+}
+
+// TestDispatchMarksReworkAfterRejection pins what a worker sees when a card
+// comes back: the objection itself plus an explicit rework flag, not just an
+// attempt counter the agent has to interpret.
+func TestDispatchMarksReworkAfterRejection(t *testing.T) {
+	f := newWorkItemFixture(t)
+	ctx := context.Background()
+	detail := f.createItem(t, "dev", "返工卡", 0)
+
+	// The plan gate owns the queue in this fixture; put the card on the queue
+	// directly so the dispatch path is what is under test.
+	if _, err := f.env.store.Write().ExecContext(ctx,
+		`UPDATE work_items SET state = ? WHERE work_id = ?`,
+		store.WorkItemStateQueued, detail.Item.WorkID); err != nil {
+		t.Fatalf("queue card: %v", err)
+	}
+
+	workerID, first := f.registerWorker(t)
+	if first == nil {
+		t.Fatal("first dispatch = nil, want the card")
+	}
+	if first.WorkItem.Attempt != 1 || first.WorkItem.Rework {
+		t.Errorf("first dispatch attempt/rework = %d/%v, want 1/false",
+			first.WorkItem.Attempt, first.WorkItem.Rework)
+	}
+
+	if _, err := f.items.ReportWorkItem(ctx, ReportWorkItemInput{
+		WorkID: first.WorkID, LeaseID: first.Lease.LeaseID,
+		MaterialID: f.specID, Actor: "agent:w",
+	}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if _, err := f.items.DecideWorkItem(ctx, WorkItemDecisionInput{
+		WorkID: first.WorkID, Decision: "reject", Reason: "缺单测", Actor: "human:qa",
+	}); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	second, err := f.claims.Claim(ctx, ClaimInput{WorkerID: workerID})
+	if err != nil {
+		t.Fatalf("Claim(rework): %v", err)
+	}
+	if second == nil {
+		t.Fatal("second claim = nil, want the rejected card requeued")
+	}
+	if second.WorkItem.Attempt != 2 {
+		t.Errorf("rework attempt = %d, want 2", second.WorkItem.Attempt)
+	}
+	if !second.WorkItem.Rework {
+		t.Error("rework flag = false, want true after a rejection")
+	}
+	if second.WorkItem.Reason == nil || *second.WorkItem.Reason != "缺单测" {
+		t.Errorf("rework reason = %v, want the objection", second.WorkItem.Reason)
 	}
 }
 

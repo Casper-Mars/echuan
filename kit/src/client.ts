@@ -149,7 +149,14 @@ export interface DispatchWorkItem {
   title: string
   body_md: string
   priority: number
+  /** 本次租约是第几次尝试（领卡即 +1，首次为 1）。 */
   attempt: number
+  /** 该卡允许的尝试上限。 */
+  max_attempts?: number
+  /** 最近一次退回原因（门禁驳回 / 卡级驳回）；报告提交后清空，首次为 null。 */
+  reason?: string | null
+  /** true = 本次是返工（reason 非空，上一版结果被驳回）。 */
+  rework?: boolean
 }
 
 /** `Dispatch.lease`：本次派单的租约。 */

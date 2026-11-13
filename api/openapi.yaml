@@ -1189,6 +1189,9 @@ paths:
                             body_md: "# 工作项正文\n"
                             priority: 10
                             attempt: 1
+                            max_attempts: 3
+                            reason: null
+                            rework: false
                           lease:
                             lease_id: l_9f8b7b09ff971dd1
                             until: "2026-10-27T16:49:25.157Z"
@@ -2242,7 +2245,7 @@ components:
     DispatchWorkItem:
       type: object
       additionalProperties: false
-      required: [project_id, title, body_md, priority, attempt]
+      required: [project_id, title, body_md, priority, attempt, max_attempts, reason, rework]
       properties:
         project_id:
           type: string
@@ -2254,6 +2257,21 @@ components:
           type: integer
         attempt:
           type: integer
+          description: 本次租约已是第几次尝试（领卡即 +1，首次为 1）。
+        max_attempts:
+          type: integer
+          description: 该卡允许的尝试上限。
+        reason:
+          type: string
+          nullable: true
+          description: |
+            最近一次退回原因（门禁驳回或卡级驳回）。Worker 必须据此返工；
+            报告提交后清空，首次尝试时为 null。
+        rework:
+          type: boolean
+          description: |
+            true 表示本次派单是返工：reason 非空，即上一版结果被驳回、这次要针对
+            该原因修改。仅凭 attempt>1 不足以判断（租约过期重派也会 +1）。
     DispatchLease:
       type: object
       additionalProperties: false

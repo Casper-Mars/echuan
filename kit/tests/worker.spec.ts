@@ -507,6 +507,31 @@ describe('dispatch 投递', () => {
     expect(lines).toContain(`仓库：${DISPATCH.context.product.git_url}`)
   })
 
+  it('renderDispatchMessage 返工卡：显式【返工】块 + 驳回原因 + 尝试进度', () => {
+    const text = renderDispatchMessage({
+      ...DISPATCH,
+      work_item: {
+        ...DISPATCH.work_item,
+        attempt: 2,
+        max_attempts: 3,
+        reason: '接口缺少幂等键',
+        rework: true,
+      },
+    } as never)
+    expect(text).toContain('【返工】')
+    expect(text).toContain('驳回原因：接口缺少幂等键')
+    expect(text).toContain('尝试次数：2/3')
+  })
+
+  it('renderDispatchMessage 首次派单：没有返工块', () => {
+    const text = renderDispatchMessage({
+      ...DISPATCH,
+      work_item: { ...DISPATCH.work_item, max_attempts: 3, reason: null, rework: false },
+    } as never)
+    expect(text).not.toContain('【返工】')
+    expect(text).toContain('尝试次数：1/3')
+  })
+
   it('无可用 agent：warn 一条、本轮跳过、无 inflight；下一轮有 agent 就投', async () => {
     const roots: Agent[] = []
     const delivered: string[] = []
