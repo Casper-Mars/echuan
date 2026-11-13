@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Casper-Mars/echuan/internal/domain"
@@ -191,6 +192,68 @@ func settlePhaseWorkItem(ctx context.Context, tx *sql.Tx, projectID int64, kind 
 			return err
 		}
 		if fresh.State == store.WorkItemStateAccepted {
+			return nil
+		}
+		return &domain.InvalidVersionError{Current: fresh.Version, Expected: item.Version}
+	}
+	return nil
+}
+
+// isPhaseKind reports whether kind is one of the three producing-stage cards
+// (需求撰写 / 方案设计 / 任务拆分) rather than a dev card.
+func isPhaseKind(kind string) bool {
+	switch kind {
+	case phaseKindRequirement, phaseKindDesign, phaseKindBreakdown:
+		return true
+	default:
+		return false
+	}
+}
+
+// requeuePhaseWorkItem sends a stage card whose artifact the gate just rejected
+// back to the queue, in the caller's transaction.
+//
+// The card keeps its attempt budget (a rework is the same attempt, not a fresh
+// one) and carries the objection, so the worker that claims it reads why it came
+// back. Nothing is created here: a project whose gate was reached by a manual
+// upload owns no card, and enqueueing one would take the rework away from the
+// human who is already editing the document. Only a reported (submitted) or
+// failed card is moved; a queued/leased one is already on its way.
+func requeuePhaseWorkItem(ctx context.Context, tx *sql.Tx, projectID int64, kind, reason string, now time.Time) error {
+	item, err := store.GetActivePhaseWorkItem(ctx, tx, projectID, kind)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if item.State != store.WorkItemStateSubmitted && item.State != store.WorkItemStateFailed {
+		return nil
+	}
+
+	var reasonPtr *string
+	if trimmed := strings.TrimSpace(reason); trimmed != "" {
+		reasonPtr = &trimmed
+	}
+	updateTime := formatTimestamp(nextTimestampAfter(now, item.UpdateTime))
+	affected, err := store.TransitionWorkItemDecision(ctx, tx, store.WorkItemDecisionWrite{
+		ID:            item.ID,
+		ExpectState:   item.State,
+		ExpectVersion: item.Version,
+		NextState:     store.WorkItemStateQueued,
+		Reason:        reasonPtr,
+		ResetAttempts: false,
+		UpdateTime:    updateTime,
+	})
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		fresh, readErr := store.GetWorkItemByID(ctx, tx, item.ID)
+		if readErr != nil {
+			return readErr
+		}
+		if fresh.State == store.WorkItemStateQueued {
 			return nil
 		}
 		return &domain.InvalidVersionError{Current: fresh.Version, Expected: item.Version}

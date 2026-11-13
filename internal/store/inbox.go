@@ -17,6 +17,15 @@ import (
 // human has to look at. They are spelled out here because the dependency runs
 // domain ← store and store must not import domain.
 //
+// Stage cards (kind requirement/design/breakdown) are excluded while they are
+// submitted: reporting one of them advances its project into the matching
+// review gate in the same transaction, so the project row already carries that
+// pending decision. Listing the card too would show one decision twice — and an
+// approval taken on the card would not even move the gate. The card is settled
+// by the gate itself (approve accepts it, reject requeues it), so the human
+// never needs to see it. A failed stage card stays visible: the gate never
+// opened for it, so nothing else would report that the producing stage died.
+//
 // state is rendered as text for both branches: a project's integer status is
 // cast, a work item's state is already text. One read model therefore carries
 // both without a union-unfriendly type split.
@@ -36,6 +45,8 @@ FROM (
          w.title AS title, w.update_time AS update_time, w.reason AS reason
     FROM work_items w
    WHERE w.state IN ('submitted', 'failed')
+     AND NOT (w.state = 'submitted'
+              AND w.kind IN ('requirement', 'design', 'breakdown'))
 )
 ORDER BY julianday(update_time) ASC, kind ASC, id ASC
 LIMIT ?`

@@ -356,6 +356,18 @@ func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisio
 			return err
 		}
 
+		// A reported stage card belongs to its project gate, not to this
+		// endpoint. Approving it here would accept the artifact without moving
+		// the gate, and rejecting it would leave the gate pending with the card
+		// back in the queue — both are decisions the gate itself performs
+		// (approve accepts the card, reject requeues it). Only a failed stage
+		// card is actionable here: no gate ever opened for it.
+		if isPhaseKind(row.Kind) && row.State == store.WorkItemStateSubmitted {
+			return &domain.InvalidStateError{Reason: fmt.Sprintf(
+				"work item %q is a %s stage card owned by its project gate; decide the project instead "+
+					"(the gate accepts or requeues this card automatically)", row.WorkID, row.Kind)}
+		}
+
 		var next string
 		if decision == string(domain.DecisionApprove) {
 			if row.State != store.WorkItemStateSubmitted {
@@ -573,6 +585,15 @@ func (s *WorkItemService) ReviewWorkItems(ctx context.Context, in ReviewWorkItem
 				Actor:              actor,
 				CreateTime:         updateTime,
 			}); err != nil {
+				return err
+			}
+
+			// The stage card that produced the rejected plan goes back to the
+			// queue in this same transaction, carrying the objection. Without
+			// this the planner would sit in submitted state next to a rejected
+			// batch and wait for a second, card-level rejection that the inbox
+			// no longer shows.
+			if err := requeuePhaseWorkItem(ctx, tx, project.ID, phaseKindBreakdown, reason, s.now()); err != nil {
 				return err
 			}
 
