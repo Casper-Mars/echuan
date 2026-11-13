@@ -51,11 +51,14 @@ type dispatchInputResponse struct {
 
 // dispatchWorkItemResponse is the card part of a dispatch.
 type dispatchWorkItemResponse struct {
-	ProjectID string `json:"project_id"`
-	Title     string `json:"title"`
-	BodyMD    string `json:"body_md"`
-	Priority  int    `json:"priority"`
-	Attempt   int    `json:"attempt"`
+	ProjectID   string  `json:"project_id"`
+	Title       string  `json:"title"`
+	BodyMD      string  `json:"body_md"`
+	Priority    int     `json:"priority"`
+	Attempt     int     `json:"attempt"`
+	MaxAttempts int     `json:"max_attempts"`
+	Reason      *string `json:"reason"`
+	Rework      bool    `json:"rework"`
 }
 
 // dispatchLeaseResponse is the freshly issued lease.
@@ -167,11 +170,14 @@ func toDispatchResponse(dispatch app.Dispatch) dispatchResponse {
 		Kind:     dispatch.Kind,
 		Inputs:   inputs,
 		WorkItem: dispatchWorkItemResponse{
-			ProjectID: dispatch.WorkItem.ProjectID,
-			Title:     dispatch.WorkItem.Title,
-			BodyMD:    dispatch.WorkItem.BodyMD,
-			Priority:  dispatch.WorkItem.Priority,
-			Attempt:   dispatch.WorkItem.Attempt,
+			ProjectID:   dispatch.WorkItem.ProjectID,
+			Title:       dispatch.WorkItem.Title,
+			BodyMD:      dispatch.WorkItem.BodyMD,
+			Priority:    dispatch.WorkItem.Priority,
+			Attempt:     dispatch.WorkItem.Attempt,
+			MaxAttempts: dispatch.WorkItem.MaxAttempts,
+			Reason:      dispatch.WorkItem.Reason,
+			Rework:      dispatch.WorkItem.Rework,
 		},
 		Lease: dispatchLeaseResponse{
 			LeaseID:    dispatch.Lease.LeaseID,

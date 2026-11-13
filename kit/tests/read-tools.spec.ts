@@ -478,6 +478,16 @@ describe('echuan_work_get：工作项详情', () => {
     expect(text).toContain(`完整内容共 ${body.length} 字`)
   })
 
+  it('work_get 带驳回原因时明说这是返工，并给出当前尝试次数', async () => {
+    const platform = createPlatform(() => jsonResponse(TASK_PAYLOAD))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_work_get')
+
+    const { text } = await runTool(tool!, { work_id: 'APP-1-T0007' })
+    expect(text).toContain('原因说明：第一次报告缺单测')
+    expect(text).toContain('返工：是')
+    expect(text).toContain('第 2 次尝试')
+  })
+
   it('没有报告/租约时明确说「无」', async () => {
     const platform = createPlatform(() => jsonResponse({
       ...TASK_PAYLOAD,
@@ -703,6 +713,21 @@ describe('echuan_project_list：项目列表', () => {
     expect(text).toContain('原因：等待人工确认方案')
     expect(text).toContain('更新时间：2026-10-28T09:44:00.000Z')
     expect(text).toContain('echuan_work_list')
+  })
+
+  it('project_get 草稿态：驳回原因后面点明「按该原因修改后重新提交」', async () => {
+    const platform = createPlatform(() => jsonResponse({
+      ...PROJECT_PAYLOAD,
+      status: 2,
+      status_name: '方案草稿',
+      reason: '方案缺少接口约定',
+    }))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_project_get')
+
+    const { text } = await runTool(tool!, { id: 'APP-2' })
+    expect(text).toContain('最近一次驳回原因：方案缺少接口约定')
+    expect(text).toContain('项目当前在草稿态')
+    expect(text).toContain('重新提交评审')
   })
 
   it('筛选透传：product_id、status（单个整数，含 0）、limit、cursor', async () => {

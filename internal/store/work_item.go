@@ -314,6 +314,12 @@ func CompleteWorkItemReport(ctx context.Context, tx *sql.Tx, id, materialID int6
 // of an artifact: its result_material_id stays NULL while the generated child
 // cards carry the actual work. Every other kind still passes a material, so
 // this variant is additive and the material-id signature above is preserved.
+// CompleteWorkItemReportOptionalMaterial completes a report.
+//
+// reason is cleared in the same write: a reason on a card is the unanswered
+// objection that sent it back, and the report answers it. Leaving it behind
+// would make the next dispatch of this card look like a rework it is not, and
+// would show a stale objection next to a freshly submitted result.
 func CompleteWorkItemReportOptionalMaterial(ctx context.Context, tx *sql.Tx, id int64, materialID *int64, leaseID, now, updateTime string) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE work_items
@@ -321,6 +327,7 @@ func CompleteWorkItemReportOptionalMaterial(ctx context.Context, tx *sql.Tx, id 
 		       state = ?,
 		       lease_id = NULL,
 		       lease_until = NULL,
+		       reason = NULL,
 		       version = version + 1,
 		       update_time = ?
 		 WHERE id = ? AND state = ? AND lease_id = ?
