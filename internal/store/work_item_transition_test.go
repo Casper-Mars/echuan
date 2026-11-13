@@ -187,7 +187,7 @@ func TestCompleteWorkItemReportGuards(t *testing.T) {
 func TestProjectBulkWorkItemWrites(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("queue only touches blocked", func(t *testing.T) {
+	t.Run("release only touches ungated blocked cards", func(t *testing.T) {
 		st := openTestStore(t, 1)
 		projectID := seedProjectRow(t, st)
 		insertSeededWorkItems(t, st, projectID, []workItemSeed{
@@ -201,10 +201,10 @@ func TestProjectBulkWorkItemWrites(t *testing.T) {
 		var affected int64
 		if err := st.Tx(ctx, func(tx *sql.Tx) error {
 			var err error
-			affected, err = SetWorkItemsQueuedByProject(ctx, tx, projectID, leaseTestTime)
+			affected, err = ReleaseReadyWorkItems(ctx, tx, projectID, leaseTestTime)
 			return err
 		}); err != nil {
-			t.Fatalf("SetWorkItemsQueuedByProject: %v", err)
+			t.Fatalf("ReleaseReadyWorkItems: %v", err)
 		}
 		if affected != 2 {
 			t.Errorf("affected = %d, want 2", affected)

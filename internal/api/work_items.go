@@ -75,21 +75,24 @@ type createWorkItemRequest struct {
 
 // workItemResponse is the wire representation of one work item.
 type workItemResponse struct {
-	WorkID           string                 `json:"work_id"`
-	ProjectID        string                 `json:"project_id"`
-	ParentID         *string                `json:"parent_id"`
-	Kind             string                 `json:"kind"`
-	SeqNo            int                    `json:"seq_no"`
-	Title            string                 `json:"title"`
-	BodyMD           string                 `json:"body_md"`
-	Priority         int                    `json:"priority"`
-	State            string                 `json:"state"`
-	WorkerID         *string                `json:"worker_id"`
-	Attempt          int                    `json:"attempt"`
-	MaxAttempts      int                    `json:"max_attempts"`
-	Reason           *string                `json:"reason"`
-	Version          int                    `json:"version"`
-	DependsOn        []string               `json:"depends_on"`
+	WorkID      string   `json:"work_id"`
+	ProjectID   string   `json:"project_id"`
+	ParentID    *string  `json:"parent_id"`
+	Kind        string   `json:"kind"`
+	SeqNo       int      `json:"seq_no"`
+	Title       string   `json:"title"`
+	BodyMD      string   `json:"body_md"`
+	Priority    int      `json:"priority"`
+	State       string   `json:"state"`
+	WorkerID    *string  `json:"worker_id"`
+	Attempt     int      `json:"attempt"`
+	MaxAttempts int      `json:"max_attempts"`
+	Reason      *string  `json:"reason"`
+	Version     int      `json:"version"`
+	DependsOn   []string `json:"depends_on"`
+	// BlockedBy lists the dependencies that are not accepted yet; it is the
+	// machine-readable form of "why this card is still blocked".
+	BlockedBy        []string               `json:"blocked_by"`
 	ResultMaterialID *string                `json:"result_material_id"`
 	CreateTime       string                 `json:"create_time"`
 	UpdateTime       string                 `json:"update_time"`
@@ -477,6 +480,7 @@ func toWorkItemResponse(item app.WorkItemView) workItemResponse {
 		Reason:           nullableString(item.Reason),
 		Version:          item.Version,
 		DependsOn:        item.DependsOn,
+		BlockedBy:        item.BlockedBy,
 		ResultMaterialID: item.ResultMaterialID,
 		CreateTime:       item.CreateTime.UTC().Format(time.RFC3339Nano),
 		UpdateTime:       item.UpdateTime.UTC().Format(time.RFC3339Nano),
