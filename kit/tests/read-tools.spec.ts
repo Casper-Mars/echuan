@@ -488,6 +488,19 @@ describe('echuan_work_get：工作项详情', () => {
     expect(text).toContain('第 2 次尝试')
   })
 
+  it('blocked 卡带 blocked_by 时写出等待哪几张、并说明会自动放行', async () => {
+    const platform = createPlatform(() => jsonResponse({
+      ...TASK_PAYLOAD,
+      state: 'blocked',
+      depends_on: ['APP-1-T0005'],
+      blocked_by: ['APP-1-T0005'],
+    }))
+    const tool = toolsFor(platform.fetchImpl).get('echuan_work_get')
+
+    const { text } = await runTool(tool!, { work_id: 'APP-1-T0007' })
+    expect(text).toContain('等待依赖：APP-1-T0005（未验收，通过后自动放行）')
+  })
+
   it('没有报告/租约时明确说「无」', async () => {
     const platform = createPlatform(() => jsonResponse({
       ...TASK_PAYLOAD,

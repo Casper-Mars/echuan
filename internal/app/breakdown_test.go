@@ -249,8 +249,10 @@ func TestBreakdownPlanCreatesBlockedChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReviewWorkItems: %v", err)
 	}
-	if review.ReadyItems != 3 {
-		t.Errorf("ready_work_items = %d, want 3", review.ReadyItems)
+	// Only the head of the dependency graph is released: items 2 and 3 wait for
+	// item 1 to be accepted, so they stay blocked.
+	if review.ReadyItems != 1 {
+		t.Errorf("ready_work_items = %d, want 1 (only the ungated head)", review.ReadyItems)
 	}
 	if review.ToStatus != domain.StatusPendingDone {
 		t.Errorf("project status after review = %d, want pending_done", review.ToStatus)
@@ -259,8 +261,12 @@ func TestBreakdownPlanCreatesBlockedChildren(t *testing.T) {
 		t.Errorf("breakdown after review = %q, want accepted", after.State)
 	}
 	for i, dev := range f.devItems(t) {
-		if dev.State != store.WorkItemStateQueued {
-			t.Errorf("dev[%d] after review = %q, want queued", i, dev.State)
+		want := store.WorkItemStateBlocked
+		if i == 0 {
+			want = store.WorkItemStateQueued
+		}
+		if dev.State != want {
+			t.Errorf("dev[%d] after review = %q, want %q", i, dev.State, want)
 		}
 	}
 

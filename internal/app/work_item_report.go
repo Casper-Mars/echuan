@@ -450,6 +450,16 @@ func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisio
 		}
 
 		if next == store.WorkItemStateAccepted {
+			// Acceptance is what releases the cards waiting on this one: they
+			// stayed blocked through the whole review, so "queued" only ever
+			// means "dispatchable".
+			project, err := store.GetProjectByProjectID(ctx, tx, row.ProjectCode)
+			if err != nil {
+				return err
+			}
+			if _, err := store.ReleaseReadyWorkItems(ctx, tx, project.ID, updateTime); err != nil {
+				return err
+			}
 			result.Project, err = s.settleProjectIfDone(ctx, tx, row.ProjectCode, actor)
 			if err != nil {
 				return err
@@ -538,10 +548,13 @@ type ReviewWorkItemsResult struct {
 
 // ReviewWorkItems applies one human verdict to a project's plan batch.
 //
-// approve: every blocked card becomes queued and the project moves 5 → 6 (or
-// repeats 6 → 6 when cards were added after an earlier approval) in the same
-// transaction, which also clears any recorded objection. A batch with no
-// blocked card is a conflict and writes nothing.
+// approve: the blocked cards whose dependencies are all accepted become queued
+// and the project moves 5 → 6 (or repeats 6 → 6 when cards were added after an
+// earlier approval) in the same transaction, which also clears any recorded
+// objection. A card still waiting on an unaccepted dependency stays blocked and
+// is released by the acceptance (DecideWorkItem). A batch with no blocked card
+// at all is a conflict and writes nothing; a batch where every card is gated is
+// approved with ready_work_items = 0.
 //
 // reject: the cards and the project status stay exactly where they are; only
 // tasks_review_reason / tasks_review_rejected_at (plus actor, version and
@@ -637,13 +650,23 @@ func (s *WorkItemService) ReviewWorkItems(ctx context.Context, in ReviewWorkItem
 			return err
 		}
 
-		ready, err := store.SetWorkItemsQueuedByProject(ctx, tx, project.ID, updateTime)
+		// Approving the batch releases the cards that are not gated by a
+		// dependency; the rest stay blocked until their dependency is accepted
+		// (DecideWorkItem releases them). A batch where every card is gated
+		// still approves: there is simply nothing to release yet.
+		ready, err := store.ReleaseReadyWorkItems(ctx, tx, project.ID, updateTime)
 		if err != nil {
 			return err
 		}
 		if ready == 0 {
-			return &domain.InvalidStateError{Reason: fmt.Sprintf(
-				"project %q has no blocked work item to approve", project.ProjectID)}
+			blocked, err := store.CountBlockedWorkItemsByProject(ctx, tx, project.ID)
+			if err != nil {
+				return err
+			}
+			if blocked == 0 {
+				return &domain.InvalidStateError{Reason: fmt.Sprintf(
+					"project %q has no blocked work item to approve", project.ProjectID)}
+			}
 		}
 
 		affected, err := store.TransitionProjectClearTasksReview(ctx, tx, project.ID,

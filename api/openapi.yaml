@@ -1067,6 +1067,14 @@ paths:
     post:
       operationId: reviewWorkItems
       summary: 审批或驳回一个项目的计划批次
+      description: |
+        审批通过时把批次里**可以开工**的卡放行：只把依赖已全部 accepted 的
+        blocked 卡置为 queued，其余继续 blocked，并在它的依赖被验收时由
+        `/v1/work-items/decide` 的 approve 自动放行。因此 `queued` 始终等于
+        「可派发」；`ready_work_items` 是本轮真正放行的张数。
+
+        一个批次里所有卡都被依赖挡住时审批仍然成功（`ready_work_items=0`），
+        它们会随上游验收陆续放行；只有批次里根本没有 blocked 卡时才返回 409。
       tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -1993,7 +2001,7 @@ components:
     WorkItem:
       type: object
       additionalProperties: false
-      required: [work_id, project_id, parent_id, kind, seq_no, title, body_md, priority, state, worker_id, attempt, max_attempts, reason, version, depends_on, result_material_id, create_time, update_time, lease]
+      required: [work_id, project_id, parent_id, kind, seq_no, title, body_md, priority, state, worker_id, attempt, max_attempts, reason, version, depends_on, blocked_by, result_material_id, create_time, update_time, lease]
       properties:
         work_id:
           type: string
@@ -2032,6 +2040,14 @@ components:
           type: integer
         depends_on:
           type: array
+          items:
+            type: string
+        blocked_by:
+          type: array
+          description: |
+            尚未验收的依赖 work_id（`depends_on` 的子集）。非空表示这张卡还在
+            等依赖通过验收；这些依赖全部 accepted 后平台会在接受事务里自动把它
+            从 blocked 放行到 queued。
           items:
             type: string
         result_material_id:
@@ -2123,7 +2139,7 @@ components:
     WorkItemDetail:
       type: object
       additionalProperties: false
-      required: [work_id, project_id, parent_id, kind, seq_no, title, body_md, priority, state, worker_id, attempt, max_attempts, reason, version, depends_on, result_material_id, create_time, update_time, lease, result]
+      required: [work_id, project_id, parent_id, kind, seq_no, title, body_md, priority, state, worker_id, attempt, max_attempts, reason, version, depends_on, blocked_by, result_material_id, create_time, update_time, lease, result]
       properties:
         work_id:
           type: string
@@ -2160,6 +2176,13 @@ components:
           type: integer
         depends_on:
           type: array
+          items:
+            type: string
+        blocked_by:
+          type: array
+          description: |
+            尚未验收的依赖 work_id（`depends_on` 的子集）。非空表示这张卡还在
+            等依赖通过验收；全部 accepted 后由接受事务自动放行到 queued。
           items:
             type: string
         result_material_id:

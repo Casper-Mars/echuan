@@ -239,6 +239,8 @@ export interface WorkItemDetail {
   reason?: string | null
   version?: number
   depends_on?: string[]
+  /** 尚未验收的依赖（`depends_on` 的子集）；非空表示这张卡在等这些依赖验收。 */
+  blocked_by?: string[]
   result_material_id?: string | null
   create_time?: string
   update_time?: string
