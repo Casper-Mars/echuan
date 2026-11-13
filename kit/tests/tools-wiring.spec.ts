@@ -655,6 +655,11 @@ describe('工具接线：方向性约束', () => {
     expect(platform.calls.filter(request => request.method === 'DELETE')).toHaveLength(1)
   })
 
+  /**
+   * 22 条客户端 operation 里 `updateProduct` / `deleteProduct` 还没有工具装配
+   * （卡 2 的范围，见 contract.spec.ts 的 PENDING_TOOL_WIRING），因此本轮 23 个工具
+   * 只覆盖 20 个不同端点；卡 2 装配后这里应变为 22 个端点并补两行清单。
+   */
   it('23 个工具跑完一共 22 个请求（worker_info 零 HTTP），共用 20 个 operation', async () => {
     const calls = await runWholeChain()
 
