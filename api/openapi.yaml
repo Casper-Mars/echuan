@@ -1721,7 +1721,7 @@ components:
     Project:
       type: object
       additionalProperties: false
-      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, work_item_total, work_item_done, create_time, update_time]
+      required: [id, project_id, product_id, seq_no, title, dev_branch, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, work_item_total, work_item_done, create_time, update_time]
       properties:
         id:
           type: string
@@ -1733,6 +1733,13 @@ components:
           type: integer
         title:
           type: string
+        dev_branch:
+          type: string
+          description: |
+            项目的开发分支（一个项目一条 feature 分支），如 `feat/app-1-social-login`。
+            创建项目时由平台按 `feat/<project_id>-<title slug>` 生成；PATCH 可显式改写，
+            格式为 `^(feat|fix|refactor|docs|chore|test)/[a-z0-9][a-z0-9._-]*$`，
+            同一产品下不得重复（409）。
         status:
           type: integer
           description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
@@ -1774,7 +1781,7 @@ components:
       type: object
       description: 项目详情。requirement/spec 仅返回材料元数据（含 material_id），正文请通过 GET /v1/materials?id=<material_id> 单独获取；详情响应不内嵌正文。
       additionalProperties: false
-      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, work_item_total, work_item_done, create_time, update_time, requirement, spec]
+      required: [id, project_id, product_id, seq_no, title, dev_branch, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, work_item_total, work_item_done, create_time, update_time, requirement, spec]
       properties:
         id:
           type: string
@@ -1786,6 +1793,9 @@ components:
           type: integer
         title:
           type: string
+        dev_branch:
+          type: string
+          description: 项目的开发分支，如 `feat/app-1-social-login`
         status:
           type: integer
           description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
@@ -1870,6 +1880,11 @@ components:
       properties:
         title:
           type: string
+        dev_branch:
+          type: string
+          description: |
+            显式改写项目开发分支。格式 `^(feat|fix|refactor|docs|chore|test)/[a-z0-9][a-z0-9._-]*$`；
+            同一产品下唯一，重复返回 409。省略表示不改。
         status:
           type: integer
           description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled

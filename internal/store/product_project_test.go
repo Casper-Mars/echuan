@@ -259,10 +259,11 @@ func TestProjectCRUDAndTransitions(t *testing.T) {
 	}
 
 	// Title update bumps the version.
+	title := "新标题"
 	if err := st.Tx(ctx, func(tx *sql.Tx) error {
-		return UpdateProjectTitle(ctx, tx, projectID, "新标题", "2026-02-01T00:00:00Z")
+		return UpdateProjectMetadata(ctx, tx, projectID, &title, nil, "2026-02-01T00:00:00Z")
 	}); err != nil {
-		t.Fatalf("UpdateProjectTitle: %v", err)
+		t.Fatalf("UpdateProjectMetadata: %v", err)
 	}
 	renamed, err := GetProjectByID(ctx, st.Read(), projectID)
 	if err != nil {
@@ -272,9 +273,9 @@ func TestProjectCRUDAndTransitions(t *testing.T) {
 		t.Errorf("renamed = %+v, want title/version", renamed)
 	}
 	if err := st.Tx(ctx, func(tx *sql.Tx) error {
-		return UpdateProjectTitle(ctx, tx, 999, "x", "t")
+		return UpdateProjectMetadata(ctx, tx, 999, &title, nil, "t")
 	}); !errors.Is(err, sql.ErrNoRows) {
-		t.Errorf("UpdateProjectTitle(missing) = %v, want sql.ErrNoRows", err)
+		t.Errorf("UpdateProjectMetadata(missing) = %v, want sql.ErrNoRows", err)
 	}
 
 	// Conditional transition: wrong version and wrong status match nothing.

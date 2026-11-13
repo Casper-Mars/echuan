@@ -99,7 +99,7 @@ func TestMigrateFSRunsForeignKeyCheck(t *testing.T) {
 	}
 
 	applied, err := st.MigrateFS(ctx, fstest.MapFS{
-		"0006_noop.sql": {Data: []byte("CREATE TABLE __noop_0006 (id INTEGER);")},
+		"0007_noop.sql": {Data: []byte("CREATE TABLE __noop_0007 (id INTEGER);")},
 	})
 	var integrity *ForeignKeyIntegrityError
 	if !errors.As(err, &integrity) {
@@ -114,8 +114,7 @@ func TestMigrateFSRunsForeignKeyCheck(t *testing.T) {
 		t.Fatalf("delete orphan: %v", err)
 	}
 	applied, err = st.MigrateFS(ctx, fstest.MapFS{
-		"0006_noop.sql": {Data: []byte("CREATE TABLE __noop_0006 (id INTEGER);")},
-		"0007_noop.sql": {Data: []byte("CREATE TABLE __noop_0007 (id INTEGER);")},
+		"0008_noop.sql": {Data: []byte("CREATE TABLE __noop_0008 (id INTEGER);")},
 	})
 	if err != nil {
 		t.Fatalf("MigrateFS after cleanup: %v", err)
@@ -126,8 +125,7 @@ func TestMigrateFSRunsForeignKeyCheck(t *testing.T) {
 
 	// An up-to-date database applies nothing and skips the check.
 	applied, err = st.MigrateFS(ctx, fstest.MapFS{
-		"0006_noop.sql": {Data: []byte("CREATE TABLE __noop_0006 (id INTEGER);")},
-		"0007_noop.sql": {Data: []byte("CREATE TABLE __noop_0007 (id INTEGER);")},
+		"0008_noop.sql": {Data: []byte("CREATE TABLE __noop_0008 (id INTEGER);")},
 	})
 	if err != nil {
 		t.Fatalf("MigrateFS up-to-date: %v", err)

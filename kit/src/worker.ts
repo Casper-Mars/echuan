@@ -710,6 +710,9 @@ export function renderDispatchMessage(dispatch: Dispatch): string {
     `项目：${item.project_id}`,
     `产品：${context.product.name}（${context.product.id}）`,
     `仓库：${context.product.git_url}`,
+    ...(typeof context.dev_branch === 'string' && context.dev_branch.trim() !== ''
+      ? [`开发分支：${context.dev_branch.trim()}`]
+      : []),
     `租约到期：${lease.until}（TTL ${lease.ttl_seconds}s，lease_id=${lease.lease_id}）`,
     `尝试次数：${item.attempt}${item.max_attempts === undefined ? '' : `/${item.max_attempts}`}，优先级：${item.priority}`,
   ]

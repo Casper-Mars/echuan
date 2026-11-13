@@ -507,6 +507,17 @@ describe('dispatch 投递', () => {
     expect(lines).toContain(`仓库：${DISPATCH.context.product.git_url}`)
   })
 
+  it('renderDispatchMessage 带上项目开发分支；缺省时不渲染空行', () => {
+    const withBranch = renderDispatchMessage({
+      ...DISPATCH,
+      context: { ...DISPATCH.context, dev_branch: 'feat/app-1-social-login' },
+    } as never)
+    expect(withBranch.split('\n')).toContain('开发分支：feat/app-1-social-login')
+
+    const without = renderDispatchMessage(DISPATCH as never)
+    expect(without).not.toContain('开发分支：')
+  })
+
   it('renderDispatchMessage 返工卡：显式【返工】块 + 驳回原因 + 尝试进度', () => {
     const text = renderDispatchMessage({
       ...DISPATCH,

@@ -568,9 +568,10 @@ export function createProjectUpdateTool(options: EchuanToolOptions): ToolDefinit
     },
     async execute(args) {
       try {
+        const title = requireText(args.title, 'title')
         const input: UpdateProjectInput = {
           id: requireText(args.project_id, 'project_id'),
-          title: requireText(args.title, 'title'),
+          title,
         }
         const result = await client.updateProject(input)
         if (result.kind === 'empty') {
@@ -587,7 +588,7 @@ export function createProjectUpdateTool(options: EchuanToolOptions): ToolDefinit
         return {
           kind: 'project_updated' as const,
           project_id: asString(detail.project_id) ?? asString(detail.id) ?? input.id,
-          title: asString(detail.title) ?? input.title,
+          title: asString(detail.title) ?? title,
           ...(status === undefined ? {} : { status }),
           ...(statusName === undefined ? {} : { status_name: statusName }),
           ...(version === undefined ? {} : { version }),

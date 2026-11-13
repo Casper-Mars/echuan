@@ -231,11 +231,15 @@ type WorkItemStats struct {
 // RequirementMaterialID/SpecMaterialID are physical material ids, 0 when the
 // pointer is empty.
 type Project struct {
-	ID                    int64
-	ProjectID             string
-	ProductID             string
-	SeqNo                 int
-	Title                 string
+	ID        int64
+	ProjectID string
+	ProductID string
+	SeqNo     int
+	Title     string
+	// DevBranch is the project's single feature branch, e.g.
+	// "feat/app-1-social-login". Empty means "not generated yet": the platform
+	// generates it on create and lazily backfills old rows on first dispatch.
+	DevBranch             string
 	Status                int
 	Reason                string
 	LastActor             string

@@ -42,6 +42,7 @@ type createProjectRequest struct {
 // generic "unknown field"; every other member is rejected by the decoder.
 type updateProjectRequest struct {
 	Title     *string `json:"title"`
+	DevBranch *string `json:"dev_branch"`
 	Status    *int    `json:"status"`
 	ProductID *string `json:"product_id"`
 }
@@ -64,6 +65,7 @@ type projectResponse struct {
 	ProductID  string  `json:"product_id"`
 	SeqNo      int     `json:"seq_no"`
 	Title      string  `json:"title"`
+	DevBranch  string  `json:"dev_branch"`
 	Status     int     `json:"status"`
 	StatusName string  `json:"status_name"`
 	Reason     *string `json:"reason"`
@@ -229,6 +231,7 @@ func (h *projectsHandler) updateProject(w http.ResponseWriter, r *http.Request) 
 
 	project, err := h.service.UpdateProject(r.Context(), projectID, app.UpdateProjectInput{
 		Title:     req.Title,
+		DevBranch: req.DevBranch,
 		Status:    req.Status,
 		ProductID: req.ProductID,
 	})
@@ -427,6 +430,7 @@ func toProjectResponse(p domain.Project) projectResponse {
 		ProductID:             p.ProductID,
 		SeqNo:                 p.SeqNo,
 		Title:                 p.Title,
+		DevBranch:             p.DevBranch,
 		Status:                p.Status,
 		StatusName:            domain.StatusName(p.Status),
 		Reason:                reason,

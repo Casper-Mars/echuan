@@ -102,7 +102,10 @@ type DispatchProduct struct {
 type DispatchContext struct {
 	SpecVersion int
 	SpecDigest  string
-	Product     DispatchProduct
+	// DevBranch is the project's single feature branch (dsh-agent-dev 0.6.0+
+	// flow). Older rows are backfilled on their first dispatch.
+	DevBranch string
+	Product   DispatchProduct
 }
 
 // Dispatch is the payload of a dispatch command and of a 200 claim response.
@@ -334,6 +337,14 @@ func buildDispatch(ctx context.Context, tx *sql.Tx, row store.WorkItem, ttl time
 		specDigest = "sha256:" + spec.SHA256
 	}
 
+	devBranch := project.DevBranch
+	if devBranch == "" {
+		devBranch = generateDevBranch(project.ProjectID, project.Title)
+		if err := store.BackfillProjectDevBranch(ctx, tx, project.ID, devBranch, formatTimestamp(now)); err != nil {
+			return nil, err
+		}
+	}
+
 	inputs, err := store.ListWorkItemInputs(ctx, tx, row.ID)
 	if err != nil {
 		return nil, err
@@ -379,6 +390,7 @@ func buildDispatch(ctx context.Context, tx *sql.Tx, row store.WorkItem, ttl time
 		Context: DispatchContext{
 			SpecVersion: specVersion,
 			SpecDigest:  specDigest,
+			DevBranch:   devBranch,
 			Product: DispatchProduct{
 				ID:     product.ProductID,
 				Name:   product.Name,
