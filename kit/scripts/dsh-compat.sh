@@ -14,7 +14,7 @@
 #      不满足会直接拒绝安装并打印 requirements（这是 manifest 层）；
 #   2. patch 组合：`dsh --profile <p> --dump-config` 能把 echuan 插件组进配置树
 #      （这是装配层，schema 变更会在这里炸）；
-#   3. 运行时装配：冷启动 profile，断言 23 个工具与 1 个技能真的注册成功
+#   3. 运行时装配：冷启动 profile，断言 25 个工具与 1 个技能真的注册成功
 #      （这是运行层，服务契约变更 / 惰性 import 失败会在这里暴露）。
 #
 # 退出码：全部目标通过为 0，任一目标失败为 1，用法错误为 2。
@@ -124,7 +124,7 @@ check_one() {
       err "运行时探针未通过（dsh $resolved）"
       exit 1
     fi
-    echo "[dsh-compat] PASS 运行时装配（23 工具 + 1 技能）"
+    echo "[dsh-compat] PASS 运行时装配（25 工具 + 1 技能）"
   )
 
   local status=$?
