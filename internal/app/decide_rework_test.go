@@ -11,6 +11,8 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -503,4 +505,79 @@ func TestRequirementRejectRequeuesReportedCard(t *testing.T) {
 	if items[0].Attempt != 1 {
 		t.Errorf("attempt = %d, want 1 (rework keeps the attempt)", items[0].Attempt)
 	}
+}
+
+// TestSpecRejectExhaustsBudgetIntoFailed pins the fix for "after three
+// rejections the card sits in the queue forever": the claim query only takes
+// attempt < max_attempts, so the last rejection fails the card instead. A
+// failed card is an inbox candidate, and rejecting it again starts a new round
+// with a fresh budget.
+func TestSpecRejectExhaustsBudgetIntoFailed(t *testing.T) {
+	f := newPhaseFixture(t)
+	ctx := context.Background()
+	detail := f.createProject(t, "方案反复驳回", "# 需求\n\n正文\n")
+	projectID := detail.Project.ProjectID
+	if approved := f.approve(t, projectID); approved.Status != domain.StatusSpecDraft {
+		t.Fatalf("status = %d, want spec_draft", approved.Status)
+	}
+
+	for round := 1; round <= defaultWorkItemMaxAttempts; round++ {
+		_, dispatch := f.register(t, phaseKindDesign)
+		if dispatch == nil || dispatch.Kind != phaseKindDesign {
+			t.Fatalf("round %d: dispatch = %+v, want the design card", round, dispatch)
+		}
+		spec, _, err := f.env.service.SaveSpec(ctx, projectID, "", "agent:cto",
+			titlePtr(fmt.Sprintf("方案 v%d", round)), "# 方案\n", 0, false)
+		if err != nil {
+			t.Fatalf("round %d: SaveSpec: %v", round, err)
+		}
+		if _, err := f.report(t, dispatch, spec.Spec.MaterialID); err != nil {
+			t.Fatalf("round %d: report: %v", round, err)
+		}
+		if _, err := f.reject(t, projectID, fmt.Sprintf("第 %d 次驳回", round)); err != nil {
+			t.Fatalf("round %d: reject: %v", round, err)
+		}
+	}
+
+	card := f.singlePhaseItem(t, projectID, phaseKindDesign)
+	if card.State != store.WorkItemStateFailed {
+		t.Fatalf("state after %d rejections = %q, want failed (queued would never be dispatched)",
+			defaultWorkItemMaxAttempts, card.State)
+	}
+	if card.Attempt != defaultWorkItemMaxAttempts {
+		t.Errorf("attempt = %d, want %d", card.Attempt, defaultWorkItemMaxAttempts)
+	}
+	if card.Reason == nil || !strings.Contains(*card.Reason, "已用完") {
+		t.Errorf("reason = %v, want the budget note", card.Reason)
+	}
+
+	// No worker can pick it up at this point.
+	if dispatch := f.claimOrNil(t); dispatch != nil {
+		t.Fatalf("claim = %+v, want nothing while the budget is exhausted", dispatch)
+	}
+
+	// Rejecting the failed card is the human's "another round": the budget is
+	// reset so the card is claimable again.
+	decided, err := f.work.DecideWorkItem(ctx, WorkItemDecisionInput{
+		WorkID: card.WorkID, Decision: "reject", Reason: "再给一轮", Actor: "human:cto",
+	})
+	if err != nil {
+		t.Fatalf("DecideWorkItem(reject failed): %v", err)
+	}
+	if decided.ToState != store.WorkItemStateQueued {
+		t.Errorf("to_state = %q, want queued", decided.ToState)
+	}
+	if decided.Detail.Item.Attempt != 0 {
+		t.Errorf("attempt = %d, want 0 after the human reopened the card", decided.Detail.Item.Attempt)
+	}
+	if next := f.claimOrNil(t); next == nil || next.Kind != phaseKindDesign {
+		t.Fatalf("claim after reopen = %+v, want the design card", next)
+	}
+}
+
+// claimOrNil registers a design worker and returns the dispatch, if any.
+func (f *phaseFixture) claimOrNil(t *testing.T) *Dispatch {
+	t.Helper()
+	_, dispatch := f.register(t, phaseKindDesign)
+	return dispatch
 }

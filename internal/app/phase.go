@@ -210,6 +210,37 @@ func isPhaseKind(kind string) bool {
 	}
 }
 
+// exhaustedReason renders the objection of a card whose attempt budget is used
+// up, so the failure explains itself in the inbox instead of looking like an
+// agent error.
+func exhaustedReason(base string, attempt, maxAttempts int) string {
+	note := fmt.Sprintf("本轮 %d/%d 次尝试已用完，需人工驳回该卡重开", attempt, maxAttempts)
+	if trimmed := strings.TrimSpace(base); trimmed != "" {
+		return trimmed + "｜" + note
+	}
+	return note
+}
+
+// requeueTarget decides the state a human rejection sends a card to.
+//
+// The attempt budget is per round, and the claim query only takes cards with
+// attempt < max_attempts. Requeueing the last allowed attempt would therefore
+// park the card in a queue nothing dispatches and the inbox does not show — the
+// reported "stuck in queued forever". Such a card goes to failed instead, which
+// is an inbox candidate; the human can then reject it again to start a new
+// round (DecideWorkItem resets the budget on a failed card).
+func requeueTarget(state string, attempt, maxAttempts int, reason string) (string, *string) {
+	trimmed := strings.TrimSpace(reason)
+	if state == store.WorkItemStateFailed || attempt >= maxAttempts {
+		text := exhaustedReason(trimmed, attempt, maxAttempts)
+		return store.WorkItemStateFailed, &text
+	}
+	if trimmed == "" {
+		return store.WorkItemStateQueued, nil
+	}
+	return store.WorkItemStateQueued, &trimmed
+}
+
 // requeuePhaseWorkItem sends a stage card whose artifact the gate just rejected
 // back to the queue, in the caller's transaction.
 //
@@ -231,16 +262,13 @@ func requeuePhaseWorkItem(ctx context.Context, tx *sql.Tx, projectID int64, kind
 		return nil
 	}
 
-	var reasonPtr *string
-	if trimmed := strings.TrimSpace(reason); trimmed != "" {
-		reasonPtr = &trimmed
-	}
+	next, reasonPtr := requeueTarget(item.State, item.Attempt, item.MaxAttempts, reason)
 	updateTime := formatTimestamp(nextTimestampAfter(now, item.UpdateTime))
 	affected, err := store.TransitionWorkItemDecision(ctx, tx, store.WorkItemDecisionWrite{
 		ID:            item.ID,
 		ExpectState:   item.State,
 		ExpectVersion: item.Version,
-		NextState:     store.WorkItemStateQueued,
+		NextState:     next,
 		Reason:        reasonPtr,
 		ResetAttempts: false,
 		UpdateTime:    updateTime,

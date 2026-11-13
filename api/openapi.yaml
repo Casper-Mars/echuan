@@ -1030,6 +1030,12 @@ paths:
         悬空。请改用 `/v1/projects/decide`（计划批次用 `/v1/work-items/review`），
         门禁会在同一事务内接受或退回该卡；此处返回 409 `invalid_state`。
         `failed` 状态的阶段卡仍可驳回重排。
+
+        重试预算按「轮」计算：领卡时 `attempt` +1，派单只取 `attempt <
+        max_attempts` 的卡。因此驳回最后一次允许的尝试（`attempt >=
+        max_attempts`）时，卡转为 `failed` 而不是 `queued`——排进队列也永远不会
+        被派发，且收件箱看不到。`failed` 卡再次 `reject` 表示人工「再来一轮」：
+        回到 `queued` 且 `attempt` 归零。
       tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"

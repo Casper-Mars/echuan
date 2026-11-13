@@ -368,7 +368,10 @@ func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisio
 					"(the gate accepts or requeues this card automatically)", row.WorkID, row.Kind)}
 		}
 
-		var next string
+		var (
+			next          string
+			resetAttempts bool
+		)
 		if decision == string(domain.DecisionApprove) {
 			if row.State != store.WorkItemStateSubmitted {
 				return &domain.InvalidStateError{Reason: fmt.Sprintf(
@@ -380,12 +383,32 @@ func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisio
 				return &domain.InvalidStateError{Reason: fmt.Sprintf(
 					"work item %q is in state %s; reject requires submitted or failed", row.WorkID, row.State)}
 			}
-			next = store.WorkItemStateQueued
+			// Rejecting a failed card is the human's "one more round": the
+			// budget is reset, otherwise the requeued card could never be
+			// claimed (the queue only takes attempt < max_attempts).
+			//
+			// Rejecting the last allowed attempt of a submitted card cannot
+			// requeue it either, so it fails instead of parking invisibly in
+			// the queue. The human objection stays in the recorded decision;
+			// the card carries it plus the budget note.
+			switch {
+			case row.State == store.WorkItemStateFailed:
+				next = store.WorkItemStateQueued
+				resetAttempts = true
+			case row.Attempt >= row.MaxAttempts:
+				next = store.WorkItemStateFailed
+			default:
+				next = store.WorkItemStateQueued
+			}
 		}
 
 		var reasonPtr *string
 		if reason != "" {
 			reasonPtr = &reason
+		}
+		if next == store.WorkItemStateFailed && decision != string(domain.DecisionApprove) {
+			text := exhaustedReason(reason, row.Attempt, row.MaxAttempts)
+			reasonPtr = &text
 		}
 		updateTime := formatTimestamp(s.nextTimestamp(row.UpdateTime))
 
@@ -395,7 +418,7 @@ func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisio
 			ExpectVersion: row.Version,
 			NextState:     next,
 			Reason:        reasonPtr,
-			ResetAttempts: false,
+			ResetAttempts: resetAttempts,
 			UpdateTime:    updateTime,
 		})
 		if err != nil {
