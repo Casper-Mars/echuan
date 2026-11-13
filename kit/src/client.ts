@@ -610,8 +610,8 @@ export type ToolMethodName = (typeof TOOL_METHODS)[number]
  * `tool` 是客户端方法名；`method`/`path`/`operationId` 必须能在
  * `api/openapi.yaml` 的 `paths` 下原样找到（单测解析 yaml 校验）。
  *
- * 注意：23 个工具共用这 22 条 operation 里的 20 条（`echuan_worker_info` 零 HTTP）——
- * `updateProduct` / `deleteProduct` 已进客户端契约但还没有工具装配（待后续卡）；
+ * 注意：25 个工具共用这 22 条 operation 的**全部** 22 条（`echuan_worker_info` 零 HTTP）——
+ * `updateProduct` / `deleteProduct` 已由 `echuan_product_update` / `echuan_product_delete` 装配；
  * `listProjects` / `listWorkItems` 各由一个 GET 同时承担「列表」与「按 id 取详情」两种工具语义。
  */
 export const TOOL_OPERATIONS = [

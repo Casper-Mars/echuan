@@ -102,7 +102,7 @@ export interface EchuanToolOptions {
   workerInfo?: WorkerInfoDeps
   /**
    * 不注册的工具名（可选）。只影响本进程注册哪些工具，不改变工具定义与 HTTP 契约；
-   * 缺省等价于 `[]`（全量 23 个）。名称的归一化与校验见 `../tool-names.js`。
+   * 缺省等价于 `[]`（全量 25 个）。名称的归一化与校验见 `../tool-names.js`。
    */
   exclude?: readonly string[]
 }

@@ -1,15 +1,15 @@
 /**
- * 工具层入口：装配并注册 23 个工具（15 个写：项目创建 / 需求写入 / 提交评审 /
+ * 工具层入口：装配并注册 25 个工具（17 个写：项目创建 / 需求写入 / 提交评审 /
  * 方案创建 / 方案修订 / 批量建卡 / 领卡 / 续租 / 交报告 / 单卡增改删 /
- * 项目改标题 / 建产品 / 资料包下载；8 个读：待办 / 产品列表 / 项目列表 /
- * 工作项列表 / 项目全景 / 工作项详情 / 资料正文 / worker 诊断）。
+ * 项目改标题 / 建产品 / 改产品 / 删产品 / 资料包下载；8 个读：待办 / 产品列表 /
+ * 项目列表 / 工作项列表 / 项目全景 / 工作项详情 / 资料正文 / worker 诊断）。
  *
  * 写工具只覆盖「起草 → 提交评审 → 建卡」、工作项执行（领卡/续租/交报告）与
  * 单卡增改删等辅助动作，**不提供任何审批 / 驳回 / 取消动作**。
  *
  * 裁剪：`EchuanToolOptions.exclude` 里的工具名不会进入本进程的注册表。过滤只发生在
  * 「构造 → 注册」这一层，工具定义、参数与平台 HTTP 契约完全不变；不传 `exclude`
- * 时行为与升级前一致（全量 23 个）。工具名清单的唯一真源是 `../tool-names.js`
+ * 时行为与升级前一致（全量 25 个）。工具名清单的唯一真源是 `../tool-names.js`
  * （纯常量、不依赖 dsh-tools），因此入口可以在同步阶段就校验配置。
  *
  * 加载时机：本模块会静态引入 `@deepseek-ai/dsh-tools`（较重的模块图），
@@ -26,6 +26,8 @@ import { validateExclude } from '../tool-names.js'
 import { createEchuanReadTools } from './read.js'
 import {
   createProductCreateTool,
+  createProductDeleteTool,
+  createProductUpdateTool,
   createProjectUpdateTool,
   createWorkItemCreateTool,
   createWorkItemDeleteTool,
@@ -69,12 +71,12 @@ export {
 } from './render.js'
 export { NO_WORK_TEXT } from './render.js'
 
-/** 构造 15 个写工具定义（历史名称，等价于 {@link createEchuanWriteTools}）。 */
+/** 构造 17 个写工具定义（历史名称，等价于 {@link createEchuanWriteTools}）。 */
 export function createEchuanTools(options: EchuanToolOptions): ToolDefinition[] {
   return createEchuanWriteTools(options)
 }
 
-/** 构造 15 个写工具定义（生命周期 6 个 + 工作项执行 3 个 + 辅助 6 个）。 */
+/** 构造 17 个写工具定义（生命周期 6 个 + 工作项执行 3 个 + 辅助 8 个）。 */
 export function createEchuanWriteTools(options: EchuanToolOptions): ToolDefinition[] {
   return [
     createClaimTool(options),
@@ -91,6 +93,8 @@ export function createEchuanWriteTools(options: EchuanToolOptions): ToolDefiniti
     createWorkItemDeleteTool(options),
     createProjectUpdateTool(options),
     createProductCreateTool(options),
+    createProductUpdateTool(options),
+    createProductDeleteTool(options),
     createProjectPackageTool(options),
   ]
 }
@@ -99,9 +103,9 @@ export function createEchuanWriteTools(options: EchuanToolOptions): ToolDefiniti
 export { createEchuanReadTools }
 
 /**
- * 构造**过滤后**的 23 个工具定义（先写后读，与注册顺序一致）。
+ * 构造**过滤后**的 25 个工具定义（先写后读，与注册顺序一致）。
  *
- * - 不传 / 传空 `exclude`：返回全部 23 个，顺序与 {@link TOOL_NAMES} 完全一致；
+ * - 不传 / 传空 `exclude`：返回全部 25 个，顺序与 {@link TOOL_NAMES} 完全一致；
  * - 传了 `exclude`：先按 {@link validateExclude} 归一化（trim / 去重 / 未知名称抛错），
  *   再按名字过滤。未知名称在这里也会抛 `TypeError`，作为入口校验之外的第二道防线。
  */
