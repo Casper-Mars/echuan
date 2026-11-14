@@ -724,3 +724,339 @@ func TestProjectDetailOmitsBodies(t *testing.T) {
 		}
 	}
 }
+
+// forceProjectStatus puts a project into a state/version pair the HTTP API would
+// take many requests to reach, so the completion endpoint can be driven from
+// pending_done directly.
+func forceProjectStatus(t *testing.T, st *store.Store, projectID string, status, version int) {
+	t.Helper()
+	if _, err := st.Write().ExecContext(context.Background(),
+		`UPDATE projects SET status = ?, version = ? WHERE project_id = ?`,
+		status, version, projectID); err != nil {
+		t.Fatalf("force project %s to %d/v%d: %v", projectID, status, version, err)
+	}
+}
+
+// completionGateCount counts the project-level gate=complete rows of one project.
+func completionGateCount(t *testing.T, st *store.Store, projectID string) int64 {
+	t.Helper()
+	var n int64
+	if err := st.Read().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM gate_decisions WHERE subject_type = 'project' AND subject_id = ? AND gate = 'complete'`,
+		projectID).Scan(&n); err != nil {
+		t.Fatalf("count completion records: %v", err)
+	}
+	return n
+}
+
+// TestCompleteProjectHTTP covers the success path of POST
+// /v1/projects/complete: 200 with status completed, version + 1, the human
+// actor in last_actor, and one gate_decisions record sharing the project's
+// update_time.
+func TestCompleteProjectHTTP(t *testing.T) {
+	h, st := newProjectTestServer(t)
+	seedProduct(t, st, "APP")
+
+	created := doJSON(t, h, http.MethodPost, "/v1/projects", map[string]any{
+		"product_id":     "APP",
+		"title":          "登录页改版",
+		"requirement_md": httpRequirement,
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d (body %s)", created.Code, created.Body.String())
+	}
+	projectID := decodeProjectDetail(t, created).ProjectID
+	forceProjectStatus(t, st, projectID, 6, 5)
+
+	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/complete?id="+projectID, nil,
+		map[string]string{"If-Match": "5", HeaderActor: "human:pm"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("complete: status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	completed := decodeProjectFromResponse(t, rec)
+	if completed.Status != 7 || completed.StatusName != "completed" {
+		t.Errorf("status = %d (%s), want 7 (completed)", completed.Status, completed.StatusName)
+	}
+	if completed.Version != 6 {
+		t.Errorf("version = %d, want 6 (one bump)", completed.Version)
+	}
+	if completed.LastActor == nil || *completed.LastActor != "human:pm" {
+		t.Errorf("last_actor = %v, want human:pm", completed.LastActor)
+	}
+
+	// The read model agrees with the response, and the completion record shares
+	// the project's update_time.
+	detailRec := doJSON(t, h, http.MethodGet, "/v1/projects?id="+projectID, nil)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("get: status = %d", detailRec.Code)
+	}
+	detail := decodeProjectDetail(t, detailRec)
+	if detail.Status != 7 || detail.Version != 6 {
+		t.Errorf("persisted state = %d/v%d, want 7/v6", detail.Status, detail.Version)
+	}
+
+	historyRec := doJSON(t, h, http.MethodGet, "/v1/gate-decisions?project_id="+projectID, nil)
+	if historyRec.Code != http.StatusOK {
+		t.Fatalf("history: status = %d (body %s)", historyRec.Code, historyRec.Body.String())
+	}
+	var history gateDecisionListResponse
+	if err := json.Unmarshal(historyRec.Body.Bytes(), &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(history.Items) != 1 {
+		t.Fatalf("history items = %d, want 1 (only the completion)", len(history.Items))
+	}
+	row := history.Items[0]
+	if row.SubjectType != "project" || row.SubjectID != projectID || row.Gate != "complete" {
+		t.Errorf("record = %s/%s/%s, want project/%s/complete", row.SubjectType, row.SubjectID, row.Gate, projectID)
+	}
+	if row.Decision != "approve" || row.DecidedBy != "human:pm" {
+		t.Errorf("record decision = %s/%s, want approve/human:pm", row.Decision, row.DecidedBy)
+	}
+	if row.MaterialID != nil || row.MaterialVersion != nil {
+		t.Errorf("record material = %v/%v, want null/null", row.MaterialID, row.MaterialVersion)
+	}
+	if row.CreateTime != detail.UpdateTime {
+		t.Errorf("record create_time = %q, project update_time = %q, want the same value", row.CreateTime, detail.UpdateTime)
+	}
+
+	// A replay is an invalid state and adds no second record.
+	replay := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/complete?id="+projectID, nil,
+		map[string]string{"If-Match": "6", HeaderActor: "human:pm"})
+	if replay.Code != http.StatusConflict {
+		t.Fatalf("replay: status = %d, want 409 (body %s)", replay.Code, replay.Body.String())
+	}
+	if body := decodeError(t, replay); body.Code != "invalid_state" {
+		t.Errorf("replay code = %q, want invalid_state", body.Code)
+	}
+	if got := completionGateCount(t, st, projectID); got != 1 {
+		t.Errorf("completion records after replay = %d, want 1", got)
+	}
+}
+
+// TestCompleteProjectHTTPRejectsAgents pins the actor gate of the completion
+// endpoint: an agent may not close a project.
+func TestCompleteProjectHTTPRejectsAgents(t *testing.T) {
+	h, st := newProjectTestServer(t)
+	seedProduct(t, st, "APP")
+	created := doJSON(t, h, http.MethodPost, "/v1/projects", map[string]any{
+		"product_id": "APP", "title": "门禁", "requirement_md": httpRequirement,
+	})
+	projectID := decodeProjectDetail(t, created).ProjectID
+	forceProjectStatus(t, st, projectID, 6, 2)
+
+	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/complete?id="+projectID, nil,
+		map[string]string{"If-Match": "2", HeaderActor: "agent:echuan"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body %s)", rec.Code, rec.Body.String())
+	}
+	if body := decodeError(t, rec); body.Code != "agent_forbidden" {
+		t.Errorf("code = %q, want agent_forbidden", body.Code)
+	}
+	if got := completionGateCount(t, st, projectID); got != 0 {
+		t.Errorf("completion records = %d, want 0", got)
+	}
+}
+
+// TestCompleteProjectHTTPUnsettledCards keeps the "still has open work" answer at
+// the HTTP boundary: 409 invalid_state, the message carries the count, the
+// project stays pending_done and no record is written.
+func TestCompleteProjectHTTPUnsettledCards(t *testing.T) {
+	h, st := newProjectTestServer(t)
+	seedProduct(t, st, "APP")
+	created := doJSON(t, h, http.MethodPost, "/v1/projects", map[string]any{
+		"product_id": "APP", "title": "未结清", "requirement_md": httpRequirement,
+	})
+	projectID := decodeProjectDetail(t, created).ProjectID
+	forceProjectStatus(t, st, projectID, 6, 3)
+	insertCard(t, st, physicalProjectID(t, st, projectID), projectID+"-T0001", "dev",
+		store.WorkItemStateBlocked, 1, nil)
+	insertCard(t, st, physicalProjectID(t, st, projectID), projectID+"-T0002", "dev",
+		store.WorkItemStateQueued, 2, nil)
+
+	rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/complete?id="+projectID, nil,
+		map[string]string{"If-Match": "3", HeaderActor: "human:pm"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body %s)", rec.Code, rec.Body.String())
+	}
+	body := decodeError(t, rec)
+	if body.Code != "invalid_state" {
+		t.Errorf("code = %q, want invalid_state", body.Code)
+	}
+	if !strings.Contains(body.Message, "2") {
+		t.Errorf("message = %q, want the unsettled count", body.Message)
+	}
+	detail := decodeProjectDetail(t, doJSON(t, h, http.MethodGet, "/v1/projects?id="+projectID, nil))
+	if detail.Status != 6 || detail.Version != 3 {
+		t.Errorf("state = %d/v%d, want 6/v3", detail.Status, detail.Version)
+	}
+	if got := completionGateCount(t, st, projectID); got != 0 {
+		t.Errorf("completion records = %d, want 0", got)
+	}
+}
+
+// TestCompleteProjectHTTPPreconditions walks the remaining error contract of the
+// completion endpoint: version header (400), stale version (409), illegal state
+// (409) and unknown project (404).
+func TestCompleteProjectHTTPPreconditions(t *testing.T) {
+	h, st := newProjectTestServer(t)
+	seedProduct(t, st, "APP")
+	created := doJSON(t, h, http.MethodPost, "/v1/projects", map[string]any{
+		"product_id": "APP", "title": "前置条件", "requirement_md": httpRequirement,
+	})
+	projectID := decodeProjectDetail(t, created).ProjectID
+	forceProjectStatus(t, st, projectID, 6, 4)
+
+	t.Run("missing If-Match", func(t *testing.T) {
+		rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/complete?id="+projectID, nil,
+			map[string]string{HeaderActor: "human:pm"})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+		}
+		body := decodeError(t, rec)
+		if body.Code != "invalid_version" {
+			t.Errorf("code = %q, want invalid_version", body.Code)
+		}
+		if detail := fieldReason(body, "If-Match"); detail == "" {
+			t.Errorf("details = %+v, want a field entry for If-Match", body.Details)
+		}
+	})
+
+	t.Run("malformed If-Match", func(t *testing.T) {
+		for _, raw := range []string{"abc", "0", "-3"} {
+			rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/complete?id="+projectID, nil,
+				map[string]string{"If-Match": raw, HeaderActor: "human:pm"})
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("If-Match %q: status = %d, want 400 (body %s)", raw, rec.Code, rec.Body.String())
+			}
+			if body := decodeError(t, rec); body.Code != "invalid_version" {
+				t.Errorf("If-Match %q: code = %q, want invalid_version", raw, body.Code)
+			}
+		}
+	})
+
+	t.Run("stale version", func(t *testing.T) {
+		rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/complete?id="+projectID, nil,
+			map[string]string{"If-Match": "3", HeaderActor: "human:pm"})
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409 (body %s)", rec.Code, rec.Body.String())
+		}
+		if body := decodeError(t, rec); body.Code != "invalid_version" {
+			t.Errorf("code = %q, want invalid_version", body.Code)
+		}
+	})
+
+	t.Run("illegal state", func(t *testing.T) {
+		for _, status := range []int{0, 1, 2, 3, 4, 5, 7, 8} {
+			forceProjectStatus(t, st, projectID, status, 9)
+			rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/complete?id="+projectID, nil,
+				map[string]string{"If-Match": "9", HeaderActor: "human:pm"})
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status %d: rec = %d, want 409 (body %s)", status, rec.Code, rec.Body.String())
+			}
+			if body := decodeError(t, rec); body.Code != "invalid_state" {
+				t.Errorf("status %d: code = %q, want invalid_state", status, body.Code)
+			}
+		}
+	})
+
+	t.Run("unknown project", func(t *testing.T) {
+		rec := doJSONHeaders(t, h, http.MethodPost, "/v1/projects/complete?id=APP-404", nil,
+			map[string]string{"If-Match": "1", HeaderActor: "human:pm"})
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body %s)", rec.Code, rec.Body.String())
+		}
+		if body := decodeError(t, rec); body.Code != "not_found" {
+			t.Errorf("code = %q, want not_found", body.Code)
+		}
+	})
+
+	if got := completionGateCount(t, st, projectID); got != 0 {
+		t.Errorf("completion records after every rejection = %d, want 0", got)
+	}
+}
+
+// TestProjectResponseDerivedFields pins repo_url and the status-derived
+// dev_branch on both the list and the detail response (same DTO).
+func TestProjectResponseDerivedFields(t *testing.T) {
+	h, st := newProjectTestServer(t)
+	seedProduct(t, st, "APP")
+
+	// The product git_url is the repo_url the project response must echo.
+	productRec := doJSON(t, h, http.MethodGet, "/v1/products?id=APP", nil)
+	if productRec.Code != http.StatusOK {
+		t.Fatalf("product: status = %d", productRec.Code)
+	}
+	var product struct {
+		GitURL string `json:"git_url"`
+	}
+	if err := json.Unmarshal(productRec.Body.Bytes(), &product); err != nil {
+		t.Fatalf("decode product: %v", err)
+	}
+	if product.GitURL == "" {
+		t.Fatal("seeded product has no git_url")
+	}
+
+	created := doJSON(t, h, http.MethodPost, "/v1/projects", map[string]any{
+		"product_id": "APP", "title": "分支与仓库", "requirement_md": httpRequirement,
+	})
+	projectID := decodeProjectDetail(t, created).ProjectID
+
+	detail := func() projectResponse {
+		t.Helper()
+		rec := doJSON(t, h, http.MethodGet, "/v1/projects?id="+projectID, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get: status = %d (body %s)", rec.Code, rec.Body.String())
+		}
+		return decodeProjectDetail(t, rec).projectResponse
+	}
+	list := func() projectResponse {
+		t.Helper()
+		rec := doJSON(t, h, http.MethodGet, "/v1/projects?product_id=APP", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list: status = %d (body %s)", rec.Code, rec.Body.String())
+		}
+		page := decodeProjectList(t, rec)
+		if len(page.Items) != 1 {
+			t.Fatalf("list items = %d, want 1", len(page.Items))
+		}
+		return page.Items[0]
+	}
+
+	// 0–3: no branch yet, but the repository is already known.
+	for _, status := range []int{0, 1, 2, 3} {
+		forceProjectStatus(t, st, projectID, status, 1)
+		for name, got := range map[string]projectResponse{"detail": detail(), "list": list()} {
+			if got.Status != status {
+				t.Fatalf("%s: status = %d, want %d", name, got.Status, status)
+			}
+			if got.DevBranch != nil {
+				t.Errorf("%s status %d: dev_branch = %q, want null", name, status, *got.DevBranch)
+			}
+			if got.RepoURL == nil || *got.RepoURL != product.GitURL {
+				t.Errorf("%s status %d: repo_url = %v, want %q", name, status, got.RepoURL, product.GitURL)
+			}
+		}
+	}
+
+	// 4–7: the recorded branch is returned.
+	for _, status := range []int{4, 5, 6, 7} {
+		forceProjectStatus(t, st, projectID, status, 1)
+		for name, got := range map[string]projectResponse{"detail": detail(), "list": list()} {
+			if got.DevBranch == nil || *got.DevBranch == "" {
+				t.Errorf("%s status %d: dev_branch = %v, want the recorded branch", name, status, got.DevBranch)
+			}
+			if got.RepoURL == nil || *got.RepoURL != product.GitURL {
+				t.Errorf("%s status %d: repo_url = %v, want %q", name, status, got.RepoURL, product.GitURL)
+			}
+		}
+	}
+
+	// 8 (cancelled): no branch is claimed.
+	forceProjectStatus(t, st, projectID, 8, 1)
+	for name, got := range map[string]projectResponse{"detail": detail(), "list": list()} {
+		if got.DevBranch != nil {
+			t.Errorf("%s status 8: dev_branch = %q, want null", name, *got.DevBranch)
+		}
+	}
+}

@@ -255,6 +255,20 @@ export function cancelProject(id: string): Promise<Project> {
 }
 
 /**
+ * 人工完成项目（pending_done 6 → completed 7），6→7 的唯一入口。
+ *
+ * 必须带 If-Match（version）：缺失/过期 → invalid_version；项目不在 6
+ * 或仍有未结清卡片 → invalid_state（message 含未结清数量）。
+ */
+export function completeProject(id: string, version: number): Promise<Project> {
+  return request<Project>('/v1/projects/complete', {
+    method: 'POST',
+    query: { id },
+    version,
+  })
+}
+
+/**
  * 项目内工作项列表。默认只拉 kind=dev（开发任务看板）；
  * 需要阶段工作项时显式传入 kinds（如评审弹窗查 breakdown 计划资料）。
  */

@@ -539,6 +539,49 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+  /v1/projects/complete:
+    post:
+      operationId: completeProject
+      summary: 人工完成项目（pending_done → completed）
+      description: |
+        把处于 `pending_done`(6) 的项目置为 `completed`(7)。这是 6→7 的**唯一**入口：
+        卡片验收不再推进项目状态，全部卡片结清后项目停在 6，等人显式调用本接口。
+
+        前置条件（全部在同一事务内校验，任一不满足则整体回滚，项目仍为 6）：
+        - 项目存在，且 `If-Match` 等于当前 `version`（必填；缺失或非正整数返回 400
+          `invalid_version`，版本已过期返回 409 `invalid_version`）；
+        - 项目状态为 `pending_done`(6)：0–5、7、8 一律 409 `invalid_state`；
+        - 项目下没有未结清的卡片：blocked / queued / leased / submitted / failed
+          任一状态存在即返回 409 `invalid_state`，message 中带未结清数量；
+        - 调用者不是 agent：actor 以 `agent:` 前缀开头返回 403 `agent_forbidden`。
+
+        成功时同一事务内追加一条 `gate_decisions` 记录：`subject_type=project`、
+        `subject_id=<project_id>`、`gate=complete`、`decision=approve`、
+        `material_id=null`、`decided_by=<actor>`，`create_time` 与项目 `update_time` 同值。
+        重复提交（项目已为 7）返回 409 `invalid_state`，不会产生第二条记录。
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: 已完成
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/projects/materials:
     get:
       operationId: listProjectMaterials
@@ -1721,7 +1764,7 @@ components:
     Project:
       type: object
       additionalProperties: false
-      required: [id, project_id, product_id, seq_no, title, dev_branch, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, work_item_total, work_item_done, create_time, update_time]
+      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, work_item_total, work_item_done, create_time, update_time]
       properties:
         id:
           type: string
@@ -1735,11 +1778,23 @@ components:
           type: string
         dev_branch:
           type: string
+          nullable: true
           description: |
             项目的开发分支（一个项目一条 feature 分支），如 `feat/app-1-social-login`。
             创建项目时由平台按 `feat/<project_id>-<title slug>` 生成；PATCH 可显式改写，
             格式为 `^(feat|fix|refactor|docs|chore|test)/[a-z0-9][a-z0-9._-]*$`，
             同一产品下不得重复（409）。
+
+            只读响应中该字段按状态派生：`status` 为 4/5/6/7 时返回记录的分支名
+            （记录为空则为 null），`status` 为 0/1/2/3/8 时一律为 null —— 尚未进入
+            开发阶段的项目没有开发分支，已取消项目不猜分支。这是「约定分支名」，
+            平台不校验远端是否存在。
+        repo_url:
+          type: string
+          nullable: true
+          description: |
+            产品的代码仓库地址，取自 `products.git_url`（空串按 null）。
+            只读派生字段，不可通过 PATCH 修改。
         status:
           type: integer
           description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
@@ -1781,7 +1836,7 @@ components:
       type: object
       description: 项目详情。requirement/spec 仅返回材料元数据（含 material_id），正文请通过 GET /v1/materials?id=<material_id> 单独获取；详情响应不内嵌正文。
       additionalProperties: false
-      required: [id, project_id, product_id, seq_no, title, dev_branch, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, work_item_total, work_item_done, create_time, update_time, requirement, spec]
+      required: [id, project_id, product_id, seq_no, title, status, status_name, reason, last_actor, version, tasks_review_reason, tasks_review_rejected_at, work_item_total, work_item_done, create_time, update_time, requirement, spec]
       properties:
         id:
           type: string
@@ -1795,7 +1850,14 @@ components:
           type: string
         dev_branch:
           type: string
-          description: 项目的开发分支，如 `feat/app-1-social-login`
+          nullable: true
+          description: |
+            项目的开发分支，如 `feat/app-1-social-login`。按状态派生：`status` 为
+            4/5/6/7 时返回记录的分支名（记录为空则为 null），0/1/2/3/8 时一律为 null。
+        repo_url:
+          type: string
+          nullable: true
+          description: 产品的代码仓库地址（`products.git_url`），空串按 null；只读派生字段。
         status:
           type: integer
           description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled

@@ -19,7 +19,7 @@ var projectEdges = map[string]int{
 	"4/submit/":              5,
 	"5/review_tasks/approve": 6,
 	"6/review_tasks/approve": 6,
-	"6/settle_tasks/":        7,
+	"6/complete/":            7,
 
 	"0/cancel/": 8,
 	"1/cancel/": 8,
@@ -33,7 +33,7 @@ var projectEdges = map[string]int{
 func TestProjectTransitionMatrix(t *testing.T) {
 	actions := []string{
 		ProjectActionSubmit, ProjectActionDecide, ProjectActionCancel,
-		ProjectActionAddFirstTask, ProjectActionReviewTasks, ProjectActionSettleTasks,
+		ProjectActionAddFirstTask, ProjectActionReviewTasks, ProjectActionComplete,
 	}
 	decisions := []Decision{"", DecisionApprove, DecisionReject, "bogus"}
 
@@ -84,7 +84,7 @@ func TestProjectTerminalStatusesAcceptNothing(t *testing.T) {
 		}
 		for _, action := range []string{
 			ProjectActionSubmit, ProjectActionDecide, ProjectActionCancel,
-			ProjectActionAddFirstTask, ProjectActionReviewTasks, ProjectActionSettleTasks,
+			ProjectActionAddFirstTask, ProjectActionReviewTasks, ProjectActionComplete,
 		} {
 			if err := ValidateProjectTransition(status, action, DecisionApprove); !errors.Is(err, ErrInvalidState) {
 				t.Errorf("status %d action %s: error = %v, want invalid_state", status, action, err)

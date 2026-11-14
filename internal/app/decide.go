@@ -63,6 +63,22 @@ func (s *ProjectService) CancelProject(ctx context.Context, projectID, actor, re
 	return s.transitionProject(ctx, projectID, domain.ProjectActionCancel, "", reason, nil, actor)
 }
 
+// gateComplete is the gate_decisions.gate value of a human project completion.
+// It is written by CompleteProject and by nothing else.
+const gateComplete = "complete"
+
+// CompleteProject closes a pending_done project (6 → 7).
+//
+// It is the only trigger of that edge: accepting the last card no longer
+// advances the project (issue #39), so a project reaches completed solely
+// through this human request. Both preconditions are enforced in the write
+// transaction: the project must be pending_done, and none of its cards may be
+// left in a non-terminal state. A completion that fails either one writes
+// nothing at all — not even the gate record.
+func (s *ProjectService) CompleteProject(ctx context.Context, projectID, actor string, expectVersion int) (DecideResult, error) {
+	return s.transitionProject(ctx, projectID, domain.ProjectActionComplete, "", "", &expectVersion, actor)
+}
+
 // Decide is the unified entry point for human verdicts.
 func (s *ProjectService) Decide(ctx context.Context, in DecideInput) (DecideResult, error) {
 	switch in.Kind {
@@ -109,6 +125,13 @@ func (s *ProjectService) transitionProject(ctx context.Context, projectID, actio
 			}}
 		}
 	}
+	// Completion is a conditional write as well: without the version the caller
+	// cannot prove it closed the state it had read.
+	if action == domain.ProjectActionComplete && expectVersion == nil {
+		return DecideResult{}, &domain.ValidationError{Fields: []domain.FieldError{
+			{Field: "If-Match", Reason: "is required"},
+		}}
+	}
 
 	actor = actorOrDefault(actor)
 
@@ -139,6 +162,24 @@ func (s *ProjectService) transitionProject(ctx context.Context, projectID, actio
 			return err
 		}
 
+		// Completion requires the project to be settled: a pending_done project
+		// that still owns blocked/queued/leased/submitted/failed cards must not
+		// be closed, otherwise "human acceptance" is only a button. The count
+		// runs in the transaction that performs the write, so a card added
+		// concurrently either wins the race (this read sees it) or hits the new
+		// terminal status and is rejected itself.
+		if action == domain.ProjectActionComplete {
+			unsettled, err := store.CountUnsettledWorkItemsByProject(ctx, tx, row.ID)
+			if err != nil {
+				return err
+			}
+			if unsettled > 0 {
+				return &domain.InvalidStateError{Reason: fmt.Sprintf(
+					"project %q has %d unsettled work items; complete requires every card to be accepted or cancelled",
+					row.ProjectID, unsettled)}
+			}
+		}
+
 		nextReason := decideReason(action, decision, reason)
 		updateTime := formatTimestamp(s.nextTimestamp(row.UpdateTime))
 
@@ -166,6 +207,22 @@ func (s *ProjectService) transitionProject(ctx context.Context, projectID, actio
 		// gate was reviewing (requirement or spec of the current status), so a
 		// later v2 never rewrites what an earlier verdict referred to.
 		var material *GateMaterial
+		if action == domain.ProjectActionComplete {
+			// The completion record is the audit trail of "who closed the
+			// project and when": gate=complete, no material, decision=approve,
+			// decided_by=the human actor. create_time is the same value as the
+			// project's update_time because both come from updateTime.
+			if _, err := recordGateDecision(ctx, tx, gateDecisionWrite{
+				SubjectType: store.GateSubjectProject,
+				SubjectID:   row.ProjectID,
+				Gate:        gateComplete,
+				Decision:    string(domain.DecisionApprove),
+				Actor:       actor,
+				CreateTime:  updateTime,
+			}); err != nil {
+				return err
+			}
+		}
 		if action == domain.ProjectActionDecide {
 			gate, ok := projectGate(row.Status)
 			if ok {

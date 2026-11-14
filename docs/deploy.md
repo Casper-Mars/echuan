@@ -610,11 +610,26 @@ curl -fsS -X POST "$BASE/v1/tasks/decide?id=$TASK_ID" \
   -d '{"decision":"accept"}' | jq '.status_name'    # done
 ```
 
-重复 9.8–9.10 处理剩余任务。最后一张卡结清（验收或放弃）后，项目自动进入 `completed`，无需再做项目级验收。
+### 9.11 人工完成项目
+
+重复 9.8–9.10 处理剩余任务。最后一张卡结清（验收或放弃）后，项目**停在 `pending_done`**，
+不会自行收工；`completed` 只由人工调用完成接口写入，项目级验收因此是一次显式动作。
 
 ```bash
-curl -fsS "$BASE/v1/projects?id=APP-1" | jq '.status_name'   # completed
+# 1. 读当前项目：结清后停在 pending_done；If-Match 要用的版本取自这里的 .version
+PROJECT=$(curl -fsS "$BASE/v1/projects?id=APP-1")
+printf '%s\n' "$PROJECT" | jq -r '.status_name'                    # pending_done
+PROJECT_VER=$(printf '%s\n' "$PROJECT" | jq -r '.version')
+
+# 2. 人工完成：If-Match 必填（取自 GET /v1/projects?id=<id> 的 .version），X-Actor 不能是 agent:*
+curl -fsS -X POST "$BASE/v1/projects/complete?id=APP-1" \
+  -H "$JSON" -H 'X-Actor: human:pm' -H "If-Match: $PROJECT_VER" \
+  | jq '.status_name, .version, .last_actor'                       # completed, <VER+1>, human:pm
 ```
+
+失败语义：缺 `If-Match` 或格式非法 → `400 invalid_version`；版本过期 → `409 invalid_version`；
+项目不处于 `pending_done` 或仍有未结清工作项 → `409 invalid_state`（message 带未结清数量）；
+`X-Actor: agent:*` → `403 agent_forbidden`。项目一旦 `completed` 即终态，不再接受新工作项。
 
 ### 9.12 查看整体状态
 

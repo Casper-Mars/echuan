@@ -22,13 +22,18 @@ const WORK_ITEM_KIND_LABELS: Record<(typeof WORK_ITEM_KINDS)[number], string> = 
   dev: '开发',
 }
 
-/** 工作项 state 的中文标签（与 api/openapi.yaml 的文本状态一一对应）。 */
+/**
+ * 工作项 state 的中文标签（与 api/openapi.yaml 的文本状态一一对应）。
+ *
+ * accepted 固定叫「已验收」：项目状态 7 已经占用了「已完成」，
+ * 卡片验收与项目人工完成是两件事，三个词互不覆盖（待完成 / 已完成 / 已验收）。
+ */
 const WORK_ITEM_STATE_LABELS: Record<string, string> = {
   blocked: '待评审',
   queued: '待开发',
   leased: '开发中',
   submitted: '待验收',
-  accepted: '已完成',
+  accepted: '已验收',
   failed: '已失败',
   cancelled: '已取消',
 }
@@ -51,7 +56,7 @@ export const WORK_ITEM_BOARD_COLUMNS: { state: string; label: string }[] = [
   { state: 'queued', label: '待开发' },
   { state: 'leased', label: '开发中' },
   { state: 'submitted', label: '待验收' },
-  { state: 'accepted', label: '已完成' },
+  { state: 'accepted', label: '已验收' },
 ]
 
 /** 附加列（已失败/已取消）：仅非空时显示。 */
@@ -59,6 +64,26 @@ export const WORK_ITEM_TRAILING_COLUMNS: { state: string; label: string }[] = [
   { state: 'failed', label: '已失败' },
   { state: 'cancelled', label: '已取消' },
 ]
+
+/**
+ * 未结清的工作项状态：既非 accepted 也非 cancelled。
+ *
+ * 与后端 store.CountUnsettledWorkItemsByProject 的判定一致
+ * （state NOT IN (accepted, cancelled)），是「完成项目」的前置条件。
+ */
+export const WORK_ITEM_UNSETTLED_STATES = [
+  'blocked',
+  'queued',
+  'leased',
+  'submitted',
+  'failed',
+] as const
+
+/** 按 work_item_by_state 统计未结清卡片数（字段缺失按 0）。 */
+export function unsettledWorkItemCount(byState: Record<string, number> | undefined): number {
+  if (!byState) return 0
+  return WORK_ITEM_UNSETTLED_STATES.reduce((sum, state) => sum + (byState[state] ?? 0), 0)
+}
 
 export function workItemKindLabel(kind: string): string {
   return WORK_ITEM_KIND_LABELS[kind as WorkItemKindValue] ?? `未知(${kind})`
