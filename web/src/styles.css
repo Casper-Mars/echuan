@@ -2331,3 +2331,8 @@ button {
   font-size: 0.8rem;
   line-height: 1.5;
 }
+
+/* 产品详情抽屉：仓库地址链接可换行，长地址不撑破抽屉 */
+.detail-section .repo-link {
+  overflow-wrap: anywhere;
+}

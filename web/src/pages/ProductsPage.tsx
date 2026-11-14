@@ -15,6 +15,7 @@ import {
 import { usePolling } from '../hooks/usePolling'
 import { formatDateTime } from '../lib/format'
 import { isInteractiveTarget } from '../lib/interaction'
+import { repoHref } from '../lib/url'
 
 /**
  * 产品列表：卡片展示编号、名称、git 地址、证书与项目数；
@@ -118,6 +119,11 @@ export function ProductsPage() {
 }
 
 function ProductDetail({ product }: { product: Product }) {
+  // 只有 http(s) 地址渲染成新标签页链接，其余形态保持纯文本。
+  const repoUrl = repoHref(product.git_url)
+  // 纯文本分支：全空白与 null / undefined 一样回退占位符；非空值的原字符串照原样显示，
+  // 含前后空白也不 trim（`git@…`、`ssh://…` 这类登记值必须原样可读）。
+  const repoText = typeof product.git_url === 'string' && product.git_url.trim() ? product.git_url : '—'
   return (
     <div className="detail">
       <div className="detail-summary">
@@ -144,7 +150,19 @@ function ProductDetail({ product }: { product: Product }) {
       </dl>
       <section className="detail-section">
         <h3>代码仓库地址</h3>
-        <p className="mono">{product.git_url || '—'}</p>
+        {repoUrl ? (
+          <a
+            className="mono repo-link"
+            href={repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={product.git_url}
+          >
+            {repoUrl}
+          </a>
+        ) : (
+          <p className="mono">{repoText}</p>
+        )}
       </section>
       <section className="detail-section">
         <h3>描述</h3>
