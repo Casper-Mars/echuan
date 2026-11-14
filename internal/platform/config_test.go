@@ -393,3 +393,64 @@ func TestLoadMalformedTOML(t *testing.T) {
 		t.Fatal("Load: expected parse error, got nil")
 	}
 }
+
+// TestAgentPresetMappingDefaults pins the V3 routing table and the switch.
+func TestAgentPresetMappingDefaults(t *testing.T) {
+	clearEnv(t)
+
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.DispatchAgentPreset {
+		t.Error("DispatchAgentPreset = false, want true by default")
+	}
+	want := map[string]string{
+		"requirement": "pm",
+		"design":      "cto",
+		"breakdown":   "cto",
+		"dev":         "dev-leader",
+	}
+	for kind, preset := range want {
+		if cfg.AgentPresetByKind[kind] != preset {
+			t.Errorf("AgentPresetByKind[%q] = %q, want %q", kind, cfg.AgentPresetByKind[kind], preset)
+		}
+	}
+}
+
+// TestAgentPresetMappingFromEnv covers the override and the off switch.
+func TestAgentPresetMappingFromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ECHUAN_AGENT_PRESET_BY_KIND", "design=cto2, dev=dev-leader")
+
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.AgentPresetByKind) != 2 {
+		t.Fatalf("AgentPresetByKind = %v, want 2 entries", cfg.AgentPresetByKind)
+	}
+	if cfg.AgentPresetByKind["design"] != "cto2" || cfg.AgentPresetByKind["dev"] != "dev-leader" {
+		t.Errorf("AgentPresetByKind = %v", cfg.AgentPresetByKind)
+	}
+
+	t.Setenv("ECHUAN_AGENT_PRESET_DISPATCH", "false")
+	cfg, err = Load(filepath.Join(t.TempDir(), "missing.toml"))
+	if err != nil {
+		t.Fatalf("Load(disabled): %v", err)
+	}
+	if cfg.DispatchAgentPreset {
+		t.Error("DispatchAgentPreset = true, want false after ECHUAN_AGENT_PRESET_DISPATCH=false")
+	}
+}
+
+// TestAgentPresetMappingRejectsUnknownKind fails closed: a typo must not ship a
+// mapping that silently never matches a card.
+func TestAgentPresetMappingRejectsUnknownKind(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ECHUAN_AGENT_PRESET_BY_KIND", "devv=dev-leader")
+
+	if _, err := Load(filepath.Join(t.TempDir(), "missing.toml")); err == nil {
+		t.Fatal("Load = nil error, want unknown-kind rejection")
+	}
+}

@@ -49,6 +49,13 @@ type Config struct {
 	// kept before it may be pruned. It must be greater than WorkerTTL so a
 	// worker row is never deleted before the worker is considered offline.
 	WorkerRetention time.Duration
+	// DispatchAgentPreset enables the kind → agent preset mapping carried by
+	// every dispatch payload. Turning it off restores the pre-V3 behaviour
+	// where the worker decided the role from its own kind declaration.
+	DispatchAgentPreset bool
+	// AgentPresetByKind maps a work-item kind to the agent preset that should
+	// run it. Only consulted when DispatchAgentPreset is true.
+	AgentPresetByKind map[string]string
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string
 	// IM is the optional Feishu bot integration. When IM.Enabled is false the
@@ -72,6 +79,8 @@ func DefaultConfig() Config {
 		HeartbeatInterval:      15 * time.Second,
 		WorkerMetadataMaxBytes: 8192,
 		WorkerRetention:        1 * time.Hour,
+		DispatchAgentPreset:    true,
+		AgentPresetByKind:      DefaultAgentPresetByKind(),
 		LogLevel:               "info",
 		IM:                     DefaultIMConfig(),
 	}
@@ -120,6 +129,8 @@ var envKeys = map[string]string{
 	"heartbeat_interval":        "ECHUAN_HEARTBEAT_INTERVAL",
 	"worker_metadata_max_bytes": "ECHUAN_WORKER_METADATA_MAX_BYTES",
 	"worker_retention":          "ECHUAN_WORKER_RETENTION",
+	"agent_preset_dispatch":     "ECHUAN_AGENT_PRESET_DISPATCH",
+	"agent_preset_by_kind":      "ECHUAN_AGENT_PRESET_BY_KIND",
 	"log_level":                 "ECHUAN_LOG_LEVEL",
 	"im_enabled":                "ECHUAN_IM_ENABLED",
 	"im_app_id":                 "ECHUAN_IM_APP_ID",
@@ -208,6 +219,18 @@ func (c *Config) set(key, raw string) error {
 			return fmt.Errorf("worker_retention: invalid duration %q", raw)
 		}
 		c.WorkerRetention = d
+	case "agent_preset_dispatch":
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("agent_preset_dispatch: invalid boolean %q", raw)
+		}
+		c.DispatchAgentPreset = v
+	case "agent_preset_by_kind":
+		mapping, err := parseAgentPresetByKind(raw)
+		if err != nil {
+			return fmt.Errorf("agent_preset_by_kind: %w", err)
+		}
+		c.AgentPresetByKind = mapping
 	case "log_level":
 		c.LogLevel = raw
 	default:
@@ -265,6 +288,11 @@ func (c *Config) normalize() error {
 	if c.WorkerRetention <= c.WorkerTTL {
 		return fmt.Errorf("worker_retention: must be greater than worker_ttl (%s), got %s", c.WorkerTTL, c.WorkerRetention)
 	}
+	if c.DispatchAgentPreset {
+		if err := validateAgentPresetByKind(c.AgentPresetByKind); err != nil {
+			return err
+		}
+	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:
@@ -272,6 +300,75 @@ func (c *Config) normalize() error {
 	}
 	if err := c.IM.normalize(); err != nil {
 		return err
+	}
+	return nil
+}
+
+// KnownWorkItemKinds mirrors the four work-item kinds the store accepts. It is
+// duplicated here on purpose: platform must not import store (the store imports
+// this package), and the mapping keys have to be validated before the database
+// ever sees them.
+var KnownWorkItemKinds = []string{"requirement", "design", "breakdown", "dev"}
+
+// DefaultAgentPresetByKind is the V3 default: which role runs which card kind.
+//
+// requirement → pm, design / breakdown → cto (the CTO owns both the technical
+// design and the task breakdown), dev → dev-leader (the dev Host's orchestration
+// preset; developer / tester are subagent presets and never receive dispatches).
+func DefaultAgentPresetByKind() map[string]string {
+	return map[string]string{
+		"requirement": "pm",
+		"design":      "cto",
+		"breakdown":   "cto",
+		"dev":         "dev-leader",
+	}
+}
+
+// parseAgentPresetByKind parses "kind=preset,kind=preset".
+func parseAgentPresetByKind(raw string) (map[string]string, error) {
+	mapping := map[string]string{}
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		kind, preset, ok := strings.Cut(pair, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid entry %q (want kind=preset)", pair)
+		}
+		kind = strings.TrimSpace(kind)
+		preset = strings.TrimSpace(preset)
+		if kind == "" || preset == "" {
+			return nil, fmt.Errorf("invalid entry %q (want kind=preset)", pair)
+		}
+		mapping[kind] = preset
+	}
+	if len(mapping) == 0 {
+		return nil, errors.New("must not be empty")
+	}
+	return mapping, nil
+}
+
+// validateAgentPresetByKind rejects unknown kinds and unknown presets.
+func validateAgentPresetByKind(mapping map[string]string) error {
+	if len(mapping) == 0 {
+		return errors.New("agent_preset_by_kind: must not be empty when agent_preset_dispatch is enabled")
+	}
+	for kind, preset := range mapping {
+		known := false
+		for _, candidate := range KnownWorkItemKinds {
+			if candidate == kind {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return fmt.Errorf("agent_preset_by_kind: unknown kind %q (want one of %s)",
+				kind, strings.Join(KnownWorkItemKinds, ", "))
+		}
+		if strings.TrimSpace(preset) == "" {
+			return fmt.Errorf("agent_preset_by_kind: empty preset for kind %q", kind)
+		}
 	}
 	return nil
 }

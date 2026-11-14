@@ -1236,6 +1236,7 @@ paths:
                           protocol: v2
                           work_id: w_01M5Z46Q7T9K3C8N2V5X1B4D6F
                           kind: dev
+                          agent_preset: dev-leader
                           inputs:
                             - material_id: MAT-01M5Z45N8Q2R4S6T8V0W2X4Y6Z
                               kind: 3
@@ -2425,6 +2426,12 @@ components:
         kind:
           type: string
           enum: [requirement, design, breakdown, dev]
+        agent_preset:
+          type: string
+          description: |
+            Agent preset the worker should run this card with, resolved from the
+            platform's kind → preset mapping (requirement→pm, design/breakdown→cto,
+            dev→dev-leader). Omitted when `agent_preset_dispatch` is disabled.
         inputs:
           type: array
           items:

@@ -48,6 +48,10 @@ type WorkerService struct {
 	workerTTL         time.Duration
 	heartbeatInterval time.Duration
 	metadataMaxBytes  int64
+	// agentPresetEnabled gates the kind → preset field on dispatch payloads;
+	// presetByKind is the resolved mapping (see ClaimService for the rationale).
+	agentPresetEnabled bool
+	presetByKind       map[string]string
 }
 
 // NewWorkerService builds the worker service on top of an open store.
@@ -434,6 +438,13 @@ func (s *WorkerService) normalizeMetadata(raw []byte) (string, error) {
 	return string(doc), nil
 }
 
+// SetAgentPresetDispatch configures the kind → agent preset routing carried by
+// dispatch payloads. Disabled or an empty mapping leaves the field empty.
+func (s *WorkerService) SetAgentPresetDispatch(enabled bool, byKind map[string]string) {
+	s.agentPresetEnabled = enabled
+	s.presetByKind = byKind
+}
+
 // dispatch takes the next claimable card and binds it to the worker.
 func (s *WorkerService) dispatch(ctx context.Context, tx *sql.Tx, workerID string, now time.Time) (*Dispatch, error) {
 	updateTime := formatTimestamp(now)
@@ -451,7 +462,11 @@ func (s *WorkerService) dispatch(ctx context.Context, tx *sql.Tx, workerID strin
 		return nil, nil
 	}
 
-	dispatch, err := buildDispatch(ctx, tx, row, s.leaseTTL, now)
+	agentPreset := ""
+	if s.agentPresetEnabled {
+		agentPreset = s.presetByKind[row.Kind]
+	}
+	dispatch, err := buildDispatch(ctx, tx, row, s.leaseTTL, now, agentPreset)
 	if err != nil {
 		return nil, err
 	}

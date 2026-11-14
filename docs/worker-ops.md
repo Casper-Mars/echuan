@@ -25,6 +25,8 @@
 | `worker_retention` | `ECHUAN_WORKER_RETENTION` | `1h` | 离线且不持卡的 Worker 行保留多久后被删除 | **必须大于 `worker_ttl`**，否则行会在变为 offline 之前就被删掉；默认 1 小时，需要更长审计窗口时按需调大 |
 | `material_max_bytes` | `ECHUAN_MATERIAL_MAX_BYTES` | `20971520` | 单个物料最大字节数（20 MiB） | 影响报告/规格上传 |
 | `log_level` | `ECHUAN_LOG_LEVEL` | `info` | `debug/info/warn/error` | 排查注册/派卡问题时用 `debug` |
+| `agent_preset_dispatch` | `ECHUAN_AGENT_PRESET_DISPATCH` | `true` | 派单是否携带 `agent_preset` | 关掉即回到 V3 之前：worker 自行决定角色 |
+| `agent_preset_by_kind` | `ECHUAN_AGENT_PRESET_BY_KIND` | `requirement=pm,design=cto,breakdown=cto,dev=dev-leader` | kind → preset 映射 | 键必须是四种 kind 之一；未知 kind 直接拒绝启动 |
 
 配置校验：所有时长必须为正；`worker_ttl`、`heartbeat_interval`、`worker_retention` 任一 ≤ 0 都会导致进程启动失败。此外 `worker_retention` 必须严格大于 `worker_ttl`，否则同样拒绝启动。`worker_ttl` 与 `heartbeat_interval` 的倍数关系当前不做强校验，需要部署方自行保证。
 
@@ -68,6 +70,21 @@ curl -sS -X POST http://127.0.0.1:8721/v1/workers/heartbeat \
 - 客户端必须持久化这个 id；后续每次心跳回填。
 - `heartbeat_interval_ms` / `lease_ttl_seconds` 是服务端下发的节奏，Worker 应按它安排心跳与续租，不要写死。
 - `metadata` 必须在 JSON 层面是对象；数组/字符串/null 会 400。提供即**整体替换**，不提供则保留旧文档。
+
+### 2.1.1 派单携带的角色（`agent_preset`）
+
+派单 payload 在 `kind` 旁边多一个 `agent_preset`，由平台的 `kind → preset` 映射解析：
+
+| kind | preset |
+| --- | --- |
+| requirement | pm |
+| design | cto |
+| breakdown | cto |
+| dev | dev-leader |
+
+- 字段可选：映射关闭（`ECHUAN_AGENT_PRESET_DISPATCH=false`）时不出现，旧 worker 不受影响。
+- worker 侧用它决定 `ensureSession` 建哪个 preset 的会话；worker 自己的 `kinds` 声明仍然决定"能领什么卡"。
+- `dev-developer` / `dev-tester` 不参与派单：它们是 dev 会话内部由 subagent 派生的角色。
 
 ### 2.2 持续心跳与派卡
 

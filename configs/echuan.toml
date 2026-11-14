@@ -43,6 +43,13 @@ worker_retention = "1h"
 # 日志级别：debug / info / warn / error
 log_level = "info"
 
+# ---------- 派单角色映射（V3） ----------
+# 派单 payload 携带 agent_preset，告诉 worker 用哪个 preset 建会话。
+# 关掉即回到 V3 之前：worker 自己决定角色（旧拓扑回退用）。
+agent_preset_dispatch = true
+# 键必须是 requirement / design / breakdown / dev 之一，未知键会拒绝启动。
+agent_preset_by_kind = "requirement=pm,design=cto,breakdown=cto,dev=dev-leader"
+
 # ---------- 飞书机器人（可选，默认关闭） ----------
 # 注意：本包的 TOML 解析器忽略 [section]，所有 key 必须扁平书写。
 # 开启后平台会内嵌长连接、卡片与文档同步；关闭时平台行为不变。

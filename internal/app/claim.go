@@ -113,10 +113,13 @@ type Dispatch struct {
 	Protocol string
 	WorkID   string
 	Kind     string
-	Inputs   []DispatchInput
-	WorkItem DispatchWorkItem
-	Lease    DispatchLease
-	Context  DispatchContext
+	// AgentPreset is the agent preset that should run this card, resolved from
+	// the platform's kind → preset mapping. Empty when the mapping is disabled.
+	AgentPreset string
+	Inputs      []DispatchInput
+	WorkItem    DispatchWorkItem
+	Lease       DispatchLease
+	Context     DispatchContext
 }
 
 // LeaseRenewal is the body of a 200 lease renewal. Until is the renewed
@@ -134,6 +137,10 @@ type ClaimService struct {
 	logger   *slog.Logger
 	clock    platform.Clock
 	leaseTTL time.Duration
+	// agentPresetEnabled gates the kind → preset field; presetByKind holds the
+	// resolved mapping. Both are set once at wiring time.
+	agentPresetEnabled bool
+	presetByKind       map[string]string
 }
 
 // NewClaimService builds the claim service. A non-positive ttl falls back to
@@ -151,6 +158,14 @@ func NewClaimService(st *store.Store, logger *slog.Logger, ttl time.Duration) *C
 		clock:    platform.RealClock{},
 		leaseTTL: ttl,
 	}
+}
+
+// SetAgentPresetDispatch configures the kind → agent preset routing carried by
+// dispatch payloads. Disabled or an empty mapping leaves AgentPreset empty,
+// which is exactly the pre-V3 behaviour.
+func (s *ClaimService) SetAgentPresetDispatch(enabled bool, byKind map[string]string) {
+	s.agentPresetEnabled = enabled
+	s.presetByKind = byKind
 }
 
 // SetClock replaces the clock. It is meant for tests that need to move the wall
@@ -227,7 +242,11 @@ func (s *ClaimService) Claim(ctx context.Context, in ClaimInput) (*Dispatch, err
 			return err
 		}
 
-		result, err = buildDispatch(ctx, tx, row, s.leaseTTL, now)
+		agentPreset := ""
+		if s.agentPresetEnabled {
+			agentPreset = s.presetByKind[row.Kind]
+		}
+		result, err = buildDispatch(ctx, tx, row, s.leaseTTL, now, agentPreset)
 		return err
 	})
 	if err != nil {
@@ -317,7 +336,7 @@ func (s *ClaimService) RenewLease(ctx context.Context, workID, leaseID string) (
 // project pointed at when the card was leased. Package-level because both the
 // pull-mode claim and the worker heartbeat dispatch must return exactly the
 // same payload.
-func buildDispatch(ctx context.Context, tx *sql.Tx, row store.WorkItem, ttl time.Duration, now time.Time) (*Dispatch, error) {
+func buildDispatch(ctx context.Context, tx *sql.Tx, row store.WorkItem, ttl time.Duration, now time.Time, agentPreset string) (*Dispatch, error) {
 	project, err := store.GetProjectByProjectID(ctx, tx, row.ProjectCode)
 	if err != nil {
 		return nil, err
@@ -372,10 +391,11 @@ func buildDispatch(ctx context.Context, tx *sql.Tx, row store.WorkItem, ttl time
 	}
 
 	return &Dispatch{
-		Protocol: DispatchProtocol,
-		WorkID:   row.WorkID,
-		Kind:     row.Kind,
-		Inputs:   dispatchInputs,
+		Protocol:    DispatchProtocol,
+		WorkID:      row.WorkID,
+		Kind:        row.Kind,
+		AgentPreset: agentPreset,
+		Inputs:      dispatchInputs,
 		WorkItem: DispatchWorkItem{
 			ProjectID:   row.ProjectCode,
 			Title:       row.Title,
