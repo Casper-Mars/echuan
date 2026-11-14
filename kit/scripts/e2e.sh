@@ -14,7 +14,8 @@
 #   S8  平台重启 → 同一 worker id 心跳 200、不重复领卡
 #   S9  插件重启 → 新 w_ id，旧记录仍在且不领同一张卡
 #   S10 停用插件 → worker 在 worker_ttl(45s) 窗口内转 offline
-#   S10b/S10c 验收工作项一后项目停在 pending_done，结清工作项二后项目进入 completed
+#   S10b/S10c 验收工作项一后项目停在 pending_done；结清工作项二后仍停在
+#              pending_done，最后由人工 POST /v1/projects/complete 才进入 completed
 #   S11 收尾：容器 / profile / 临时目录全清，~/echuan-v2-data 指纹不变
 #
 # 隔离性（与 scripts/e2e-worker.sh 同一套策略）：
@@ -828,9 +829,9 @@ require_code 200 "读取项目"
 [ "$(jqr '.status_name')" = "pending_done" ] || fail "最后一张卡未结清时项目应停在 pending_done，实际 $(jqr '.status_name')"
 pass "10b/11 验收卡一成功，项目保持 pending_done（等待卡二结清）"
 
-# --- 10c. 结清最后一张卡 → 项目进入 completed ------------------------------
+# --- 10c. 结清最后一张卡 → 仍停在 pending_done → 人工 complete 才 completed ---
 say ""
-say "== 10c/11 唤醒 worker 领取卡二 → 交报告 → 验收，项目应进入 completed =="
+say "== 10c/11 唤醒 worker 领取卡二 → 交报告 → 验收，项目仍应停在 pending_done =="
 
 # 卡二在 S7 被派给旧 worker 后一直未结清；S10 已停掉 dsh，90s 租约可能
 # 已过期并被回收成 ready。这里用同一条 HTTP 心跳把卡二重新拿回来：
@@ -878,8 +879,16 @@ require_code 200 "验收卡二"
 
 http_get "/v1/projects?id=$PROJECT_ID"
 require_code 200 "读取项目"
-[ "$(jqr '.status_name')" = "completed" ] || fail "最后一张卡结清后项目应为 completed，实际 $(jqr '.status_name')"
-pass "10c/11 卡二结清，项目进入 completed（$PROJECT_ID）"
+[ "$(jqr '.status_name')" = "pending_done" ] || fail "最后一张卡结清后项目应停在 pending_done（issue #39：不再自动收工），实际 $(jqr '.status_name')"
+pass "10c/11 卡二结清，项目停在 pending_done（$PROJECT_ID）"
+
+# 6 → 7 只由人工 complete 触发：If-Match 取自 GET /v1/projects?id=<id> 的 .version，
+# X-Actor 不能是 agent:*（本项目脚本用 kit-e2e，不是 agent 前缀）。
+PROJECT_VER="$(jqr '.version')"
+http_post "/v1/projects/complete?id=$PROJECT_ID" '' -H "If-Match: $PROJECT_VER"
+require_code 200 "人工完成项目"
+[ "$(jqr '.status_name')" = "completed" ] || fail "人工 complete 后项目应为 completed，实际 $(jqr '.status_name')"
+pass "10c/11 人工 complete 后项目进入 completed（$PROJECT_ID, version=$PROJECT_VER -> $(jqr '.version')）"
 
 # --- 11. 收尾 --------------------------------------------------------------
 STEP="11/11 收尾"
