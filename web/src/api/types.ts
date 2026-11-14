@@ -54,6 +54,16 @@ export interface Project {
   tasks_review_reason: string | null
   /** 上述驳回的落库时间。 */
   tasks_review_rejected_at: string | null
+  /**
+   * 平台记录的约定开发分支（只读派生字段，不落库）。
+   *
+   * 仅 status 4/5/6/7 有值，形态由执行约定给出；0–3 与 8（已取消）为 null。
+   * 语义边界：平台不与远端仓库校验，也不等于仓库里的实际分支，
+   * 界面必须带「约定分支」字样，不得表述为「实际分支」。
+   */
+  dev_branch: string | null
+  /** 所属产品登记的 git 地址（只读派生字段）；产品未登记时为 null。 */
+  repo_url: string | null
   last_actor: string | null
   version: number
   work_item_total: number
