@@ -183,14 +183,19 @@ export interface EnsureSessionLogger {
 export async function ensureSession(
   projectId: string,
   deps: EnsureSessionDeps,
+  presetId?: string,
 ): Promise<EnsureSessionResult | undefined> {
   const warn = deps.warn ?? ((message: string): void => console.warn(message))
   const info = deps.info ?? ((): void => {})
-  const id = typeof projectId === 'string' ? projectId.trim() : ''
-  if (id === '') {
+  const project = typeof projectId === 'string' ? projectId.trim() : ''
+  if (project === '') {
     warn(`${TAG} 警告：projectId 为空，放弃本次 ensure`)
     return undefined
   }
+  // 会话键 = 项目号[:preset]。V3 起一个项目按角色拆会话，preset 由派单显式给出；
+  // 未给 preset 时退回「项目号即会话号」的旧行为（老拓扑 / 灰度期）。
+  const requested = typeof presetId === 'string' && presetId.trim() !== '' ? presetId.trim() : undefined
+  const id = requested === undefined ? project : `${project}:${requested}`
 
   // 1) live 命中 → 直接复用（不调 stat / resume / create）。
   let live: EnsureAgent | undefined | null
@@ -225,7 +230,7 @@ export async function ensureSession(
     // resume 以 header 为准：header 未记录 preset 就不挂，绝不套 registry 默认 preset 覆盖。
     const requestedPreset = typeof header.agentPreset === 'string' && header.agentPreset.trim() !== ''
       ? header.agentPreset
-      : undefined
+      : requested
     let setup: ((agentCtx: unknown) => void | Promise<void>) | undefined
     if (requestedPreset === undefined) {
       info(`${TAG} 会话 header 未记录 agentPreset，resume 不挂载 preset（project=${id}）`)
@@ -257,7 +262,7 @@ export async function ensureSession(
   }
 
   // 3) 都不存在 → create 新建。
-  const preset = await resolvePreset(deps.agentPresets, undefined, id, warn)
+  const preset = await resolvePreset(deps.agentPresets, requested, id, warn)
   if (preset === undefined) return undefined
 
   // cwd 就是工作区根目录本身：项目号只用于 sessionId（项目号即会话号），
@@ -327,7 +332,7 @@ export async function ensureSession(
 export function createSessionEnsurer(
   ctx: unknown,
   logger?: EnsureSessionLogger,
-): (projectId: string) => Promise<EnsureSessionResult | undefined> {
+): (projectId: string, presetId?: string) => Promise<EnsureSessionResult | undefined> {
   const lookup = ctx as { agents?: EnsureAgentsLike; get?: (name: string) => unknown }
   const warn = logger?.warn ?? ((message: string): void => console.warn(message))
   const info = logger?.info
@@ -341,7 +346,7 @@ export function createSessionEnsurer(
     }
   }
 
-  return async (projectId: string): Promise<EnsureSessionResult | undefined> => {
+  return async (projectId: string, presetId?: string): Promise<EnsureSessionResult | undefined> => {
     const agents = lookup.agents
     if (agents === undefined || agents === null) {
       warn(`${TAG} 警告：agents 服务不可用，放弃本次 ensure（project=${projectId}）`)
@@ -363,7 +368,7 @@ export function createSessionEnsurer(
       ...(models === undefined ? {} : { agentDefaultModel: models }),
       ...(info === undefined ? {} : { info }),
       warn,
-    })
+    }, presetId)
   }
 }
 
