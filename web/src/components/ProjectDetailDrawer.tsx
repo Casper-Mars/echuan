@@ -3,6 +3,7 @@ import { getProject, listProjectMaterials, materialDownloadUrl, projectPackageUr
 import type { MaterialChain, MaterialVersion, ProjectDetail } from '../api/types'
 import { usePolling } from '../hooks/usePolling'
 import { copyText } from '../lib/clipboard'
+import { repoHref } from '../lib/url'
 import {
   WORK_ITEM_STATE_COLUMNS,
   formatBytes,
@@ -143,6 +144,13 @@ export function ProjectDetailDrawer({
 
   const { detail, requirementChain, specChain } = data
   const byState = detail.work_item_by_state ?? {}
+  // 仓库行：repo_url 是产品 git_url 的只读透出，后端把空串按 null 给。
+  // null / 全空白一律不渲染整行——宁可不显示，也不留「只有标签没有值」的空行。
+  const repoText =
+    typeof detail.repo_url === 'string' && detail.repo_url.trim() ? detail.repo_url : null
+  // 只有 http(s) 能进 href：repoHref 收敛过 scheme，其余形态返回 null → 纯文本，
+  // `javascript:` 之类不会落到 href 上；返回值为登记原串，与 git_url 逐字一致。
+  const repoLink = repoHref(repoText)
   const changed = () => {
     refresh()
     onChanged()
@@ -210,6 +218,47 @@ export function ProjectDetailDrawer({
           <dt>序号</dt>
           <dd>#{detail.seq_no}</dd>
         </div>
+        <div>
+          <dt>开发分支</dt>
+          <dd>
+            {/* 只读展示平台记录值：带「约定分支」标注，不表述为实际/真实分支。
+                长值靠 `title` 悬停看全文，并由 dd 的 overflow-wrap 换行，不撑破布局。 */}
+            {detail.dev_branch ? (
+              <>
+                <span className="mono" title={detail.dev_branch}>
+                  {detail.dev_branch}
+                </span>{' '}
+                <span className="muted">约定分支，以仓库实际为准</span>
+              </>
+            ) : (
+              // 0–3 尚未进入开发阶段、8 已取消（不猜分支）：一律占位，不留空值。
+              <span className="muted">尚未创建开发分支</span>
+            )}
+          </dd>
+        </div>
+        {repoText !== null && (
+          <div>
+            <dt>仓库</dt>
+            <dd>
+              {repoLink ? (
+                <a
+                  className="link mono"
+                  href={repoLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={repoText}
+                >
+                  {repoText}
+                </a>
+              ) : (
+                // git@… / ssh://… 等非 http(s) 登记值原样以纯文本呈现。
+                <span className="mono" title={repoText}>
+                  {repoText}
+                </span>
+              )}
+            </dd>
+          </div>
+        )}
       </dl>
 
       <section className="detail-section">
