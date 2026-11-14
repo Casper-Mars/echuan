@@ -217,7 +217,12 @@ export function ProjectDetailDrawer({
         <p className={detail.reason ? 'reason-text' : 'muted'}>{detail.reason || '—'}</p>
       </section>
 
-      <ProjectActions project={detail} onChanged={changed} className="detail-actions" />
+      <ProjectActions
+        project={detail}
+        onChanged={changed}
+        className="detail-actions"
+        showComplete
+      />
       <div className="detail-actions">
         <button type="button" className="action" onClick={() => setEditing('title')}>编辑标题</button>
         {(detail.status === 0 || detail.status === 1) && (
@@ -232,7 +237,8 @@ export function ProjectDetailDrawer({
             <strong>
               {detail.work_item_done}/{detail.work_item_total}
             </strong>
-            <span className="muted">已完成</span>
+            {/* 卡片口径是「已验收」；「已完成」只留给项目状态 7。 */}
+            <span className="muted">已验收</span>
           </div>
           {WORK_ITEM_STATE_COLUMNS.map((column) => (
             <div key={column.state} className="progress-cell">
