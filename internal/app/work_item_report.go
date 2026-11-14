@@ -460,10 +460,10 @@ func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisio
 			if _, err := store.ReleaseReadyWorkItems(ctx, tx, project.ID, updateTime); err != nil {
 				return err
 			}
-			result.Project, err = s.settleProjectIfDone(ctx, tx, row.ProjectCode, actor)
-			if err != nil {
-				return err
-			}
+			// The project itself is deliberately left alone: accepting the last
+			// card no longer closes it. A pending_done project reaches completed
+			// only through a human call to ProjectService.CompleteProject
+			// (issue #39), which keeps result.Project nil here.
 		}
 
 		result.Detail, err = s.detail(ctx, tx, row.ID)
@@ -478,53 +478,6 @@ func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisio
 		return WorkItemDecisionResult{}, err
 	}
 	return result, nil
-}
-
-// settleProjectIfDone closes a pending_done project once no item of it is left
-// in a non-terminal state (accepted and cancelled are terminal).
-func (s *WorkItemService) settleProjectIfDone(ctx context.Context, tx *sql.Tx, projectCode, actor string) (*ProjectAdvance, error) {
-	project, err := store.GetProjectByProjectID(ctx, tx, projectCode)
-	if err != nil {
-		return nil, err
-	}
-	if project.Status != domain.StatusPendingDone {
-		return nil, nil
-	}
-
-	unsettled, err := store.CountUnsettledWorkItemsByProject(ctx, tx, project.ID)
-	if err != nil {
-		return nil, err
-	}
-	if unsettled > 0 {
-		return nil, nil
-	}
-
-	next, err := domain.ProjectNextStatus(project.Status, domain.ProjectActionSettleTasks, "")
-	if err != nil {
-		return nil, err
-	}
-	updateTime := formatTimestamp(s.nextTimestamp(project.UpdateTime))
-	affected, err := store.TransitionProject(ctx, tx, project.ID,
-		project.Status, project.Version, next, nil, actor, updateTime)
-	if err != nil {
-		return nil, err
-	}
-	if affected == 0 {
-		fresh, readErr := store.GetProjectByProjectID(ctx, tx, project.ProjectID)
-		if readErr != nil {
-			return nil, readErr
-		}
-		if fresh.Status == next {
-			return &ProjectAdvance{ProjectID: fresh.ProjectID, FromStatus: project.Status, ToStatus: fresh.Status}, nil
-		}
-		return nil, &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
-	}
-
-	return &ProjectAdvance{
-		ProjectID:  project.ProjectID,
-		FromStatus: project.Status,
-		ToStatus:   next,
-	}, nil
 }
 
 // ReviewWorkItemsInput is the use-case input of POST /v1/work-items/review.

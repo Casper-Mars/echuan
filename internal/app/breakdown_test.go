@@ -287,8 +287,11 @@ func TestBreakdownPlanCreatesBlockedChildren(t *testing.T) {
 			t.Fatalf("accept dev %s: %v", want, err)
 		}
 	}
-	if state := f.env.projectState(t, f.projectID); state.Status != domain.StatusCompleted {
-		t.Errorf("project status = %d, want completed after the last acceptance", state.Status)
+	// Accepting the last card settles the cards, not the project: it stays
+	// pending_done until a human completes it (issue #39). The completion path
+	// itself is covered by TestCompleteProject* in project_test.go.
+	if state := f.env.projectState(t, f.projectID); state.Status != domain.StatusPendingDone {
+		t.Errorf("project status = %d, want pending_done after the last acceptance", state.Status)
 	}
 }
 
