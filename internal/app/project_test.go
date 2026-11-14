@@ -882,3 +882,220 @@ func TestGetProjectMissing(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+// completeGateCount counts the project-level completion records of one project.
+func (e *projectTestEnv) completeGateCount(t *testing.T, projectID string) int64 {
+	t.Helper()
+	return e.count(t,
+		`SELECT COUNT(*) FROM gate_decisions WHERE subject_type = 'project' AND subject_id = ? AND gate = 'complete'`,
+		projectID)
+}
+
+// completeProjectFixture creates a product and a project and forces the project
+// into pending_done at the given version, which is the only state the completion
+// edge accepts.
+func (e *projectTestEnv) completeProjectFixture(t *testing.T, version int) string {
+	t.Helper()
+	e.createProduct(t, "APP")
+	projectID := e.createProject(t, "APP", "登录页改版")
+	e.setProjectState(t, projectID, domain.StatusPendingDone, version, nil)
+	return projectID
+}
+
+// TestCompleteProjectMovesPendingDoneToCompleted covers the human completion
+// path end to end: 6 → 7, version bumped once, last_actor recorded, and exactly
+// one gate_decisions row whose create_time equals the project's update_time.
+func TestCompleteProjectMovesPendingDoneToCompleted(t *testing.T) {
+	env := newProjectTestEnv(t)
+	projectID := env.completeProjectFixture(t, 5)
+	ctx := context.Background()
+
+	result, err := env.service.CompleteProject(ctx, projectID, "human:pm", 5)
+	if err != nil {
+		t.Fatalf("CompleteProject: %v", err)
+	}
+	if result.FromStatus != domain.StatusPendingDone || result.ToStatus != domain.StatusCompleted {
+		t.Errorf("edge = %d → %d, want 6 → 7", result.FromStatus, result.ToStatus)
+	}
+	if result.Material != nil {
+		t.Errorf("material = %+v, want nil (a completion binds no artifact)", *result.Material)
+	}
+	project := result.Project
+	if project == nil {
+		t.Fatal("project = nil, want the completed project")
+	}
+	if project.Status != domain.StatusCompleted {
+		t.Errorf("status = %d, want completed", project.Status)
+	}
+	if project.Version != 6 {
+		t.Errorf("version = %d, want 6", project.Version)
+	}
+	if project.LastActor != "human:pm" {
+		t.Errorf("last_actor = %q, want human:pm", project.LastActor)
+	}
+	if project.Reason != "" {
+		t.Errorf("reason = %q, want empty", project.Reason)
+	}
+
+	state := env.projectState(t, projectID)
+	if state.Status != domain.StatusCompleted || state.Version != 6 {
+		t.Errorf("persisted state = %d/v%d, want 7/v6", state.Status, state.Version)
+	}
+
+	if got := env.completeGateCount(t, projectID); got != 1 {
+		t.Fatalf("gate=complete rows = %d, want 1", got)
+	}
+	var (
+		subjectType string
+		decision    string
+		decidedBy   string
+		createTime  string
+		updateTime  string
+		materialID  *int64
+		reason      *string
+	)
+	if err := env.store.Read().QueryRowContext(ctx, `
+		SELECT g.subject_type, g.decision, g.decided_by, g.create_time, g.material_id, g.reason, p.update_time
+		  FROM gate_decisions g
+		  JOIN projects p ON p.project_id = g.subject_id
+		 WHERE g.subject_id = ? AND g.gate = 'complete'`, projectID).
+		Scan(&subjectType, &decision, &decidedBy, &createTime, &materialID, &reason, &updateTime); err != nil {
+		t.Fatalf("read completion record: %v", err)
+	}
+	if subjectType != "project" || decision != "approve" || decidedBy != "human:pm" {
+		t.Errorf("record = %q/%q/%q, want project/approve/human:pm", subjectType, decision, decidedBy)
+	}
+	if materialID != nil {
+		t.Errorf("material_id = %d, want NULL", *materialID)
+	}
+	if reason != nil {
+		t.Errorf("reason = %q, want NULL", *reason)
+	}
+	if createTime != updateTime {
+		t.Errorf("record create_time = %q, project update_time = %q, want the same value", createTime, updateTime)
+	}
+
+	// Replaying the same completion is an invalid state, and it must not append
+	// a second record.
+	if _, err := env.service.CompleteProject(ctx, projectID, "human:pm", 6); !errors.Is(err, domain.ErrInvalidState) {
+		t.Errorf("replay err = %v, want invalid_state", err)
+	}
+	if got := env.completeGateCount(t, projectID); got != 1 {
+		t.Errorf("gate=complete rows after replay = %d, want 1", got)
+	}
+	if state := env.projectState(t, projectID); state.Status != domain.StatusCompleted || state.Version != 6 {
+		t.Errorf("state after replay = %d/v%d, want 7/v6", state.Status, state.Version)
+	}
+}
+
+// TestCompleteProjectRejectsUnsettledCards proves the completion precondition:
+// a pending_done project that still owns a non-terminal card cannot be closed,
+// the state does not move and no completion record is written.
+func TestCompleteProjectRejectsUnsettledCards(t *testing.T) {
+	for _, state := range []string{
+		store.WorkItemStateBlocked,
+		store.WorkItemStateQueued,
+		store.WorkItemStateLeased,
+		store.WorkItemStateSubmitted,
+		store.WorkItemStateFailed,
+	} {
+		t.Run(state, func(t *testing.T) {
+			env := newProjectTestEnv(t)
+			projectID := env.completeProjectFixture(t, 3)
+			env.insertWorkItem(t, projectID, projectID+"-T0001", 1, state, 1)
+
+			_, err := env.service.CompleteProject(context.Background(), projectID, "human:pm", 3)
+			if !errors.Is(err, domain.ErrInvalidState) {
+				t.Fatalf("err = %v, want invalid_state", err)
+			}
+			var invalid *domain.InvalidStateError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("err = %T, want *InvalidStateError", err)
+			}
+			if !strings.Contains(invalid.Reason, "1") {
+				t.Errorf("reason = %q, want the unsettled count", invalid.Reason)
+			}
+			if got := env.projectState(t, projectID); got.Status != domain.StatusPendingDone || got.Version != 3 {
+				t.Errorf("state = %d/v%d, want 6/v3", got.Status, got.Version)
+			}
+			if got := env.completeGateCount(t, projectID); got != 0 {
+				t.Errorf("gate=complete rows = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// TestCompleteProjectAcceptsSettledCards is the positive counterpart: accepted
+// and cancelled cards count as settled, so completion goes through.
+func TestCompleteProjectAcceptsSettledCards(t *testing.T) {
+	env := newProjectTestEnv(t)
+	projectID := env.completeProjectFixture(t, 2)
+	env.insertWorkItem(t, projectID, projectID+"-T0001", 1, store.WorkItemStateAccepted, 2)
+	env.insertWorkItem(t, projectID, projectID+"-T0002", 2, store.WorkItemStateCancelled, 2)
+
+	result, err := env.service.CompleteProject(context.Background(), projectID, "human:pm", 2)
+	if err != nil {
+		t.Fatalf("CompleteProject: %v", err)
+	}
+	if result.Project.Status != domain.StatusCompleted {
+		t.Errorf("status = %d, want completed", result.Project.Status)
+	}
+}
+
+// TestCompleteProjectRejectsOtherStatuses walks every status that has no
+// completion edge: 0–5 and the two terminal states.
+func TestCompleteProjectRejectsOtherStatuses(t *testing.T) {
+	env := newProjectTestEnv(t)
+	env.createProduct(t, "APP")
+	projectID := env.createProject(t, "APP", "登录页改版")
+
+	for _, status := range []int{
+		domain.StatusRequirementDraft,
+		domain.StatusRequirementReview,
+		domain.StatusSpecDraft,
+		domain.StatusSpecReview,
+		domain.StatusTasksDraft,
+		domain.StatusTasksReview,
+		domain.StatusCompleted,
+		domain.StatusCancelled,
+	} {
+		t.Run(domain.StatusName(status), func(t *testing.T) {
+			env.setProjectState(t, projectID, status, 7, nil)
+			if _, err := env.service.CompleteProject(context.Background(), projectID, "human:pm", 7); !errors.Is(err, domain.ErrInvalidState) {
+				t.Fatalf("status %d: err = %v, want invalid_state", status, err)
+			}
+			if got := env.projectState(t, projectID); got.Status != status || got.Version != 7 {
+				t.Errorf("state = %d/v%d, want %d/v7", got.Status, got.Version, status)
+			}
+			if got := env.completeGateCount(t, projectID); got != 0 {
+				t.Errorf("gate=complete rows = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// TestCompleteProjectVersionGuard keeps the optimistic lock honest: a stale
+// If-Match is invalid_version, not invalid_state, and writes nothing.
+func TestCompleteProjectVersionGuard(t *testing.T) {
+	env := newProjectTestEnv(t)
+	projectID := env.completeProjectFixture(t, 4)
+
+	_, err := env.service.CompleteProject(context.Background(), projectID, "human:pm", 3)
+	if !errors.Is(err, domain.ErrInvalidVersion) {
+		t.Fatalf("err = %v, want invalid_version", err)
+	}
+	if got := env.projectState(t, projectID); got.Status != domain.StatusPendingDone || got.Version != 4 {
+		t.Errorf("state = %d/v%d, want 6/v4", got.Status, got.Version)
+	}
+	if got := env.completeGateCount(t, projectID); got != 0 {
+		t.Errorf("gate=complete rows = %d, want 0", got)
+	}
+}
+
+// TestCompleteProjectMissing checks the 404 of the completion path.
+func TestCompleteProjectMissing(t *testing.T) {
+	env := newProjectTestEnv(t)
+	if _, err := env.service.CompleteProject(context.Background(), "APP-404", "human:pm", 1); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("err = %v, want not found", err)
+	}
+}

@@ -13,7 +13,8 @@ func invalidField(field, reason string) *domain.ValidationError {
 }
 
 // decideReason resolves the reason column of one project transition: a submit
-// or an automated advance clears it, an approve clears it, and any other
+// or an internal advance clears it, an approve clears it, a completion clears it
+// (the closing record lives in gate_decisions, not in reason), and any other
 // verdict stores the trimmed reason.
 func decideReason(action string, decision domain.Decision, reason string) *string {
 	switch {
@@ -21,7 +22,7 @@ func decideReason(action string, decision domain.Decision, reason string) *strin
 		return nil
 	case action == domain.ProjectActionAddFirstTask,
 		action == domain.ProjectActionReviewTasks,
-		action == domain.ProjectActionSettleTasks:
+		action == domain.ProjectActionComplete:
 		return nil
 	case action == domain.ProjectActionDecide && decision == domain.DecisionApprove:
 		return nil

@@ -64,6 +64,7 @@ var routeSpecs = []routeSpec{
 	{http.MethodPost, "/v1/projects/submit", "projects"},
 	{http.MethodPost, "/v1/projects/decide", "projects"},
 	{http.MethodPost, "/v1/projects/cancel", "projects"},
+	{http.MethodPost, "/v1/projects/complete", "projects"},
 	{http.MethodGet, "/v1/projects/materials", "materials"},
 	{http.MethodGet, "/v1/gate-decisions", "projects"},
 
@@ -115,6 +116,7 @@ func Routes() []Route {
 //	POST /v1/projects/submit         draft → its review gate (?id=)
 //	POST /v1/projects/decide         approve/reject a review gate (?id=, If-Match)
 //	POST /v1/projects/cancel         cancel a non-terminal project (?id=)
+//	POST /v1/projects/complete       complete a settled pending_done project (?id=, If-Match)
 //	POST /v1/work-items              add one work item {project_id, kind, ...}
 //	GET /v1/work-items               list work items (or fetch one with ?id=/?work_id=)
 //	PATCH /v1/work-items             patch title/body_md/priority (?work_id=)
@@ -160,7 +162,7 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 	}
 	if projects != nil {
 		enabled["projects"] = true
-		projectsHandler := newProjectsHandler(projects, logger)
+		projectsHandler := newProjectsHandler(projects, products, logger)
 		handlers["POST /v1/projects"] = projectsHandler.createProject
 		handlers["GET /v1/projects"] = projectsHandler.listOrGetProject
 		handlers["PATCH /v1/projects"] = projectsHandler.updateProject
@@ -175,6 +177,7 @@ func NewRouter(logger *slog.Logger, fallback http.Handler, checks []HealthChecke
 		handlers["POST /v1/projects/submit"] = projectsHandler.submitProject
 		handlers["POST /v1/projects/decide"] = projectsHandler.decideProject
 		handlers["POST /v1/projects/cancel"] = projectsHandler.cancelProject
+		handlers["POST /v1/projects/complete"] = projectsHandler.completeProject
 		handlers["GET /v1/gate-decisions"] = projectsHandler.listGateDecisions
 	}
 	if workItems != nil {
