@@ -4,8 +4,8 @@
  * 需求=(0 需求草稿, 1 需求评审)
  * 方案=(2 方案草稿, 3 方案评审)
  * 拆解=(4 开发任务草稿, 5 开发任务评审)
- * 开发=(6 待完成)
- * 完成=(7 已完成)
+ * 待完成=(6 待完成)：卡片全部结清后停在这里，等人工点「完成项目」
+ * 已完成=(7 已完成)
  *
  * 纯展示组件，不新增接口；status=8（已取消）时整体置灰并标注「已取消」。
  */
@@ -20,8 +20,8 @@ const STAGES: Stage[] = [
   { key: 'requirement', label: '需求', statuses: [0, 1] },
   { key: 'spec', label: '方案', statuses: [2, 3] },
   { key: 'plan', label: '拆解', statuses: [4, 5] },
-  { key: 'dev', label: '开发', statuses: [6] },
-  { key: 'done', label: '完成', statuses: [7] },
+  { key: 'pending', label: '待完成', statuses: [6] },
+  { key: 'done', label: '已完成', statuses: [7] },
 ]
 
 const CANCELLED_STATUS = 8

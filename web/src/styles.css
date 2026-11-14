@@ -954,6 +954,20 @@ button {
   flex-wrap: wrap;
 }
 
+/* 「完成项目」入口：按钮 + 未结清数量说明（禁用时给出可见原因）。 */
+.action-complete {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.action-hint {
+  color: var(--danger);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
 /* 筛选条 */
 .filter-bar {
   display: flex;
@@ -1022,6 +1036,13 @@ button {
   gap: 10px;
   margin-top: 6px;
   font-size: 0.84rem;
+}
+
+/* 页头说明：任务验收 ≠ 项目完成（仅项目处于「待完成」时出现）。 */
+.board-hint {
+  margin: 6px 0 0;
+  color: #8a5a00;
+  font-size: 0.82rem;
 }
 
 .board-card-reason {
