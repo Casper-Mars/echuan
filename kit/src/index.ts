@@ -299,7 +299,7 @@ export function apply(ctx: Context, config?: ConfigInput): void {
           agents: { roots: () => ctx.agents.roots() },
           // 项目级会话：sessionId = 项目号，cwd 取会话数最多的 workspace。
           // 服务每次调用时惰性读取，避免插件加载早期服务未就绪。
-          ensureSession: async projectId => (await ensureProjectSession(projectId))?.agent as Agent | undefined,
+          ensureSession: async (projectId, presetId) => (await ensureProjectSession(projectId, presetId))?.agent as Agent | undefined,
           logger: toRuntimeLogger(log, warn),
         })
         loop = nextLoop
