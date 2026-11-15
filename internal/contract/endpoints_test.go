@@ -537,8 +537,17 @@ func TestContractEndpoints(t *testing.T) {
 	if name := stringField(t, review, "status_name"); name != "pending_done" {
 		t.Fatalf("after batch approval status = %q", name)
 	}
-	if ready := intField(t, review, "ready_work_items"); ready != 2 {
+	// Neither planned card is gated: the approval queues both, and both are
+	// claimable right away.
+	if queued := intField(t, review, "queued_work_items"); queued != 2 {
+		t.Errorf("queued_work_items = %d, want 2", queued)
+	}
+	ready := intField(t, review, "ready_work_items")
+	if ready != 2 {
 		t.Errorf("ready_work_items = %d, want 2", ready)
+	}
+	if ready > intField(t, review, "queued_work_items") {
+		t.Errorf("ready_work_items = %d > queued_work_items = %d", ready, intField(t, review, "queued_work_items"))
 	}
 
 	e.call(http.MethodGet, "/v1/projects/materials?id="+mainID+"&kind=1", nil, nil, http.StatusOK)

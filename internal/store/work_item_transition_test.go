@@ -182,54 +182,101 @@ func TestCompleteWorkItemReportGuards(t *testing.T) {
 	}
 }
 
-// TestProjectBulkWorkItemWrites covers the three set-based helpers the project
+// TestProjectBulkWorkItemWrites covers the set-based helpers the project
 // decision uses (queue, cancel, delete) plus the unsettled counter.
 func TestProjectBulkWorkItemWrites(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("release only touches ungated blocked cards", func(t *testing.T) {
+	t.Run("approval queues every blocked card, ready counts the ungated ones", func(t *testing.T) {
 		st := openTestStore(t, 1)
 		projectID := seedProjectRow(t, st)
-		insertSeededWorkItems(t, st, projectID, []workItemSeed{
+		ids := insertSeededWorkItems(t, st, projectID, []workItemSeed{
 			{workID: "w_01", seq: 1, state: WorkItemStateBlocked},
 			{workID: "w_02", seq: 2, state: WorkItemStateBlocked},
 			{workID: "w_03", seq: 3, state: WorkItemStateQueued},
 			{workID: "w_04", seq: 4, state: WorkItemStateAccepted},
 			{workID: "w_05", seq: 5, state: WorkItemStateCancelled},
+			{workID: "w_06", seq: 6, state: WorkItemStateBlocked},
 		})
+		// w_02 waits on the still blocked w_01 (not claimable); w_06 waits on the
+		// accepted w_04 (claimable as soon as it is queued).
+		if err := st.Tx(ctx, func(tx *sql.Tx) error {
+			if err := InsertWorkDependency(ctx, tx, ids["w_02"], ids["w_01"]); err != nil {
+				return err
+			}
+			return InsertWorkDependency(ctx, tx, ids["w_06"], ids["w_04"])
+		}); err != nil {
+			t.Fatalf("seed dependencies: %v", err)
+		}
 
-		var affected int64
+		var ready, queued int64
 		if err := st.Tx(ctx, func(tx *sql.Tx) error {
 			var err error
-			affected, err = ReleaseReadyWorkItems(ctx, tx, projectID, leaseTestTime)
+			if ready, err = CountReadyBlockedWorkItems(ctx, tx, projectID); err != nil {
+				return err
+			}
+			queued, err = QueueBlockedWorkItems(ctx, tx, projectID, leaseTestTime)
 			return err
 		}); err != nil {
-			t.Fatalf("ReleaseReadyWorkItems: %v", err)
+			t.Fatalf("queue blocked work items: %v", err)
 		}
-		if affected != 2 {
-			t.Errorf("affected = %d, want 2", affected)
+		// Ready keeps the historical meaning (gated cards excluded); queued is
+		// the whole batch, gated or not.
+		if ready != 2 {
+			t.Errorf("ready = %d, want 2 (w_01 and w_06)", ready)
+		}
+		if queued != 3 {
+			t.Errorf("queued = %d, want 3 (every blocked card, w_02 included)", queued)
 		}
 
 		states := map[string]string{}
-		rows, err := st.Read().QueryContext(ctx, `SELECT work_id, state FROM work_items`)
+		versions := map[string]int{}
+		rows, err := st.Read().QueryContext(ctx, `SELECT work_id, state, version FROM work_items`)
 		if err != nil {
 			t.Fatalf("read states: %v", err)
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var id, state string
-			if err := rows.Scan(&id, &state); err != nil {
+			var version int
+			if err := rows.Scan(&id, &state, &version); err != nil {
 				t.Fatalf("scan state: %v", err)
 			}
 			states[id] = state
+			versions[id] = version
 		}
 		if err := rows.Err(); err != nil {
 			t.Fatalf("rows: %v", err)
 		}
+		// w_02 is queued even though its dependency is not accepted: approval is
+		// what puts a card on the board, claim is what gates dispatch.
 		if states["w_01"] != WorkItemStateQueued || states["w_02"] != WorkItemStateQueued ||
 			states["w_03"] != WorkItemStateQueued || states["w_04"] != WorkItemStateAccepted ||
-			states["w_05"] != WorkItemStateCancelled {
+			states["w_05"] != WorkItemStateCancelled || states["w_06"] != WorkItemStateQueued {
 			t.Errorf("states = %v", states)
+		}
+		for _, id := range []string{"w_01", "w_02", "w_06"} {
+			if versions[id] != 2 {
+				t.Errorf("%s version = %d, want 2 after the queue write", id, versions[id])
+			}
+		}
+		for _, id := range []string{"w_03", "w_04", "w_05"} {
+			if versions[id] != 1 {
+				t.Errorf("%s version = %d, want untouched (1)", id, versions[id])
+			}
+		}
+
+		// A second approval has nothing left to queue, which is the caller's
+		// "no blocked card to approve" signal.
+		if err := st.Tx(ctx, func(tx *sql.Tx) error {
+			var err error
+			queued, err = QueueBlockedWorkItems(ctx, tx, projectID, leaseTestTime)
+			return err
+		}); err != nil {
+			t.Fatalf("second queue write: %v", err)
+		}
+		if queued != 0 {
+			t.Errorf("second queued = %d, want 0", queued)
 		}
 	})
 
