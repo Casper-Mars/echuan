@@ -215,7 +215,9 @@ SELECT w.work_id, w.project_id, w.title
 
 用途：找出**审批后仍停在「待评审」**的 dev 卡。常见于同一项目在审批后又新建了一批计划（并发新建），或升级前遗留、没有走新逻辑重批的批次。这些卡任何 claim 都看不到——有行就是「卡住了」。
 
-处理：对 `project_id` 点一次「全部通过」（`POST /v1/work-items/review`，`{"project_id":"<项目>","decision":"approve"}`），项目内所有 `blocked` 卡会一起转 `queued`；接口返回 409 `has no blocked work item to approve` 说明这批早已放行，不用再点。
+处理：对命中的项目点一次「全部通过」（`POST /v1/work-items/review`，`{"project_id":"<项目业务编号>","decision":"approve"}`），项目内所有 `blocked` 卡会一起转 `queued`；接口返回 409 `has no blocked work item to approve` 说明这批早已放行，不用再点。
+
+> SQL A 输出的 `project_id` 是 `work_items.project_id`（内部数字 id），不是接口用的业务编号（如 `APP-1`）。重批前先换成业务编号：`SELECT project_id FROM projects WHERE id = <上面查到的数字 id>;`，或直接在 GUI 工作项看板按项目名找到。
 
 **SQL B：已「待开发」但依赖未验收、当前不可派发的卡**
 
@@ -230,7 +232,7 @@ SELECT w.work_id, w.project_id, dep.work_id AS waiting_on, dep.state AS waiting_
 
 用途：找出**已待开发但依赖未验收、当前不可派发**的卡（`waiting_on` / `waiting_state` 指出在等哪张、它到哪一步了）。**「看板有卡、心跳不派」时先查 B**：这是审批后的正常中间态，不是故障。
 
-处理：去推进 `waiting_on`（派发、报告、催验收），不要手工改下游卡的状态；B 为空且心跳仍不派卡，再看 2.2 派卡规则与 Worker 的 `current_task_id`（是否还持有旧卡）。
+处理：去推进 `waiting_on`（派发、报告、催验收），不要手工改下游卡的状态；B 为空且心跳仍不派卡，再看 2.2 派卡规则与 Worker 的 `current_work_item_id`（是否还持有旧卡）。
 
 ---
 

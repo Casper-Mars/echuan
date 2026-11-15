@@ -410,7 +410,7 @@ SELECT w.work_id, w.project_id, w.title
 sqlite3 "${ECHUAN_DATA_DIR:-$HOME/echuan-v2-data}/state.db"
 ```
 
-有行就把 `project_id` 记下来，升级后按「升级后」一节重批一次；构建镜像前建议先给当前镜像打个保留 tag（见下方回滚），用错版本时不必重新构建。
+有行就把这些卡所属的项目记下来（SQL 输出的是内部数字 id；先用 `SELECT project_id FROM projects WHERE id = <数字 id>;` 换成业务编号，或直接在 GUI 工作项看板按项目名找到），升级后按「升级后」一节重批一次；构建镜像前建议先给当前镜像打个保留 tag（见下方回滚），用错版本时不必重新构建。
 
 ```bash
 # 1. 拉取/切换代码后重新构建（版本号来自 git describe）
