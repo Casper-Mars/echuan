@@ -188,6 +188,9 @@ export interface WorkItemReviewResult {
   project_id: string
   status: number
   version: number
+  /** 本轮从 blocked 转入 queued 的张数：审批通过时等于被通过的卡数，驳回为 0。 */
+  queued_work_items: number
+  /** 其中依赖已全部验收、当前即可被 claim 的张数；恒有 ready ≤ queued。 */
   ready_work_items: number
   reason: string | null
   rejected_at: string | null

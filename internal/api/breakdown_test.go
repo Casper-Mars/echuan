@@ -350,10 +350,42 @@ func TestBreakdownReportHTTPSuccess(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &review); err != nil {
 		t.Fatalf("decode review: %v", err)
 	}
-	// Item 2 depends on item 1, so only the head is released by the approval;
-	// the dependent card waits for item 1's acceptance.
+	// The approval queues both cards (queued=2); only the head is claimable
+	// right away (ready=1), because item 2 waits for item 1's acceptance.
 	if review.ReadyWorkItems != 1 || review.Status != 6 {
 		t.Errorf("review = %d/%d, want 1 ready / status 6", review.ReadyWorkItems, review.Status)
+	}
+	if review.QueuedWorkItems != 2 {
+		t.Errorf("queued_work_items = %d, want 2", review.QueuedWorkItems)
+	}
+	if review.ReadyWorkItems > review.QueuedWorkItems {
+		t.Errorf("ready_work_items = %d > queued_work_items = %d", review.ReadyWorkItems, review.QueuedWorkItems)
+	}
+
+	// The board agrees with the response: both dev cards are queued, none is
+	// left in "待评审".
+	rec = doJSON(t, e.handler, http.MethodGet,
+		"/v1/work-items?project_id="+e.projectID+"&kind=dev&state=queued", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list queued: %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var queuedItems workItemListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &queuedItems); err != nil {
+		t.Fatalf("decode queued list: %v", err)
+	}
+	if len(queuedItems.Items) != 2 {
+		t.Errorf("queued dev cards = %d, want 2", len(queuedItems.Items))
+	}
+	for i, item := range queuedItems.Items {
+		if item.State != "queued" {
+			t.Errorf("queued[%d].state = %q, want queued", i, item.State)
+		}
+	}
+	// The dependent card is queued but still names the dependency that keeps it
+	// out of dispatch.
+	if blockedBy := queuedItems.Items[1].BlockedBy; len(blockedBy) != 1 ||
+		blockedBy[0] != queuedItems.Items[0].WorkID {
+		t.Errorf("queued[1].blocked_by = %v, want [%s]", blockedBy, queuedItems.Items[0].WorkID)
 	}
 
 	rec = doJSON(t, e.handler, http.MethodPost, "/v1/work-items/claim",
