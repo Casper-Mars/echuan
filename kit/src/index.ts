@@ -60,8 +60,8 @@ export type { ConfigInput, ResolvedConfig } from './config.js'
 export { READ_TOOL_NAMES, TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from './tool-names.js'
 export { DEFAULT_POLL_INTERVAL_MS, createEchuanRuntime } from './runtime.js'
 export type { EchuanRuntime, EchuanRuntimeOptions, Logger, TimerApi } from './runtime.js'
-export { WORKER_KINDS } from './config.js'
-export type { WorkerKind } from './config.js'
+export { DEFAULT_PRESET_BY_KIND } from './config.js'
+export type { PresetByKind } from './config.js'
 export type { WorkerLoop, WorkerLoopOptions } from './worker.js'
 export {
   ECHUAN_SKILL_DESCRIPTION,
@@ -140,7 +140,8 @@ export function apply(ctx: Context, config?: ConfigInput): void {
     `${TAG} 插件加载 name=${name} inject=[${inject.join(', ')}] `
       + `baseUrl=${resolved.baseUrl} actor=${resolved.actor} `
       + `timeout=${resolved.requestTimeoutMs}ms poll=${resolved.worker.poll.enable} `
-      + `kinds=[${resolved.worker.kinds.join(',')}]`,
+      + `kinds=[${resolved.worker.kinds.join(',')}] `
+      + `presets=[${formatPresetByKind(resolved.worker.presetByKind)}]`,
   )
 
   // R-02：超限在这里判一次，超限就完全不启动循环（零请求、零定时器）。
@@ -164,7 +165,7 @@ export function apply(ctx: Context, config?: ConfigInput): void {
   if (resolved.worker.poll.enable && resolved.worker.kinds.length === 0) {
     warn(
       `${TAG} 警告：worker.kinds 为空，不启动心跳循环；`
-        + '请在配置里声明至少一个 kind（requirement / design / breakdown / dev），'
+        + '请配置 worker.presetByKind（推荐，键即声明）或 worker.kinds 至少一个类别，'
         + '或保持 worker.poll.enable=false',
     )
   }
@@ -321,6 +322,13 @@ export function apply(ctx: Context, config?: ConfigInput): void {
       active?.dispose('plugin dispose')
     }
   }, 'echuan.runtime()')
+}
+
+/** 把生效的 kind → preset 映射压成一行日志，补上平台那边看不到的中央可见性。 */
+function formatPresetByKind(presetByKind: Readonly<Record<string, string>>): string {
+  const entries = Object.entries(presetByKind)
+  if (entries.length === 0) return '未配置（回落 registry 默认 preset）'
+  return entries.map(([kind, preset]) => `${kind}→${preset}`).join(',')
 }
 
 /** 把插件的两个日志出口适配成 worker 循环要求的 `Logger`。 */

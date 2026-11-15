@@ -19,18 +19,25 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 35_000
 export const WORKER_METADATA_MAX_BYTES = 8 * 1024
 
 /**
- * worker 可声明的工作项类别（平台契约 `WorkerHeartbeatRequest.kinds` 的枚举）。
+ * 默认 kind → preset 映射（V3 角色表）。
  *
- * 一个 worker 只声明「自己能做什么」，平台按声明派单；kit 不做 kind→agent 映射：
- * 一个 worker 对应一个 agent，需要隔离就拆 worker。
+ * 角色路由属于 **worker 侧**：kit 最清楚本 Host 装了哪些 preset，也天然承担
+ * 「换 agent 运行时」的适配责任。平台只发它自己的工作项词汇（kind），不认识
+ * preset 名，所以新增角色只需改这里 + 在 Host 装好对应 preset，平台零改动。
+ *
+ * requirement → pm；design / breakdown → cto（CTO 同时负责技术方案与任务拆解）；
+ * dev → dev-leader（dev Host 的编排 preset；developer / tester 是会话内派生的
+ * subagent preset，不会收到派单）。
  */
-export const WORKER_KINDS = ['requirement', 'design', 'breakdown', 'dev'] as const
+export const DEFAULT_PRESET_BY_KIND: Readonly<Record<string, string>> = {
+  requirement: 'pm',
+  design: 'cto',
+  breakdown: 'cto',
+  dev: 'dev-leader',
+}
 
-/** 单个工作项类别。 */
-export type WorkerKind = (typeof WORKER_KINDS)[number]
-
-/** 合法 kind 的查找表（配置解析时校验用）。 */
-const WORKER_KIND_SET: ReadonlySet<string> = new Set(WORKER_KINDS)
+/** kind → preset 映射；键是平台的工作项类别。空对象表示不做映射（回落 registry 默认）。 */
+export type PresetByKind = Readonly<Record<string, string>>
 
 /** 插件收到的原始配置：字段均可缺省，由 Schema 的默认值补齐。 */
 export interface ConfigInput {
@@ -41,6 +48,7 @@ export interface ConfigInput {
   worker?: {
     poll?: { enable?: boolean | null } | null
     kinds?: string[] | null
+    presetByKind?: Record<string, string> | null
     metadata?: Record<string, unknown> | null
   } | null
 }
@@ -60,8 +68,10 @@ export interface ResolvedConfig {
       /** 是否启用定时心跳；默认 false。 */
       enable: boolean
     }
-    /** 声明可执行的工作项类别（已 trim、去重、保序）；默认 `[]`。 */
-    kinds: WorkerKind[]
+    /** 声明可执行的工作项类别（已 trim、去重、保序）；缺省取 `presetByKind` 的键。 */
+    kinds: string[]
+    /** kind → preset 映射（已 trim）；空对象表示不做映射，回落 registry 默认 preset。 */
+    presetByKind: Record<string, string>
     /** 任意 JSON 对象，原样上报。 */
     metadata: Record<string, unknown>
   }
@@ -75,6 +85,7 @@ export type SchemaConfig = Omit<ResolvedConfig, 'worker'> & {
   worker: {
     poll: { enable: boolean }
     kinds: string[]
+    presetByKind: Record<string, string>
     metadata: Record<string, unknown>
   }
 }
@@ -111,8 +122,14 @@ export const Config: Schemastery<ConfigInput, SchemaConfig> = Schema.object({
     kinds: Schema.array(Schema.string())
       .default([])
       .description(
-        '声明本 worker 可执行的 work item 类别（requirement / design / breakdown / dev）；'
-        + '为空时不启动心跳循环。一个 worker 对应一个 agent，不做 kind→agent 映射',
+        '声明本 worker 可执行的 work item 类别；缺省时取 presetByKind 的键（即全接）。'
+        + '只有显式写空数组且 presetByKind 也为空时才不启动心跳循环',
+      ),
+    presetByKind: Schema.dict(Schema.string())
+      .default({ ...DEFAULT_PRESET_BY_KIND })
+      .description(
+        'kind → preset 映射（角色路由在 worker 侧）；默认 requirement=pm, design=cto, '
+        + 'breakdown=cto, dev=dev-leader。写空对象表示不映射，回落 registry 默认 preset',
       ),
     metadata: Schema.dict(Schema.any())
       .default({})
@@ -128,7 +145,12 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   actor: DEFAULT_ACTOR,
   requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
   exclude: [],
-  worker: { poll: { enable: false }, kinds: [], metadata: {} },
+  worker: {
+    poll: { enable: false },
+    kinds: Object.keys(DEFAULT_PRESET_BY_KIND),
+    presetByKind: { ...DEFAULT_PRESET_BY_KIND },
+    metadata: {},
+  },
 }
 
 /**
@@ -149,41 +171,70 @@ export function resolveConfig(input?: ConfigInput | null): ResolvedConfig {
   const resolved = Config(input ?? {})
   const baseUrl = normalizeBaseUrl(resolved.baseUrl)
   const actor = (resolved.actor ?? '').trim()
+  const presetByKind = normalizePresetByKind(resolved.worker.presetByKind)
+  const workerConfig = {
+    poll: { enable: resolved.worker.poll.enable },
+    presetByKind,
+    kinds: normalizeKinds(resolved.worker.kinds, presetByKind),
+    metadata: resolved.worker.metadata,
+  }
   return {
     baseUrl,
     // S-02：actor 是写操作身份，前后空白没有语义；trim 后为空则回落默认值。
     actor: actor === '' ? DEFAULT_ACTOR : actor,
     requestTimeoutMs: resolved.requestTimeoutMs,
     exclude: normalizeExclude(resolved.exclude),
-    worker: {
-      poll: { enable: resolved.worker.poll.enable },
-      kinds: normalizeKinds(resolved.worker.kinds),
-      metadata: resolved.worker.metadata,
-    },
+    worker: workerConfig,
   }
 }
 
 /**
- * 归一化 `worker.kinds`：trim、去重（保序），未知类别抛 `TypeError`。
+ * 归一化 `worker.presetByKind`：键值 trim，空键 / 空 preset 抛 `TypeError`。
  *
- * 未知 kind 必须让配置解析失败：平台心跳只接受四类枚举，静默丢弃会让
- * 「以为声明了某类」变成「其实没声明」，派单永远不来。
+ * 空对象是合法输入，含义是「不做映射」：会话回落 registry 默认 preset。
+ * 空白项不能静默丢弃——那会让「以为配了某角色」变成「其实没配」。
  */
-function normalizeKinds(kinds?: readonly string[] | null): WorkerKind[] {
-  if (kinds === undefined || kinds === null || kinds.length === 0) return []
-  const normalized: WorkerKind[] = []
-  const seen = new Set<string>()
-  for (const item of kinds) {
-    const kind = item.trim()
-    if (!WORKER_KIND_SET.has(kind)) {
+function normalizePresetByKind(input?: Record<string, string> | null): Record<string, string> {
+  if (input === undefined || input === null) return { ...DEFAULT_PRESET_BY_KIND }
+  const normalized: Record<string, string> = {}
+  for (const [rawKind, rawPreset] of Object.entries(input)) {
+    const kind = rawKind.trim()
+    const preset = (rawPreset ?? '').trim()
+    if (kind === '' || preset === '') {
       throw new TypeError(
-        `worker.kinds 含未知类别：${JSON.stringify(item)}。合法取值（${WORKER_KINDS.length} 个）：`
-          + `${WORKER_KINDS.join(', ')}。`,
+        `worker.presetByKind 存在空键或空 preset：${JSON.stringify(rawKind)} → `
+          + `${JSON.stringify(rawPreset)}。下一步：填写 kind 与 preset id，或删掉该条目。`,
       )
+    }
+    normalized[kind] = preset
+  }
+  return normalized
+}
+
+/**
+ * 归一化 `worker.kinds`：trim、去重（保序），空白项抛 `TypeError`。
+ *
+ * 缺省（未写 / 空数组）时取 `presetByKind` 的键——「能领什么」自然等于「有角色
+ * 可挂什么」。kind 词汇由平台拥有，kit 不维护枚举：拼错的 kind 由平台心跳拒绝，
+ * 错误信息比本地猜枚举更准。
+ */
+function normalizeKinds(
+  kinds: readonly string[] | null | undefined,
+  presetByKind: Record<string, string>,
+): string[] {
+  const source = kinds === undefined || kinds === null || kinds.length === 0
+    ? Object.keys(presetByKind)
+    : kinds
+  const normalized: string[] = []
+  const seen = new Set<string>()
+  for (const item of source) {
+    const kind = item.trim()
+    if (kind === '') {
+      throw new TypeError('worker.kinds 不能包含空白项。下一步：填写 kind，或直接删掉该条目。')
     }
     if (seen.has(kind)) continue
     seen.add(kind)
-    normalized.push(kind as WorkerKind)
+    normalized.push(kind)
   }
   return normalized
 }

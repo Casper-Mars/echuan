@@ -193,7 +193,8 @@ function setup(
   handler: Handler,
   options: {
     enable?: boolean
-    kinds?: readonly ('requirement' | 'design' | 'breakdown' | 'dev')[]
+    kinds?: readonly string[]
+    presetByKind?: Record<string, string>
     metadata?: Record<string, unknown>
     /** 本进程的 root agents；派单固定投给第一个。 */
     agents?: readonly Agent[]
@@ -208,6 +209,7 @@ function setup(
     worker: {
       poll: { enable: options.enable ?? true },
       kinds: [...(options.kinds ?? ['dev'])],
+      ...(options.presetByKind === undefined ? {} : { presetByKind: options.presetByKind }),
       metadata,
     },
   })
@@ -434,11 +436,11 @@ describe('dispatch 投递', () => {
     expect(harness.lines.some(line => line.includes('给项目 APP-1 的 agent'))).toBe(true)
   })
 
-  it('派单带 agent_preset：原样传给 ensureSession（V3 按角色建会话）', async () => {
-    const projectAgent = buildAgent('idle', 'agent-APP-1:pm')
+  it('派单只带 kind：preset 由 worker 侧映射解析（dev → dev-leader）', async () => {
+    const projectAgent = buildAgent('idle', 'agent-APP-1:dev-leader')
     const asked: Array<{ project: string; preset?: string }> = []
     const harness = setup(
-      () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand({ agent_preset: 'pm' })], 5_000)),
+      () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand()], 5_000)),
       {
         agents: [buildAgent('idle', 'agent-root').agent],
         ensureSession: async (projectId, presetId) => {
@@ -449,8 +451,48 @@ describe('dispatch 投递', () => {
     )
     await startAndBeat(harness.loop, harness.scheduler)
 
-    expect(asked).toEqual([{ project: 'APP-1', preset: 'pm' }])
+    expect(asked).toEqual([{ project: 'APP-1', preset: 'dev-leader' }])
     expect(projectAgent.followup).toHaveBeenCalledTimes(1)
+  })
+
+  it('worker 侧映射可覆盖：requirement → reviewer（平台无需知情）', async () => {
+    const projectAgent = buildAgent('idle', 'agent-APP-1:reviewer')
+    const asked: Array<{ project: string; preset?: string }> = []
+    const harness = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand({ kind: 'review' })], 5_000)),
+      {
+        kinds: ['review'],
+        presetByKind: { review: 'reviewer' },
+        agents: [buildAgent('idle', 'agent-root').agent],
+        ensureSession: async (projectId, presetId) => {
+          asked.push({ project: projectId, ...(presetId === undefined ? {} : { preset: presetId }) })
+          return projectAgent.agent
+        },
+      },
+    )
+    await startAndBeat(harness.loop, harness.scheduler)
+
+    expect(asked).toEqual([{ project: 'APP-1', preset: 'reviewer' }])
+  })
+
+  it('映射未命中：preset 传 undefined，回落 registry 默认', async () => {
+    const projectAgent = buildAgent('idle', 'agent-APP-1')
+    const asked: Array<{ project: string; preset?: string }> = []
+    const harness = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand({ kind: 'hotfix' })], 5_000)),
+      {
+        kinds: ['hotfix'],
+        presetByKind: { dev: 'dev-leader' },
+        agents: [buildAgent('idle', 'agent-root').agent],
+        ensureSession: async (projectId, presetId) => {
+          asked.push({ project: projectId, ...(presetId === undefined ? {} : { preset: presetId }) })
+          return projectAgent.agent
+        },
+      },
+    )
+    await startAndBeat(harness.loop, harness.scheduler)
+
+    expect(asked).toEqual([{ project: 'APP-1' }])
   })
 
   it('ensureSession 返回空：不投递、不写 inflight，下一轮重试', async () => {
@@ -841,7 +883,7 @@ describe('开关与卸载', () => {
   })
 
   it('kinds 为空：warn 一条、零请求、零定时器（不每轮 400）', async () => {
-    const harness = setup(() => okResponse(heartbeatPayload(WORKER_ID)), { kinds: [] })
+    const harness = setup(() => okResponse(heartbeatPayload(WORKER_ID)), { kinds: [], presetByKind: {} })
     harness.loop.start()
     await drain()
     expect(harness.platform.calls).toHaveLength(0)

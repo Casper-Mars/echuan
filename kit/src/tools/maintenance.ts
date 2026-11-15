@@ -254,15 +254,15 @@ function requireBody(value: unknown, field: string): string {
 }
 
 function requireKind(value: unknown): WorkItemKind {
-  if (value !== 'requirement' && value !== 'design' && value !== 'breakdown' && value !== 'dev') {
+  // kind 词汇属于平台：这里只挡空白，拼错的类别交给平台报错（错误信息更准）。
+  if (typeof value !== 'string' || value.trim() === '') {
     throw new EchuanValidationError(
-      `kind 必须是 requirement / design / breakdown / dev 之一，收到 ${String(value)}。`
-        + '本次没有发出任何请求。',
+      `kind 必须是非空字符串，收到 ${String(value)}。本次没有发出任何请求。`,
       'invalid_argument',
       'kind',
     )
   }
-  return value
+  return value.trim()
 }
 
 function requirePriority(value: unknown): number {

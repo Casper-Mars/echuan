@@ -23,11 +23,9 @@
  * 两者共用 `requestRaw` / `requestJson`，仍然是全插件唯一的 fetch 出口。
  */
 import {
-  WORKER_KINDS,
   WORKER_METADATA_MAX_BYTES,
   metadataByteLength,
   type ResolvedConfig,
-  type WorkerKind,
 } from './config.js'
 import {
   DEFAULT_RETRY_AFTER_MS,
@@ -146,7 +144,11 @@ export const DELETED_MESSAGE =
 // ---------------------------------------------------------------------------
 
 /** 工作项类别（`Dispatch.kind` / 工具的 `kind` 入参）。 */
-export type WorkItemKind = 'requirement' | 'design' | 'breakdown' | 'dev'
+/**
+ * 工作项类别。字符串而非封闭联合：kind 词汇属于平台，kit 不做镜像枚举——
+ * 平台新增阶段（例如 review）时 kit 不应因类型未更新而编译失败。
+ */
+export type WorkItemKind = string
 
 /** 工作项状态（文本枚举，平台 v2 契约）。 */
 export type WorkItemState =
@@ -207,12 +209,6 @@ export interface Dispatch {
   protocol: 'v2'
   work_id: string
   kind: WorkItemKind
-  /**
-   * Agent preset that should run this card, resolved by the platform from its
-   * kind → preset mapping (V3). Absent when the platform disabled routing, in
-   * which case the worker falls back to the registry default preset.
-   */
-  agent_preset?: string
   inputs: WorkItemInput[]
   work_item: DispatchWorkItem
   lease: DispatchLease
@@ -1644,25 +1640,26 @@ function requireIdList(value: unknown, field: string): string[] {
   return value.map((item, index) => requireNonEmpty(item, `${field}[${index}]`))
 }
 
-/** 工作项类别：必须是契约四类之一（避免把拼写错误直接发给平台）。 */
-function requireWorkItemKind(value: unknown, field: string): WorkerKind {
-  if (typeof value !== 'string' || !(WORKER_KINDS as readonly string[]).includes(value)) {
+/** 工作项类别：非空字符串即可，合法取值由平台裁决（kind 词汇属于平台）。 */
+function requireWorkItemKind(value: unknown, field: string): WorkItemKind {
+  if (typeof value !== 'string' || value.trim() === '') {
     throw new EchuanValidationError(
-      `${field} 必须是 ${WORKER_KINDS.join(' / ')} 之一，收到 ${String(value)}。`
-        + '下一步：检查调用参数，按 api/openapi.yaml 的 kind 枚举传入。',
+      `${field} 必须是非空字符串，收到 ${String(value)}。`
+        + '下一步：检查调用参数，kind 取值请参考平台当前的工作项阶段。',
       'invalid_argument',
       field,
     )
   }
-  return value as WorkerKind
+  return value.trim()
 }
 
-/** 心跳 kinds：至少一项，且必须是契约四类之一。 */
-function requireKinds(value: unknown): WorkerKind[] {
+/** 心跳 kinds：至少一项，每项都是非空字符串（是否被平台接受由平台判定）。 */
+function requireKinds(value: unknown): WorkItemKind[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new EchuanValidationError(
-      'kinds 必须是非空数组（requirement / design / breakdown / dev）。'
-        + '下一步：在 worker.kinds 里声明本 worker 能执行的类别；为空时不要发心跳。',
+      'kinds 必须是非空数组。'
+        + '下一步：在 worker.presetByKind 或 worker.kinds 里声明本 worker 能执行的类别；'
+        + '为空时不要发心跳。',
       'invalid_argument',
       'kinds',
     )

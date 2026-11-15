@@ -6,6 +6,7 @@ import {
   DEFAULT_ACTOR,
   DEFAULT_BASE_URL,
   DEFAULT_CONFIG,
+  DEFAULT_PRESET_BY_KIND,
   DEFAULT_REQUEST_TIMEOUT_MS,
   metadataByteLength,
   resolveConfig,
@@ -141,7 +142,7 @@ describe('resolveConfig：未知键', () => {
 
     const resolved = resolveConfig(legacy)
     expect('legacyOption' in resolved.worker).toBe(false)
-    expect(resolved.worker).toEqual({ poll: { enable: false }, kinds: [], metadata: {} })
+    expect(resolved.worker).toEqual(DEFAULT_CONFIG.worker)
     expect(resolved).toEqual(DEFAULT_CONFIG)
   })
 })
@@ -165,9 +166,9 @@ describe('metadataByteLength', () => {
   })
 })
 
-describe('worker.kinds：四类枚举、去重保序、默认空', () => {
-  it('默认 []', () => {
-    expect(resolveConfig({}).worker.kinds).toEqual([])
+describe('worker.kinds：由映射推导、去重保序、非枚举校验', () => {
+  it('缺省时取 presetByKind 的键', () => {
+    expect(resolveConfig({}).worker.kinds).toEqual(Object.keys(DEFAULT_PRESET_BY_KIND))
   })
 
   it('trim + 去重（保序）', () => {
@@ -177,12 +178,46 @@ describe('worker.kinds：四类枚举、去重保序、默认空', () => {
     expect(resolved.worker.kinds).toEqual(['dev', 'design', 'breakdown'])
   })
 
-  it('未知 kind → TypeError，消息列出合法取值', () => {
-    expect(() => resolveConfig({ worker: { kinds: ['dev', 'qa'] } })).toThrow(TypeError)
-    expect(() => resolveConfig({ worker: { kinds: ['qa'] } })).toThrow(/requirement, design, breakdown, dev/)
+  it('未知 kind 原样透传（词汇由平台裁决，不再本地枚举）', () => {
+    expect(resolveConfig({ worker: { kinds: ['dev', 'review', ' review '] } }).worker.kinds)
+      .toEqual(['dev', 'review'])
   })
 
-  it('DEFAULT_CONFIG 里 kinds 为 []（浅比较也要一致）', () => {
-    expect(DEFAULT_CONFIG.worker.kinds).toEqual([])
+  it('空白 kind → TypeError', () => {
+    expect(() => resolveConfig({ worker: { kinds: ['dev', '  '] } })).toThrow(TypeError)
+  })
+
+  it('DEFAULT_CONFIG 里 kinds 取默认映射的键', () => {
+    expect(DEFAULT_CONFIG.worker.kinds).toEqual(Object.keys(DEFAULT_PRESET_BY_KIND))
+  })
+})
+
+describe('worker.presetByKind：角色路由在 worker 侧', () => {
+  it('默认 V3 角色表', () => {
+    expect(resolveConfig({}).worker.presetByKind).toEqual({
+      requirement: 'pm',
+      design: 'cto',
+      breakdown: 'cto',
+      dev: 'dev-leader',
+    })
+  })
+
+  it('可整体覆盖：新增 review → reviewer 不需要平台参与', () => {
+    const resolved = resolveConfig({ worker: { presetByKind: { review: 'reviewer' } } })
+    expect(resolved.worker.presetByKind).toEqual({ review: 'reviewer' })
+    expect(resolved.worker.kinds).toEqual(['review'])
+  })
+
+  it('键值 trim；空 preset / 空键抛 TypeError', () => {
+    expect(resolveConfig({ worker: { presetByKind: { ' dev ': ' dev-leader ' } } }).worker.presetByKind)
+      .toEqual({ dev: 'dev-leader' })
+    expect(() => resolveConfig({ worker: { presetByKind: { dev: '  ' } } })).toThrow(TypeError)
+    expect(() => resolveConfig({ worker: { presetByKind: { ' ': 'cto' } } })).toThrow(TypeError)
+  })
+
+  it('空对象 = 不做映射：kinds 为空，会话回落 registry 默认', () => {
+    const resolved = resolveConfig({ worker: { presetByKind: {} } })
+    expect(resolved.worker.presetByKind).toEqual({})
+    expect(resolved.worker.kinds).toEqual([])
   })
 })

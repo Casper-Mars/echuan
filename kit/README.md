@@ -155,24 +155,26 @@ dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
     worker:
       poll:
         enable: true                      # 默认关闭；打开才会定时心跳
-      kinds:                              # 声明本 worker 能做的类别（四类、去重保序）
-        - dev
+      presetByKind:                       # kind → preset（角色路由在 worker 侧）
+        dev: dev-leader
+      # kinds 可省略：缺省取 presetByKind 的键（上面等价于 kinds: [dev]）
       metadata:                           # 原样上报，序列化后 ≤8KiB
         host: build-01
         os: darwin
         agent_version: 1.0.0
 ```
 
-- `worker.kinds` 的合法值是 `requirement` / `design` / `breakdown` / `dev`。每项会 `trim`、去重（保序）；写未知类别会让插件激活直接失败（`TypeError`，错误里列出四类合法值），不会静默丢弃。
-- `worker.kinds` 为空（默认 `[]`）时**不启动心跳循环**：平台心跳要求 `kinds` 非空，发出去只会每轮 400。此时只 warn 一条，工具仍可正常调用（但 `echuan_work_claim` 因没有 `worker_id` 会在本地拒绝）。
+- `worker.presetByKind` 是 **worker 侧的角色路由表**：默认 `requirement=pm, design=cto, breakdown=cto, dev=dev-leader`。平台的派单只带 `kind`，不带任何 preset 字段——新增角色只改这里（+ 在 Host 装好 preset），平台零改动。写空对象 `{}` 表示不做映射，会话回落 registry 默认 preset。
+- `worker.kinds` 是「能领什么卡」的声明，缺省时**取 `presetByKind` 的键**；每项会 `trim`、去重（保序），空白项抛 `TypeError`。kind 词汇属于平台，kit 不维护枚举：拼错的 kind 由平台心跳拒绝（错误信息更准），不会因平台新增阶段而编译失败。
+- 只有 `kinds` 与 `presetByKind` 同时为空时才**不启动心跳循环**：平台心跳要求 `kinds` 非空，发出去只会每轮 400。此时只 warn 一条，工具仍可正常调用（但 `echuan_work_claim` 因没有 `worker_id` 会在本地拒绝）。
 - `worker.poll.enable=false` 是默认值：不建定时器、零请求；**手动领卡需要先注册**（见上一条）。
 - `metadata` 序列化后超过 8KiB 时插件**不启动心跳循环**并 warn 一条（不是截断），避免每轮都被平台拒。
 - `exclude` 默认 `[]`（不排除，全量 25 个）；工具名写错或含空白项时**插件激活直接失败**（`TypeError`，错误里列出未知项与合法名单），不会静默少注册。
-- **一个 worker 一个身份，一个项目按角色拆会话**：派单按 `project_id` + `agent_preset` ensureSession，
-  会话键 = `项目号:preset`（平台未下发 preset 时退回「项目号即会话号」的旧键），
+- **一个 worker 一个身份，一个项目按角色拆会话**：派单先按 `kind` 查本机
+  `worker.presetByKind` 得到 preset，再按 `project_id` + preset ensureSession，
+  会话键 = `项目号:preset`（映射未命中时退回「项目号即会话号」的旧键），
   cwd 取会话数最多的 workspace；拿到该会话的 agent 再投递。会话未就绪时只 warn 一条、
-  本轮跳过、下一轮重试。角色选择由平台的 `kind → preset` 映射决定（见
-  `docs/worker-ops.md`），worker 只声明自己「能领哪些 kind」。
+  本轮跳过、下一轮重试。**平台不认识 preset 名**：路由表完全属于 worker 侧配置。
 - **agentOptions 与 create/resume 同源**：provider/model 取 `agentDefaultModel`，否则恢复出的会话没有模型，首轮 turn 会在 `{{model}}` 插值处失败。
 - 真实例子：本机起好平台后，把 `enable` 改成 `true` 并声明 `kinds`，`baseUrl` 保持 `http://127.0.0.1:8720`，重启 dsh 即可。
 
@@ -200,8 +202,8 @@ dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
     worker:
       poll:
         enable: true                      # worker 通常需要派单，打开心跳
-      kinds:
-        - dev
+      presetByKind:
+        dev: dev-leader
     exclude:
       - echuan_project_create
       - echuan_project_requirement_write
@@ -243,7 +245,7 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 插件日志关键字（启动时 / 卸载时）：
 
 ```
-[dsh-echuan] 插件加载 ... poll=true kinds=[dev]
+[dsh-echuan] 插件加载 ... poll=true kinds=[dev] presets=[dev→dev-leader]
 [dsh-echuan] 已注册 25 个工具（17 写 + 8 读）：...
 [dsh-echuan] 已注册技能 echuan-task-execution（source=runtime）
 [dsh-echuan] worker 心跳已启动（kinds=dev；首轮心跳将在 5000ms 后发出，兜底间隔 15000ms）

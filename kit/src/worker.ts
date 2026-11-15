@@ -44,7 +44,7 @@ import type {
   WorkerCommand as ClientWorkerCommand,
   WorkerHeartbeatPayload,
 } from './client.js'
-import type { ResolvedConfig, WorkerKind } from './config.js'
+import type { ResolvedConfig } from './config.js'
 import { WORKER_METADATA_MAX_BYTES, metadataByteLength } from './config.js'
 import { EchuanApiError, EchuanClientError } from './errors.js'
 import type { Logger } from './runtime.js'
@@ -203,7 +203,7 @@ export interface WorkerLoop {
   /** 当前持有的 worker_id（仅内存；测试断言用，不要把值写日志）。 */
   readonly workerId: string | undefined
   /** 当前声明的 kinds（来自配置，与心跳 body 一致）。 */
-  readonly kinds: readonly WorkerKind[]
+  readonly kinds: readonly string[]
   /** 当前使用的轮询间隔（毫秒）。 */
   readonly intervalMs: number
   /** R-02：`worker.metadata` 是否超过平台上限（超限时永不启动循环）。 */
@@ -249,7 +249,7 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
     ? options.ensureTimeoutMs
     : DEFAULT_ENSURE_TIMEOUT_MS
   const now = options.now ?? Date.now
-  const kinds: readonly WorkerKind[] = config.worker.kinds
+  const kinds: readonly string[] = config.worker.kinds
   const fallbackIntervalMs =
     options.defaultIntervalMs !== undefined && Number.isFinite(options.defaultIntervalMs)
       && options.defaultIntervalMs > 0
@@ -511,9 +511,12 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
       const projectId = dispatch.work_item.project_id
       let agent: Agent | undefined
 
+      // 角色路由在这里：kind → preset 由 worker 侧配置决定，平台不参与。
+      const presetId = config.worker.presetByKind[dispatch.kind]
+
       if (ensureSession !== undefined) {
         const outcome = await settleWithTimeout(
-          ensureSession(projectId, dispatch.agent_preset),
+          ensureSession(projectId, presetId),
           ensureTimeoutMs,
           timer,
         )
