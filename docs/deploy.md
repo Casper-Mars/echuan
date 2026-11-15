@@ -428,7 +428,7 @@ curl -fsS http://127.0.0.1:8721/readyz
 curl -fsS http://127.0.0.1:8721/version
 ```
 
-**升级后：旧 blocked 卡人工重批。** 新版本不会补转过存量卡：批次评审只在有人点审批时发生。对升级前 SQL 命中的每个项目，在 GUI 工作项看板点一次「全部通过」（6→6：该项目 6 张仍停在 `blocked` 的卡一次全部转成 6 张 `queued`，一张不落；等价 `POST /v1/work-items/review` 带 `{"project_id":"<项目>","decision":"approve"}`）。
+**升级后：旧 blocked 卡人工重批。** 新版本不会补转过存量卡：批次评审只在有人点审批时发生。对升级前 SQL 命中的每个项目，在 GUI 工作项看板点一次「全部通过」（6→6：该项目 6 张仍停在 `blocked` 的卡一次全部转成 6 张 `queued`，一张不落；等价 `POST /v1/work-items/review` 带 `{"project_id":"<项目业务编号>","decision":"approve"}`）。
 
 ```bash
 curl -fsS -X POST http://127.0.0.1:8721/v1/work-items/review \

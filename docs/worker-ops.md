@@ -217,7 +217,7 @@ SELECT w.work_id, w.project_id, w.title
 
 处理：对命中的项目点一次「全部通过」（`POST /v1/work-items/review`，`{"project_id":"<项目业务编号>","decision":"approve"}`），项目内所有 `blocked` 卡会一起转 `queued`；接口返回 409 `has no blocked work item to approve` 说明这批早已放行，不用再点。
 
-> SQL A 输出的 `project_id` 是 `work_items.project_id`（内部数字 id），不是接口用的业务编号（如 `APP-1`）。重批前先换成业务编号：`SELECT project_id FROM projects WHERE id = <上面查到的数字 id>;`，或直接在 GUI 工作项看板按项目名找到。
+> 两条 SQL 输出的 `project_id` 都是 `work_items.project_id`（内部数字 id），不是接口用的业务编号（如 `APP-1`）。重批前先换成业务编号：`SELECT project_id FROM projects WHERE id = <上面查到的数字 id>;`，或直接在 GUI 工作项看板按项目名找到。
 
 **SQL B：已「待开发」但依赖未验收、当前不可派发的卡**
 
