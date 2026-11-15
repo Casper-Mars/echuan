@@ -230,7 +230,7 @@ SELECT w.work_id, w.project_id, dep.work_id AS waiting_on, dep.state AS waiting_
 
 用途：找出**已待开发但依赖未验收、当前不可派发**的卡（`waiting_on` / `waiting_state` 指出在等哪张、它到哪一步了）。**「看板有卡、心跳不派」时先查 B**：这是审批后的正常中间态，不是故障。
 
-处理：去推进 `waiting_on`（派发、报告、催验收），不要手工改下游卡的状态；B 为空且心跳仍不派卡，再看 2.2 派卡规则与 Worker 的 `current_work_item_id`（是否还持有旧卡）。
+处理：去推进 `waiting_on`（派发、报告、催验收），不要手工改下游卡的状态；B 为空且心跳仍不派卡，再看 2.2 派卡规则与 Worker 的 `current_task_id`（是否还持有旧卡）。
 
 ---
 
