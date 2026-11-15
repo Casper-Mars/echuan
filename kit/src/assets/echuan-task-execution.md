@@ -22,8 +22,8 @@
 - `requirement`：派单 `inputs` 已带需求物料时直接用它汇报，不要重复写一版；确实没有才写。
 - `dev` 代码卡：交付时直接传 `summary_md`（四段式正文），平台在同一事务里落成 `kind=3` 报告物料并回填 `result_material_id`；不需要单独创建物料，也没有这样的工具。
 - `design`：已有方案要改时用 `echuan_spec_revise` 在原链上修订，不要新建第二条方案链。
-- `breakdown` 的 `plan.items` 每项：`seq_no`（计划内 1..N）、`title`、`body_md`，可选 `priority`（0..99）、`depends_on`（计划内序号，如 `[1]`）、`project_id`（传了必须等于当前项目）。平台会把 plan 落成 kind=4 物料、回填 `result_material_id`，并在同一事务里生成 blocked 状态的 dev 卡；开发任务评审通过后才放出可开工的那批。
-- **有先后顺序必须写 `depends_on`**：不写按并行派发；写了，下游要等上游**验收通过**才进队列（`blocked_by` 指出还差哪几张）。
+- `breakdown` 的 `plan.items` 每项：`seq_no`（计划内 1..N）、`title`、`body_md`，可选 `priority`（0..99）、`depends_on`（计划内序号，如 `[1]`）、`project_id`（传了必须等于当前项目）。平台会把 plan 落成 kind=4 物料、回填 `result_material_id`，并在同一事务里生成 blocked 状态的 dev 卡；整批评审后全转 `queued`。
+- **有先后顺序必须写 `depends_on`**：不写按并行派发；写了，下游评审后也进 `queued`，上游**验收前**不派发（`blocked_by` 列未验收依赖）。
 - 阶段卡报告被 400 / 409 拒绝时，卡仍在你手里：按 `details` 里的 `field` / `reason` 补资料或修 plan，再用**同一个 `lease_id`** 重报；不要重新领卡，不要手工建卡绕过平台。
 - `409 plan already submitted for breakdown item` 表示这批卡已经生成，不要重复提交；成功一次即止，等评审结论。
 

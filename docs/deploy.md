@@ -396,6 +396,22 @@ scripts/restore.sh "$HOME/echuan-v2-backups/echuan-20261027-140000"
 
 ## 7. 升级流程
 
+**升级前：先查一遍停在「待评审」的 dev 卡。** 新版本「审批通过即全量转待开发」，只对审批那一刻的项目生效；升级前遗留的 `blocked` 卡不会自己转队列。升级前先备份，再用下面的 SQL 记录现场（可直接粘进 `sqlite3`）：
+
+```sql
+SELECT w.work_id, w.project_id, w.title
+  FROM work_items w JOIN projects p ON p.id = w.project_id
+ WHERE w.kind = 'dev' AND w.state = 'blocked'
+ ORDER BY w.project_id, w.seq_no;
+```
+
+```bash
+# 数据目录按实际部署路径替换（见 3.1），再把上面的 SQL 粘进去
+sqlite3 "${ECHUAN_DATA_DIR:-$HOME/echuan-v2-data}/state.db"
+```
+
+有行就把 `project_id` 记下来，升级后按「升级后」一节重批一次；构建镜像前建议先给当前镜像打个保留 tag（见下方回滚），用错版本时不必重新构建。
+
 ```bash
 # 1. 拉取/切换代码后重新构建（版本号来自 git describe）
 #    注意：make docker-build 收尾的 builder/image prune 是全局操作，见 3.4
@@ -411,6 +427,20 @@ docker compose up -d
 curl -fsS http://127.0.0.1:8721/readyz
 curl -fsS http://127.0.0.1:8721/version
 ```
+
+**升级后：旧 blocked 卡人工重批。** 新版本不会补转过存量卡：批次评审只在有人点审批时发生。对升级前 SQL 命中的每个项目，在 GUI 工作项看板点一次「全部通过」（6→6：该项目 6 张仍停在 `blocked` 的卡一次全部转成 6 张 `queued`，一张不落；等价 `POST /v1/work-items/review` 带 `{"project_id":"<项目>","decision":"approve"}`）。
+
+```bash
+curl -fsS -X POST http://127.0.0.1:8721/v1/work-items/review \
+  -H 'Content-Type: application/json' -H 'X-Actor: pm' \
+  -d '{"project_id":"APP-1","decision":"approve"}' \
+  | jq '.queued_work_items, .ready_work_items'
+```
+
+- `queued_work_items` 是本次从 `blocked` 转入 `queued` 的张数（上例 6 张即 6→6）；`ready_work_items` 是其中依赖**已全部验收**、当前即可被 claim 的张数，恒 `ready ≤ queued`。
+- 返回 409 `has no blocked work item to approve` 表示这批早已放行，不用再点。
+- 重批后再查 SQL A，结果应为空；仍卡在 `queued` 却没派发的卡看 `docs/worker-ops.md` §4.4（SQL B：依赖未验收）。
+- 验收单卡不会再放行下游卡：依赖未验收的 `queued` 卡 `blocked_by` 非空，要等上游验收完才会被派发。
 
 回滚：
 

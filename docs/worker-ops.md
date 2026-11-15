@@ -196,6 +196,42 @@ curl -sS 'http://127.0.0.1:8721/v1/workers?id=w_01M5...'
 
 Web 控制台侧栏 **Worker**（路由 `#/workers`）展示注册表：在线数/总数、presence、state、当前任务。页面数据来自 `GET /v1/workers`，与 API 同源；判定规则一致。
 
+### 4.4 计划批次与依赖巡检
+
+批次评审通过时，项目内**全部** `blocked` 工作项在同一事务里转 `queued`；能不能被 claim 只看依赖是否全部 `accepted`（派卡时的依赖过滤），与「哪批过审」无关。验收一张卡只写这一张，不会再去动下游卡。所以「看板有卡、心跳不派」最常见的两个原因是：卡还没重批（仍是 `blocked`，`待评审`），或它已经是 `queued`（`待开发`）但依赖没验收完——两者要分开查。下面两条 SQL 直接粘进 `sqlite3 state.db` 即可（数据目录见 `docs/deploy.md` §3.1）：
+
+```bash
+sqlite3 "${ECHUAN_DATA_DIR:-$HOME/echuan-v2-data}/state.db" '<SQL>'
+```
+
+**SQL A：审批后仍停在「待评审」的 dev 卡**
+
+```sql
+SELECT w.work_id, w.project_id, w.title
+  FROM work_items w JOIN projects p ON p.id = w.project_id
+ WHERE w.kind = 'dev' AND w.state = 'blocked'
+ ORDER BY w.project_id, w.seq_no;
+```
+
+用途：找出**审批后仍停在「待评审」**的 dev 卡。常见于同一项目在审批后又新建了一批计划（并发新建），或升级前遗留、没有走新逻辑重批的批次。这些卡任何 claim 都看不到——有行就是「卡住了」。
+
+处理：对 `project_id` 点一次「全部通过」（`POST /v1/work-items/review`，`{"project_id":"<项目>","decision":"approve"}`），项目内所有 `blocked` 卡会一起转 `queued`；接口返回 409 `has no blocked work item to approve` 说明这批早已放行，不用再点。
+
+**SQL B：已「待开发」但依赖未验收、当前不可派发的卡**
+
+```sql
+SELECT w.work_id, w.project_id, dep.work_id AS waiting_on, dep.state AS waiting_state
+  FROM work_items w
+  JOIN work_deps d ON d.work_item_id = w.id
+  JOIN work_items dep ON dep.id = d.depends_on_id
+ WHERE w.state = 'queued' AND dep.state <> 'accepted'
+ ORDER BY w.project_id, w.seq_no;
+```
+
+用途：找出**已待开发但依赖未验收、当前不可派发**的卡（`waiting_on` / `waiting_state` 指出在等哪张、它到哪一步了）。**「看板有卡、心跳不派」时先查 B**：这是审批后的正常中间态，不是故障。
+
+处理：去推进 `waiting_on`（派发、报告、催验收），不要手工改下游卡的状态；B 为空且心跳仍不派卡，再看 2.2 派卡规则与 Worker 的 `current_work_item_id`（是否还持有旧卡）。
+
 ---
 
 ## 5. 验收脚本
