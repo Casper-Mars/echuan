@@ -385,45 +385,52 @@ func boolInt(value bool) int {
 	return 0
 }
 
-// ReleaseReadyWorkItems moves the blocked items of one project whose
-// dependencies are all accepted to queued.
+// QueueBlockedWorkItems moves every blocked item of one project to queued.
 //
-// It runs on plan approval and on every acceptance. A card gated by an open
-// dependency stays blocked, so "queued" always means "dispatchable": the claim
-// query already refuses a card whose dependency is merely submitted, and this
-// keeps the state machine honest about it instead of parking such a card in a
-// queue that will not hand it out.
-func ReleaseReadyWorkItems(ctx context.Context, tx *sql.Tx, projectID int64, updateTime string) (int64, error) {
+// It is the side effect of approving a plan batch, and it deliberately ignores
+// dependencies: approving the batch is what puts the cards on the "待开发"
+// board, and dispatchability is decided by the claim query (a queued card whose
+// dependency is not accepted yet is simply not handed out). Binding the state
+// transition to the dependency instead would keep gated cards in "待评审" until
+// their upstream card happened to be accepted, which is the bug this write
+// exists to avoid.
+//
+// The zero rows affected case is the caller's "nothing to approve" signal.
+func QueueBlockedWorkItems(ctx context.Context, tx *sql.Tx, projectID int64, updateTime string) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE work_items
 		   SET state = ?, version = version + 1, update_time = ?
-		 WHERE project_id = ? AND state = ?
-		   AND NOT EXISTS (
-		         SELECT 1
-		           FROM work_deps d
-		           JOIN work_items dep ON dep.id = d.depends_on_id
-		          WHERE d.work_item_id = work_items.id
-		            AND dep.state <> ?)`,
-		WorkItemStateQueued, updateTime, projectID, WorkItemStateBlocked, WorkItemStateAccepted)
+		 WHERE project_id = ? AND state = ?`,
+		WorkItemStateQueued, updateTime, projectID, WorkItemStateBlocked)
 	if err != nil {
-		return 0, fmt.Errorf("store: release ready work items of project %d: %w", projectID, err)
+		return 0, fmt.Errorf("store: queue blocked work items of project %d: %w", projectID, err)
 	}
 	return res.RowsAffected()
 }
 
-// CountBlockedWorkItemsByProject counts the blocked items of one project,
-// released or not. Plan review uses it to tell "nothing to approve" apart from
-// "everything is still gated by an open dependency".
-func CountBlockedWorkItemsByProject(ctx context.Context, q Querier, projectID int64) (int64, error) {
+// CountReadyBlockedWorkItems counts the blocked items of one project whose
+// dependencies are all accepted — the ones that are claimable the moment the
+// batch is approved. It keeps the historical meaning of ready_work_items, which
+// is a subset of what an approval queues.
+//
+// It must be read before QueueBlockedWorkItems in the same transaction, because
+// the update removes the blocked rows it counts.
+func CountReadyBlockedWorkItems(ctx context.Context, q Querier, projectID int64) (int64, error) {
 	row, err := One[struct {
 		Count int64 `db:"count"`
 	}](ctx, q, `
 		SELECT COUNT(*) AS count
-		  FROM work_items
-		 WHERE project_id = ? AND state = ?`,
-		projectID, WorkItemStateBlocked)
+		  FROM work_items w
+		 WHERE w.project_id = ? AND w.state = ?
+		   AND NOT EXISTS (
+		         SELECT 1
+		           FROM work_deps d
+		           JOIN work_items dep ON dep.id = d.depends_on_id
+		          WHERE d.work_item_id = w.id
+		            AND dep.state <> ?)`,
+		projectID, WorkItemStateBlocked, WorkItemStateAccepted)
 	if err != nil {
-		return 0, fmt.Errorf("store: count blocked work items of project %d: %w", projectID, err)
+		return 0, fmt.Errorf("store: count ready blocked work items of project %d: %w", projectID, err)
 	}
 	return row.Count, nil
 }

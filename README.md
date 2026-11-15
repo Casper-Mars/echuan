@@ -99,11 +99,13 @@ blocked → queued → leased → submitted → accepted
 任意非终态 ──▶ cancelled
 ```
 
-- `blocked`：依赖未满足，暂不可领取
-- `queued`：可领取；依赖按 `depends_on` 自动解锁
+- `blocked`：计划已生成、待批次评审（评审通过后才会转 `queued`）
+- `queued`：已过评审、待开发（依赖全验收后才可领取；`blocked_by` 会指出还差哪几张）
 - `leased`：已被某个 Worker 持有，租约期内独占
 - `submitted`：产出已回传，等待人工验收
 - `accepted` / `failed` / `cancelled`：终态
+
+批次评审通过即把项目内**全部** `blocked` 卡转 `queued`（响应 `queued_work_items` 为转入张数）；能否领到只看依赖是否全部验收，验收单卡不会再改动其它卡的状态（`ready_work_items` 是其中当前即可领取的张数，恒 `ready ≤ queued`）。
 
 ## Worker 模型
 
