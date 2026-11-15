@@ -46,6 +46,12 @@ v1 的 `tasks` / `task_deps` 不再创建：队列语义已收口到 `work_items
 | `ux_workers_current_work_item` | 唯一，`workers(current_work_item_id)`，仅非 NULL |
 | `ix_gate_decisions_subject` | `gate_decisions(subject_type, subject_id, id)` |
 | `ix_gate_decisions_material` | `gate_decisions(material_id)` |
+| `ux_projects_dev_branch` | 唯一，`projects(product_id, dev_branch)`，仅 `dev_branch <> ''` |
+
+`0006_project_dev_branch.sql` adds the project development branch at
+`user_version = 6`: `projects.dev_branch`（`TEXT NOT NULL DEFAULT ''`，空串表示
+尚未生成）与部分唯一索引 `ux_projects_dev_branch(product_id, dev_branch)`。
+存量项目在首次派单时由平台惰性回填。
 
 启动时还会校验 schema 版本：数据库版本高于二进制内置的最新版本时直接报
 `SchemaVersionError`，不尝试兼容。

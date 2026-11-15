@@ -85,13 +85,16 @@ type dispatchContextResponse struct {
 // dispatchResponse is the dispatch payload carried by a 200 claim and by the
 // heartbeat dispatch command. One shape, two delivery paths.
 type dispatchResponse struct {
-	Protocol string                   `json:"protocol"`
-	WorkID   string                   `json:"work_id"`
-	Kind     string                   `json:"kind"`
-	Inputs   []dispatchInputResponse  `json:"inputs"`
-	WorkItem dispatchWorkItemResponse `json:"work_item"`
-	Lease    dispatchLeaseResponse    `json:"lease"`
-	Context  dispatchContextResponse  `json:"context"`
+	Protocol string `json:"protocol"`
+	WorkID   string `json:"work_id"`
+	Kind     string `json:"kind"`
+	// AgentPreset is the preset the worker should run this card with; omitted
+	// when the platform mapping is disabled.
+	AgentPreset string                   `json:"agent_preset,omitempty"`
+	Inputs      []dispatchInputResponse  `json:"inputs"`
+	WorkItem    dispatchWorkItemResponse `json:"work_item"`
+	Lease       dispatchLeaseResponse    `json:"lease"`
+	Context     dispatchContextResponse  `json:"context"`
 }
 
 // claimResponse is the 200 body of POST /v1/work-items/claim.
@@ -165,10 +168,11 @@ func toDispatchResponse(dispatch app.Dispatch) dispatchResponse {
 		})
 	}
 	return dispatchResponse{
-		Protocol: dispatch.Protocol,
-		WorkID:   dispatch.WorkID,
-		Kind:     dispatch.Kind,
-		Inputs:   inputs,
+		Protocol:    dispatch.Protocol,
+		WorkID:      dispatch.WorkID,
+		Kind:        dispatch.Kind,
+		AgentPreset: dispatch.AgentPreset,
+		Inputs:      inputs,
 		WorkItem: dispatchWorkItemResponse{
 			ProjectID:   dispatch.WorkItem.ProjectID,
 			Title:       dispatch.WorkItem.Title,

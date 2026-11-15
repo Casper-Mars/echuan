@@ -359,8 +359,8 @@ func TestContractEndpoints(t *testing.T) {
 
 	// The operation set is pinned: adding or dropping one is a contract change.
 	operations := e.doc.Operations()
-	if len(operations) != 36 {
-		t.Fatalf("openapi operations = %d, want exactly 36", len(operations))
+	if len(operations) != 37 {
+		t.Fatalf("openapi operations = %d, want exactly 37", len(operations))
 	}
 
 	// ---- health & version -------------------------------------------------
@@ -651,11 +651,24 @@ func TestContractEndpoints(t *testing.T) {
 	e.call(http.MethodPost, "/v1/work-items/decide",
 		map[string]any{"work_id": secondID, "decision": "approve"}, nil, http.StatusOK)
 
-	// All work done: the project completed itself and the queue is empty.
+	// All cards are settled, but the project stays pending_done: accepting the
+	// last card no longer completes it (issue #39).
 	raw, _ = e.call(http.MethodGet, "/v1/projects?id="+mainID, nil, nil, http.StatusOK)
-	if name := stringField(t, object(t, raw), "status_name"); name != "completed" {
-		t.Fatalf("project status = %q, want completed after the last acceptance", name)
+	settled := object(t, raw)
+	if name := stringField(t, settled, "status_name"); name != "pending_done" {
+		t.Fatalf("project status = %q, want pending_done after the last acceptance", name)
 	}
+	// A human closes it explicitly; that is the only remaining 6→7 path.
+	raw, _ = e.call(http.MethodPost, "/v1/projects/complete?id="+mainID, nil,
+		map[string]string{"If-Match": strconv.Itoa(intField(t, settled, "version"))}, http.StatusOK)
+	if name := stringField(t, object(t, raw), "status_name"); name != "completed" {
+		t.Fatalf("project status = %q, want completed after POST /v1/projects/complete", name)
+	}
+	// The version header is mandatory: without it the request is a 400.
+	e.call(http.MethodPost, "/v1/projects/complete?id="+mainID, nil, nil, http.StatusBadRequest)
+	// Replaying a completed project is an invalid state, not a second record.
+	e.call(http.MethodPost, "/v1/projects/complete?id="+mainID, nil,
+		map[string]string{"If-Match": strconv.Itoa(intField(t, object(t, raw), "version"))}, http.StatusConflict)
 
 	// Heartbeat on an empty queue: commands must be [].
 	raw, _ = e.call(http.MethodPost, "/v1/workers/heartbeat",
@@ -1024,8 +1037,8 @@ func TestRoutesMatchOpenAPI(t *testing.T) {
 	for _, route := range api.Routes() {
 		got[route.Method+" "+route.Path] = true
 	}
-	if len(want) != 36 {
-		t.Fatalf("openapi operations = %d, want 36", len(want))
+	if len(want) != 37 {
+		t.Fatalf("openapi operations = %d, want 37", len(want))
 	}
 	for key := range want {
 		if !got[key] {

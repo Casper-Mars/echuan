@@ -192,6 +192,8 @@ export interface DispatchLease {
 export interface DispatchContext {
   spec_version: number
   spec_digest: string
+  /** 项目开发分支（一个项目一条 feature 分支）；存量项目首次派单时回填。 */
+  dev_branch?: string
   product: { id: string; name: string; git_url: string }
 }
 
@@ -205,6 +207,12 @@ export interface Dispatch {
   protocol: 'v2'
   work_id: string
   kind: WorkItemKind
+  /**
+   * Agent preset that should run this card, resolved by the platform from its
+   * kind → preset mapping (V3). Absent when the platform disabled routing, in
+   * which case the worker falls back to the registry default preset.
+   */
+  agent_preset?: string
   inputs: WorkItemInput[]
   work_item: DispatchWorkItem
   lease: DispatchLease
@@ -239,6 +247,8 @@ export interface WorkItemDetail {
   reason?: string | null
   version?: number
   depends_on?: string[]
+  /** 尚未验收的依赖（`depends_on` 的子集）；非空表示这张卡在等这些依赖验收。 */
+  blocked_by?: string[]
   result_material_id?: string | null
   create_time?: string
   update_time?: string
@@ -257,6 +267,8 @@ export interface Project {
   project_id?: string
   product_id?: string
   title?: string
+  /** 项目开发分支，如 `feat/app-1-social-login`；空串表示尚未生成。 */
+  dev_branch?: string
   status?: number
   status_name?: string
   reason?: string | null
@@ -501,7 +513,9 @@ export interface DeleteWorkItemInput {
 export interface UpdateProjectInput {
   /** 项目编号，走 query `?id=`。 */
   id: string
-  title: string
+  title?: string
+  /** 显式改写开发分支；省略表示不改。 */
+  dev_branch?: string
 }
 
 export interface CreateProductInput {
@@ -1158,12 +1172,17 @@ export function createClient(
 
     async updateProject(input) {
       const id = requireNonEmpty(input?.id, 'id')
-      const title = requireNonEmpty(input?.title, 'title')
+      const body: Record<string, unknown> = {}
+      if (input?.title !== undefined) body.title = requireNonEmpty(input.title, 'title')
+      if (input?.dev_branch !== undefined) body.dev_branch = requireNonEmpty(input.dev_branch, 'dev_branch')
+      if (Object.keys(body).length === 0) {
+        throw new EchuanValidationError('title 与 dev_branch 至少给一个。', 'invalid_argument', 'project')
+      }
       return requestJson<Project>(ctx, {
         method: 'PATCH',
         path: '/v1/projects',
         query: { id },
-        body: { title },
+        body,
       })
     },
 

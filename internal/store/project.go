@@ -16,7 +16,7 @@ import (
 // machine; it is spelled out here as a literal rather than making store depend
 // on domain (the dependency runs domain ← store ← app ← api).
 const projectColumns = `p.id, p.project_id, pr.product_id AS product_code, p.seq_no,
-	p.title, p.requirement_material_id, p.spec_material_id, p.status, p.reason,
+	p.title, p.dev_branch, p.requirement_material_id, p.spec_material_id, p.status, p.reason,
 	p.last_actor, p.version, p.tasks_review_reason, p.tasks_review_rejected_at,
 	(SELECT COUNT(*) FROM work_items w WHERE w.project_id = p.id) AS work_item_total,
 	(SELECT COUNT(*) FROM work_items w WHERE w.project_id = p.id AND w.state = 'accepted') AS work_item_done,
@@ -32,6 +32,7 @@ type Project struct {
 	ProductCode           string  `db:"product_code"`
 	SeqNo                 int     `db:"seq_no"`
 	Title                 string  `db:"title"`
+	DevBranch             string  `db:"dev_branch"`
 	RequirementMaterialID *int64  `db:"requirement_material_id"`
 	SpecMaterialID        *int64  `db:"spec_material_id"`
 	Status                int     `db:"status"`
@@ -54,6 +55,7 @@ type NewProject struct {
 	ProductID             int64
 	SeqNo                 int
 	Title                 string
+	DevBranch             string
 	RequirementMaterialID *int64
 	Status                int
 	Reason                *string
@@ -132,11 +134,11 @@ func ListProjects(ctx context.Context, q Querier, filter ProjectFilter) ([]Proje
 // ErrUniqueViolation; the write never relies on a prior SELECT.
 func CreateProject(ctx context.Context, tx *sql.Tx, p NewProject) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
-		INSERT INTO projects (project_id, product_id, seq_no, title,
+		INSERT INTO projects (project_id, product_id, seq_no, title, dev_branch,
 		                      requirement_material_id, status, reason, version,
 		                      create_time, update_time)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ProjectID, p.ProductID, p.SeqNo, p.Title, p.RequirementMaterialID,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ProjectID, p.ProductID, p.SeqNo, p.Title, p.DevBranch, p.RequirementMaterialID,
 		p.Status, p.Reason, p.Version, p.CreateTime, p.UpdateTime)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -147,16 +149,37 @@ func CreateProject(ctx context.Context, tx *sql.Tx, p NewProject) (int64, error)
 	return res.LastInsertId()
 }
 
-// UpdateProjectTitle renames one project and bumps its version.
+// UpdateProjectMetadata rewrites the business-writable project fields — the
+// title and the development branch — and bumps the version exactly once.
 //
-// Only the title is business-writable (tech design §4.3); every other column
-// is platform-maintained.
-func UpdateProjectTitle(ctx context.Context, tx *sql.Tx, id int64, title, updateTime string) error {
+// Either pointer may be nil ("field not supplied"). Every other column is
+// platform-maintained. A duplicate (product_id, dev_branch) surfaces as
+// ErrUniqueViolation.
+func UpdateProjectMetadata(ctx context.Context, tx *sql.Tx, id int64, title, devBranch *string, updateTime string) error {
+	sets := make([]string, 0, 3)
+	args := make([]any, 0, 4)
+	if title != nil {
+		sets = append(sets, "title = ?")
+		args = append(args, *title)
+	}
+	if devBranch != nil {
+		sets = append(sets, "dev_branch = ?")
+		args = append(args, *devBranch)
+	}
+	if len(sets) == 0 {
+		return fmt.Errorf("store: update project %d: no fields to update", id)
+	}
+	sets = append(sets, "version = version + 1", "update_time = ?")
+	args = append(args, updateTime, id)
+
 	res, err := tx.ExecContext(ctx, `
 		UPDATE projects
-		   SET title = ?, version = version + 1, update_time = ?
-		 WHERE id = ?`, title, updateTime, id)
+		   SET `+strings.Join(sets, ", ")+`
+		 WHERE id = ?`, args...)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: %v", ErrUniqueViolation, err)
+		}
 		return fmt.Errorf("store: update project %d: %w", id, err)
 	}
 	n, err := res.RowsAffected()
@@ -165,6 +188,20 @@ func UpdateProjectTitle(ctx context.Context, tx *sql.Tx, id int64, title, update
 	}
 	if n == 0 {
 		return fmt.Errorf("store: update project %d: %w", id, sql.ErrNoRows)
+	}
+	return nil
+}
+
+// BackfillProjectDevBranch writes a lazily generated branch name without
+// touching the version: the backfill happens during dispatch and must not
+// invalidate a client's If-Match.
+func BackfillProjectDevBranch(ctx context.Context, tx *sql.Tx, id int64, devBranch, updateTime string) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE projects
+		   SET dev_branch = ?, update_time = ?
+		 WHERE id = ? AND dev_branch = ''`, devBranch, updateTime, id)
+	if err != nil {
+		return fmt.Errorf("store: backfill project %d dev_branch: %w", id, err)
 	}
 	return nil
 }

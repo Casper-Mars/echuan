@@ -10,7 +10,9 @@
 #   4  心跳 dispatch 派发需求返工卡 → 上报返工回到评审 → 批准 1→2 派发方案阶段卡；
 #      单 worker 单租约并发（并发 claim 全部 409 worker_busy）
 #   5  租约（持方案阶段卡）：busy 心跳续租、显式 lease 续租、持卡 idle 仍续租（契约）
-#   6  报告（material_id + lease_id）→ submitted；验收 → accepted，项目自动 completed
+#   6  报告（material_id + lease_id）→ submitted；验收 → accepted 后项目停在
+#      pending_done；6 状态下加卡 / 走完卡仍为 6，未结清 complete 409，
+#      人工 POST /v1/projects/complete 才进入 completed 且终态不再收卡
 #   7  平台重启后 worker 注册表与心跳仍可用
 #   8  停止心跳 → offline（worker_ttl）→ 保留期清理（worker_retention）
 #   9  收尾
@@ -503,7 +505,7 @@ pass "5/9 持方案阶段卡时 busy 心跳与显式 lease 均续租，持卡 id
 
 STEP="6/9 阶段推进"
 say ""
-say "== 6/9 方案报告 → 3 → 审批 4 + 拆解项 → 5 → 批次 → 6 → 开发卡验收 → completed =="
+say "== 6/9 方案报告 → 3 → 审批 4 + 拆解项 → 5 → 批次 → 6 → 开发卡验收 → 停留 pending_done → 人工 complete =="
 
 # 6.1 方案阶段报告：2 → 3（第 4 步派发、第 5 步续租的同一张方案卡）。
 DESIGN_LEASE="$LEASE_ID"
@@ -598,7 +600,8 @@ require_code 200 "批次审批通过"
 [[ "$(jqr '.ready_work_items')" == "2" ]] || fail "批次通过后应有 2 张卡转 queued，实际 $(jqr '.ready_work_items')"
 [[ "$(jqr '.reason // ""')" == "" ]] || fail "审批通过后驳回原因应被清空"
 
-# 6.5 开发卡：报告 → submitted，验收 → accepted，项目自动 completed。
+# 6.5 开发卡：报告 → submitted，验收 → accepted。最后一张卡结清后项目停在
+# pending_done —— issue #39 之后没有「结清即完成」，6 → 7 只由人工 complete 触发。
 dispatch_next "心跳派发开发卡"
 [[ "$NEXT_WORK" == "$DEV_WORK_ID" ]] || fail "应派发开发卡 $DEV_WORK_ID，实际 $NEXT_WORK"
 [[ "$NEXT_KIND" == "dev" ]] || fail "dispatch.kind 应为 dev，实际 $NEXT_KIND"
@@ -623,7 +626,8 @@ require_code 200 "验收工作项"
 [[ "$(jqr '.state')" == "accepted" ]] || fail "验收后工作项应为 accepted，实际 $(jqr '.state')"
 [[ "$(jqr '.material_id')" == "$SPEC_MATERIAL_ID" ]] || fail "验收响应 material_id 应指向被审结果资料，实际 $(jqr '.material_id')"
 
-# 拆解计划生成的 dev 子项同样可被 claim / 报告 / 验收；结清后项目 completed。
+# 拆解计划生成的 dev 子项同样可被 claim / 报告 / 验收；结清后项目仍停在
+# pending_done，不会自行收工。
 dispatch_next "心跳派发拆解生成的 dev 子项"
 [[ "$NEXT_KIND" == "dev" ]] || fail "dispatch.kind 应为 dev，实际 $NEXT_KIND"
 [[ "$NEXT_WORK" != "$DEV_WORK_ID" ]] || fail "第二张 dev 不应是已完成的 $DEV_WORK_ID"
@@ -638,15 +642,46 @@ require_code 200 "验收拆解生成的 dev"
 [[ "$(jqr '.state')" == "accepted" ]] || fail "验收后 dev 应为 accepted，实际 $(jqr '.state')"
 
 http_get "/v1/projects?id=$PROJECT_ID"
-require_code 200 "读取项目"
-[[ "$(jqr '.status_name')" == "completed" ]] || fail "最后一张卡结清后项目应为 completed，实际 $(jqr '.status_name')"
+require_code 200 "读取最后一张卡结清后的项目"
+[[ "$(jqr '.status_name')" == "pending_done" ]] \
+  || fail "最后一张卡结清后项目应停在 pending_done（issue #39：不再自动收工），实际 $(jqr '.status_name')"
+[[ "$(jqr '.status')" == "6" ]] || fail "最后一张卡结清后项目 status 应为 6，实际 $(jqr '.status')"
+PROJECT_VERSION="$(jqr '.version')"
+pass "6/9 最后一张卡结清后停留 pending_done（issue #39：不再自动收工，version=$PROJECT_VERSION）"
 
-# 6.6 门禁历史：项目级 requirement（驳回 + 通过）/spec/plan×2 + 两条工作项验收，
-# 共 7 条；版本绑定不随资料升级改变，计划批次绑定 kind=4 计划物料。
+# 6.6 人工完成：6 → 7。complete 是 issue #39 之后唯一的 6 → 7 入口，必须带
+# If-Match（版本取自 GET /v1/projects?id=<id> 的 .version），且是人工动作
+# （X-Actor 不带 agent: 前缀）。成功后写一条 gate_decisions(gate=complete)。
+COMPLETE_VERSION="$PROJECT_VERSION"
+http_post "/v1/projects/complete?id=$PROJECT_ID" '' -H "If-Match: $COMPLETE_VERSION"
+require_code 200 "人工完成项目"
+[[ "$(jqr '.status_name')" == "completed" ]] || fail "complete 后项目应为 completed，实际 $(jqr '.status_name')"
+[[ "$(jqr '.status')" == "7" ]] || fail "complete 后项目 status 应为 7，实际 $(jqr '.status')"
+[[ "$(jqr '.last_actor')" == "e2e" ]] || fail "complete 后 last_actor 应为操作人 e2e，实际 $(jqr '.last_actor')"
+COMPLETED_VERSION="$(jqr '.version')"
+[[ "$COMPLETED_VERSION" -eq $((COMPLETE_VERSION + 1)) ]] \
+  || fail "complete 应只升一版：$COMPLETE_VERSION -> $COMPLETED_VERSION"
+
+# 终态项目不再收卡：plans 入口 409 invalid_state，项目与版本都不变。
+http_post "/v1/projects/plans?id=$PROJECT_ID" \
+  '{"work_items":[{"title":"E2E 完成后加卡","body_md":"# 不应成功\n","priority":10}]}'
+require_code 409 "completed 状态下加卡"
+[[ "$(jqr '.code')" == "invalid_state" ]] || fail "completed 加卡应返回 invalid_state，实际 $(jqr '.code')"
+http_get "/v1/projects?id=$PROJECT_ID"
+require_code 200 "加卡被拒后复核项目"
+[[ "$(jqr '.status_name')" == "completed" ]] || fail "加卡被拒后项目应仍为 completed，实际 $(jqr '.status_name')"
+[[ "$(jqr '.status')" == "7" ]] || fail "加卡被拒后项目应仍为 7，实际 $(jqr '.status')"
+[[ "$(jqr '.version')" == "$COMPLETED_VERSION" ]] \
+  || fail "加卡被拒不应改版本：$COMPLETED_VERSION -> $(jqr '.version')"
+pass "6/9 complete 成功后 completed，加卡被拒且仍为 7"
+
+# 6.7 门禁历史：项目级 requirement（驳回 + 通过）/spec/plan×2 + 两条工作项验收
+# + 本次人工完成（gate=complete），共 8 条。数量与每个过滤条件一起断言，
+# 避免只把总数从 7 改成 8 掩盖回归；complete 记录没有绑定任何物料。
 http_get "/v1/gate-decisions?project_id=$PROJECT_ID&limit=100"
 require_code 200 "查询门禁历史"
-[[ "$(jqr '.items|length')" == "7" ]] || fail "门禁历史应恰有 7 条（需求驳回 + 需求通过各 1），实际 $(jqr '.items|length')"
-[[ "$(jqr '.items[0].subject_type')" == "work_item" ]] || fail "门禁历史应按 id 倒序，首条应为工作项，实际 $(jqr '.items[0].subject_type')"
+[[ "$(jqr '.items|length')" == "8" ]] \
+  || fail "门禁历史应恰有 8 条（原 7 条 + gate=complete），实际 $(jqr '.items|length')"
 [[ "$(jqr '[.items[] | select(.gate=="requirement")] | length')" == "2" ]] || fail "需求门禁应恰有 2 条（驳回 + 通过）"
 [[ "$(jqr '[.items[] | select(.gate=="requirement") | .decision] | sort | join(",")')" == "approve,reject" ]] \
   || fail "需求门禁应驳回与通过各一条，实际 $(jqr '[.items[] | select(.gate=="requirement") | .decision] | join(",")')"
@@ -658,17 +693,153 @@ require_code 200 "查询门禁历史"
 [[ "$(jqr '[.items[] | select(.gate=="plan")] | length')" == "2" ]] || fail "计划批次应恰有 2 条（驳回 + 通过）"
 [[ "$(jqr '[.items[] | select(.gate=="plan") | .material_id] | all(. == "'"$PLAN_MATERIAL_ID"'")')" == "true" ]] || fail "计划审批 material_id 应指向 kind=4 计划物料"
 [[ "$(jqr '[.items[] | select(.gate=="dev")] | length')" == "2" ]] || fail "工作项验收应恰有 2 条"
-say "门禁历史: 7 条（requirement×2/spec/plan×2/dev×2），版本绑定正确"
+[[ "$(jqr '[.items[] | select(.gate=="complete")] | length')" == "1" ]] \
+  || fail "人工完成应恰有 1 条 gate=complete，实际 $(jqr '[.items[] | select(.gate=="complete")] | length')"
+# 历史按 id 倒序，首条即本次人工完成：操作人 + decision=approve + 无物料。
+[[ "$(jqr '.items[0].gate')" == "complete" ]] || fail "门禁历史应按 id 倒序，首条应为 complete，实际 $(jqr '.items[0].gate')"
+[[ "$(jqr '.items[0].subject_type')" == "project" ]] || fail "complete 记录 subject_type 应为 project，实际 $(jqr '.items[0].subject_type')"
+[[ "$(jqr '.items[0].subject_id')" == "$PROJECT_ID" ]] || fail "complete 记录 subject_id 应为 $PROJECT_ID，实际 $(jqr '.items[0].subject_id')"
+[[ "$(jqr '.items[0].decision')" == "approve" ]] || fail "complete 记录 decision 应为 approve，实际 $(jqr '.items[0].decision')"
+[[ "$(jqr '.items[0].decided_by')" == "e2e" ]] || fail "complete 记录 decided_by 应为操作人 e2e，实际 $(jqr '.items[0].decided_by')"
+[[ "$(jqr '.items[0].material_id')" == "null" ]] || fail "complete 记录 material_id 应为 null，实际 $(jqr '.items[0].material_id')"
+[[ "$(jqr '.items[0].material_version')" == "null" ]] || fail "complete 记录 material_version 应为 null，实际 $(jqr '.items[0].material_version')"
+say "门禁历史: 8 条（requirement×2/spec/plan×2/dev×2/complete），complete 记录 decided_by=e2e 且无物料"
 
-# 阶段卡在门禁批准时已结清：requirement（驳回补出来的返工卡）/design accepted，
-# breakdown accepted，不会把项目卡在 pending_done。
-for kind in requirement design breakdown; do
+# 阶段卡在门禁批准时已结清：requirement（驳回补出来的返工卡）与 design 随批准
+# 变 accepted；breakdown 卡在批次被驳回时已被打回 queued，第二次批准时没有新的
+# submitted 结果，settlePhaseWorkItem 直接把它 cancelled（同为终态，不影响 6 → 7）。
+for pair in requirement:accepted design:accepted breakdown:cancelled; do
+  kind="${pair%%:*}"
+  want="${pair##*:}"
   http_get "/v1/work-items?project_id=$PROJECT_ID&kind=$kind"
   require_code 200 "复核 $kind 阶段项"
   [[ "$(jqr '.items|length')" == "1" ]] || fail "$kind 阶段项历史应恰有 1 条，实际 $(jqr '.items|length')"
-  [[ "$(jqr '.items[0].state')" == "accepted" ]] || fail "$kind 阶段项应已 accepted，实际 $(jqr '.items[0].state')"
+  [[ "$(jqr '.items[0].state')" == "$want" ]] || fail "$kind 阶段项应已 $want，实际 $(jqr '.items[0].state')"
 done
-pass "6/9 阶段卡驱动 2→3→4→5，批次门禁 5→6；门禁结清阶段项，开发卡验收后项目 completed"
+
+# 6.8 第二个项目：6 状态下加卡 / 未结清 complete 409 / 走完卡仍为 6。
+# 主项目此时已 completed，终态不再收卡，所以「6 状态下加卡并走完」必须在另一个
+# 停在 6 的项目上验证；这样主项目的门禁历史保持 7 + 1(complete) 的干净计数，
+# 上面 6.7 的逐条过滤断言才成立。
+say ""
+say "== 6/9 第二个项目：6 状态下加卡 → 未结清 complete 409 → 走完卡仍为 6 =="
+http_post "/v1/projects" "$(jq -nc \
+  --arg pid "$PRODUCT_ID" \
+  '{product_id:$pid,title:"E2E 六状态加卡项目",requirement_md:"# 需求\n\n验证 6 状态下加卡。\n"}')"
+require_code 201 "创建第二个项目"
+PROJECT2_ID="$(jqr '.project_id')"
+PROJECT2_VERSION="$(jqr '.version')"
+[[ "$PROJECT2_ID" == "$PRODUCT_ID-2" ]] || fail "第二个项目 id 应形如 <product_id>-2，实际 $PROJECT2_ID"
+say "第二个项目: $PROJECT2_ID (status=requirement_review)"
+
+http_post "/v1/projects/decide?id=$PROJECT2_ID" '{"decision":"approve"}' -H "If-Match: $PROJECT2_VERSION"
+require_code 200 "第二个项目需求评审通过"
+[[ "$(jqr '.status_name')" == "spec_draft" ]] || fail "第二个项目需求通过后应为 spec_draft，实际 $(jqr '.status_name')"
+PROJECT2_VERSION="$(jqr '.version')"
+
+dispatch_next "心跳派发第二个项目的方案卡"
+[[ "$NEXT_KIND" == "design" ]] || fail "应派发第二个项目的方案卡，实际 $NEXT_KIND"
+PROJECT2_DESIGN_WORK_ID="$NEXT_WORK"
+PROJECT2_DESIGN_LEASE="$NEXT_LEASE"
+http_post "/v1/projects/specs?id=$PROJECT2_ID" '{"body_md":"# 技术方案\n\n第二个项目（加卡验证）。\n"}'
+require_code 200 "提交第二个项目方案"
+PROJECT2_SPEC_MATERIAL_ID="$(jqr '.spec.material_id')"
+[[ -n "$PROJECT2_SPEC_MATERIAL_ID" && "$PROJECT2_SPEC_MATERIAL_ID" != "null" ]] || fail "第二个项目方案响应缺少 material_id"
+http_post "/v1/work-items/report" "$(jq -nc \
+  --arg wid "$PROJECT2_DESIGN_WORK_ID" --arg mid "$PROJECT2_SPEC_MATERIAL_ID" --arg lease "$PROJECT2_DESIGN_LEASE" \
+  '{work_id:$wid,material_id:$mid,lease_id:$lease}')"
+require_code 200 "提交第二个项目方案报告"
+http_get "/v1/projects?id=$PROJECT2_ID"
+require_code 200 "第二个项目方案报告后读取项目"
+[[ "$(jqr '.status_name')" == "spec_review" ]] || fail "第二个项目方案报告后应为 spec_review，实际 $(jqr '.status_name')"
+PROJECT2_VERSION="$(jqr '.version')"
+
+http_post "/v1/projects/decide?id=$PROJECT2_ID" '{"decision":"approve"}' -H "If-Match: $PROJECT2_VERSION"
+require_code 200 "第二个项目方案评审通过"
+[[ "$(jqr '.status_name')" == "tasks_draft" ]] || fail "第二个项目方案通过后应为 tasks_draft，实际 $(jqr '.status_name')"
+PROJECT2_VERSION="$(jqr '.version')"
+
+# tasks_draft 下加第一批卡（4 → 5），批次通过后 5 → 6。
+http_post "/v1/projects/plans?id=$PROJECT2_ID" \
+  '{"work_items":[{"title":"E2E 六状态前的卡","body_md":"# 执行\n\n先结清的一张。\n","priority":10}]}'
+require_code 201 "第二个项目加第一批卡"
+PROJECT2_CARD_A="$(jqr '.work_items[0].work_id')"
+[[ "$(jqr '.status_name')" == "tasks_review" ]] || fail "tasks_draft 加卡后应打开批次评审，实际 $(jqr '.status_name')"
+PROJECT2_VERSION="$(jqr '.project_version')"
+
+http_post "/v1/work-items/review" "$(jq -nc --arg pid "$PROJECT2_ID" '{project_id:$pid,decision:"approve"}')"
+require_code 200 "第二个项目批次通过"
+[[ "$(jqr '.status_name')" == "pending_done" ]] || fail "第二个项目批次通过后应为 pending_done，实际 $(jqr '.status_name')"
+[[ "$(jqr '.ready_work_items')" == "1" ]] || fail "第二个项目批次通过应放行 1 张卡，实际 $(jqr '.ready_work_items')"
+
+# 先把批次里的卡走完，让第二个项目停在「全部结清」的 6。
+dispatch_next "心跳派发第二个项目的卡 A"
+[[ "$NEXT_WORK" == "$PROJECT2_CARD_A" ]] || fail "应派发卡 A $PROJECT2_CARD_A，实际 $NEXT_WORK"
+PROJECT2_A_LEASE="$NEXT_LEASE"
+http_post "/v1/work-items/report" "$(jq -nc \
+  --arg wid "$PROJECT2_CARD_A" --arg mid "$PROJECT2_SPEC_MATERIAL_ID" --arg lease "$PROJECT2_A_LEASE" \
+  '{work_id:$wid,material_id:$mid,lease_id:$lease}')"
+require_code 200 "提交卡 A 报告"
+http_post "/v1/work-items/decide" "$(jq -nc --arg wid "$PROJECT2_CARD_A" '{work_id:$wid,decision:"approve"}')"
+require_code 200 "验收卡 A"
+http_get "/v1/projects?id=$PROJECT2_ID"
+require_code 200 "卡 A 结清后读取第二个项目"
+[[ "$(jqr '.status')" == "6" ]] || fail "卡 A 结清后第二个项目应停在 6，实际 $(jqr '.status')"
+PROJECT2_VERSION="$(jqr '.version')"
+
+# 6 状态下新增开发卡：卡落 blocked、项目状态与版本都不动（等下一次批次评审）。
+http_post "/v1/projects/plans?id=$PROJECT2_ID" \
+  '{"work_items":[{"title":"E2E 六状态下加卡","body_md":"# 执行\n\n6 状态下新增的卡。\n","priority":10}]}'
+require_code 201 "6 状态下加卡"
+PROJECT2_CARD_B="$(jqr '.work_items[0].work_id')"
+[[ -n "$PROJECT2_CARD_B" && "$PROJECT2_CARD_B" != "null" ]] || fail "6 状态下加卡响应缺少 work_id"
+[[ "$(jqr '.work_items[0].kind')" == "dev" ]] || fail "6 状态下新增卡 kind 应为 dev，实际 $(jqr '.work_items[0].kind')"
+[[ "$(jqr '.work_items[0].state')" == "blocked" ]] \
+  || fail "6 状态下新增卡应落为 blocked（需再过一次批次评审），实际 $(jqr '.work_items[0].state')"
+[[ "$(jqr '.status_name')" == "pending_done" ]] || fail "6 状态下加卡不应改状态名，实际 $(jqr '.status_name')"
+[[ "$(jqr '.status')" == "6" ]] || fail "6 状态下加卡后项目应仍为 6，实际 $(jqr '.status')"
+[[ "$(jqr '.project_version')" == "$PROJECT2_VERSION" ]] || fail "6 状态下加卡不应改项目版本"
+pass "6/9 6 状态下新增开发卡成功且项目仍为 6"
+
+# 未结清时 complete：409 invalid_state，message 带未结清数量，项目与版本都不变。
+http_post "/v1/projects/complete?id=$PROJECT2_ID" '' -H "If-Match: $PROJECT2_VERSION"
+require_code 409 "未结清时 complete"
+[[ "$(jqr '.code')" == "invalid_state" ]] || fail "未结清时 complete 应返回 invalid_state，实际 $(jqr '.code')"
+[[ "$(jqr '.message')" == *"1 unsettled work items"* ]] \
+  || fail "未结清时 complete 的 message 应带未结清数量，实际 $(jqr '.message')"
+http_get "/v1/projects?id=$PROJECT2_ID"
+require_code 200 "未结清 complete 被拒后复核第二个项目"
+[[ "$(jqr '.status')" == "6" ]] || fail "未结清 complete 被拒后项目应仍为 6，实际 $(jqr '.status')"
+[[ "$(jqr '.version')" == "$PROJECT2_VERSION" ]] \
+  || fail "未结清 complete 被拒不应改版本：$PROJECT2_VERSION -> $(jqr '.version')"
+pass "6/9 未结清时 complete 返回 409 且项目仍为 6"
+
+# 6 状态下的批次评审（6 → 6）放行新卡，走完领取 → 报告 → 验收后项目仍为 6。
+http_post "/v1/work-items/review" "$(jq -nc --arg pid "$PROJECT2_ID" '{project_id:$pid,decision:"approve"}')"
+require_code 200 "6 状态下批次评审通过"
+[[ "$(jqr '.status_name')" == "pending_done" ]] || fail "6 状态下批次通过后项目应仍为 pending_done，实际 $(jqr '.status_name')"
+[[ "$(jqr '.ready_work_items')" == "1" ]] || fail "6 状态下批次通过应放行 1 张卡，实际 $(jqr '.ready_work_items')"
+
+dispatch_next "心跳派发 6 状态下新增的卡"
+[[ "$NEXT_WORK" == "$PROJECT2_CARD_B" ]] || fail "应派发 6 状态下新增的卡 $PROJECT2_CARD_B，实际 $NEXT_WORK"
+[[ "$NEXT_KIND" == "dev" ]] || fail "dispatch.kind 应为 dev，实际 $NEXT_KIND"
+PROJECT2_B_LEASE="$NEXT_LEASE"
+http_post "/v1/work-items/report" "$(jq -nc \
+  --arg wid "$PROJECT2_CARD_B" --arg mid "$PROJECT2_SPEC_MATERIAL_ID" --arg lease "$PROJECT2_B_LEASE" \
+  '{work_id:$wid,material_id:$mid,lease_id:$lease}')"
+require_code 200 "提交 6 状态下新增卡的报告"
+[[ "$(jqr '.state')" == "submitted" ]] || fail "卡 B 报告后应为 submitted，实际 $(jqr '.state')"
+http_post "/v1/work-items/decide" "$(jq -nc --arg wid "$PROJECT2_CARD_B" '{work_id:$wid,decision:"approve"}')"
+require_code 200 "验收 6 状态下新增卡"
+[[ "$(jqr '.state')" == "accepted" ]] || fail "卡 B 验收后应为 accepted，实际 $(jqr '.state')"
+http_get "/v1/projects?id=$PROJECT2_ID"
+require_code 200 "卡 B 结清后读取第二个项目"
+[[ "$(jqr '.status_name')" == "pending_done" ]] \
+  || fail "卡 B 结清后第二个项目应仍为 pending_done（不自动收工），实际 $(jqr '.status_name')"
+[[ "$(jqr '.status')" == "6" ]] || fail "卡 B 结清后第二个项目应仍为 6，实际 $(jqr '.status')"
+pass "6/9 该卡走完批次评审→领取→报告→验收后项目仍为 6"
+
+pass "6/9 阶段卡驱动 2→3→4→5，批次门禁 5→6；结清停在 pending_done，人工 complete 才 completed，6 状态下加卡/走完卡仍为 6"
 
 # --- 7. 重启进程后注册表仍在 ------------------------------------------------
 

@@ -350,8 +350,10 @@ func TestBreakdownReportHTTPSuccess(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &review); err != nil {
 		t.Fatalf("decode review: %v", err)
 	}
-	if review.ReadyWorkItems != 2 || review.Status != 6 {
-		t.Errorf("review = %d/%d, want 2 ready / status 6", review.ReadyWorkItems, review.Status)
+	// Item 2 depends on item 1, so only the head is released by the approval;
+	// the dependent card waits for item 1's acceptance.
+	if review.ReadyWorkItems != 1 || review.Status != 6 {
+		t.Errorf("review = %d/%d, want 1 ready / status 6", review.ReadyWorkItems, review.Status)
 	}
 
 	rec = doJSON(t, e.handler, http.MethodPost, "/v1/work-items/claim",

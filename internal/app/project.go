@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -16,6 +17,14 @@ import (
 
 // maxProjectTitleLen bounds a project title in characters.
 const maxProjectTitleLen = 200
+
+// maxProjectBranchLen bounds projects.dev_branch in characters.
+const maxProjectBranchLen = 200
+
+// devBranchPattern is the accepted shape of a project branch: one of the
+// conventional types followed by a lowercase slug. It also rejects "main",
+// Chinese names and whitespace.
+var devBranchPattern = regexp.MustCompile(`^(feat|fix|refactor|docs|chore|test)/[a-z0-9][a-z0-9._-]*$`)
 
 // CreateProjectInput is the use-case input for POST /v1/projects.
 type CreateProjectInput struct {
@@ -30,6 +39,7 @@ type CreateProjectInput struct {
 // rejected with a precise field error.
 type UpdateProjectInput struct {
 	Title     *string
+	DevBranch *string
 	Status    *int
 	ProductID *string
 }
@@ -125,6 +135,9 @@ func (s *ProjectService) CreateProject(ctx context.Context, in CreateProjectInpu
 
 		ts := formatTimestamp(s.timestamp())
 		projectID := fmt.Sprintf("%s-%d", product.ProductID, seq)
+		// The branch is part of the project's identity, not a task detail: it is
+		// generated once here and never re-derived from a later title change.
+		devBranch := generateDevBranch(projectID, normalized.Title)
 
 		// Insert the project first with an empty pointer, then store the
 		// requirement and backfill it. The order is what makes the rollback
@@ -135,6 +148,7 @@ func (s *ProjectService) CreateProject(ctx context.Context, in CreateProjectInpu
 			ProductID:             product.ID,
 			SeqNo:                 seq,
 			Title:                 normalized.Title,
+			DevBranch:             devBranch,
 			RequirementMaterialID: nil,
 			Status:                domain.StatusRequirementReview,
 			Version:               1,
@@ -256,7 +270,7 @@ func (s *ProjectService) UpdateProject(ctx context.Context, projectID string, in
 			{Field: "id", Reason: "is required"},
 		}}
 	}
-	title, fields := validateUpdateProject(in)
+	title, devBranch, fields := validateUpdateProject(in)
 	if len(fields) > 0 {
 		return domain.Project{}, &domain.ValidationError{Fields: fields}
 	}
@@ -271,7 +285,20 @@ func (s *ProjectService) UpdateProject(ctx context.Context, projectID string, in
 			return err
 		}
 
-		if err := store.UpdateProjectTitle(ctx, tx, row.ID, title, formatTimestamp(s.nextTimestamp(row.UpdateTime))); err != nil {
+		var titlePtr, branchPtr *string
+		if in.Title != nil {
+			titlePtr = &title
+		}
+		if in.DevBranch != nil {
+			branchPtr = &devBranch
+		}
+		err = store.UpdateProjectMetadata(ctx, tx, row.ID, titlePtr, branchPtr,
+			formatTimestamp(s.nextTimestamp(row.UpdateTime)))
+		if err != nil {
+			if errors.Is(err, store.ErrUniqueViolation) {
+				return &domain.ConflictError{Reason: fmt.Sprintf(
+					"dev_branch %q is already used by another project of this product", devBranch)}
+			}
 			return err
 		}
 
@@ -499,9 +526,9 @@ func (s *ProjectService) validateRequirementBody(field, body string) ([]byte, []
 	return []byte(body), nil
 }
 
-// validateUpdateProject rejects every field a PATCH must not touch and
-// requires at least one writable field.
-func validateUpdateProject(in UpdateProjectInput) (string, []domain.FieldError) {
+// validateUpdateProject rejects every field a PATCH must not touch, normalises
+// the writable ones and requires at least one of them.
+func validateUpdateProject(in UpdateProjectInput) (string, string, []domain.FieldError) {
 	var fields []domain.FieldError
 
 	if in.ProductID != nil {
@@ -527,14 +554,75 @@ func validateUpdateProject(in UpdateProjectInput) (string, []domain.FieldError) 
 		}
 	}
 
-	if in.Title == nil && in.Status == nil && in.ProductID == nil {
+	devBranch := ""
+	if in.DevBranch != nil {
+		trimmed := strings.TrimSpace(*in.DevBranch)
+		switch {
+		case trimmed == "":
+			fields = append(fields, domain.FieldError{Field: "dev_branch", Reason: "is required"})
+		case utf8.RuneCountInString(trimmed) > maxProjectBranchLen:
+			fields = append(fields, domain.FieldError{
+				Field:  "dev_branch",
+				Reason: fmt.Sprintf("must be at most %d characters", maxProjectBranchLen),
+			})
+		case !devBranchPattern.MatchString(trimmed):
+			fields = append(fields, domain.FieldError{
+				Field:  "dev_branch",
+				Reason: "must look like feat/<slug> with a lowercase slug (types: feat, fix, refactor, docs, chore, test)",
+			})
+		default:
+			devBranch = trimmed
+		}
+	}
+
+	if in.Title == nil && in.DevBranch == nil {
 		fields = append(fields, domain.FieldError{
 			Field:  "body",
-			Reason: "at least one of title is required",
+			Reason: "at least one of title, dev_branch is required",
 		})
 	}
 
-	return title, fields
+	return title, devBranch, fields
+}
+
+// generateDevBranch derives the project branch from its business id and title:
+// "feat/app-1-social-login". It is deterministic and runs exactly once per
+// project (create, or the first dispatch for rows created before the column
+// existed), so a later title edit never moves the branch.
+func generateDevBranch(projectID, title string) string {
+	base := branchSlug(projectID, 40)
+	if base == "" {
+		base = "proj"
+	}
+	slug := branchSlug(title, 40)
+	if slug == "" {
+		return "feat/" + base
+	}
+	return "feat/" + base + "-" + slug
+}
+
+// branchSlug lowercases s and keeps only [a-z0-9], collapsing every other run
+// of characters into a single hyphen.
+func branchSlug(s string, max int) string {
+	var b strings.Builder
+	lastDash := true
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+		if b.Len() >= max {
+			break
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > max {
+		out = strings.Trim(out[:max], "-")
+	}
+	return out
 }
 
 // projectFromRow converts the store read model into the domain entity.
@@ -553,6 +641,7 @@ func projectFromRow(row store.Project) (domain.Project, error) {
 		ProductID:             row.ProductCode,
 		SeqNo:                 row.SeqNo,
 		Title:                 row.Title,
+		DevBranch:             row.DevBranch,
 		Status:                row.Status,
 		Reason:                stringValue(row.Reason),
 		LastActor:             stringValue(row.LastActor),

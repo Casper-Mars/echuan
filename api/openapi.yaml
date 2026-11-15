@@ -539,6 +539,49 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+  /v1/projects/complete:
+    post:
+      operationId: completeProject
+      summary: 人工完成项目（pending_done → completed）
+      description: |
+        把处于 `pending_done`(6) 的项目置为 `completed`(7)。这是 6→7 的**唯一**入口：
+        卡片验收不再推进项目状态，全部卡片结清后项目停在 6，等人显式调用本接口。
+
+        前置条件（全部在同一事务内校验，任一不满足则整体回滚，项目仍为 6）：
+        - 项目存在，且 `If-Match` 等于当前 `version`（必填；缺失或非正整数返回 400
+          `invalid_version`，版本已过期返回 409 `invalid_version`）；
+        - 项目状态为 `pending_done`(6)：0–5、7、8 一律 409 `invalid_state`；
+        - 项目下没有未结清的卡片：blocked / queued / leased / submitted / failed
+          任一状态存在即返回 409 `invalid_state`，message 中带未结清数量；
+        - 调用者不是 agent：actor 以 `agent:` 前缀开头返回 403 `agent_forbidden`。
+
+        成功时同一事务内追加一条 `gate_decisions` 记录：`subject_type=project`、
+        `subject_id=<project_id>`、`gate=complete`、`decision=approve`、
+        `material_id=null`、`decided_by=<actor>`，`create_time` 与项目 `update_time` 同值。
+        重复提交（项目已为 7）返回 409 `invalid_state`，不会产生第二条记录。
+      tags: [projects]
+      parameters:
+        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/ResourceID"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: 已完成
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /v1/projects/materials:
     get:
       operationId: listProjectMaterials
@@ -1067,6 +1110,14 @@ paths:
     post:
       operationId: reviewWorkItems
       summary: 审批或驳回一个项目的计划批次
+      description: |
+        审批通过时把批次里**可以开工**的卡放行：只把依赖已全部 accepted 的
+        blocked 卡置为 queued，其余继续 blocked，并在它的依赖被验收时由
+        `/v1/work-items/decide` 的 approve 自动放行。因此 `queued` 始终等于
+        「可派发」；`ready_work_items` 是本轮真正放行的张数。
+
+        一个批次里所有卡都被依赖挡住时审批仍然成功（`ready_work_items=0`），
+        它们会随上游验收陆续放行；只有批次里根本没有 blocked 卡时才返回 409。
       tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -1185,6 +1236,7 @@ paths:
                           protocol: v2
                           work_id: w_01M5Z46Q7T9K3C8N2V5X1B4D6F
                           kind: dev
+                          agent_preset: dev-leader
                           inputs:
                             - material_id: MAT-01M5Z45N8Q2R4S6T8V0W2X4Y6Z
                               kind: 3
@@ -1725,6 +1777,25 @@ components:
           type: integer
         title:
           type: string
+        dev_branch:
+          type: string
+          nullable: true
+          description: |
+            项目的开发分支（一个项目一条 feature 分支），如 `feat/app-1-social-login`。
+            创建项目时由平台按 `feat/<project_id>-<title slug>` 生成；PATCH 可显式改写，
+            格式为 `^(feat|fix|refactor|docs|chore|test)/[a-z0-9][a-z0-9._-]*$`，
+            同一产品下不得重复（409）。
+
+            只读响应中该字段按状态派生：`status` 为 4/5/6/7 时返回记录的分支名
+            （记录为空则为 null），`status` 为 0/1/2/3/8 时一律为 null —— 尚未进入
+            开发阶段的项目没有开发分支，已取消项目不猜分支。这是「约定分支名」，
+            平台不校验远端是否存在。
+        repo_url:
+          type: string
+          nullable: true
+          description: |
+            产品的代码仓库地址，取自 `products.git_url`（空串按 null）。
+            只读派生字段，不可通过 PATCH 修改。
         status:
           type: integer
           description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
@@ -1778,6 +1849,16 @@ components:
           type: integer
         title:
           type: string
+        dev_branch:
+          type: string
+          nullable: true
+          description: |
+            项目的开发分支，如 `feat/app-1-social-login`。按状态派生：`status` 为
+            4/5/6/7 时返回记录的分支名（记录为空则为 null），0/1/2/3/8 时一律为 null。
+        repo_url:
+          type: string
+          nullable: true
+          description: 产品的代码仓库地址（`products.git_url`），空串按 null；只读派生字段。
         status:
           type: integer
           description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
@@ -1862,6 +1943,11 @@ components:
       properties:
         title:
           type: string
+        dev_branch:
+          type: string
+          description: |
+            显式改写项目开发分支。格式 `^(feat|fix|refactor|docs|chore|test)/[a-z0-9][a-z0-9._-]*$`；
+            同一产品下唯一，重复返回 409。省略表示不改。
         status:
           type: integer
           description: 项目状态（九态）：0 requirement_draft / 1 requirement_review / 2 spec_draft / 3 spec_review / 4 tasks_draft / 5 tasks_review / 6 pending_done / 7 completed / 8 cancelled
@@ -1993,7 +2079,7 @@ components:
     WorkItem:
       type: object
       additionalProperties: false
-      required: [work_id, project_id, parent_id, kind, seq_no, title, body_md, priority, state, worker_id, attempt, max_attempts, reason, version, depends_on, result_material_id, create_time, update_time, lease]
+      required: [work_id, project_id, parent_id, kind, seq_no, title, body_md, priority, state, worker_id, attempt, max_attempts, reason, version, depends_on, blocked_by, result_material_id, create_time, update_time, lease]
       properties:
         work_id:
           type: string
@@ -2032,6 +2118,14 @@ components:
           type: integer
         depends_on:
           type: array
+          items:
+            type: string
+        blocked_by:
+          type: array
+          description: |
+            尚未验收的依赖 work_id（`depends_on` 的子集）。非空表示这张卡还在
+            等依赖通过验收；这些依赖全部 accepted 后平台会在接受事务里自动把它
+            从 blocked 放行到 queued。
           items:
             type: string
         result_material_id:
@@ -2123,7 +2217,7 @@ components:
     WorkItemDetail:
       type: object
       additionalProperties: false
-      required: [work_id, project_id, parent_id, kind, seq_no, title, body_md, priority, state, worker_id, attempt, max_attempts, reason, version, depends_on, result_material_id, create_time, update_time, lease, result]
+      required: [work_id, project_id, parent_id, kind, seq_no, title, body_md, priority, state, worker_id, attempt, max_attempts, reason, version, depends_on, blocked_by, result_material_id, create_time, update_time, lease, result]
       properties:
         work_id:
           type: string
@@ -2160,6 +2254,13 @@ components:
           type: integer
         depends_on:
           type: array
+          items:
+            type: string
+        blocked_by:
+          type: array
+          description: |
+            尚未验收的依赖 work_id（`depends_on` 的子集）。非空表示这张卡还在
+            等依赖通过验收；全部 accepted 后由接受事务自动放行到 queued。
           items:
             type: string
         result_material_id:
@@ -2325,6 +2426,12 @@ components:
         kind:
           type: string
           enum: [requirement, design, breakdown, dev]
+        agent_preset:
+          type: string
+          description: |
+            Agent preset the worker should run this card with, resolved from the
+            platform's kind → preset mapping (requirement→pm, design/breakdown→cto,
+            dev→dev-leader). Omitted when `agent_preset_dispatch` is disabled.
         inputs:
           type: array
           items:

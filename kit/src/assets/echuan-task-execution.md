@@ -22,7 +22,8 @@
 - `requirement`：派单 `inputs` 已带需求物料时直接用它汇报，不要重复写一版；确实没有才写。
 - `dev` 代码卡：交付时直接传 `summary_md`（四段式正文），平台在同一事务里落成 `kind=3` 报告物料并回填 `result_material_id`；不需要单独创建物料，也没有这样的工具。
 - `design`：已有方案要改时用 `echuan_spec_revise` 在原链上修订，不要新建第二条方案链。
-- `breakdown` 的 `plan.items` 每项：`seq_no`（计划内 1..N）、`title`、`body_md`，可选 `priority`（0..99）、`depends_on`（计划内序号，如 `[1]`）、`project_id`（传了必须等于当前项目）。平台会把 plan 落成 kind=4 物料、回填 `result_material_id`，并在同一事务里生成 blocked 状态的 dev 卡；开发任务评审通过后才会放行。
+- `breakdown` 的 `plan.items` 每项：`seq_no`（计划内 1..N）、`title`、`body_md`，可选 `priority`（0..99）、`depends_on`（计划内序号，如 `[1]`）、`project_id`（传了必须等于当前项目）。平台会把 plan 落成 kind=4 物料、回填 `result_material_id`，并在同一事务里生成 blocked 状态的 dev 卡；开发任务评审通过后才放出可开工的那批。
+- **有先后顺序必须写 `depends_on`**：不写按并行派发；写了，下游要等上游**验收通过**才进队列（`blocked_by` 指出还差哪几张）。
 - 阶段卡报告被 400 / 409 拒绝时，卡仍在你手里：按 `details` 里的 `field` / `reason` 补资料或修 plan，再用**同一个 `lease_id`** 重报；不要重新领卡，不要手工建卡绕过平台。
 - `409 plan already submitted for breakdown item` 表示这批卡已经生成，不要重复提交；成功一次即止，等评审结论。
 
@@ -51,7 +52,7 @@
 
 - `project_id` 取派单消息里的「项目」；缺失时用 `echuan_work_get` 补齐，**不得编造**。
 - 分支名固定：项目分支 `feature/<project_id>`，任务分支 `task/<work_id>`（`work_id` 是平台生成的 `w_` 前缀业务编号）。
-- **一条项目自始至终只在一个仓库里完成**，不得中途改道：权限后来变了，也不在原仓库重开一条同名分支，那会把项目劈成两条互不相干的线。
+- **一条项目自始至终只在一个仓库里完成**，不得中途改道：权限后来变了，也不在原仓库重开同名分支。
 
 ### 2.2 原仓库路径（有推送权限）
 
@@ -253,30 +254,30 @@ gh pr create --repo "$UPSTREAM" --base "$BASE" \
 - 用默认分支建任务分支，或任务 PR 不写 `--base`：base 会落回 `main`，项目没有独立分支载体，删 worktree 与分支，回第 2 节重来。
 - 向 `upstream` push：禁止，会把分支推到别人的原仓库；所有推送只走 `origin`。
 - 干完只在会话里说一句「完成」：平台没有记录，等于没交，必须调 `echuan_work_report`。
-- 干完不 push：review 的人拿不到代码，按未交付处理，补 push 加校验后重新汇报。
-- 第二张卡不 `fetch` 就建 worktree：base 已过期，删掉 worktree 与分支，回第 2 节重来。
+- 干完不 push：按未交付处理，补 push 后重新汇报。
+- 第二张卡不 `fetch` 就建 worktree：base 已过期，删掉后回第 2 节重来。
 - 分支建不出来就「先按 main 做」：禁止，停下按第 5 节汇报。
 - 手动领的卡快到期还在写代码：先 `echuan_work_renew`，再继续。
-- 把 Worker 派发的卡也去续租：与心跳抢租约，直接 lease_lost。
-- 领卡返回无活就连续重试：制造请求风暴，应当等下一轮。
-- 顺手把卡标成通过：越界做门禁，禁止。
+- 给 Worker 派发的卡续租：与心跳抢租约，直接 lease_lost。
+- 领卡无活就连刷：制造请求风暴，应当等下一轮。
+- 顺手把卡标通过：越界做门禁，禁止。
 
 ## 10. 无活不是错误
 
-`echuan_work_claim` 返回「当前无活」（HTTP 204）是正常结果：不要重试风暴、不要连续刷请求、不要自己造任务。停下等下一轮派单即可。
+`echuan_work_claim` 返回「当前无活」（HTTP 204）是正常结果：不要连刷、不要自己造任务，停下等下一轮。
 
 ## 11. 一页速查
 
 | 场景 | 动作 |
 | --- | --- |
 | 收到派单 | 直接开工，不反问能否开始 |
-| 分支归属 | 按第 2.1 节四步表判定：原仓库有分支 → 原仓库；fork 有分支 → fork；都没有看推送权限 |
+| 分支归属 | 按 2.1 四步表：原仓库有分支 → 原仓库；fork 有分支 → fork；都没有看权限 |
 | 开工前同步 | `git fetch --prune origin`（fork 路径再 `git fetch --prune upstream`）；任务分支一律从 `origin/feature/<project_id>` 起，禁止以默认分支为基线 |
 | 建项目分支 | 不存在则从最新默认分支建 `feature/<project_id>`，推 `$PUSH_REMOTE`；禁止向 upstream push |
 | 建工作区 | `git worktree add ../wt-<work_id> -b task/<work_id> "origin/feature/<project_id>"`，一卡一个 |
 | 开工前 | `echuan_project_get` → 需要全文再 `echuan_material_get` |
 | 单卡细节 | `echuan_work_get`（`project_id` 缺失也用它补齐） |
-| 交付完成 | commit → `git push -u origin task/<work_id>` → `ls-remote` 校验 → 任务 PR（`--base feature/<project_id>`，不得省略）→ `echuan_work_report`（summary_md + 四段式） |
+| 交付完成 | commit → `git push -u origin task/<work_id>` → `ls-remote` 校验 → 任务 PR（`--base feature/<project_id>`，不得省略）→ `echuan_work_report` |
 | 项目最后一张卡 | 建合并 PR `feature/<project_id>` → 默认分支，链接写进报告待人工合并；不合并、不删分支 |
 | 推送失败/无权限 | 不算交付，按第 5 节汇报卡在哪 |
 | 做不下去 | 同样 `echuan_work_report`，写清卡在哪、缺什么、谁决策 |

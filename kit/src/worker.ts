@@ -170,7 +170,7 @@ export type WorkerDeliver = (agent: Agent, text: string) => void
  * 生产环境接 `createSessionEnsurer(ctx)`（sessionId = 项目号，cwd 取会话数最多
  * 的 workspace，agentOptions 取 agentDefaultModel）。
  */
-export type WorkerEnsureSession = (projectId: string) => Promise<Agent | undefined>
+export type WorkerEnsureSession = (projectId: string, presetId?: string) => Promise<Agent | undefined>
 
 export interface WorkerLoopOptions {
   /** 已归一化的配置（读取 `worker.kinds` / `worker.metadata` / `worker.poll.enable`）。 */
@@ -513,7 +513,7 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
 
       if (ensureSession !== undefined) {
         const outcome = await settleWithTimeout(
-          ensureSession(projectId),
+          ensureSession(projectId, dispatch.agent_preset),
           ensureTimeoutMs,
           timer,
         )
@@ -710,6 +710,9 @@ export function renderDispatchMessage(dispatch: Dispatch): string {
     `项目：${item.project_id}`,
     `产品：${context.product.name}（${context.product.id}）`,
     `仓库：${context.product.git_url}`,
+    ...(typeof context.dev_branch === 'string' && context.dev_branch.trim() !== ''
+      ? [`开发分支：${context.dev_branch.trim()}`]
+      : []),
     `租约到期：${lease.until}（TTL ${lease.ttl_seconds}s，lease_id=${lease.lease_id}）`,
     `尝试次数：${item.attempt}${item.max_attempts === undefined ? '' : `/${item.max_attempts}`}，优先级：${item.priority}`,
   ]

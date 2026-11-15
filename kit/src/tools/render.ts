@@ -428,6 +428,20 @@ function formatProjectReason(detail: Project): string {
   return reason
 }
 
+/**
+ * `blocked_by` → `A、B（未验收）`；空/缺失 → 空串。
+ *
+ * 只对 blocked 卡有意义：它把「为什么还没轮到这张卡」直接写在卡上，
+ * 而不是让 agent 从依赖列表里自己推断。
+ */
+function formatBlockedBy(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  const ids = value
+    .map(item => asString(item)?.trim())
+    .filter((item): item is string => item !== undefined && item !== '')
+  return ids.length === 0 ? '' : `${ids.join('、')}（未验收，通过后自动放行）`
+}
+
 /** `depends_on` → `A、B`；空数组/缺失 → `无`。 */
 function formatDependsOn(value: unknown): string {
   if (!Array.isArray(value)) return '无'
@@ -466,6 +480,8 @@ export function formatWorkItem(detail: WorkItemDetail): string {
   lines.push(`- 优先级：${asNumber(detail.priority) ?? '未知'}`)
   lines.push(`- 尝试次数：${attempt ?? '未知'}/${maxAttempts ?? '未知'}`)
   lines.push(`- 依赖：${formatDependsOn(detail.depends_on)}`)
+  const blockedBy = formatBlockedBy(detail.blocked_by)
+  if (blockedBy !== '') lines.push(`- 等待依赖：${blockedBy}`)
   const reason = asString(detail.reason)?.trim() ?? ''
   lines.push(`- 原因说明：${reason === '' ? '无' : reason}`)
   if (reason !== '') {
@@ -553,7 +569,10 @@ export function formatWorkItemList(items: readonly WorkItemDetail[]): string {
         + `｜状态：${workItemStateLabel(asString(item.state))}`
         + `｜优先级：${asNumber(item.priority) ?? '未知'}`
         + `｜尝试次数：${attempt ?? '未知'}`
-        + `｜依赖：${formatDependsOn(item.depends_on)}`,
+        + `｜依赖：${formatDependsOn(item.depends_on)}`
+        + (formatBlockedBy(item.blocked_by) === ''
+          ? ''
+          : `｜等待依赖：${formatBlockedBy(item.blocked_by)}`),
     )
   }
   return lines.join('\n')

@@ -51,21 +51,25 @@ type WorkItemLease struct {
 // is nil unless the item is leased and the deadline is still valid. WorkerID is
 // the executor of a leased card and nil for every other state.
 type WorkItemView struct {
-	WorkID           string
-	ProjectID        string
-	ParentID         *string
-	Kind             string
-	SeqNo            int
-	Title            string
-	BodyMD           string
-	Priority         int
-	State            string
-	WorkerID         *string
-	Attempt          int
-	MaxAttempts      int
-	Reason           string
-	Version          int
-	DependsOn        []string
+	WorkID      string
+	ProjectID   string
+	ParentID    *string
+	Kind        string
+	SeqNo       int
+	Title       string
+	BodyMD      string
+	Priority    int
+	State       string
+	WorkerID    *string
+	Attempt     int
+	MaxAttempts int
+	Reason      string
+	Version     int
+	DependsOn   []string
+	// BlockedBy holds the dependency work ids that are not accepted yet, i.e.
+	// the ones keeping a blocked card out of the queue. It is empty for every
+	// other state and for a card whose dependencies are all accepted.
+	BlockedBy        []string
 	ResultMaterialID *string
 	Lease            *WorkItemLease
 	CreateTime       time.Time
@@ -472,7 +476,7 @@ func (s *WorkItemService) ListWorkItems(ctx context.Context, in ListWorkItemsInp
 		page.Next = &WorkItemCursor{Priority: last.Priority, SeqNo: last.SeqNo, ID: last.ID}
 	}
 
-	deps, err := s.dependencies(ctx, s.store.Read(), rows)
+	deps, blockedBy, err := s.dependencies(ctx, s.store.Read(), rows)
 	if err != nil {
 		return WorkItemPage{}, err
 	}
@@ -504,7 +508,7 @@ func (s *WorkItemService) ListWorkItems(ctx context.Context, in ListWorkItemsInp
 			}
 			result = &mapped
 		}
-		view, err := s.viewFromRow(ctx, s.store.Read(), row, deps[row.ID], result)
+		view, err := s.viewFromRow(ctx, s.store.Read(), row, deps[row.ID], blockedBy[row.ID], result)
 		if err != nil {
 			return WorkItemPage{}, err
 		}
@@ -623,6 +627,10 @@ func (s *WorkItemService) detail(ctx context.Context, q store.Querier, physicalI
 	if err != nil {
 		return WorkItemDetail{}, err
 	}
+	blockedBy, err := store.WorkBlockingDependenciesByWorkItemIDs(ctx, q, []int64{row.ID})
+	if err != nil {
+		return WorkItemDetail{}, err
+	}
 
 	detail := WorkItemDetail{}
 	if row.ResultMaterialID != nil {
@@ -637,7 +645,7 @@ func (s *WorkItemService) detail(ctx context.Context, q store.Querier, physicalI
 		detail.Result = &mapped
 	}
 
-	view, err := s.viewFromRow(ctx, q, row, dependsOn, detail.Result)
+	view, err := s.viewFromRow(ctx, q, row, dependsOn, blockedBy[row.ID], detail.Result)
 	if err != nil {
 		return WorkItemDetail{}, err
 	}
@@ -646,16 +654,24 @@ func (s *WorkItemService) detail(ctx context.Context, q store.Querier, physicalI
 }
 
 // dependencies resolves the dependencies of a whole page in one query.
-func (s *WorkItemService) dependencies(ctx context.Context, q store.Querier, rows []store.WorkItem) (map[int64][]string, error) {
+func (s *WorkItemService) dependencies(ctx context.Context, q store.Querier, rows []store.WorkItem) (map[int64][]string, map[int64][]string, error) {
 	ids := make([]int64, 0, len(rows))
 	for _, row := range rows {
 		ids = append(ids, row.ID)
 	}
-	return store.WorkDependenciesByWorkItemIDs(ctx, q, ids)
+	deps, err := store.WorkDependenciesByWorkItemIDs(ctx, q, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	blockedBy, err := store.WorkBlockingDependenciesByWorkItemIDs(ctx, q, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	return deps, blockedBy, nil
 }
 
 // viewFromRow converts the store read model into the use-case view.
-func (s *WorkItemService) viewFromRow(ctx context.Context, q store.Querier, row store.WorkItem, dependsOn []string, result *domain.Material) (WorkItemView, error) {
+func (s *WorkItemService) viewFromRow(ctx context.Context, q store.Querier, row store.WorkItem, dependsOn, blockedBy []string, result *domain.Material) (WorkItemView, error) {
 	createTime, err := parseTimestamp(row.CreateTime)
 	if err != nil {
 		return WorkItemView{}, err
@@ -666,6 +682,9 @@ func (s *WorkItemService) viewFromRow(ctx context.Context, q store.Querier, row 
 	}
 	if dependsOn == nil {
 		dependsOn = []string{}
+	}
+	if blockedBy == nil {
+		blockedBy = []string{}
 	}
 
 	var parentID *string
@@ -693,6 +712,7 @@ func (s *WorkItemService) viewFromRow(ctx context.Context, q store.Querier, row 
 		Reason:      stringValue(row.Reason),
 		Version:     row.Version,
 		DependsOn:   dependsOn,
+		BlockedBy:   blockedBy,
 		CreateTime:  createTime,
 		UpdateTime:  updateTime,
 	}

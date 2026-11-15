@@ -434,6 +434,25 @@ describe('dispatch 投递', () => {
     expect(harness.lines.some(line => line.includes('给项目 APP-1 的 agent'))).toBe(true)
   })
 
+  it('派单带 agent_preset：原样传给 ensureSession（V3 按角色建会话）', async () => {
+    const projectAgent = buildAgent('idle', 'agent-APP-1:pm')
+    const asked: Array<{ project: string; preset?: string }> = []
+    const harness = setup(
+      () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand({ agent_preset: 'pm' })], 5_000)),
+      {
+        agents: [buildAgent('idle', 'agent-root').agent],
+        ensureSession: async (projectId, presetId) => {
+          asked.push({ project: projectId, ...(presetId === undefined ? {} : { preset: presetId }) })
+          return projectAgent.agent
+        },
+      },
+    )
+    await startAndBeat(harness.loop, harness.scheduler)
+
+    expect(asked).toEqual([{ project: 'APP-1', preset: 'pm' }])
+    expect(projectAgent.followup).toHaveBeenCalledTimes(1)
+  })
+
   it('ensureSession 返回空：不投递、不写 inflight，下一轮重试', async () => {
     const projectAgent = buildAgent('idle', 'agent-APP-1')
     let attempts = 0
@@ -505,6 +524,17 @@ describe('dispatch 投递', () => {
     const lines = text.split('\n')
     expect(lines[0]).toBe('【驿传派单】')
     expect(lines).toContain(`仓库：${DISPATCH.context.product.git_url}`)
+  })
+
+  it('renderDispatchMessage 带上项目开发分支；缺省时不渲染空行', () => {
+    const withBranch = renderDispatchMessage({
+      ...DISPATCH,
+      context: { ...DISPATCH.context, dev_branch: 'feat/app-1-social-login' },
+    } as never)
+    expect(withBranch.split('\n')).toContain('开发分支：feat/app-1-social-login')
+
+    const without = renderDispatchMessage(DISPATCH as never)
+    expect(without).not.toContain('开发分支：')
   })
 
   it('renderDispatchMessage 返工卡：显式【返工】块 + 驳回原因 + 尝试进度', () => {

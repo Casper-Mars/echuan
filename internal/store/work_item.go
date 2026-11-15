@@ -385,19 +385,47 @@ func boolInt(value bool) int {
 	return 0
 }
 
-// SetWorkItemsQueuedByProject moves every blocked item of one project to
-// queued. It is the side effect of an approved plan review; already-queued
-// items are left untouched.
-func SetWorkItemsQueuedByProject(ctx context.Context, tx *sql.Tx, projectID int64, updateTime string) (int64, error) {
+// ReleaseReadyWorkItems moves the blocked items of one project whose
+// dependencies are all accepted to queued.
+//
+// It runs on plan approval and on every acceptance. A card gated by an open
+// dependency stays blocked, so "queued" always means "dispatchable": the claim
+// query already refuses a card whose dependency is merely submitted, and this
+// keeps the state machine honest about it instead of parking such a card in a
+// queue that will not hand it out.
+func ReleaseReadyWorkItems(ctx context.Context, tx *sql.Tx, projectID int64, updateTime string) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE work_items
 		   SET state = ?, version = version + 1, update_time = ?
-		 WHERE project_id = ? AND state = ?`,
-		WorkItemStateQueued, updateTime, projectID, WorkItemStateBlocked)
+		 WHERE project_id = ? AND state = ?
+		   AND NOT EXISTS (
+		         SELECT 1
+		           FROM work_deps d
+		           JOIN work_items dep ON dep.id = d.depends_on_id
+		          WHERE d.work_item_id = work_items.id
+		            AND dep.state <> ?)`,
+		WorkItemStateQueued, updateTime, projectID, WorkItemStateBlocked, WorkItemStateAccepted)
 	if err != nil {
-		return 0, fmt.Errorf("store: queue work items of project %d: %w", projectID, err)
+		return 0, fmt.Errorf("store: release ready work items of project %d: %w", projectID, err)
 	}
 	return res.RowsAffected()
+}
+
+// CountBlockedWorkItemsByProject counts the blocked items of one project,
+// released or not. Plan review uses it to tell "nothing to approve" apart from
+// "everything is still gated by an open dependency".
+func CountBlockedWorkItemsByProject(ctx context.Context, q Querier, projectID int64) (int64, error) {
+	row, err := One[struct {
+		Count int64 `db:"count"`
+	}](ctx, q, `
+		SELECT COUNT(*) AS count
+		  FROM work_items
+		 WHERE project_id = ? AND state = ?`,
+		projectID, WorkItemStateBlocked)
+	if err != nil {
+		return 0, fmt.Errorf("store: count blocked work items of project %d: %w", projectID, err)
+	}
+	return row.Count, nil
 }
 
 // CancelUnfinishedWorkItems moves every item of one project that is neither
@@ -718,6 +746,39 @@ func WorkDependenciesByWorkItemIDs(ctx context.Context, q Querier, ids []int64) 
 		 ORDER BY d.work_item_id ASC, dep.seq_no ASC, dep.id ASC`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list dependencies of %d work items: %w", len(ids), err)
+	}
+	for _, row := range rows {
+		out[row.Owner] = append(out[row.Owner], row.WorkID)
+	}
+	return out, nil
+}
+
+// WorkBlockingDependenciesByWorkItemIDs returns, per owner, only the
+// dependency business ids that are not accepted yet — the ones actually keeping
+// the card out of the queue. One statement per page, like
+// WorkDependenciesByWorkItemIDs.
+func WorkBlockingDependenciesByWorkItemIDs(ctx context.Context, q Querier, ids []int64) (map[int64][]string, error) {
+	out := make(map[int64][]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(ids)+1)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	args = append(args, WorkItemStateAccepted)
+	rows, err := All[struct {
+		Owner  int64  `db:"owner_id"`
+		WorkID string `db:"work_id"`
+	}](ctx, q, `
+		SELECT d.work_item_id AS owner_id, dep.work_id
+		  FROM work_deps d
+		  JOIN work_items dep ON dep.id = d.depends_on_id
+		 WHERE d.work_item_id IN (`+placeholders(len(ids))+`)
+		   AND dep.state <> ?
+		 ORDER BY d.work_item_id ASC, dep.seq_no ASC, dep.id ASC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list blocking dependencies of %d work items: %w", len(ids), err)
 	}
 	for _, row := range rows {
 		out[row.Owner] = append(out[row.Owner], row.WorkID)

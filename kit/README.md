@@ -168,7 +168,11 @@ dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
 - `worker.poll.enable=false` 是默认值：不建定时器、零请求；**手动领卡需要先注册**（见上一条）。
 - `metadata` 序列化后超过 8KiB 时插件**不启动心跳循环**并 warn 一条（不是截断），避免每轮都被平台拒。
 - `exclude` 默认 `[]`（不排除，全量 25 个）；工具名写错或含空白项时**插件激活直接失败**（`TypeError`，错误里列出未知项与合法名单），不会静默少注册。
-- **一个 worker 一个身份，一个项目一个会话**：派单按 `project_id` ensureSession，sessionId = 项目号，cwd 取会话数最多的 workspace；拿到该会话的 agent 再投递。会话未就绪时只 warn 一条、本轮跳过、下一轮重试。不做 kind → agent 的分流；需要多角色 / 多模型并行就拆成多个 worker。
+- **一个 worker 一个身份，一个项目按角色拆会话**：派单按 `project_id` + `agent_preset` ensureSession，
+  会话键 = `项目号:preset`（平台未下发 preset 时退回「项目号即会话号」的旧键），
+  cwd 取会话数最多的 workspace；拿到该会话的 agent 再投递。会话未就绪时只 warn 一条、
+  本轮跳过、下一轮重试。角色选择由平台的 `kind → preset` 映射决定（见
+  `docs/worker-ops.md`），worker 只声明自己「能领哪些 kind」。
 - **agentOptions 与 create/resume 同源**：provider/model 取 `agentDefaultModel`，否则恢复出的会话没有模型，首轮 turn 会在 `{{model}}` 插值处失败。
 - 真实例子：本机起好平台后，把 `enable` 改成 `true` 并声明 `kinds`，`baseUrl` 保持 `http://127.0.0.1:8720`，重启 dsh 即可。
 

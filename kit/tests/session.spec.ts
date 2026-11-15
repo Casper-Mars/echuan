@@ -695,3 +695,61 @@ describe('ensureSession：修复回归', () => {
     expect('agentOptions' in h.calls.resume[0]!).toBe(false)
   })
 })
+
+
+// ---------------------------------------------------------------------------
+// V3：按角色拆会话（项目号:preset）
+// ---------------------------------------------------------------------------
+
+describe('按角色拆会话（V3）', () => {
+  it('带 preset → 会话键为 项目:preset，meta 与 mount 都用它', async () => {
+    const h = createHarness()
+    const result = await ensureSession(PROJECT, h.deps, 'pm')
+
+    expect(result?.outcome).toBe('created')
+    expect(h.calls.get).toEqual([`${PROJECT}:pm`])
+    expect(h.calls.stat).toEqual([`${PROJECT}:pm`])
+    expect(h.calls.create[0]?.sessionId).toBe(`${PROJECT}:pm`)
+    expect(h.calls.create[0]?.meta).toMatchObject({ agentPreset: 'pm' })
+    await h.calls.create[0]?.setup?.({})
+    expect(h.calls.mount.map((item) => item.id)).toEqual(['pm'])
+  })
+
+  it('不带 preset → 保持旧键（项目号即会话号）', async () => {
+    const h = createHarness()
+    await ensureSession(PROJECT, h.deps)
+
+    expect(h.calls.get).toEqual([PROJECT])
+    expect(h.calls.create[0]?.sessionId).toBe(PROJECT)
+  })
+
+  it('两个角色互不干扰：各自命中自己的键', async () => {
+    const live = new Map<string, EnsureAgent>()
+    const h = createHarness({
+      get: (id) => live.get(id),
+    })
+    const pm = await ensureSession(PROJECT, h.deps, 'pm')
+    const cto = await ensureSession(PROJECT, h.deps, 'cto')
+
+    expect(pm?.outcome).toBe('created')
+    expect(cto?.outcome).toBe('created')
+    expect(h.calls.get).toEqual([`${PROJECT}:pm`, `${PROJECT}:cto`])
+    expect(h.calls.create.map((item) => item.sessionId)).toEqual([`${PROJECT}:pm`, `${PROJECT}:cto`])
+    live.set(`${PROJECT}:pm`, { id: `${PROJECT}:pm`, session: { id: `${PROJECT}:pm` } })
+    const again = await ensureSession(PROJECT, h.deps, 'pm')
+    expect(again?.outcome).toBe('reuse')
+  })
+
+  it('resume 时 header 没记录 preset → 用派单给的 preset 挂载', async () => {
+    const h = createHarness({
+      stat: async () => ({ header: {} }),
+    })
+    const result = await ensureSession(PROJECT, h.deps, 'cto')
+
+    expect(result?.outcome).toBe('resumed')
+    expect(h.calls.resume[0]?.resumeSessionId).toBe(`${PROJECT}:cto`)
+    expect(h.calls.resolve).toContain('cto')
+    await h.calls.resume[0]?.setup?.({})
+    expect(h.calls.mount.map((item) => item.id)).toEqual(['cto'])
+  })
+})
