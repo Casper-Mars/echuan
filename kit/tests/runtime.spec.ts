@@ -53,7 +53,7 @@ function config(pollEnable: boolean): ResolvedConfig {
     actor: 'agent:echuan',
     requestTimeoutMs: 35_000,
     exclude: [],
-    worker: { poll: { enable: pollEnable }, kinds: [], metadata: {} },
+    worker: { poll: { enable: pollEnable }, kinds: [], presetByKind: {}, metadata: {} },
   }
 }
 

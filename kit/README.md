@@ -157,7 +157,7 @@ dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
         enable: true                      # 默认关闭；打开才会定时心跳
       presetByKind:                       # kind → preset（角色路由在 worker 侧）
         dev: dev-leader
-      # kinds 可省略：缺省取 presetByKind 的键（上面等价于 kinds: [dev]）
+      # 键即本 worker 声明的 kinds，不再单独配置 kinds
       metadata:                           # 原样上报，序列化后 ≤8KiB
         host: build-01
         os: darwin
@@ -165,8 +165,8 @@ dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
 ```
 
 - `worker.presetByKind` 是 **worker 侧的角色路由表**：默认 `requirement=pm, design=cto, breakdown=cto, dev=dev-leader`。平台的派单只带 `kind`，不带任何 preset 字段——新增角色只改这里（+ 在 Host 装好 preset），平台零改动。写空对象 `{}` 表示不做映射，会话回落 registry 默认 preset。
-- `worker.kinds` 是「能领什么卡」的声明，缺省时**取 `presetByKind` 的键**；每项会 `trim`、去重（保序），空白项抛 `TypeError`。kind 词汇属于平台，kit 不维护枚举：拼错的 kind 由平台心跳拒绝（错误信息更准），不会因平台新增阶段而编译失败。
-- 只有 `kinds` 与 `presetByKind` 同时为空时才**不启动心跳循环**：平台心跳要求 `kinds` 非空，发出去只会每轮 400。此时只 warn 一条，工具仍可正常调用（但 `echuan_work_claim` 因没有 `worker_id` 会在本地拒绝）。
+- **`worker.presetByKind` 是唯一的角色/能力配置项**：键即本 worker 声明的 `kinds`（能领什么卡），值即拿到卡后挂哪个 preset。心跳上报的 `kinds` 是它的键（派生值），没有独立的 `worker.kinds` 配置——有映射就必然有可接的卡。kind 词汇属于平台，kit 不维护枚举：拼错的 kind 由平台心跳拒绝（错误信息更准），不会因平台新增阶段而编译失败。
+- `worker.presetByKind` 为空（`{}`）时**不启动心跳循环**：没有映射就没有可接的 kind，心跳发出去只会每轮 400。此时只 warn 一条，工具仍可正常调用（但 `echuan_work_claim` 因没有 `worker_id` 会在本地拒绝）。
 - `worker.poll.enable=false` 是默认值：不建定时器、零请求；**手动领卡需要先注册**（见上一条）。
 - `metadata` 序列化后超过 8KiB 时插件**不启动心跳循环**并 warn 一条（不是截断），避免每轮都被平台拒。
 - `exclude` 默认 `[]`（不排除，全量 25 个）；工具名写错或含空白项时**插件激活直接失败**（`TypeError`，错误里列出未知项与合法名单），不会静默少注册。
@@ -176,7 +176,7 @@ dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
   cwd 取会话数最多的 workspace；拿到该会话的 agent 再投递。会话未就绪时只 warn 一条、
   本轮跳过、下一轮重试。**平台不认识 preset 名**：路由表完全属于 worker 侧配置。
 - **agentOptions 与 create/resume 同源**：provider/model 取 `agentDefaultModel`，否则恢复出的会话没有模型，首轮 turn 会在 `{{model}}` 插值处失败。
-- 真实例子：本机起好平台后，把 `enable` 改成 `true` 并声明 `kinds`，`baseUrl` 保持 `http://127.0.0.1:8720`，重启 dsh 即可。
+- 真实例子：本机起好平台后，把 `enable` 改成 `true` 并配好 `presetByKind`，`baseUrl` 保持 `http://127.0.0.1:8720`，重启 dsh 即可。
 
 ### 按 agent 裁剪工具（exclude）
 
@@ -223,11 +223,11 @@ dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
 
 启动日志：`[dsh-echuan] 已注册 11 个工具（3 写 + 8 读；已排除 14 个：...）：...`
 
-> 上面是 **dev-only worker** 的裁剪示例。若 `worker.kinds` 含 `requirement` / `design`，不要套用这份 exclude：`requirement` 卡需要 `echuan_project_requirement_write`，`design` 卡需要 `echuan_spec_create` / `echuan_spec_revise`；`breakdown` 卡只用 `echuan_work_report` 的 `plan` 参数。阶段 worker 至少保留这些工具，或直接不传 `exclude`（全量 25 个）。
+> 上面是 **dev-only worker** 的裁剪示例。若 `worker.presetByKind` 含 `requirement` / `design`，不要套用这份 exclude：`requirement` 卡需要 `echuan_project_requirement_write`，`design` 卡需要 `echuan_spec_create` / `echuan_spec_revise`；`breakdown` 卡只用 `echuan_work_report` 的 `plan` 参数。阶段 worker 至少保留这些工具，或直接不传 `exclude`（全量 25 个）。
 
 - 名称必须与上文工具表**逐字一致**；写错（如 `echuan_plan_submmit`）会让插件激活直接失败，日志里给出未知项与合法名单。
 - 条目会先 `trim` 再去重（保序）；空白项视为配置错误。
-- 全部排除也合法：`已注册 0 个工具（已排除 25 个：...）`，心跳与派单照常（是否需要心跳只由 `worker.poll.enable` 与 `worker.kinds` 决定）。
+- 全部排除也合法：`已注册 0 个工具（已排除 25 个：...）`，心跳与派单照常（是否需要心跳只由 `worker.poll.enable` 与 `worker.presetByKind` 是否为空决定）。
 
 ## 确认它真的在工作
 
@@ -261,19 +261,19 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 |---|---|---|
 | 心跳全部失败，日志 `warn` 网络错误 | `baseUrl` 写错 / 平台没起 / 端口不对 | `curl http://127.0.0.1:8720/readyz` 确认平台活着，再改 `baseUrl` |
 | 日志反复出现 `409 worker_unknown` | 平台库里没有这个 id（被保留期清理或换库） | 插件会自动清 id 重注册；持续出现则检查平台是否被重置 |
-| 日志 `worker.kinds 为空，不启动心跳循环` | 没声明 kinds | 补 `worker.kinds`（至少一个），或保持 `poll.enable=false` |
+| 日志 `worker.presetByKind 为空，不启动心跳循环` | 没有任何 kind → preset 映射 | 补至少一条映射，或保持 `poll.enable=false` |
 | 派单来了但没人干（日志 `没有可用 agent`） | 本进程还没有 root agent | 确认插件加载在有 agent 的 profile 里；下一轮心跳会自动重试投递 |
-| `echuan_work_claim` 本地拒绝 `worker_id 尚未就绪` | 心跳没开 / 尚未注册成功 | 打开 `worker.poll.enable` 并声明 `kinds`，等首轮心跳成功后再领 |
+| `echuan_work_claim` 本地拒绝 `worker_id 尚未就绪` | 心跳没开 / 尚未注册成功 | 打开 `worker.poll.enable` 并配好 `presetByKind`，等首轮心跳成功后再领 |
 | `echuan_work_claim` 报 `409 worker_busy` | 该 worker 已持有卡 | 先 `echuan_work_report` 交掉当前卡，不要并发抢卡 |
 | 续租/报告报 `409 lease_lost` | 租约过期或被回收 | 立即停止该卡，旧结果不可再提交，重新 `echuan_work_claim` |
-| `/v1/workers` 显示 `presence=offline` | 插件停了 / 心跳关了 / 超过 45s 没心跳 | 确认 `worker.poll.enable=true`、`kinds` 非空、进程在跑、网络通 |
+| `/v1/workers` 显示 `presence=offline` | 插件停了 / 心跳关了 / 超过 45s 没心跳 | 确认 `worker.poll.enable=true`、`presetByKind` 非空、进程在跑、网络通 |
 | 报告被拒 `422 material_required` | 非 breakdown 卡既没有 `material_id` 也没有 `summary_md` | 直接传 `summary_md`（平台落报告物料），或传已有物料的 `material_id`；breakdown 卡改用 `plan` 参数 |
 
 ## 已知行为（实测）
 
 - 首轮心跳**延迟 5 秒**发出：几秒内就退出的命令（如 `dsh --profile <name> --help`）在 `worker.poll.enable=true` 时不会产生任何请求；若进程存活超过 5s 仍会注册（`--help` 不再是「必然打一次真实 POST」的命令）。
 - 心跳间隔只认平台回包 `heartbeat_interval_ms`（默认 15s），客户端夹紧在 [500ms, 24h]。
-- 每次心跳都上报配置里的 `kinds`，平台据此覆盖本 worker 的声明；`dispatch` 按 `work_id + lease_id` 去重（内存 LRU 200 条），重复下发只投一次。
+- 每次心跳都上报映射的键（`kinds`），平台据此覆盖本 worker 的声明；`dispatch` 按 `work_id + lease_id` 去重（内存 LRU 200 条），重复下发只投一次。
 - `state` 是**占用声明**，不是 agent 的瞬时运行态：inflight 非空（或上一轮回包 `current_work_item_id` 非空，覆盖手动 `echuan_work_claim` 领的卡）期间**每一轮都上报 `busy`**，所以回合间隙不会被平台当成空闲再派一张卡；只有 `echuan_work_report` 成功（`notifyReported`）或租约过期后才会回到 `idle`。一个 worker 同一时间只持一张卡。
 - 连续 `worker_unknown` 会退避 1s→2s→5s→15s，不会打爆平台。
 

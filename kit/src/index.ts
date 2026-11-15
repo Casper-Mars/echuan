@@ -164,9 +164,8 @@ export function apply(ctx: Context, config?: ConfigInput): void {
   // 平台心跳要求 kinds 非空：空声明发出去只会每轮 400，开启轮询时先 warn 一条。
   if (resolved.worker.poll.enable && resolved.worker.kinds.length === 0) {
     warn(
-      `${TAG} 警告：worker.kinds 为空，不启动心跳循环；`
-        + '请配置 worker.presetByKind（推荐，键即声明）或 worker.kinds 至少一个类别，'
-        + '或保持 worker.poll.enable=false',
+      `${TAG} 警告：worker.presetByKind 为空，不启动心跳循环；`
+        + '请配置至少一个 kind → preset 映射，或保持 worker.poll.enable=false',
     )
   }
 

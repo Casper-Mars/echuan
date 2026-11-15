@@ -285,7 +285,7 @@ describe('apply：加载与生命周期', () => {
       .map((call, index) => ({ ms: call[1], value: setSpy.mock.results[index]?.value }))
       .find(entry => entry.ms === FIRST_HEARTBEAT_DELAY_MS)?.value
 
-    apply(fake.ctx, { worker: { poll: { enable: true }, kinds: ['dev'] } })
+    apply(fake.ctx, { worker: { poll: { enable: true }, presetByKind: { dev: 'dev-leader' } } })
     await settleTools(fake)
 
     // 惰性 import → start() 只排一个 5s 后的首轮定时器，延迟期内零请求。
@@ -395,7 +395,7 @@ describe('apply：exclude 按 agent 裁剪工具', () => {
 
     expect(() => apply(fake.ctx, {
       exclude: [...TOOL_NAMES],
-      worker: { poll: { enable: true }, kinds: ['dev'] },
+      worker: { poll: { enable: true }, presetByKind: { dev: 'dev-leader' } },
     })).not.toThrow()
 
     await vi.waitFor(() => {
@@ -428,7 +428,7 @@ describe('apply：R-02 metadata 超限不启动心跳循环', () => {
     const bytes = metadataByteLength(metadata)
     expect(bytes).toBeGreaterThan(8192)
 
-    apply(fake.ctx, { worker: { poll: { enable: true }, kinds: ['dev'], metadata } })
+    apply(fake.ctx, { worker: { poll: { enable: true }, presetByKind: { dev: 'dev-leader' }, metadata } })
     await settleTools(fake)
     // 留出一轮惰性 import 的时间：正常路径这里会走 createWorkerLoop + start()。
     await new Promise<void>(resolve => { setTimeout(resolve, 20) })

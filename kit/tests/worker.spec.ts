@@ -193,7 +193,6 @@ function setup(
   handler: Handler,
   options: {
     enable?: boolean
-    kinds?: readonly string[]
     presetByKind?: Record<string, string>
     metadata?: Record<string, unknown>
     /** 本进程的 root agents；派单固定投给第一个。 */
@@ -208,8 +207,7 @@ function setup(
   const config = resolveConfig({
     worker: {
       poll: { enable: options.enable ?? true },
-      kinds: [...(options.kinds ?? ['dev'])],
-      ...(options.presetByKind === undefined ? {} : { presetByKind: options.presetByKind }),
+      presetByKind: options.presetByKind ?? { dev: 'dev-leader' },
       metadata,
     },
   })
@@ -291,7 +289,7 @@ describe('首次注册与后续心跳', () => {
 
   it('首次请求体没有 worker_id；kinds 与配置一致；第二次带同一 id', async () => {
     const harness = setup(() => okResponse(heartbeatPayload(WORKER_ID)), {
-      kinds: ['dev', 'design'],
+      presetByKind: { dev: 'dev-leader', design: 'cto' },
     })
     await startAndBeat(harness.loop, harness.scheduler)
     await harness.scheduler.advance(15_000)
@@ -461,7 +459,6 @@ describe('dispatch 投递', () => {
     const harness = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand({ kind: 'review' })], 5_000)),
       {
-        kinds: ['review'],
         presetByKind: { review: 'reviewer' },
         agents: [buildAgent('idle', 'agent-root').agent],
         ensureSession: async (projectId, presetId) => {
@@ -481,7 +478,6 @@ describe('dispatch 投递', () => {
     const harness = setup(
       () => okResponse(heartbeatPayload(WORKER_ID, [dispatchCommand({ kind: 'hotfix' })], 5_000)),
       {
-        kinds: ['hotfix'],
         presetByKind: { dev: 'dev-leader' },
         agents: [buildAgent('idle', 'agent-root').agent],
         ensureSession: async (projectId, presetId) => {
@@ -883,7 +879,7 @@ describe('开关与卸载', () => {
   })
 
   it('kinds 为空：warn 一条、零请求、零定时器（不每轮 400）', async () => {
-    const harness = setup(() => okResponse(heartbeatPayload(WORKER_ID)), { kinds: [], presetByKind: {} })
+    const harness = setup(() => okResponse(heartbeatPayload(WORKER_ID)), { presetByKind: {} })
     harness.loop.start()
     await drain()
     expect(harness.platform.calls).toHaveLength(0)

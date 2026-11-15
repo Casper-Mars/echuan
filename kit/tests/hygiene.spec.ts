@@ -558,7 +558,7 @@ function workerPayload(call: RecordedCall): Response {
 const config = resolveConfig({ baseUrl: 'http://platform.test' })
 const pollConfig = resolveConfig({
   baseUrl: 'http://platform.test',
-  worker: { poll: { enable: true }, kinds: ['dev'], metadata: { host: 'ci' } },
+  worker: { poll: { enable: true }, presetByKind: { dev: 'dev-leader' }, metadata: { host: 'ci' } },
 })
 
 const silentLogger = { info: () => {}, warn: () => {}, debug: () => {} }

@@ -47,7 +47,6 @@ export interface ConfigInput {
   exclude?: string[] | null
   worker?: {
     poll?: { enable?: boolean | null } | null
-    kinds?: string[] | null
     presetByKind?: Record<string, string> | null
     metadata?: Record<string, unknown> | null
   } | null
@@ -68,9 +67,12 @@ export interface ResolvedConfig {
       /** 是否启用定时心跳；默认 false。 */
       enable: boolean
     }
-    /** 声明可执行的工作项类别（已 trim、去重、保序）；缺省取 `presetByKind` 的键。 */
+    /**
+     * 派生值：`presetByKind` 的键（保序）。心跳上报与平台派单匹配都用它；
+     * 不作为独立配置项存在——有映射就必然有可接的 kind。
+     */
     kinds: string[]
-    /** kind → preset 映射（已 trim）；空对象表示不做映射，回落 registry 默认 preset。 */
+    /** kind → preset 映射（已 trim）；键即声明的 kinds，空对象表示不启动心跳。 */
     presetByKind: Record<string, string>
     /** 任意 JSON 对象，原样上报。 */
     metadata: Record<string, unknown>
@@ -84,7 +86,6 @@ export interface ResolvedConfig {
 export type SchemaConfig = Omit<ResolvedConfig, 'worker'> & {
   worker: {
     poll: { enable: boolean }
-    kinds: string[]
     presetByKind: Record<string, string>
     metadata: Record<string, unknown>
   }
@@ -119,17 +120,12 @@ export const Config: Schemastery<ConfigInput, SchemaConfig> = Schema.object({
     })
       .default({})
       .description('心跳与派单接收'),
-    kinds: Schema.array(Schema.string())
-      .default([])
-      .description(
-        '声明本 worker 可执行的 work item 类别；缺省时取 presetByKind 的键（即全接）。'
-        + '只有显式写空数组且 presetByKind 也为空时才不启动心跳循环',
-      ),
     presetByKind: Schema.dict(Schema.string())
       .default({ ...DEFAULT_PRESET_BY_KIND })
       .description(
-        'kind → preset 映射（角色路由在 worker 侧）；默认 requirement=pm, design=cto, '
-        + 'breakdown=cto, dev=dev-leader。写空对象表示不映射，回落 registry 默认 preset',
+        'kind → preset 映射（角色路由在 worker 侧）。键即本 worker 声明的 kinds，'
+        + '所以这是唯一的角色/能力配置；默认 requirement=pm, design=cto, '
+        + 'breakdown=cto, dev=dev-leader。写空对象表示不接任何卡（不启动心跳）',
       ),
     metadata: Schema.dict(Schema.any())
       .default({})
@@ -160,7 +156,8 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
  * - 缺省字段回落默认值（Schema 的 `.default()` 负责）；
  * - `baseUrl` 去掉结尾斜杠，为空则回落默认值；
  * - `worker.metadata` 原样保留（不做深拷贝、不做键裁剪）；
- * - `worker.kinds` 每项 trim、去重（保序），未知类别抛 `TypeError`；
+ * - `worker.presetByKind` 键值 trim，空键 / 空 preset 抛 `TypeError`；
+ *   `worker.kinds` 是它的键（派生值，不是配置项）；
  * - `exclude` 每项做 `trim`、去重（保序），空白项抛 `TypeError`；工具名是否合法
  *   由 `tool-names.ts` 的 `validateExclude` 在插件入口校验（config 不依赖 dsh-tools）。
  *
@@ -175,7 +172,7 @@ export function resolveConfig(input?: ConfigInput | null): ResolvedConfig {
   const workerConfig = {
     poll: { enable: resolved.worker.poll.enable },
     presetByKind,
-    kinds: normalizeKinds(resolved.worker.kinds, presetByKind),
+    kinds: Object.keys(presetByKind),
     metadata: resolved.worker.metadata,
   }
   return {
@@ -207,34 +204,6 @@ function normalizePresetByKind(input?: Record<string, string> | null): Record<st
       )
     }
     normalized[kind] = preset
-  }
-  return normalized
-}
-
-/**
- * 归一化 `worker.kinds`：trim、去重（保序），空白项抛 `TypeError`。
- *
- * 缺省（未写 / 空数组）时取 `presetByKind` 的键——「能领什么」自然等于「有角色
- * 可挂什么」。kind 词汇由平台拥有，kit 不维护枚举：拼错的 kind 由平台心跳拒绝，
- * 错误信息比本地猜枚举更准。
- */
-function normalizeKinds(
-  kinds: readonly string[] | null | undefined,
-  presetByKind: Record<string, string>,
-): string[] {
-  const source = kinds === undefined || kinds === null || kinds.length === 0
-    ? Object.keys(presetByKind)
-    : kinds
-  const normalized: string[] = []
-  const seen = new Set<string>()
-  for (const item of source) {
-    const kind = item.trim()
-    if (kind === '') {
-      throw new TypeError('worker.kinds 不能包含空白项。下一步：填写 kind，或直接删掉该条目。')
-    }
-    if (seen.has(kind)) continue
-    seen.add(kind)
-    normalized.push(kind)
   }
   return normalized
 }

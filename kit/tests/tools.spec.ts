@@ -221,7 +221,7 @@ describe('echuan_work_claim：worker_id 的唯一来源是心跳循环', () => {
       worker: { worker_id: WORKER_ID, heartbeat_interval_ms: 15_000 },
       commands: [],
     }))
-    const config = resolveConfig({ worker: { poll: { enable: true }, kinds: ['dev'] } })
+    const config = resolveConfig({ worker: { poll: { enable: true }, presetByKind: { dev: 'dev-leader' } } })
     // 首轮心跳延迟 5s：抓住挂起的定时器回调，手动触发它完成注册。
     const pendingTimers: Array<() => void> = []
     const loop = createWorkerLoop({

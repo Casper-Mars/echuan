@@ -166,25 +166,16 @@ describe('metadataByteLength', () => {
   })
 })
 
-describe('worker.kinds：由映射推导、去重保序、非枚举校验', () => {
-  it('缺省时取 presetByKind 的键', () => {
+describe('worker.kinds：映射键的派生值（不是配置项）', () => {
+  it('缺省时等于 presetByKind 的键', () => {
     expect(resolveConfig({}).worker.kinds).toEqual(Object.keys(DEFAULT_PRESET_BY_KIND))
   })
 
-  it('trim + 去重（保序）', () => {
+  it('只配 presetByKind 就同时决定 kinds', () => {
     const resolved = resolveConfig({
-      worker: { kinds: [' dev ', 'design', 'dev', 'breakdown', 'design'] },
+      worker: { presetByKind: { ' design ': 'cto', dev: 'dev-leader' } },
     })
-    expect(resolved.worker.kinds).toEqual(['dev', 'design', 'breakdown'])
-  })
-
-  it('未知 kind 原样透传（词汇由平台裁决，不再本地枚举）', () => {
-    expect(resolveConfig({ worker: { kinds: ['dev', 'review', ' review '] } }).worker.kinds)
-      .toEqual(['dev', 'review'])
-  })
-
-  it('空白 kind → TypeError', () => {
-    expect(() => resolveConfig({ worker: { kinds: ['dev', '  '] } })).toThrow(TypeError)
+    expect(resolved.worker.kinds).toEqual(['design', 'dev'])
   })
 
   it('DEFAULT_CONFIG 里 kinds 取默认映射的键', () => {
