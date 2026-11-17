@@ -213,7 +213,7 @@ async function main() {
   // ---- A9：抽屉开合、ESC、遮罩 ---------------------------------------
   await navigate(`${BASE}/#/products`)
   await waitFor('products page', async () => (await bodyText()).includes('驿传示例产品'))
-  await evaluate("document.querySelector('.product-card .ghost').click()")
+  await evaluate("document.querySelector('.product-card .card-title').click()")
   await waitFor('drawer open', async () => (await evaluate("!!document.querySelector('.drawer')")) === true)
   check('A9 详情抽屉可打开', true)
 
@@ -234,7 +234,7 @@ async function main() {
   await waitFor('drawer closed by ESC', async () => (await evaluate("!!document.querySelector('.drawer')")) === false)
   check('A9 ESC 关闭抽屉', true)
 
-  await evaluate("document.querySelector('.product-card .ghost').click()")
+  await evaluate("document.querySelector('.product-card .card-title').click()")
   await waitFor('drawer reopen', async () => (await evaluate("!!document.querySelector('.drawer')")) === true)
   await evaluate("document.querySelector('.drawer-mask').click()")
   await waitFor('drawer closed by mask', async () => (await evaluate("!!document.querySelector('.drawer')")) === false)
