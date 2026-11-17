@@ -67,12 +67,16 @@ func ParseDecision(value string) (Decision, bool) {
 }
 
 // Project actions. "submit" sends the current draft for review, "decide"
-// records a verdict and "cancel" aborts a project that is not terminal.
+// records a verdict, "cancel" aborts a project that is not terminal and
+// "complete" closes a pending_done project.
 //
-// The remaining three actions are internal state moves driven by the task
-// endpoints, never by a human request: the first card of a tasks draft opens
-// its review, an approved batch moves to pending_done, and a fully settled
-// pending_done project closes itself.
+// Two actions are internal state moves driven by the task endpoints, never by a
+// human request: the first card of a tasks draft opens its review, and an
+// approved batch moves to pending_done.
+//
+// Completion is the opposite case: it has no internal trigger at all. A settled
+// pending_done project stays there until a human calls the complete endpoint,
+// which is the only writer of the 6→7 edge (issue #39).
 const (
 	// ProjectActionSubmit moves a draft to its review gate.
 	ProjectActionSubmit = "submit"
@@ -84,8 +88,9 @@ const (
 	ProjectActionAddFirstTask = "add_first_task"
 	// ProjectActionReviewTasks moves a reviewed batch to pending_done.
 	ProjectActionReviewTasks = "review_tasks"
-	// ProjectActionSettleTasks closes a pending_done project.
-	ProjectActionSettleTasks = "settle_tasks"
+	// ProjectActionComplete closes a pending_done project. It is triggered by a
+	// human request only; no card decision advances the project any more.
+	ProjectActionComplete = "complete"
 )
 
 // ProjectTransition is one legal edge of the project state machine. It is the
@@ -129,7 +134,10 @@ var projectTransitions = []ProjectTransition{
 	// is settled (tech design §5).
 	{From: StatusPendingDone, Action: ProjectActionReviewTasks, Decision: DecisionApprove, To: StatusPendingDone},
 
-	{From: StatusPendingDone, Action: ProjectActionSettleTasks, Decision: "", To: StatusCompleted},
+	// Completion is a human action: the edge exists, but nothing but the
+	// complete endpoint takes it. The platform no longer settles the project
+	// when its last card is accepted (issue #39).
+	{From: StatusPendingDone, Action: ProjectActionComplete, Decision: "", To: StatusCompleted},
 
 	{From: StatusRequirementDraft, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},
 	{From: StatusRequirementReview, Action: ProjectActionCancel, Decision: "", To: StatusCancelled},

@@ -102,6 +102,7 @@ func run() error {
 	// Pull mode: workers claim a card, hold a lease and renew it. The reclaimer
 	// returns expired leases to the queue even when nobody is claiming.
 	claims := app.NewClaimService(st, logger, cfg.LeaseTTL)
+	claims.SetAgentPresetDispatch(cfg.DispatchAgentPreset, cfg.AgentPresetByKind)
 
 	// The worker registry and worker-side dispatch. Every option is passed
 	// explicitly: a zero value silently falls back to the service default, so
@@ -113,6 +114,9 @@ func run() error {
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		MetadataMaxBytes:  cfg.WorkerMetadataMaxBytes,
 	})
+	// The heartbeat path dispatches too (command=dispatch); it must carry the
+	// same kind → preset routing as POST /v1/work-items/claim.
+	workers.SetAgentPresetDispatch(cfg.DispatchAgentPreset, cfg.AgentPresetByKind)
 	reclaimer := app.NewReclaimer(st, logger, app.DefaultReclaimInterval)
 	// worker_retention bounds how long an offline, task-free worker row is
 	// kept; the same 30s pass that reclaims leases prunes the registry.

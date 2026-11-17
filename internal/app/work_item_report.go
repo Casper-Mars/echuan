@@ -449,22 +449,16 @@ func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisio
 			return err
 		}
 
-		if next == store.WorkItemStateAccepted {
-			// Acceptance is what releases the cards waiting on this one: they
-			// stayed blocked through the whole review, so "queued" only ever
-			// means "dispatchable".
-			project, err := store.GetProjectByProjectID(ctx, tx, row.ProjectCode)
-			if err != nil {
-				return err
-			}
-			if _, err := store.ReleaseReadyWorkItems(ctx, tx, project.ID, updateTime); err != nil {
-				return err
-			}
-			result.Project, err = s.settleProjectIfDone(ctx, tx, row.ProjectCode, actor)
-			if err != nil {
-				return err
-			}
-		}
+		// Acceptance writes this card and nothing else. The cards waiting on it
+		// were already moved to queued by the plan approval, and the claim query
+		// decides on its own whether they are dispatchable yet, so there is no
+		// release step here: a downstream card must never change state as a side
+		// effect of an upstream acceptance (issue #49).
+		//
+		// The project is deliberately left alone as well: accepting the last
+		// card no longer closes it. A pending_done project reaches completed
+		// only through a human call to ProjectService.CompleteProject
+		// (issue #39), which keeps result.Project nil here.
 
 		result.Detail, err = s.detail(ctx, tx, row.ID)
 		if err != nil {
@@ -480,53 +474,6 @@ func (s *WorkItemService) DecideWorkItem(ctx context.Context, in WorkItemDecisio
 	return result, nil
 }
 
-// settleProjectIfDone closes a pending_done project once no item of it is left
-// in a non-terminal state (accepted and cancelled are terminal).
-func (s *WorkItemService) settleProjectIfDone(ctx context.Context, tx *sql.Tx, projectCode, actor string) (*ProjectAdvance, error) {
-	project, err := store.GetProjectByProjectID(ctx, tx, projectCode)
-	if err != nil {
-		return nil, err
-	}
-	if project.Status != domain.StatusPendingDone {
-		return nil, nil
-	}
-
-	unsettled, err := store.CountUnsettledWorkItemsByProject(ctx, tx, project.ID)
-	if err != nil {
-		return nil, err
-	}
-	if unsettled > 0 {
-		return nil, nil
-	}
-
-	next, err := domain.ProjectNextStatus(project.Status, domain.ProjectActionSettleTasks, "")
-	if err != nil {
-		return nil, err
-	}
-	updateTime := formatTimestamp(s.nextTimestamp(project.UpdateTime))
-	affected, err := store.TransitionProject(ctx, tx, project.ID,
-		project.Status, project.Version, next, nil, actor, updateTime)
-	if err != nil {
-		return nil, err
-	}
-	if affected == 0 {
-		fresh, readErr := store.GetProjectByProjectID(ctx, tx, project.ProjectID)
-		if readErr != nil {
-			return nil, readErr
-		}
-		if fresh.Status == next {
-			return &ProjectAdvance{ProjectID: fresh.ProjectID, FromStatus: project.Status, ToStatus: fresh.Status}, nil
-		}
-		return nil, &domain.InvalidVersionError{Current: fresh.Version, Expected: project.Version}
-	}
-
-	return &ProjectAdvance{
-		ProjectID:  project.ProjectID,
-		FromStatus: project.Status,
-		ToStatus:   next,
-	}, nil
-}
-
 // ReviewWorkItemsInput is the use-case input of POST /v1/work-items/review.
 type ReviewWorkItemsInput struct {
 	ProjectID string
@@ -536,25 +483,31 @@ type ReviewWorkItemsInput struct {
 }
 
 // ReviewWorkItemsResult reports the outcome of one plan review.
+//
+// QueuedItems is how many blocked cards this approval moved to queued (all of
+// them), ReadyItems how many of those are claimable right now (their
+// dependencies are already accepted). ReadyItems <= QueuedItems always holds.
 type ReviewWorkItemsResult struct {
-	ProjectID  string
-	FromStatus int
-	ToStatus   int
-	Version    int
-	ReadyItems int64
-	Reason     string
-	RejectedAt string
+	ProjectID   string
+	FromStatus  int
+	ToStatus    int
+	Version     int
+	QueuedItems int64
+	ReadyItems  int64
+	Reason      string
+	RejectedAt  string
 }
 
 // ReviewWorkItems applies one human verdict to a project's plan batch.
 //
-// approve: the blocked cards whose dependencies are all accepted become queued
-// and the project moves 5 → 6 (or repeats 6 → 6 when cards were added after an
-// earlier approval) in the same transaction, which also clears any recorded
-// objection. A card still waiting on an unaccepted dependency stays blocked and
-// is released by the acceptance (DecideWorkItem). A batch with no blocked card
-// at all is a conflict and writes nothing; a batch where every card is gated is
-// approved with ready_work_items = 0.
+// approve: every blocked card of the project becomes queued and the project
+// moves 5 → 6 (or repeats 6 → 6 when cards were added after an earlier
+// approval) in the same transaction, which also clears any recorded objection.
+// "queued" therefore means "approved and waiting to be developed", not
+// "dispatchable": a card whose dependency is not accepted yet stays queued and
+// is refused by the claim query until that dependency is accepted. A batch with
+// no blocked card at all is a conflict and writes nothing; a batch where every
+// card is gated is approved with ready_work_items = 0 and queued_work_items = N.
 //
 // reject: the cards and the project status stay exactly where they are; only
 // tasks_review_reason / tasks_review_rejected_at (plus actor, version and
@@ -634,13 +587,14 @@ func (s *WorkItemService) ReviewWorkItems(ctx context.Context, in ReviewWorkItem
 			}
 
 			result = ReviewWorkItemsResult{
-				ProjectID:  project.ProjectID,
-				FromStatus: project.Status,
-				ToStatus:   project.Status,
-				Version:    project.Version + 1,
-				ReadyItems: 0,
-				Reason:     reason,
-				RejectedAt: updateTime,
+				ProjectID:   project.ProjectID,
+				FromStatus:  project.Status,
+				ToStatus:    project.Status,
+				Version:     project.Version + 1,
+				QueuedItems: 0,
+				ReadyItems:  0,
+				Reason:      reason,
+				RejectedAt:  updateTime,
 			}
 			return nil
 		}
@@ -650,23 +604,21 @@ func (s *WorkItemService) ReviewWorkItems(ctx context.Context, in ReviewWorkItem
 			return err
 		}
 
-		// Approving the batch releases the cards that are not gated by a
-		// dependency; the rest stay blocked until their dependency is accepted
-		// (DecideWorkItem releases them). A batch where every card is gated
-		// still approves: there is simply nothing to release yet.
-		ready, err := store.ReleaseReadyWorkItems(ctx, tx, project.ID, updateTime)
+		// Approving the batch queues every blocked card, gated or not: the
+		// review is what puts them on the "待开发" board. ready is read first and
+		// only feeds the response, because the historical ready_work_items
+		// semantics ("claimable right now") is a subset of what is queued.
+		ready, err := store.CountReadyBlockedWorkItems(ctx, tx, project.ID)
 		if err != nil {
 			return err
 		}
-		if ready == 0 {
-			blocked, err := store.CountBlockedWorkItemsByProject(ctx, tx, project.ID)
-			if err != nil {
-				return err
-			}
-			if blocked == 0 {
-				return &domain.InvalidStateError{Reason: fmt.Sprintf(
-					"project %q has no blocked work item to approve", project.ProjectID)}
-			}
+		queued, err := store.QueueBlockedWorkItems(ctx, tx, project.ID, updateTime)
+		if err != nil {
+			return err
+		}
+		if queued == 0 {
+			return &domain.InvalidStateError{Reason: fmt.Sprintf(
+				"project %q has no blocked work item to approve", project.ProjectID)}
 		}
 
 		affected, err := store.TransitionProjectClearTasksReview(ctx, tx, project.ID,
@@ -702,11 +654,12 @@ func (s *WorkItemService) ReviewWorkItems(ctx context.Context, in ReviewWorkItem
 		}
 
 		result = ReviewWorkItemsResult{
-			ProjectID:  project.ProjectID,
-			FromStatus: project.Status,
-			ToStatus:   next,
-			Version:    project.Version + 1,
-			ReadyItems: ready,
+			ProjectID:   project.ProjectID,
+			FromStatus:  project.Status,
+			ToStatus:    next,
+			Version:     project.Version + 1,
+			QueuedItems: queued,
+			ReadyItems:  ready,
 		}
 		return nil
 	})

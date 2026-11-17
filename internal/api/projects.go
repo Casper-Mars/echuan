@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -21,13 +22,17 @@ const defaultProjectListLimit = 50
 const extraBodyBytes = 1 << 20
 
 // projectsHandler serves /v1/projects and /v1/projects/requirement.
+//
+// products backs the read-only repo_url derivation of a project response; it is
+// optional (a router built without the product service answers repo_url=null).
 type projectsHandler struct {
-	service *app.ProjectService
-	logger  *slog.Logger
+	service  *app.ProjectService
+	products *app.ProductService
+	logger   *slog.Logger
 }
 
-func newProjectsHandler(service *app.ProjectService, logger *slog.Logger) *projectsHandler {
-	return &projectsHandler{service: service, logger: logger}
+func newProjectsHandler(service *app.ProjectService, products *app.ProductService, logger *slog.Logger) *projectsHandler {
+	return &projectsHandler{service: service, products: products, logger: logger}
 }
 
 // createProjectRequest is the POST /v1/projects body.
@@ -59,13 +64,19 @@ type decideProjectRequest struct {
 }
 
 // projectResponse is the wire representation of a project.
+//
+// DevBranch and RepoURL are read-only derivations, not columns: DevBranch is the
+// recorded branch only for the statuses that can own one (null before the tasks
+// draft and for a cancelled project), and RepoURL is the product's git_url
+// (null when the product has none). Neither is writable through this DTO.
 type projectResponse struct {
 	ID         string  `json:"id"`
 	ProjectID  string  `json:"project_id"`
 	ProductID  string  `json:"product_id"`
 	SeqNo      int     `json:"seq_no"`
 	Title      string  `json:"title"`
-	DevBranch  string  `json:"dev_branch"`
+	DevBranch  *string `json:"dev_branch"`
+	RepoURL    *string `json:"repo_url"`
 	Status     int     `json:"status"`
 	StatusName string  `json:"status_name"`
 	Reason     *string `json:"reason"`
@@ -132,7 +143,7 @@ func (h *projectsHandler) createProject(w http.ResponseWriter, r *http.Request) 
 
 	WithSubject(r.Context(), detail.Project.ProjectID)
 	w.Header().Set("Location", "/v1/projects?id="+url.QueryEscape(detail.Project.ProjectID))
-	writeJSON(w, http.StatusCreated, toProjectDetailResponse(detail))
+	writeJSON(w, http.StatusCreated, h.projectDetailResponse(r, detail))
 }
 
 // listOrGetProject handles GET /v1/projects: ?id= selects the detail form,
@@ -159,7 +170,7 @@ func (h *projectsHandler) getProject(w http.ResponseWriter, r *http.Request, pro
 		writeDomainError(w, r, h.logger, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toProjectDetailResponse(detail))
+	writeJSON(w, http.StatusOK, h.projectDetailResponse(r, detail))
 }
 
 // listProjects handles GET /v1/projects?product_id=&status=&limit=&cursor=.
@@ -203,8 +214,10 @@ func (h *projectsHandler) listProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	items := make([]projectResponse, 0, len(page.Items))
+	// One resolver per response: N projects of one product cost one read.
+	urls := h.repoURLs()
 	for _, project := range page.Items {
-		items = append(items, toProjectResponse(project))
+		items = append(items, h.projectResponse(r, project, urls))
 	}
 	response := projectListResponse{Items: items}
 	if page.NextID != 0 {
@@ -239,7 +252,7 @@ func (h *projectsHandler) updateProject(w http.ResponseWriter, r *http.Request) 
 		writeDomainError(w, r, h.logger, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toProjectResponse(project))
+	writeJSON(w, http.StatusOK, h.projectResponse(r, project, h.repoURLs()))
 }
 
 // deleteProject handles DELETE /v1/projects?id=APP-1.
@@ -281,7 +294,7 @@ func (h *projectsHandler) writeRequirement(w http.ResponseWriter, r *http.Reques
 		writeDomainError(w, r, h.logger, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toProjectDetailResponse(detail))
+	writeJSON(w, http.StatusOK, h.projectDetailResponse(r, detail))
 }
 
 // bodyLimit sizes the request body reader: one material plus JSON syntax.
@@ -306,7 +319,7 @@ func (h *projectsHandler) submitProject(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	h.logProjectTransition(r, domain.ProjectActionSubmit, "", result)
-	writeJSON(w, http.StatusOK, toProjectResponse(*result.Project))
+	writeJSON(w, http.StatusOK, h.projectResponse(r, *result.Project, h.repoURLs()))
 }
 
 // decideProject handles POST /v1/projects/decide?id=APP-1.
@@ -353,7 +366,7 @@ func (h *projectsHandler) decideProject(w http.ResponseWriter, r *http.Request) 
 	}
 	h.logProjectTransition(r, domain.ProjectActionDecide, decision, result)
 	writeJSON(w, http.StatusOK, projectDecisionResponse{
-		projectResponse: toProjectResponse(*result.Project),
+		projectResponse: h.projectResponse(r, *result.Project, h.repoURLs()),
 		MaterialID:      materialRefID(result.Material),
 	})
 }
@@ -375,7 +388,59 @@ func (h *projectsHandler) cancelProject(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	h.logProjectTransition(r, domain.ProjectActionCancel, "", result)
-	writeJSON(w, http.StatusOK, toProjectResponse(*result.Project))
+	writeJSON(w, http.StatusOK, h.projectResponse(r, *result.Project, h.repoURLs()))
+}
+
+// completeProject handles POST /v1/projects/complete?id=APP-1: the only way a
+// pending_done project becomes completed.
+//
+// The precondition set is the whole authorization story of the edge — a human
+// actor (agents are refused), a project in pending_done with no unsettled card,
+// and an If-Match version that still matches. Everything is re-checked inside
+// the write transaction, so a concurrent card cannot slip between the check and
+// the status write.
+func (h *projectsHandler) completeProject(w http.ResponseWriter, r *http.Request) {
+	if forbidAgentActor(w, r) {
+		return
+	}
+	projectID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if projectID == "" {
+		writeDomainError(w, r, h.logger, invalidField("id", "is required"))
+		return
+	}
+	WithSubject(r.Context(), projectID)
+
+	version, verr := ifMatchVersion(r)
+	if verr != nil {
+		// The version lives in a header here, so a missing or malformed one is
+		// reported as a version error (400 invalid_version) instead of a body
+		// field error (tech design §7.1).
+		writePreconditionError(w, r, verr)
+		return
+	}
+
+	result, err := h.service.CompleteProject(r.Context(), projectID, ActorFromContext(r.Context()), version)
+	if err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	h.logProjectTransition(r, domain.ProjectActionComplete, "", result)
+	writeJSON(w, http.StatusOK, h.projectResponse(r, *result.Project, h.repoURLs()))
+}
+
+// writePreconditionError renders a rejected If-Match header as 400
+// invalid_version, keeping the offending field in details so the client can tell
+// "header missing" from "header malformed".
+func writePreconditionError(w http.ResponseWriter, r *http.Request, err error) {
+	details := []ErrorDetail{}
+	var validation *domain.ValidationError
+	if errors.As(err, &validation) {
+		for _, field := range validation.Fields {
+			details = append(details, ErrorDetail{Field: field.Field, Reason: field.Reason})
+		}
+	}
+	writeError(w, r, http.StatusBadRequest, "invalid_version",
+		"If-Match must carry the current project version", details)
 }
 
 // logProjectTransition records one decision with the fields required by §7 of
@@ -417,8 +482,12 @@ func ifMatchVersion(r *http.Request) (int, error) {
 	return version, nil
 }
 
-// toProjectResponse maps the domain entity to the list DTO.
-func toProjectResponse(p domain.Project) projectResponse {
+// projectResponse maps one domain entity to the list DTO.
+//
+// The two read-only derivations are resolved here rather than in the store:
+// dev_branch is a projection of the recorded column that depends on the status,
+// and repo_url belongs to the owning product (the resolver memoises it).
+func (h *projectsHandler) projectResponse(r *http.Request, p domain.Project, urls *repoURLResolver) projectResponse {
 	var reason *string
 	if p.Reason != "" {
 		value := p.Reason
@@ -430,7 +499,8 @@ func toProjectResponse(p domain.Project) projectResponse {
 		ProductID:             p.ProductID,
 		SeqNo:                 p.SeqNo,
 		Title:                 p.Title,
-		DevBranch:             p.DevBranch,
+		DevBranch:             projectDevBranch(p),
+		RepoURL:               urls.url(r, p.ProductID),
 		Status:                p.Status,
 		StatusName:            domain.StatusName(p.Status),
 		Reason:                reason,
@@ -444,6 +514,64 @@ func toProjectResponse(p domain.Project) projectResponse {
 		CreateTime:            p.CreateTime.UTC().Format(time.RFC3339Nano),
 		UpdateTime:            p.UpdateTime.UTC().Format(time.RFC3339Nano),
 	}
+}
+
+// projectDevBranch projects projects.dev_branch onto the wire value: the
+// recorded name for the statuses that can own a feature branch (tasks_draft 4
+// through completed 7), null for 0–3 (the branch does not exist yet) and for
+// cancelled 8 (the platform has no evidence a branch was ever created, and
+// guessing one would show a name nobody can verify).
+func projectDevBranch(p domain.Project) *string {
+	switch p.Status {
+	case domain.StatusTasksDraft, domain.StatusTasksReview,
+		domain.StatusPendingDone, domain.StatusCompleted:
+		return nullableString(p.DevBranch)
+	}
+	return nil
+}
+
+// repoURLResolver resolves the product git_url backing one project response.
+//
+// It is created per response and caches by product id, so listing N projects of
+// the same product costs one read. A product that cannot be read (or has no
+// git_url) yields null instead of failing the project response: repo_url is
+// auxiliary information (tech design §7.2).
+type repoURLResolver struct {
+	products *app.ProductService
+	logger   *slog.Logger
+	cache    map[string]*string
+}
+
+// repoURLs returns a resolver bound to this handler's dependencies.
+func (h *projectsHandler) repoURLs() *repoURLResolver {
+	return &repoURLResolver{products: h.products, logger: h.logger, cache: map[string]*string{}}
+}
+
+// url returns the product's git_url, or nil when there is none to show.
+func (u *repoURLResolver) url(r *http.Request, productID string) *string {
+	if u.products == nil || productID == "" {
+		return nil
+	}
+	if cached, ok := u.cache[productID]; ok {
+		return cached
+	}
+	resolved := (*string)(nil)
+	product, err := u.products.GetProduct(r.Context(), productID)
+	switch {
+	case err != nil:
+		if u.logger != nil {
+			u.logger.Warn("resolve project repo_url",
+				"request_id", RequestIDFromContext(r.Context()),
+				"product_id", productID,
+				"error", err.Error(),
+			)
+		}
+	case product.GitURL != "":
+		value := product.GitURL
+		resolved = &value
+	}
+	u.cache[productID] = resolved
+	return resolved
 }
 
 // nullableString renders an empty domain string as JSON null.
@@ -468,10 +596,10 @@ func toMaterialResponse(m domain.Material) materialResponse {
 	}
 }
 
-// toProjectDetailResponse maps the detail aggregate to the wire DTO.
-func toProjectDetailResponse(detail domain.ProjectDetail) projectDetailResponse {
+// projectDetailResponse maps the detail aggregate to the wire DTO.
+func (h *projectsHandler) projectDetailResponse(r *http.Request, detail domain.ProjectDetail) projectDetailResponse {
 	response := projectDetailResponse{
-		projectResponse: toProjectResponse(detail.Project),
+		projectResponse: h.projectResponse(r, detail.Project, h.repoURLs()),
 	}
 	if detail.Requirement != nil {
 		requirement := toMaterialResponse(*detail.Requirement)

@@ -170,7 +170,7 @@ export type WorkerDeliver = (agent: Agent, text: string) => void
  * 生产环境接 `createSessionEnsurer(ctx)`（sessionId = 项目号，cwd 取会话数最多
  * 的 workspace，agentOptions 取 agentDefaultModel）。
  */
-export type WorkerEnsureSession = (projectId: string) => Promise<Agent | undefined>
+export type WorkerEnsureSession = (projectId: string, presetId?: string) => Promise<Agent | undefined>
 
 export interface WorkerLoopOptions {
   /** 已归一化的配置（读取 `worker.kinds` / `worker.metadata` / `worker.poll.enable`）。 */
@@ -513,7 +513,7 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
 
       if (ensureSession !== undefined) {
         const outcome = await settleWithTimeout(
-          ensureSession(projectId),
+          ensureSession(projectId, dispatch.agent_preset),
           ensureTimeoutMs,
           timer,
         )

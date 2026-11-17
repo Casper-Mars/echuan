@@ -25,6 +25,8 @@
 | `worker_retention` | `ECHUAN_WORKER_RETENTION` | `1h` | 离线且不持卡的 Worker 行保留多久后被删除 | **必须大于 `worker_ttl`**，否则行会在变为 offline 之前就被删掉；默认 1 小时，需要更长审计窗口时按需调大 |
 | `material_max_bytes` | `ECHUAN_MATERIAL_MAX_BYTES` | `20971520` | 单个物料最大字节数（20 MiB） | 影响报告/规格上传 |
 | `log_level` | `ECHUAN_LOG_LEVEL` | `info` | `debug/info/warn/error` | 排查注册/派卡问题时用 `debug` |
+| `agent_preset_dispatch` | `ECHUAN_AGENT_PRESET_DISPATCH` | `true` | 派单是否携带 `agent_preset` | 关掉即回到 V3 之前：worker 自行决定角色 |
+| `agent_preset_by_kind` | `ECHUAN_AGENT_PRESET_BY_KIND` | `requirement=pm,design=cto,breakdown=cto,dev=dev-leader` | kind → preset 映射 | 键必须是四种 kind 之一；未知 kind 直接拒绝启动 |
 
 配置校验：所有时长必须为正；`worker_ttl`、`heartbeat_interval`、`worker_retention` 任一 ≤ 0 都会导致进程启动失败。此外 `worker_retention` 必须严格大于 `worker_ttl`，否则同样拒绝启动。`worker_ttl` 与 `heartbeat_interval` 的倍数关系当前不做强校验，需要部署方自行保证。
 
@@ -68,6 +70,21 @@ curl -sS -X POST http://127.0.0.1:8721/v1/workers/heartbeat \
 - 客户端必须持久化这个 id；后续每次心跳回填。
 - `heartbeat_interval_ms` / `lease_ttl_seconds` 是服务端下发的节奏，Worker 应按它安排心跳与续租，不要写死。
 - `metadata` 必须在 JSON 层面是对象；数组/字符串/null 会 400。提供即**整体替换**，不提供则保留旧文档。
+
+### 2.1.1 派单携带的角色（`agent_preset`）
+
+派单 payload 在 `kind` 旁边多一个 `agent_preset`，由平台的 `kind → preset` 映射解析：
+
+| kind | preset |
+| --- | --- |
+| requirement | pm |
+| design | cto |
+| breakdown | cto |
+| dev | dev-leader |
+
+- 字段可选：映射关闭（`ECHUAN_AGENT_PRESET_DISPATCH=false`）时不出现，旧 worker 不受影响。
+- worker 侧用它决定 `ensureSession` 建哪个 preset 的会话；worker 自己的 `kinds` 声明仍然决定"能领什么卡"。
+- `dev-developer` / `dev-tester` 不参与派单：它们是 dev 会话内部由 subagent 派生的角色。
 
 ### 2.2 持续心跳与派卡
 
@@ -178,6 +195,44 @@ curl -sS 'http://127.0.0.1:8721/v1/workers?id=w_01M5...'
 ### 4.3 UI
 
 Web 控制台侧栏 **Worker**（路由 `#/workers`）展示注册表：在线数/总数、presence、state、当前任务。页面数据来自 `GET /v1/workers`，与 API 同源；判定规则一致。
+
+### 4.4 计划批次与依赖巡检
+
+批次评审通过时，项目内**全部** `blocked` 工作项在同一事务里转 `queued`；能不能被 claim 只看依赖是否全部 `accepted`（派卡时的依赖过滤），与「哪批过审」无关。验收一张卡只写这一张，不会再去动下游卡。所以「看板有卡、心跳不派」最常见的两个原因是：卡还没重批（仍是 `blocked`，`待评审`），或它已经是 `queued`（`待开发`）但依赖没验收完——两者要分开查。下面两条 SQL 直接粘进 `sqlite3 state.db` 即可（数据目录见 `docs/deploy.md` §3.1）：
+
+```bash
+sqlite3 "${ECHUAN_DATA_DIR:-$HOME/echuan-v2-data}/state.db" '<SQL>'
+```
+
+**SQL A：审批后仍停在「待评审」的 dev 卡**
+
+```sql
+SELECT w.work_id, w.project_id, w.title
+  FROM work_items w JOIN projects p ON p.id = w.project_id
+ WHERE w.kind = 'dev' AND w.state = 'blocked'
+ ORDER BY w.project_id, w.seq_no;
+```
+
+用途：找出**审批后仍停在「待评审」**的 dev 卡。常见于同一项目在审批后又新建了一批计划（并发新建），或升级前遗留、没有走新逻辑重批的批次。这些卡任何 claim 都看不到——有行就是「卡住了」。
+
+处理：对命中的项目点一次「全部通过」（`POST /v1/work-items/review`，`{"project_id":"<项目业务编号>","decision":"approve"}`），项目内所有 `blocked` 卡会一起转 `queued`；接口返回 409 `has no blocked work item to approve` 说明这批早已放行，不用再点。
+
+> 两条 SQL 输出的 `project_id` 都是 `work_items.project_id`（内部数字 id），不是接口用的业务编号（如 `APP-1`）。重批前先换成业务编号：`SELECT project_id FROM projects WHERE id = <上面查到的数字 id>;`，或直接在 GUI 工作项看板按项目名找到。
+
+**SQL B：已「待开发」但依赖未验收、当前不可派发的卡**
+
+```sql
+SELECT w.work_id, w.project_id, dep.work_id AS waiting_on, dep.state AS waiting_state
+  FROM work_items w
+  JOIN work_deps d ON d.work_item_id = w.id
+  JOIN work_items dep ON dep.id = d.depends_on_id
+ WHERE w.state = 'queued' AND dep.state <> 'accepted'
+ ORDER BY w.project_id, w.seq_no;
+```
+
+用途：找出**已待开发但依赖未验收、当前不可派发**的卡（`waiting_on` / `waiting_state` 指出在等哪张、它到哪一步了）。**「看板有卡、心跳不派」时先查 B**：这是审批后的正常中间态，不是故障。
+
+处理：去推进 `waiting_on`（派发、报告、催验收），不要手工改下游卡的状态；B 为空且心跳仍不派卡，再看 2.2 派卡规则与 Worker 的 `current_work_item_id`（是否还持有旧卡）。
 
 ---
 

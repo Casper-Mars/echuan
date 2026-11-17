@@ -249,10 +249,16 @@ func TestBreakdownPlanCreatesBlockedChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReviewWorkItems: %v", err)
 	}
-	// Only the head of the dependency graph is released: items 2 and 3 wait for
-	// item 1 to be accepted, so they stay blocked.
+	// Only the head of the dependency graph is claimable right away: items 2 and
+	// 3 wait for item 1 to be accepted. All three are queued all the same.
 	if review.ReadyItems != 1 {
 		t.Errorf("ready_work_items = %d, want 1 (only the ungated head)", review.ReadyItems)
+	}
+	if review.QueuedItems != 3 {
+		t.Errorf("queued_work_items = %d, want 3 (the whole batch)", review.QueuedItems)
+	}
+	if review.ReadyItems > review.QueuedItems {
+		t.Errorf("ready_work_items = %d > queued_work_items = %d", review.ReadyItems, review.QueuedItems)
 	}
 	if review.ToStatus != domain.StatusPendingDone {
 		t.Errorf("project status after review = %d, want pending_done", review.ToStatus)
@@ -261,12 +267,8 @@ func TestBreakdownPlanCreatesBlockedChildren(t *testing.T) {
 		t.Errorf("breakdown after review = %q, want accepted", after.State)
 	}
 	for i, dev := range f.devItems(t) {
-		want := store.WorkItemStateBlocked
-		if i == 0 {
-			want = store.WorkItemStateQueued
-		}
-		if dev.State != want {
-			t.Errorf("dev[%d] after review = %q, want %q", i, dev.State, want)
+		if dev.State != store.WorkItemStateQueued {
+			t.Errorf("dev[%d] after review = %q, want queued", i, dev.State)
 		}
 	}
 
@@ -287,8 +289,11 @@ func TestBreakdownPlanCreatesBlockedChildren(t *testing.T) {
 			t.Fatalf("accept dev %s: %v", want, err)
 		}
 	}
-	if state := f.env.projectState(t, f.projectID); state.Status != domain.StatusCompleted {
-		t.Errorf("project status = %d, want completed after the last acceptance", state.Status)
+	// Accepting the last card settles the cards, not the project: it stays
+	// pending_done until a human completes it (issue #39). The completion path
+	// itself is covered by TestCompleteProject* in project_test.go.
+	if state := f.env.projectState(t, f.projectID); state.Status != domain.StatusPendingDone {
+		t.Errorf("project status = %d, want pending_done after the last acceptance", state.Status)
 	}
 }
 

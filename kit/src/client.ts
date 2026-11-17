@@ -207,6 +207,12 @@ export interface Dispatch {
   protocol: 'v2'
   work_id: string
   kind: WorkItemKind
+  /**
+   * Agent preset that should run this card, resolved by the platform from its
+   * kind → preset mapping (V3). Absent when the platform disabled routing, in
+   * which case the worker falls back to the registry default preset.
+   */
+  agent_preset?: string
   inputs: WorkItemInput[]
   work_item: DispatchWorkItem
   lease: DispatchLease

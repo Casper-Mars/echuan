@@ -54,14 +54,19 @@ type reviewWorkItemsRequest struct {
 }
 
 // reviewWorkItemsResponse is the 200 body of POST /v1/work-items/review.
+//
+// queued_work_items is how many cards this approval moved from blocked to
+// queued (the whole batch); ready_work_items keeps its historical meaning of
+// "claimable right now", so it is never larger than the queued count.
 type reviewWorkItemsResponse struct {
-	ProjectID      string `json:"project_id"`
-	Status         int    `json:"status"`
-	StatusName     string `json:"status_name"`
-	Version        int    `json:"version"`
-	ReadyWorkItems int64  `json:"ready_work_items"`
-	Reason         string `json:"reason,omitempty"`
-	RejectedAt     string `json:"rejected_at,omitempty"`
+	ProjectID       string `json:"project_id"`
+	Status          int    `json:"status"`
+	StatusName      string `json:"status_name"`
+	Version         int    `json:"version"`
+	QueuedWorkItems int64  `json:"queued_work_items"`
+	ReadyWorkItems  int64  `json:"ready_work_items"`
+	Reason          string `json:"reason,omitempty"`
+	RejectedAt      string `json:"rejected_at,omitempty"`
 }
 
 // reportWorkItem handles POST /v1/work-items/report.
@@ -189,18 +194,20 @@ func (h *workItemsHandler) reviewWorkItems(w http.ResponseWriter, r *http.Reques
 		"actor", actorOrUnknown(r),
 		"subject", result.ProjectID,
 		"decision", string(decision),
+		"queued_work_items", result.QueuedItems,
 		"ready_work_items", result.ReadyItems,
 		"project_version", result.Version,
 	)
 
 	writeJSON(w, http.StatusOK, reviewWorkItemsResponse{
-		ProjectID:      result.ProjectID,
-		Status:         result.ToStatus,
-		StatusName:     domain.StatusName(result.ToStatus),
-		Version:        result.Version,
-		ReadyWorkItems: result.ReadyItems,
-		Reason:         result.Reason,
-		RejectedAt:     result.RejectedAt,
+		ProjectID:       result.ProjectID,
+		Status:          result.ToStatus,
+		StatusName:      domain.StatusName(result.ToStatus),
+		Version:         result.Version,
+		QueuedWorkItems: result.QueuedItems,
+		ReadyWorkItems:  result.ReadyItems,
+		Reason:          result.Reason,
+		RejectedAt:      result.RejectedAt,
 	})
 }
 

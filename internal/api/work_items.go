@@ -91,7 +91,9 @@ type workItemResponse struct {
 	Version     int      `json:"version"`
 	DependsOn   []string `json:"depends_on"`
 	// BlockedBy lists the dependencies that are not accepted yet; it is the
-	// machine-readable form of "why this card is still blocked".
+	// machine-readable form of "why this card cannot be claimed". It is filled
+	// for queued cards as well: a queued card whose dependency is still open is
+	// approved but not dispatchable.
 	BlockedBy        []string               `json:"blocked_by"`
 	ResultMaterialID *string                `json:"result_material_id"`
 	CreateTime       string                 `json:"create_time"`

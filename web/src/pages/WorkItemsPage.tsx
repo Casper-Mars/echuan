@@ -34,7 +34,7 @@ const ADD_WORK_ITEM_STATUSES = new Set([4, 5, 6])
 /**
  * 开发任务看板：只展示 kind=dev 的工作项。
  * blocked（待评审）非空时单独成列并带整批评审；
- * 待开发/开发中/待验收/已完成四列常驻；已失败/已取消仅非空显示。
+ * 待开发/开发中/待验收/已验收四列常驻；已失败/已取消仅非空显示。
  * 页头只保留 state 下拉筛选，筛选只作用于已拉取的列表，列计数随筛选结果变化。
  * 卡片显式展示 kind 徽标。
  */
@@ -111,7 +111,7 @@ export function WorkItemsPage() {
           <p className="muted">
             产品 <span className="code">{productId}</span> · 项目{' '}
             <span className="code">{projectId}</span>
-            {project ? ` · ${project.title}` : ''} · 共 {filteredItems.length} 个开发任务，已完成{' '}
+            {project ? ` · ${project.title}` : ''} · 共 {filteredItems.length} 个开发任务，已验收{' '}
             {done} 个
           </p>
           {project && (
@@ -120,6 +120,12 @@ export function WorkItemsPage() {
                 {projectStatusLabel(project.status)}
               </span>
               <span className="muted">项目原因：{project.reason || '—'}</span>
+            </p>
+          )}
+          {project && project.status === 6 && (
+            // 卡片验收不再推进项目：项目停在「待完成」，等人点「完成项目」。
+            <p className="board-hint" role="note">
+              任务已完成 ≠ 项目已完成，项目待人工验收
             </p>
           )}
         </div>
