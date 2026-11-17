@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ApiError, getProduct, listProjects } from '../api/client'
 import type { Project } from '../api/types'
 import { itemsOf } from '../api/types'
@@ -11,13 +11,7 @@ import {
 } from '../components/ProjectActions'
 import { ProjectDetailDrawer } from '../components/ProjectDetailDrawer'
 import { ProjectFormDialog } from '../components/ProjectFormDialog'
-import {
-  DetailButton,
-  EmptyState,
-  ErrorNotice,
-  LoadingState,
-  RefreshBar,
-} from '../components/States'
+import { EmptyState, ErrorNotice, LoadingState, RefreshBar } from '../components/States'
 import { usePolling } from '../hooks/usePolling'
 import {
   PROJECT_STATUS_OPTIONS,
@@ -244,11 +238,12 @@ export function ProjectsPage() {
                 className={stale ? 'row project-row is-stale' : 'row project-row'}
                 onClick={(event) => {
                   if (isInteractiveTarget(event.target)) return
-                  navigate(
-                    `/products/${encodeURIComponent(productId)}/projects/${encodeURIComponent(
-                      project.project_id,
-                    )}/work-items`,
-                  )
+                  openDrawer({
+                    title: `项目 ${project.project_id} · ${project.title || '未命名'}`,
+                    body: (
+                      <ProjectDetailDrawer projectId={project.project_id} onChanged={refresh} />
+                    ),
+                  })
                 }}
               >
                 <div className="row-main">
@@ -309,17 +304,14 @@ export function ProjectsPage() {
                     project={project}
                     onAction={(request) => setAction({ project, request })}
                   />
-                  <DetailButton
-                    onClick={() =>
-                      openDrawer({
-                        title: `项目 ${project.project_id} · ${project.title || '未命名'}`,
-                        body: (
-                          <ProjectDetailDrawer projectId={project.project_id} onChanged={refresh} />
-                        ),
-                      })
-                    }
-                  />
-                  <span className="link">{boardEntry}</span>
+                  <Link
+                    className="link"
+                    to={`/products/${encodeURIComponent(productId)}/projects/${encodeURIComponent(
+                      project.project_id,
+                    )}/work-items`}
+                  >
+                    {boardEntry}
+                  </Link>
                 </div>
               </article>
             )
