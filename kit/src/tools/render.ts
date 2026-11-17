@@ -431,15 +431,16 @@ function formatProjectReason(detail: Project): string {
 /**
  * `blocked_by` → `A、B（未验收）`；空/缺失 → 空串。
  *
- * 只对 blocked 卡有意义：它把「为什么还没轮到这张卡」直接写在卡上，
- * 而不是让 agent 从依赖列表里自己推断。
+ * 对 blocked 卡与 queued 卡都有意义：它把「为什么这张卡还不能被领取 / 派发」
+ * 直接写在卡上，而不是让 agent 从依赖列表里自己推断。批次评审通过后卡就进
+ * queued，但依赖未验收的卡依然不会被派发，所以这条信息要继续展示。
  */
 function formatBlockedBy(value: unknown): string {
   if (!Array.isArray(value)) return ''
   const ids = value
     .map(item => asString(item)?.trim())
     .filter((item): item is string => item !== undefined && item !== '')
-  return ids.length === 0 ? '' : `${ids.join('、')}（未验收，通过后自动放行）`
+  return ids.length === 0 ? '' : `${ids.join('、')}（未验收，验收后才派发）`
 }
 
 /** `depends_on` → `A、B`；空数组/缺失 → `无`。 */

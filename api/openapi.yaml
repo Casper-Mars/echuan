@@ -1111,13 +1111,18 @@ paths:
       operationId: reviewWorkItems
       summary: 审批或驳回一个项目的计划批次
       description: |
-        审批通过时把批次里**可以开工**的卡放行：只把依赖已全部 accepted 的
-        blocked 卡置为 queued，其余继续 blocked，并在它的依赖被验收时由
-        `/v1/work-items/decide` 的 approve 自动放行。因此 `queued` 始终等于
-        「可派发」；`ready_work_items` 是本轮真正放行的张数。
+        审批通过时把本项目**全部** blocked 卡在同一事务里置为 queued（待开发）：
+        一次批次审批通过即整批进入 `queued`，不再按依赖是否已验收分批放行。
+        依赖只决定**可派发性**，由 `POST /v1/work-items/claim` 判定（依赖未全部
+        accepted 的 queued 卡不会被派发，定向 claim 同样 204），因此 `queued` 表示
+        「已过评审、待开发」，不等于「立即可领取」。
 
-        一个批次里所有卡都被依赖挡住时审批仍然成功（`ready_work_items=0`），
-        它们会随上游验收陆续放行；只有批次里根本没有 blocked 卡时才返回 409。
+        响应里 `queued_work_items` 是本轮转入 queued 的张数（approve 时等于被通过的
+        卡数，reject 时为 0）；`ready_work_items` 语义不变，表示其中依赖已全部
+        accepted、当前即可被 claim 的张数，恒有 `ready_work_items <= queued_work_items`。
+
+        验收（`/v1/work-items/decide` 的 approve）不再改动任何下游卡的
+        state/version/update_time；只有批次里根本没有 blocked 卡时才返回 409。
       tags: [work-items]
       parameters:
         - $ref: "#/components/parameters/Actor"
@@ -2122,9 +2127,10 @@ components:
         blocked_by:
           type: array
           description: |
-            尚未验收的依赖 work_id（`depends_on` 的子集）。非空表示这张卡还在
-            等依赖通过验收；这些依赖全部 accepted 后平台会在接受事务里自动把它
-            从 blocked 放行到 queued。
+            尚未验收的依赖 work_id（`depends_on` 的子集）。对 `blocked` 与 `queued`
+            卡都成立：批次审批把卡置为 `queued`（待开发），但只要这些依赖还没全部
+            accepted，claim（含定向 claim）就不会派发这张卡；依赖验收后不必再改卡
+            状态，它自然变成可领取。
           items:
             type: string
         result_material_id:
@@ -2258,8 +2264,10 @@ components:
         blocked_by:
           type: array
           description: |
-            尚未验收的依赖 work_id（`depends_on` 的子集）。非空表示这张卡还在
-            等依赖通过验收；全部 accepted 后由接受事务自动放行到 queued。
+            尚未验收的依赖 work_id（`depends_on` 的子集）。对 `blocked` 与 `queued`
+            卡都成立：`queued` 只表示已过评审、待开发，依赖未全部 accepted 时不可被
+            claim（定向 claim 也一样）；验收不读写下游卡，因此这里的内容只随依赖状态
+            变化而变化。
           items:
             type: string
         result_material_id:
@@ -2547,7 +2555,7 @@ components:
     WorkItemReviewResponse:
       type: object
       additionalProperties: false
-      required: [project_id, status, status_name, version, ready_work_items]
+      required: [project_id, status, status_name, version, queued_work_items, ready_work_items]
       properties:
         project_id:
           type: string
@@ -2557,8 +2565,16 @@ components:
           type: string
         version:
           type: integer
+        queued_work_items:
+          type: integer
+          description: |
+            本轮从 `blocked` 转入 `queued` 的张数。approve 时等于被通过的卡数
+            （依赖未验收的卡也在内），reject 时为 0。
         ready_work_items:
           type: integer
+          description: |
+            上述卡中依赖已全部 `accepted`、当前即可被 claim 的张数；语义与历史
+            一致，恒有 `ready_work_items <= queued_work_items`。
         reason:
           type: string
         rejected_at:

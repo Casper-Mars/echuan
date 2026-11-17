@@ -67,8 +67,10 @@ type WorkItemView struct {
 	Version     int
 	DependsOn   []string
 	// BlockedBy holds the dependency work ids that are not accepted yet, i.e.
-	// the ones keeping a blocked card out of the queue. It is empty for every
-	// other state and for a card whose dependencies are all accepted.
+	// the ones keeping a card out of dispatch. It matters for queued cards too:
+	// an approval queues every card of the batch, so a queued card with a
+	// non-empty BlockedBy is waiting for that dependency's acceptance before the
+	// claim query will hand it out.
 	BlockedBy        []string
 	ResultMaterialID *string
 	Lease            *WorkItemLease
