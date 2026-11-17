@@ -1,12 +1,11 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { listProducts } from '../api/client'
 import type { Product } from '../api/types'
 import { itemsOf } from '../api/types'
 import { useDrawer } from '../components/DrawerContext'
 import { ProductFormDialog } from '../components/ProductFormDialog'
 import {
-  DetailButton,
   EmptyState,
   ErrorNotice,
   LoadingState,
@@ -19,10 +18,9 @@ import { repoHref } from '../lib/url'
 
 /**
  * 产品列表：卡片展示编号、名称、git 地址、证书与项目数；
- * 支持新建产品、编辑产品（改名等），点击卡片进入项目列表。
+ * 支持新建产品、编辑产品（改名等），点击卡片打开产品详情抽屉。
  */
 export function ProductsPage() {
-  const navigate = useNavigate()
   const openDrawer = useDrawer()
   const { data, error, loading, refreshing, lastUpdated, refresh } = usePolling(listProducts, [])
   const products = itemsOf(data)
@@ -66,7 +64,10 @@ export function ProductsPage() {
               className="card product-card"
               onClick={(event) => {
                 if (isInteractiveTarget(event.target)) return
-                navigate(`/products/${encodeURIComponent(product.product_id)}/projects`)
+                openDrawer({
+                  title: `产品 ${product.product_id}`,
+                  body: <ProductDetail product={product} />,
+                })
               }}
             >
               <div className="card-head">
@@ -81,14 +82,6 @@ export function ProductsPage() {
               <footer className="card-foot">
                 <span>{product.project_count} 个项目</span>
                 <div className="card-actions">
-                  <DetailButton
-                    onClick={() =>
-                      openDrawer({
-                        title: `产品 ${product.product_id}`,
-                        body: <ProductDetail product={product} />,
-                      })
-                    }
-                  />
                   <button
                     type="button"
                     className="ghost"
@@ -99,7 +92,12 @@ export function ProductsPage() {
                   >
                     编辑
                   </button>
-                  <span className="link">查看项目 →</span>
+                  <Link
+                    className="link"
+                    to={`/products/${encodeURIComponent(product.product_id)}/projects`}
+                  >
+                    查看项目 →
+                  </Link>
                 </div>
               </footer>
             </article>
