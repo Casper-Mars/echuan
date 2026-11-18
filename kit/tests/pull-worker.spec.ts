@@ -61,10 +61,14 @@ describe('createPullWorkerLoop', () => {
     const followup = vi.fn()
     const agent = { followup } as any
     const ensureSession = vi.fn().mockResolvedValue(agent)
+    const renewV3Task = vi.fn().mockResolvedValue({
+      kind: 'ok',
+      data: { task_id: 't_1', lease_id: 'l_1', lease_until: '2099-01-01T00:00:30.000Z' },
+    })
 
     const loop = createPullWorkerLoop({
       config: config(),
-      client: { heartbeatV3, claimV3Task } as any,
+      client: { heartbeatV3, claimV3Task, renewV3Task } as any,
       ensureSession,
       deliver,
       logger: { info: () => {}, warn: () => {} },
@@ -82,7 +86,9 @@ describe('createPullWorkerLoop', () => {
     // Busy: no second claim while inflight.
     await loop.pollOnce()
     expect(heartbeatV3).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'busy' }))
+    expect(renewV3Task).toHaveBeenCalledWith({ task_id: 't_1', lease_id: 'l_1' })
     expect(claimV3Task).toHaveBeenCalledTimes(1)
+    expect(loop.inflight[0]?.leaseUntil).toBe('2099-01-01T00:00:30.000Z')
 
     loop.notifyReported('t_1')
     expect(loop.inflight).toHaveLength(0)
@@ -122,5 +128,31 @@ describe('createPullWorkerLoop', () => {
     await loop.pollOnce()
     expect(deliver).not.toHaveBeenCalled()
     expect(loop.inflight).toHaveLength(0)
+  })
+})
+
+describe('租约续期', () => {
+  it('续租失败时清空 inflight，并在同一轮重新领卡', async () => {
+    const heartbeatV3 = vi.fn().mockResolvedValue({ kind: 'empty' })
+    const claimV3Task = vi
+      .fn()
+      .mockResolvedValueOnce({ kind: 'ok', data: envelope })
+      .mockResolvedValue({ kind: 'empty' })
+    const renewV3Task = vi.fn().mockRejectedValue(new Error('lease lost'))
+    const deliver = vi.fn()
+    const loop = createPullWorkerLoop({
+      config: config(),
+      client: { heartbeatV3, claimV3Task, renewV3Task } as any,
+      ensureSession: vi.fn().mockResolvedValue({ followup: vi.fn() } as any),
+      deliver,
+      logger: { info: () => {}, warn: () => {} },
+    })
+
+    await loop.pollOnce()
+    expect(loop.inflight).toHaveLength(1)
+
+    await loop.pollOnce()
+    expect(renewV3Task).toHaveBeenCalledTimes(1)
+    expect(claimV3Task).toHaveBeenCalledTimes(2)
   })
 })
