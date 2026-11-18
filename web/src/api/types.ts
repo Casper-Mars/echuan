@@ -14,6 +14,8 @@ export interface Product {
   git_url: string
   description?: string | null
   license?: string | null
+  /** `GET /v1/products?id=` 已返回；列表响应可能缺省，缺省时回退调用方的本地计数。 */
+  project_count?: number
 }
 
 export interface Project {
