@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -117,6 +118,7 @@ type v3TaskListResponse struct {
 
 type v3WorkerResponse struct {
 	WorkerID       string           `json:"worker_id"`
+	Kinds          []string         `json:"kinds"`
 	State          enum.WorkerState `json:"state"`
 	CurrentTaskID  *int64           `json:"current_task_id,omitempty"`
 	CurrentLeaseID *string          `json:"current_lease_id,omitempty"`
@@ -693,9 +695,10 @@ func (h *v3Handler) decisions(w http.ResponseWriter, r *http.Request) {
 }
 
 type v3HeartbeatRequest struct {
-	WorkerID string   `json:"worker_id"`
-	Metadata string   `json:"metadata"`
-	Kinds    []string `json:"kinds"`
+	WorkerID string          `json:"worker_id"`
+	State    string          `json:"state"`
+	Metadata json.RawMessage `json:"metadata"`
+	Kinds    []string        `json:"kinds"`
 }
 
 func (h *v3Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
@@ -713,7 +716,11 @@ func (h *v3Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 		kinds = append(kinds, kind)
 	}
-	if err := h.workers.Heartbeat(r.Context(), body.WorkerID, body.Metadata, kinds); err != nil {
+	metadata := "{}"
+	if len(body.Metadata) > 0 {
+		metadata = string(body.Metadata)
+	}
+	if err := h.workers.Heartbeat(r.Context(), body.WorkerID, metadata, kinds); err != nil {
 		h.fail(w, r, err)
 		return
 	}
@@ -729,8 +736,13 @@ func (h *v3Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]v3WorkerResponse, 0, len(workers))
 	for _, worker := range workers {
+		kinds, _ := h.workers.Kinds(r.Context(), worker.WorkerID)
+		kindNames := make([]string, 0, len(kinds))
+		for _, kind := range kinds {
+			kindNames = append(kindNames, kind.String())
+		}
 		items = append(items, v3WorkerResponse{
-			WorkerID: worker.WorkerID, State: worker.State,
+			WorkerID: worker.WorkerID, Kinds: kindNames, State: worker.State,
 			CurrentTaskID: worker.CurrentTaskID, CurrentLeaseID: worker.CurrentLeaseID,
 			LastSeen: worker.LastSeen,
 		})

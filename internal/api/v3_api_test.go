@@ -401,7 +401,7 @@ func TestCloseProjectRoute(t *testing.T) {
 func TestHeartbeatAndWorkers(t *testing.T) {
 	a := newAPIServer(t)
 	resp, payload := a.do(t, http.MethodPost, "/v1/workers/heartbeat", map[string]any{
-		"worker_id": "w1", "metadata": `{"host":"mac"}`, "kinds": []string{"dev", "design"},
+		"worker_id": "w1", "metadata": map[string]any{"host": "mac"}, "kinds": []string{"dev", "design"},
 	})
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("heartbeat = %d (%s)", resp.StatusCode, payload)
