@@ -237,6 +237,14 @@ paths:
       responses:
         '200': { description: workers }
   /v1/materials:
+    post:
+      operationId: createMaterial
+      summary: Store an inline markdown artifact
+      tags: [materials]
+      responses:
+        '201': { description: created }
+        '400': { description: invalid kind or empty body }
+        '413': { description: too large }
     get:
       operationId: downloadMaterial
       summary: Download a material object

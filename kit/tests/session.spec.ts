@@ -12,6 +12,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  composeSessionId,
   ensureSession,
   type EnsureAgent,
   type EnsureAgentHandle,
@@ -751,5 +752,26 @@ describe('按角色拆会话（V3）', () => {
     expect(h.calls.resolve).toContain('cto')
     await h.calls.resume[0]?.setup?.({})
     expect(h.calls.mount.map((item) => item.id)).toEqual(['cto'])
+  })
+})
+
+describe('V3 会话键：项目 + 角色', () => {
+  it('composeSessionId 拼成 <project>:<preset>，trim 两侧空白', () => {
+    expect(composeSessionId('APP-1', 'pm')).toBe('APP-1:pm')
+    expect(composeSessionId(' APP-1 ', ' cto ')).toBe('APP-1:cto')
+  })
+
+  it('同一项目不同角色得到不同会话键', () => {
+    const keys = new Set([
+      composeSessionId('APP-1', 'pm'),
+      composeSessionId('APP-1', 'cto'),
+      composeSessionId('APP-1', 'dev-leader'),
+    ])
+    expect(keys.size).toBe(3)
+  })
+
+  it('空项目号或空角色直接抛错', () => {
+    expect(() => composeSessionId('', 'pm')).toThrow(/projectId/)
+    expect(() => composeSessionId('APP-1', '')).toThrow(/presetId/)
   })
 })

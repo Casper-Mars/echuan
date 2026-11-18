@@ -55,6 +55,7 @@ var routeSpecsV3 = []routeSpec{
 	{http.MethodGet, "/v1/workers", "workers"},
 
 	{http.MethodGet, "/v1/materials", "materials"},
+	{http.MethodPost, "/v1/materials", "materials"},
 }
 
 // RoutesV3 returns every V3 method+path pair resolved by NewRouterV3.
@@ -126,6 +127,9 @@ func NewRouterV3(logger *slog.Logger, fallback http.Handler, checks []HealthChec
 		if services.Workers != nil {
 			handlers["POST /v1/workers/heartbeat"] = v3Handler.heartbeat
 			handlers["GET /v1/workers"] = v3Handler.listWorkers
+		}
+		if services.Materials != nil {
+			handlers["POST /v1/materials"] = v3Handler.createMaterial
 		}
 	}
 

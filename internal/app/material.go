@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"strings"
@@ -26,6 +27,30 @@ type MaterialService struct {
 // the writer that owns data_dir/objects.
 func NewMaterialService(st *store.Store, materials *material.Writer) *MaterialService {
 	return &MaterialService{store: st, materials: materials}
+}
+
+// CreateMaterial stores one material version and returns its row. The object
+// bytes and the materials row are written in one transaction (file first, row
+// second); a failed transaction removes the freshly written object.
+func (s *MaterialService) CreateMaterial(ctx context.Context, kind int, title string, body []byte, uploadedBy string) (store.Material, error) {
+	var stored material.Stored
+	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		stored, err = s.materials.Write(ctx, tx, material.WriteInput{
+			Kind:       kind,
+			Title:      title,
+			Body:       body,
+			UploadedBy: uploadedBy,
+		})
+		return err
+	})
+	if err != nil {
+		if stored.NewObject {
+			_ = s.materials.RemoveNewObject(stored)
+		}
+		return store.Material{}, err
+	}
+	return stored.Material, nil
 }
 
 // Download is one material version plus an open handle on its bytes. The caller

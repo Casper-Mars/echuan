@@ -2,7 +2,7 @@
  * 运行时兼容探针：在**真的装上 dsh-echuan** 的 dsh profile 上冷启动一次，断言工具与技能生效。
  *
  * `dsh --dump-config` 只证明 patch 能被组合出来，不证明插件 `apply()` 能跑通：
- * 25 个工具注册、1 个技能注册、`@deepseek-ai/dsh-tools` 的惰性 import 都是挂载期
+ * 18 个工具注册、1 个技能注册、`@deepseek-ai/dsh-tools` 的惰性 import 都是挂载期
  * 才发生的。本探针补上这一段，是 `scripts/dsh-compat.sh` 的第二道闸门。
  *
  * 用法（由 dsh-compat.sh 调用，必须从 dsh 安装目录运行，裸导入才能解析）：
@@ -18,36 +18,29 @@ import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 
 /**
- * 期望注册的 25 个工具（17 写 + 8 读）。
+ * 期望注册的 18 个工具（10 写 + 8 读）。
  *
  * 这份清单**独立声明，不从源码动态读取**：探针的价值就是用一份独立清单去核对运行时，
  * 动态读会退化成「自己核对自己」的假绿。顺序须与 `src/tool-names.ts` 的 `TOOL_NAMES`
  * 逐项一致，由 `tests/compat-probe.spec.ts` 钉死。
  */
 export const EXPECTED_TOOLS = [
-  'echuan_work_claim',
-  'echuan_work_renew',
-  'echuan_work_report',
+  'echuan_task_claim',
+  'echuan_task_renew',
+  'echuan_task_report',
+  'echuan_task_create',
+  'echuan_task_update',
+  'echuan_task_attach',
   'echuan_project_create',
-  'echuan_project_requirement_write',
-  'echuan_project_submit',
-  'echuan_spec_create',
-  'echuan_spec_revise',
-  'echuan_plan_submit',
-  'echuan_work_create',
-  'echuan_work_update',
-  'echuan_work_delete',
-  'echuan_project_update',
+  'echuan_project_close',
+  'echuan_project_reopen',
   'echuan_product_create',
-  'echuan_product_update',
-  'echuan_product_delete',
-  'echuan_project_package',
   'echuan_inbox',
   'echuan_product_list',
   'echuan_project_list',
-  'echuan_work_list',
   'echuan_project_get',
-  'echuan_work_get',
+  'echuan_task_list',
+  'echuan_task_get',
   'echuan_material_get',
   'echuan_worker_info',
 ]

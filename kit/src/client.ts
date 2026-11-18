@@ -22,11 +22,24 @@
  * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 22 个」的断言；
  * 两者共用 `requestRaw` / `requestJson`，仍然是全插件唯一的 fetch 出口。
  */
+import type {
+  V3Attachment,
+  V3Client,
+  V3Decision,
+  V3Event,
+  V3List,
+  V3Material,
+  V3Project,
+  V3Task,
+  V3Worker,
+} from './v3-types.js'
+
 import {
   WORKER_METADATA_MAX_BYTES,
   metadataByteLength,
   type ResolvedConfig,
 } from './config.js'
+
 import {
   DEFAULT_RETRY_AFTER_MS,
   EchuanApiError,
@@ -665,7 +678,7 @@ export const TOOL_OPERATIONS = [
 ] as const
 
 /** 客户端对外的 22 个方法。 */
-export interface EchuanClient {
+export interface EchuanClient extends V3Client {
   /**
    * `POST /v1/work-items/claim`（operationId `claimWorkItem`）。
    * 无卡可领时平台返回 204，本方法返回 {@link NoWorkResult}，不抛错。
@@ -1284,6 +1297,172 @@ export function createClient(
         materialVersion: version !== undefined && Number.isFinite(version) ? version : undefined,
       }
       return okResult(raw.status, material, raw.requestId)
+    },
+
+    // ── V3 ────────────────────────────────────────────────────────────
+
+    async createV3Project(input) {
+      const body: Record<string, unknown> = {
+        product_id: requireNonEmpty(input?.product_id, 'product_id'),
+        name: requireNonEmpty(input?.name, 'name'),
+      }
+      if (input?.context_md !== undefined) body.context_md = input.context_md
+      return requestJson<V3Project>(ctx, { method: 'POST', path: '/v1/projects', body })
+    },
+
+    async closeV3Project(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      return requestJson<unknown>(ctx, {
+        method: 'POST',
+        path: '/v1/projects/close',
+        query: { id, ...(input?.force === true ? { force: '1' } : {}) },
+      })
+    },
+
+    async reopenV3Project(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      return requestJson<unknown>(ctx, {
+        method: 'POST',
+        path: '/v1/projects/reopen',
+        query: { id },
+      })
+    },
+
+    async getV3Project(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      return requestJson<V3Project>(ctx, { method: 'GET', path: '/v1/projects', query: { id } })
+    },
+
+    async listV3Projects(query) {
+      const q: Record<string, string | number> = {}
+      if (query?.status !== undefined) q.status = query.status
+      if (query?.after_id !== undefined) q.after_id = query.after_id
+      if (query?.limit !== undefined) q.limit = query.limit
+      return requestJson<V3List<V3Project>>(ctx, { method: 'GET', path: '/v1/projects', query: q })
+    },
+
+    async createV3Task(input) {
+      const body: Record<string, unknown> = {
+        project_id: requireNonEmpty(input?.project_id, 'project_id'),
+        kind: requireNonEmpty(input?.kind, 'kind'),
+        title: requireNonEmpty(input?.title, 'title'),
+      }
+      if (input.task_id !== undefined) body.task_id = input.task_id
+      if (input.parent_task_id !== undefined) body.parent_task_id = input.parent_task_id
+      if (input.description_md !== undefined) body.description_md = input.description_md
+      if (input.context_md !== undefined) body.context_md = input.context_md
+      if (input.priority !== undefined) body.priority = input.priority
+      if (input.max_attempts !== undefined) body.max_attempts = input.max_attempts
+      if (input.depends_on !== undefined) body.depends_on = input.depends_on
+      return requestJson<V3Task>(ctx, { method: 'POST', path: '/v1/tasks', body })
+    },
+
+    async updateV3Task(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      return requestJson<V3Task>(ctx, {
+        method: 'PATCH',
+        path: '/v1/tasks',
+        query: { id },
+        body: input.body,
+      })
+    },
+
+    async getV3Task(input) {
+      const id = requireNonEmpty(input?.id, 'id')
+      return requestJson<V3Task>(ctx, { method: 'GET', path: '/v1/tasks', query: { id } })
+    },
+
+    async listV3Tasks(query) {
+      const q: Record<string, string | number> = {}
+      if (query?.project_id !== undefined) q.project_id = query.project_id
+      if (query?.kind !== undefined) q.kind = query.kind
+      if (query?.status !== undefined) q.status = query.status
+      if (query?.limit !== undefined) q.limit = query.limit
+      return requestJson<V3List<V3Task>>(ctx, { method: 'GET', path: '/v1/tasks', query: q })
+    },
+
+    async claimV3Task(input) {
+      return requestJson<V3Task>(ctx, {
+        method: 'POST',
+        path: '/v1/tasks/claim',
+        body: {
+          worker_id: requireNonEmpty(input?.worker_id, 'worker_id'),
+          kind: requireNonEmpty(input?.kind, 'kind'),
+        },
+      })
+    },
+
+    async renewV3Task(input) {
+      return requestJson<unknown>(ctx, {
+        method: 'POST',
+        path: '/v1/tasks/lease',
+        body: {
+          task_id: requireNonEmpty(input?.task_id, 'task_id'),
+          lease_id: requireNonEmpty(input?.lease_id, 'lease_id'),
+        },
+      })
+    },
+
+    async reportV3Task(input) {
+      return requestJson<V3Task>(ctx, {
+        method: 'POST',
+        path: '/v1/tasks/report',
+        body: {
+          task_id: requireNonEmpty(input?.task_id, 'task_id'),
+          lease_id: requireNonEmpty(input?.lease_id, 'lease_id'),
+          material_id: requireNonEmpty(input?.material_id, 'material_id'),
+        },
+      })
+    },
+
+    async createV3Material(input) {
+      return requestJson<V3Material>(ctx, {
+        method: 'POST',
+        path: '/v1/materials',
+        body: {
+          kind: requireNonEmpty(input?.kind, 'kind'),
+          title: requireNonEmpty(input?.title, 'title'),
+          body_md: requireNonEmpty(input?.body_md, 'body_md'),
+        },
+      })
+    },
+
+    async attachV3(input) {
+      const body: Record<string, unknown> = {
+        material_id: requireNonEmpty(input?.material_id, 'material_id'),
+        role: requireNonEmpty(input?.role, 'role'),
+      }
+      if (input.project_id !== undefined) body.project_id = input.project_id
+      if (input.task_id !== undefined) body.task_id = input.task_id
+      if (input.sort_no !== undefined) body.sort_no = input.sort_no
+      return requestJson<V3Attachment>(ctx, { method: 'POST', path: '/v1/tasks/attach', body })
+    },
+
+    async getV3Inbox() {
+      return requestJson<V3List<V3Task>>(ctx, { method: 'GET', path: '/v1/inbox' })
+    },
+
+    async listV3Events(query) {
+      const task_id = requireNonEmpty(query?.task_id, 'task_id')
+      return requestJson<V3List<V3Event>>(ctx, {
+        method: 'GET', path: '/v1/tasks/events',
+        query: { task_id, ...(query.limit === undefined ? {} : { limit: query.limit }) },
+      })
+    },
+
+    async listV3Decisions(query) {
+      const task_id = requireNonEmpty(query?.task_id, 'task_id')
+      return requestJson<V3List<V3Decision>>(ctx, {
+        method: 'GET', path: '/v1/decisions',
+        query: { task_id, ...(query.limit === undefined ? {} : { limit: query.limit }) },
+      })
+    },
+
+    async listV3Workers(query) {
+      return requestJson<V3List<V3Worker>>(ctx, {
+        method: 'GET', path: '/v1/workers',
+        query: query?.limit === undefined ? {} : { limit: query.limit },
+      })
     },
   }
 }

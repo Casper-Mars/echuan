@@ -5,9 +5,9 @@
  * 1. 技能名精确、description / whenToUse 非空且 description ≤500 字符；
  * 2. 正文六条规则逐条可检索（关键词断言）；
  * 3. 正文不含「反问是否开工 / 等确认」类话术；
- * 4. 正文含 `echuan_work_renew`，不含不存在的旧续租工具名；
+ * 4. 正文含 `echuan_task_renew`，不含不存在的旧续租工具名；
  * 5. `ctx.skills.register` 只调一次、返回注销器，注销后 `list()` 不含该技能，重注册后再次出现；
- * 6. git 交付协议可检索：开工前 `git fetch`、项目分支 `feature/<project_id>` 与 `task/<work_id>` worktree、交付 `push -u origin` + `ls-remote` 校验，并锁定分支模型正/反向约束；
+ * 6. git 交付协议可检索：开工前 `git fetch`、项目分支 `feature/<project_id>` 与 `task/<task_id>` worktree、交付 `push -u origin` + `ls-remote` 校验，并锁定分支模型正/反向约束；
  * 7. `pnpm build` 后 `lib/assets/echuan-task-execution.md` 存在且与源码一致。
  */
 import { existsSync, readFileSync } from 'node:fs'
@@ -92,7 +92,7 @@ describe('正文六条规则逐条可检索', () => {
   it('① 任务来自 Worker 派单：派单直接开工，不反问', () => {
     expect(content).toContain('派单')
     expect(content).toContain('直接开工')
-    expect(content).toContain('echuan_work_claim')
+    expect(content).toContain('echuan_task_claim')
   })
 
   it('② 先读上下文：echuan_project_get 看方案，echuan_material_get 取全文', () => {
@@ -101,8 +101,8 @@ describe('正文六条规则逐条可检索', () => {
     expect(content).toContain('不要凭任务标题猜需求')
   })
 
-  it('③ 干完必须汇报：echuan_work_report + 四段式（改了什么/怎么自检/git 交付/遗留风险）', () => {
-    expect(content).toContain('echuan_work_report')
+  it('③ 干完必须汇报：echuan_task_report + 四段式（改了什么/怎么自检/git 交付/遗留风险）', () => {
+    expect(content).toContain('echuan_task_report')
     expect(content).toContain('改了什么')
     expect(content).toContain('怎么自检')
     expect(content).toContain('git 交付')
@@ -125,8 +125,8 @@ describe('正文六条规则逐条可检索', () => {
     expect(content).toContain('禁止静默失败')
   })
 
-  it('⑤ 手动模式才需续租：echuan_work_renew，Worker 派发的卡不续租', () => {
-    expect(content).toContain('echuan_work_renew')
+  it('⑤ 手动模式才需续租：echuan_task_renew，Worker 派发的卡不续租', () => {
+    expect(content).toContain('echuan_task_renew')
     expect(content).toContain('手动模式')
     // Worker 派发模式下不得调用续租工具（会与心跳抢租约语义）。
     const heartbeatSection = content.slice(content.indexOf('Worker 派发模式'))
@@ -156,10 +156,10 @@ describe('git 交付协议', () => {
     expect(content).toContain('禁止跳过')
   })
 
-  it('从项目分支 feature/<project_id> 的最新远程提交建独立 worktree 与 task/<work_id> 分支', () => {
+  it('从项目分支 feature/<project_id> 的最新远程提交建独立 worktree 与 task/<task_id> 分支', () => {
     expect(content).toContain('WORK=feature/<project_id>')
     expect(content).toContain('BASE=$(git symbolic-ref refs/remotes/origin/HEAD --short 2>/dev/null | sed')
-    expect(content).toContain('git worktree add ../wt-<work_id> -b task/<work_id> "origin/$WORK"')
+    expect(content).toContain('git worktree add ../wt-<task_id> -b task/<task_id> "origin/$WORK"')
     expect(content).toContain('task/')
     expect(content).toContain('不复用上一张卡的')
     expect(content).toContain('git worktree remove')
@@ -171,8 +171,8 @@ describe('git 交付协议', () => {
   })
 
   it('交付必须 push 并校验远程 commit 与本地 HEAD 一致', () => {
-    expect(content).toContain('git push -u origin task/<work_id>')
-    expect(content).toContain('git ls-remote --heads origin task/<work_id>')
+    expect(content).toContain('git push -u origin task/<task_id>')
+    expect(content).toContain('git ls-remote --heads origin task/<task_id>')
     expect(content).toContain('git rev-parse HEAD')
     expect(content).toContain('没 push 成功就等于没交付')
   })
@@ -180,7 +180,7 @@ describe('git 交付协议', () => {
   it('报告必须带分支 / commit / 远程分支校验 / PR 或 compare 链接', () => {
     expect(content).toContain('**git 交付**')
     expect(content).toContain('commit 短 hash')
-    expect(content).toContain('origin/task/<work_id>')
+    expect(content).toContain('origin/task/<task_id>')
     expect(content).toContain('compare 链接')
   })
 })
@@ -192,9 +192,9 @@ describe('分支模型正/反向断言', () => {
     content.indexOf('### 2.2 原仓库路径'),
   )
 
-  it('工作分支名固定为 feature/<project_id>，任务分支为 task/<work_id>', () => {
+  it('工作分支名固定为 feature/<project_id>，任务分支为 task/<task_id>', () => {
     expect(content).toContain('feature/<project_id>')
-    expect(content).toContain('task/<work_id>')
+    expect(content).toContain('task/<task_id>')
     expect(ownershipSection).toContain('分支名固定')
   })
 
@@ -284,7 +284,7 @@ describe('分支模型正/反向断言', () => {
       }
 
       // 按 --head 分类：任务 PR 与收尾合并 PR 的 base 约束不同。
-      if (command.includes('--head "task/<work_id>"')) {
+      if (command.includes('--head "task/<task_id>"')) {
         taskPrCommands.push(command)
       } else if (
         command.includes('--head "feature/<project_id>"')
@@ -319,7 +319,7 @@ describe('报告口径与正文一致（四段 + material_id）', () => {
     expect(content).toContain('git 交付')
     expect(content).toContain('遗留风险')
     expect(content).toContain('summary_md')
-    expect(content).toContain('echuan_work_report')
+    expect(content).toContain('echuan_task_report')
   })
 
   it('技能 description / whenToUse 与正文同为四段口径，不含旧口径表述', () => {
@@ -346,8 +346,8 @@ describe('正文禁用话术与工具名约束', () => {
     }
   })
 
-  it('含 echuan_work_renew，且不含旧续租工具名', () => {
-    expect(content).toContain('echuan_work_renew')
+  it('含 echuan_task_renew，且不含旧续租工具名', () => {
+    expect(content).toContain('echuan_task_renew')
     expect(content).not.toContain(['echuan', 'task', 'heartbeat'].join('_'))
   })
 })

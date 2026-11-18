@@ -15,17 +15,20 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Casper-Mars/echuan/internal/app"
 	appv3 "github.com/Casper-Mars/echuan/internal/app/v3"
 	"github.com/Casper-Mars/echuan/internal/domain/enum"
+	"github.com/Casper-Mars/echuan/internal/material"
 	storedb "github.com/Casper-Mars/echuan/internal/store"
 )
 
 type apiServer struct {
-	server   *httptest.Server
-	store    *storedb.Store
-	projects *appv3.ProjectService
-	tasks    *appv3.Service
-	workers  *appv3.WorkerService
+	server    *httptest.Server
+	store     *storedb.Store
+	projects  *appv3.ProjectService
+	tasks     *appv3.Service
+	workers   *appv3.WorkerService
+	materials *app.MaterialService
 }
 
 func newAPIServer(t *testing.T) *apiServer {
@@ -49,16 +52,22 @@ func newAPIServer(t *testing.T) *apiServer {
 	projects := appv3.NewProjectService(st)
 	tasks := appv3.New(st)
 	workers := appv3.NewWorkerService(st)
+	writer, err := material.NewWriter(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatalf("material writer: %v", err)
+	}
+	materials := app.NewMaterialService(st, writer)
 
 	handler := NewRouterV3(slog.New(slog.DiscardHandler), nil, nil, V3Services{
-		Projects: projects,
-		Tasks:    tasks,
-		Workers:  workers,
+		Projects:  projects,
+		Tasks:     tasks,
+		Workers:   workers,
+		Materials: materials,
 	})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	return &apiServer{server: server, store: st, projects: projects, tasks: tasks, workers: workers}
+	return &apiServer{server: server, store: st, projects: projects, tasks: tasks, workers: workers, materials: materials}
 }
 
 func (a *apiServer) seedProduct(t *testing.T, code string) {
@@ -130,7 +139,7 @@ func TestRoutesV3Contract(t *testing.T) {
 		"POST /v1/products", "POST /v1/projects", "POST /v1/projects/close",
 		"POST /v1/projects/reopen", "POST /v1/tasks", "POST /v1/tasks/attach",
 		"POST /v1/tasks/claim", "POST /v1/tasks/decide", "POST /v1/tasks/lease",
-		"POST /v1/tasks/report", "POST /v1/tasks/reset", "POST /v1/workers/heartbeat",
+		"POST /v1/tasks/report", "POST /v1/tasks/reset", "POST /v1/workers/heartbeat", "POST /v1/materials",
 	}
 	sort.Strings(want)
 
@@ -422,5 +431,40 @@ func TestInboxListsReadyAndReview(t *testing.T) {
 	inbox := decodeBody[v3TaskListResponse](t, payload)
 	if len(inbox.Items) != 1 || inbox.Items[0].Status != enum.Ready {
 		t.Errorf("inbox = %+v", inbox.Items)
+	}
+}
+
+func TestCreateMaterialAndReport(t *testing.T) {
+	a := newAPIServer(t)
+	a.seedProduct(t, "APP")
+	_, payload := a.do(t, http.MethodPost, "/v1/projects", map[string]any{"product_id": "APP", "name": "p"})
+	project := decodeBody[v3ProjectResponse](t, payload)
+	a.do(t, http.MethodPost, "/v1/tasks", map[string]any{
+		"project_id": project.ProjectID, "task_id": "t_req", "kind": "requirement", "title": "需求",
+	})
+
+	resp, payload := a.do(t, http.MethodPost, "/v1/materials", map[string]any{
+		"kind": "requirement", "title": "需求正文", "body_md": "# 需求\n\n正文",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create material = %d (%s)", resp.StatusCode, payload)
+	}
+	materialRow := decodeBody[v3MaterialResponse](t, payload)
+	if materialRow.MaterialID == "" || materialRow.Kind != "requirement" {
+		t.Fatalf("material = %+v", materialRow)
+	}
+
+	resp, payload = a.do(t, http.MethodPost, "/v1/tasks/claim", map[string]any{
+		"worker_id": "w1", "kind": "requirement",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("claim = %d (%s)", resp.StatusCode, payload)
+	}
+	claimed := decodeBody[v3TaskResponse](t, payload)
+	resp, payload = a.do(t, http.MethodPost, "/v1/tasks/report", map[string]any{
+		"task_id": "t_req", "lease_id": *claimed.LeaseID, "material_id": materialRow.MaterialID,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("report = %d (%s)", resp.StatusCode, payload)
 	}
 }

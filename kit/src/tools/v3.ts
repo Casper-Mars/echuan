@@ -1,0 +1,404 @@
+/**
+ * V3 工具面：18 个工具（10 写 + 8 读）。
+ *
+ * 与 v2 的差异：
+ * - `work_*` 全部改为 `task_*`；交付物统一走任务附件；
+ * - 删除需求写入 / 提交评审 / 方案创建 / 方案修订 / 拆分计划 / 资料包；
+ * - 新增 `task_attach`、`project_close`、`project_reopen`；
+ * - 项目只是容器，建项不再携带需求正文。
+ *
+ * 边界不变：工具层没有审批 / 驳回 / 取消动作，也不缓存业务状态。
+ */
+import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { EchuanToolOptions, WorkerIdentity } from './write.js'
+import { EchuanValidationError } from '../errors.js'
+import { createWorkerInfoTool } from './worker-info.js'
+import { NO_WORK_TEXT, renderTextValue, toToolError } from './render.js'
+import type { V3Task, V3TaskKind } from '../v3-types.js'
+
+const jsonObjectSchema = { type: 'object', additionalProperties: true } as const
+const renderJSON = (_args: unknown, value: unknown) => renderTextValue(value)
+
+function requireText(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new EchuanValidationError(`${field} 不能为空`, 'invalid_argument', field)
+  }
+  return value.trim()
+}
+
+function requireKind(value: unknown): V3TaskKind {
+  const kind = requireText(value, 'kind')
+  if (kind !== 'requirement' && kind !== 'design' && kind !== 'breakdown' && kind !== 'dev') {
+    throw new EchuanValidationError(
+      `kind 必须是 requirement / design / breakdown / dev，收到 ${kind}`,
+      'invalid_argument',
+      'kind',
+    )
+  }
+  return kind
+}
+
+function requireWorker(identity: WorkerIdentity): string {
+  const workerID = identity.workerId
+  if (workerID === undefined || workerID.trim() === '') {
+    throw new EchuanValidationError(
+      'worker 尚未注册（心跳循环未就绪），不能领取任务',
+      'worker_unknown',
+      'worker_id',
+    )
+  }
+  return workerID
+}
+
+function emptyToNoWork<T>(result: { kind: string; data?: T }): T | { kind: 'no_work' } {
+  if (result.kind === 'empty') return { kind: 'no_work' }
+  return result.data as T
+}
+
+function writeTool(
+  name: string,
+  description: string,
+  parameters: Record<string, unknown>,
+  run: (args: Record<string, any>) => Promise<unknown>,
+): ToolDefinition {
+  return defineTool({
+    name,
+    description,
+    parameters: parameters as any,
+    output: { schema: jsonObjectSchema, render: renderJSON },
+    async execute(args) {
+      try {
+        return (await run(args as Record<string, any>)) as any
+      } catch (err) {
+        return toToolError(err)
+      }
+    },
+  })
+}
+
+export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[] {
+  const { client, identity } = options
+
+  return [
+    writeTool(
+      'echuan_task_claim',
+      '领取一张 ready 任务（POST /v1/tasks/claim）。无任务时返回 no_work，不要当错误重试。',
+      { kind: { type: 'string', required: true, description: 'requirement / design / breakdown / dev' } },
+      async args => {
+        const result = await client.claimV3Task({ worker_id: requireWorker(identity), kind: requireKind(args.kind) })
+        const value = emptyToNoWork<V3Task>(result)
+        if ('kind' in value && value.kind === 'no_work') return { kind: 'no_work', text: NO_WORK_TEXT }
+        identity.notifyReported?.(value.task_id)
+        return { kind: 'claimed', task: value }
+      },
+    ),
+    writeTool(
+      'echuan_task_renew',
+      '续租一张在跑的任务（POST /v1/tasks/lease）。',
+      {
+        task_id: { type: 'string', required: true, description: '任务编号' },
+        lease_id: { type: 'string', required: true, description: '当前租约' },
+      },
+      async args => {
+        const result = await client.renewV3Task({
+          task_id: requireText(args.task_id, 'task_id'),
+          lease_id: requireText(args.lease_id, 'lease_id'),
+        })
+        if (result.kind === 'empty') return { kind: 'renewed' }
+        return { kind: 'renewed', result: result.data }
+      },
+    ),
+    writeTool(
+      'echuan_task_report',
+      '交付任务（POST /v1/tasks/report）：写 output 附件并把任务转为 in_review。',
+      {
+        task_id: { type: 'string', required: true },
+        lease_id: { type: 'string', required: true },
+        material_id: { type: 'string', description: '已上传的交付物编号；与 summary_md 二选一' },
+        summary_md: { type: 'string', description: '交付正文；缺 material_id 时由工具创建 material' },
+        material_title: { type: 'string' },
+      },
+      async args => {
+        const taskID = requireText(args.task_id, 'task_id')
+        const leaseID = requireText(args.lease_id, 'lease_id')
+        let materialID = typeof args.material_id === 'string' && args.material_id.trim() !== '' ? args.material_id.trim() : ''
+        if (materialID === '') {
+          const summary = requireText(args.summary_md, 'summary_md')
+          const taskResult = await client.getV3Task({ id: taskID })
+          if (taskResult.kind === 'empty') {
+            throw new EchuanValidationError('任务不存在，无法推断资料类型', 'not_found', 'task_id')
+          }
+          const materialKind = taskResult.data.kind === 'requirement' ? 'requirement'
+            : taskResult.data.kind === 'design' ? 'design'
+              : taskResult.data.kind === 'breakdown' ? 'plan'
+                : 'report'
+          const created = await client.createV3Material({
+            kind: materialKind,
+            title: typeof args.material_title === 'string' && args.material_title.trim() !== ''
+              ? args.material_title
+              : taskResult.data.title,
+            body_md: summary,
+          })
+          if (created.kind === 'empty') {
+            throw new EchuanValidationError('平台对建资料返回 204', 'unexpected_empty', 'summary_md')
+          }
+          materialID = created.data.material_id
+        }
+        const result = await client.reportV3Task({ task_id: taskID, lease_id: leaseID, material_id: materialID })
+        if (result.kind === 'empty') {
+          throw new EchuanValidationError('平台对交报告返回 204，没有回包可核对', 'unexpected_empty', 'material_id')
+        }
+        return { kind: 'reported', task: result.data }
+      },
+    ),
+    writeTool(
+      'echuan_task_create',
+      '创建任务（POST /v1/tasks）。项目只是容器；依赖未满足时平台会落 pending。',
+      {
+        project_id: { type: 'string', required: true },
+        kind: { type: 'string', required: true },
+        title: { type: 'string', required: true },
+        task_id: { type: 'string', description: '可选；缺省由平台生成 t_<ULID>' },
+        parent_task_id: { type: 'string' },
+        description_md: { type: 'string' },
+        context_md: { type: 'string' },
+        priority: { type: 'integer' },
+        max_attempts: { type: 'integer' },
+        depends_on: { type: 'array', items: { type: 'string' } },
+      },
+      async args => {
+        const result = await client.createV3Task(({
+          project_id: requireText(args.project_id, 'project_id'),
+          kind: requireKind(args.kind),
+          title: requireText(args.title, 'title'),
+          task_id: typeof args.task_id === 'string' ? args.task_id : undefined,
+          parent_task_id: typeof args.parent_task_id === 'string' ? args.parent_task_id : undefined,
+          description_md: typeof args.description_md === 'string' ? args.description_md : undefined,
+          context_md: typeof args.context_md === 'string' ? args.context_md : undefined,
+          priority: typeof args.priority === 'number' ? args.priority : undefined,
+          max_attempts: typeof args.max_attempts === 'number' ? args.max_attempts : undefined,
+          depends_on: Array.isArray(args.depends_on) ? args.depends_on.map((v: unknown) => String(v)) : undefined,
+        }) as any)
+        if (result.kind === 'empty') {
+          throw new EchuanValidationError('平台对建任务返回 204，没有回包可核对', 'unexpected_empty', 'project_id')
+        }
+        return { kind: 'task_created', task: result.data }
+      },
+    ),
+    writeTool(
+      'echuan_task_update',
+      '修改未领取任务（PATCH /v1/tasks?id=）：title / description_md / context_md / priority。',
+      {
+        id: { type: 'string', required: true },
+        title: { type: 'string', required: true },
+        description_md: { type: 'string' },
+        context_md: { type: 'string' },
+        priority: { type: 'integer' },
+      },
+      async args => {
+        const result = await client.updateV3Task({
+          id: requireText(args.id, 'id'),
+          body: {
+            title: requireText(args.title, 'title'),
+            description_md: typeof args.description_md === 'string' ? args.description_md : undefined,
+            context_md: typeof args.context_md === 'string' ? args.context_md : undefined,
+            priority: typeof args.priority === 'number' ? args.priority : undefined,
+          } as any,
+        })
+        if (result.kind === 'empty') throw new EchuanValidationError('平台返回 204', 'unexpected_empty', 'id')
+        return { kind: 'task_updated', task: result.data }
+      },
+    ),
+    writeTool(
+      'echuan_task_attach',
+      '给项目或任务挂附件（POST /v1/tasks/attach）。project_id 与 task_id 必须二选一。',
+      {
+        project_id: { type: 'string' },
+        task_id: { type: 'string' },
+        material_id: { type: 'string', required: true },
+        role: { type: 'string', required: true, description: 'input / output' },
+        sort_no: { type: 'integer' },
+      },
+      async args => {
+        const role = requireText(args.role, 'role')
+        if (role !== 'input' && role !== 'output') {
+          throw new EchuanValidationError(`role 必须是 input / output，收到 ${role}`, 'invalid_argument', 'role')
+        }
+        const result = await client.attachV3({
+          project_id: typeof args.project_id === 'string' ? args.project_id : undefined,
+          task_id: typeof args.task_id === 'string' ? args.task_id : undefined,
+          material_id: requireText(args.material_id, 'material_id'),
+          role,
+          sort_no: typeof args.sort_no === 'number' ? args.sort_no : undefined,
+        } as any)
+        if (result.kind === 'empty') throw new EchuanValidationError('平台返回 204', 'unexpected_empty', 'material_id')
+        return { kind: 'attached', attachment: result.data }
+      },
+    ),
+    writeTool(
+      'echuan_project_create',
+      '创建项目容器（POST /v1/projects）：product_id / name / context_md；不会创建任何任务。',
+      {
+        product_id: { type: 'string', required: true },
+        name: { type: 'string', required: true },
+        context_md: { type: 'string' },
+      },
+      async args => {
+        const result = await client.createV3Project({
+          product_id: requireText(args.product_id, 'product_id'),
+          name: requireText(args.name, 'name'),
+          context_md: typeof args.context_md === 'string' ? args.context_md : undefined,
+        } as any)
+        if (result.kind === 'empty') throw new EchuanValidationError('平台返回 204', 'unexpected_empty', 'project_id')
+        return { kind: 'project_created', project: result.data }
+      },
+    ),
+    writeTool(
+      'echuan_project_close',
+      '关闭项目（POST /v1/projects/close?id=）。有未完成任务时需 force=true，会取消它们。',
+      {
+        id: { type: 'string', required: true },
+        force: { type: 'boolean' },
+      },
+      async args => {
+        const result = await client.closeV3Project({
+          id: requireText(args.id, 'id'),
+          force: args.force === true,
+        })
+        return { kind: result.kind === 'empty' ? 'project_closed' : 'project_closed' }
+      },
+    ),
+    writeTool(
+      'echuan_project_reopen',
+      '重开项目（POST /v1/projects/reopen?id=）。已取消的任务不会复活。',
+      { id: { type: 'string', required: true } },
+      async args => {
+        await client.reopenV3Project({ id: requireText(args.id, 'id') })
+        return { kind: 'project_reopened' }
+      },
+    ),
+    writeTool(
+      'echuan_product_create',
+      '创建产品（POST /v1/products）。',
+      {
+        product_id: { type: 'string', required: true },
+        name: { type: 'string', required: true },
+        git_url: { type: 'string', required: true },
+        description: { type: 'string' },
+        license: { type: 'string' },
+      },
+      async args => {
+        const result = await client.createProduct({
+          product_id: requireText(args.product_id, 'product_id'),
+          name: requireText(args.name, 'name'),
+          git_url: requireText(args.git_url, 'git_url'),
+          description: typeof args.description === 'string' ? args.description : undefined,
+          license: typeof args.license === 'string' ? args.license : undefined,
+        } as any)
+        if (result.kind === 'empty') throw new EchuanValidationError('平台返回 204', 'unexpected_empty', 'product_id')
+        return { kind: 'product_created', product: result.data }
+      },
+    ),
+  ]
+}
+
+export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] {
+  const { client } = options
+
+  const readTool = (
+    name: string,
+    description: string,
+    parameters: Record<string, unknown>,
+    run: (args: Record<string, any>) => Promise<unknown>,
+  ): ToolDefinition => writeTool(name, description, parameters, run)
+
+  return [
+    readTool('echuan_inbox', '待领取 + 待审核任务（GET /v1/inbox）。', {}, async () => {
+      const result = await client.getV3Inbox()
+      if (result.kind === 'empty') return { items: [] }
+      return result.data
+    }),
+    readTool(
+      'echuan_product_list',
+      '产品列表或详情（GET /v1/products，可带 id）。',
+      { id: { type: 'string' }, after_id: { type: 'integer' }, limit: { type: 'integer' } },
+      async args => {
+        const result = await client.listProducts({
+          ...(typeof args.id === 'string' ? { id: args.id } : {}),
+          ...(typeof args.after_id === 'number' ? { after_id: args.after_id } : {}),
+          ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+        } as any)
+        return result.kind === 'empty' ? { items: [] } : result.data
+      },
+    ),
+    readTool(
+      'echuan_project_list',
+      '项目列表（GET /v1/projects），可按 open/closed 过滤。',
+      {
+        status: { type: 'string' },
+        after_id: { type: 'integer' },
+        limit: { type: 'integer' },
+      },
+      async args => {
+        const status = args.status === 'open' || args.status === 'closed' ? args.status : undefined
+        const result = await client.listV3Projects({
+          status,
+          after_id: typeof args.after_id === 'number' ? args.after_id : undefined,
+          limit: typeof args.limit === 'number' ? args.limit : undefined,
+        } as any)
+        return result.kind === 'empty' ? { items: [] } : result.data
+      },
+    ),
+    readTool(
+      'echuan_project_get',
+      '项目详情（GET /v1/projects?id=）。',
+      { id: { type: 'string', required: true } },
+      async args => {
+        const result = await client.getV3Project({ id: requireText(args.id, 'id') })
+        if (result.kind === 'empty') throw new EchuanValidationError('项目不存在', 'not_found', 'id')
+        return result.data
+      },
+    ),
+    readTool(
+      'echuan_task_list',
+      '任务列表（GET /v1/tasks），可按 project_id / kind / status 过滤。',
+      {
+        project_id: { type: 'string' },
+        kind: { type: 'string' },
+        status: { type: 'string' },
+        limit: { type: 'integer' },
+      },
+      async args => {
+        const kind = typeof args.kind === 'string' && args.kind !== '' ? requireKind(args.kind) : undefined
+        const result = await client.listV3Tasks({
+          project_id: typeof args.project_id === 'string' ? args.project_id : undefined,
+          kind,
+          status: typeof args.status === 'string' && args.status !== '' ? (args.status as any) : undefined,
+          limit: typeof args.limit === 'number' ? args.limit : undefined,
+        } as any)
+        return result.kind === 'empty' ? { items: [] } : result.data
+      },
+    ),
+    readTool(
+      'echuan_task_get',
+      '任务详情（GET /v1/tasks?id=）。',
+      { id: { type: 'string', required: true } },
+      async args => {
+        const result = await client.getV3Task({ id: requireText(args.id, 'id') })
+        if (result.kind === 'empty') throw new EchuanValidationError('任务不存在', 'not_found', 'id')
+        return result.data
+      },
+    ),
+    readTool(
+      'echuan_material_get',
+      '下载资料正文（GET /v1/materials?id=）。',
+      { id: { type: 'string', required: true } },
+      async args => {
+        const result = await client.getMaterials({ id: requireText(args.id, 'id') })
+        if (result.kind === 'empty') throw new EchuanValidationError('资料不存在', 'not_found', 'id')
+        return { kind: 'material', ...result.data }
+      },
+    ),
+    createWorkerInfoTool(options),
+  ]
+}

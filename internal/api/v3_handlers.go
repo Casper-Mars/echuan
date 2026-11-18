@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,25 +10,29 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Casper-Mars/echuan/internal/app"
 	appv3 "github.com/Casper-Mars/echuan/internal/app/v3"
 	"github.com/Casper-Mars/echuan/internal/domain/enum"
+	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/platform"
 	storev3 "github.com/Casper-Mars/echuan/internal/store/v3"
 )
 
 type v3Handler struct {
-	projects *appv3.ProjectService
-	tasks    *appv3.Service
-	workers  *appv3.WorkerService
-	logger   *slog.Logger
+	projects  *appv3.ProjectService
+	tasks     *appv3.Service
+	workers   *appv3.WorkerService
+	materials *app.MaterialService
+	logger    *slog.Logger
 }
 
 func newV3Handler(services V3Services, logger *slog.Logger) *v3Handler {
 	return &v3Handler{
-		projects: services.Projects,
-		tasks:    services.Tasks,
-		workers:  services.Workers,
-		logger:   logger,
+		projects:  services.Projects,
+		tasks:     services.Tasks,
+		workers:   services.Workers,
+		materials: services.Materials,
+		logger:    logger,
 	}
 }
 
@@ -699,4 +704,61 @@ func (h *v3Handler) inbox(w http.ResponseWriter, r *http.Request) {
 		items = append(items, v3TaskDTO(task))
 	}
 	writeJSON(w, http.StatusOK, v3TaskListResponse{Items: items})
+}
+
+type v3CreateMaterialRequest struct {
+	Kind   string `json:"kind"`
+	Title  string `json:"title"`
+	BodyMD string `json:"body_md"`
+}
+
+type v3MaterialResponse struct {
+	MaterialID string `json:"material_id"`
+	Kind       string `json:"kind"`
+	Version    int    `json:"version"`
+	Title      string `json:"title"`
+}
+
+// createMaterial stores an inline markdown artifact as a material. Reports need
+// a material id, and a worker should not have to invent one.
+func (h *v3Handler) createMaterial(w http.ResponseWriter, r *http.Request) {
+	var body v3CreateMaterialRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	kind, err := enum.ParseMaterialKind(body.Kind)
+	if err != nil {
+		invalidEnum(w, r, "kind", body.Kind)
+		return
+	}
+	if strings.TrimSpace(body.Title) == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "title is required",
+			[]ErrorDetail{{Field: "title", Reason: "is required"}})
+		return
+	}
+	if body.BodyMD == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "body_md is required",
+			[]ErrorDetail{{Field: "body_md", Reason: "is required"}})
+		return
+	}
+
+	row, err := h.materials.CreateMaterial(r.Context(), int(kind), body.Title, []byte(body.BodyMD), ActorFromContext(r.Context()))
+	if err != nil {
+		switch {
+		case errors.Is(err, material.ErrTooLarge):
+			writeError(w, r, http.StatusRequestEntityTooLarge, "too_large", "material is too large", nil)
+		case errors.Is(err, material.ErrEmpty):
+			writeError(w, r, http.StatusBadRequest, "invalid_argument", "material body is empty", nil)
+		default:
+			h.fail(w, r, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, v3MaterialResponse{
+		MaterialID: row.MaterialID,
+		Kind:       kind.String(),
+		Version:    row.Version,
+		Title:      row.Title,
+	})
 }

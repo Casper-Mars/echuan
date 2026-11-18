@@ -31,6 +31,18 @@ const TAG = '[dsh-echuan/session]'
 /** 新建会话后设置的权限 preset。 */
 export const DEFAULT_PERMISSION_PRESET = 'workspace-write'
 
+/**
+ * V3 会话键 = 项目 + 角色。同一项目的 PM / CTO / Dev 必须是三个会话，
+ * 否则第二个角色派单会 resume 到旧 preset 的会话。
+ */
+export function composeSessionId(projectId: string, presetId: string): string {
+  const project = projectId.trim()
+  const preset = presetId.trim()
+  if (project === '') throw new TypeError('projectId 不能为空')
+  if (preset === '') throw new TypeError('presetId 不能为空')
+  return `${project}:${preset}`
+}
+
 /** ensure 结局：live 复用 / resume 恢复 / create 新建。 */
 export type EnsureOutcome = 'reuse' | 'resumed' | 'created'
 

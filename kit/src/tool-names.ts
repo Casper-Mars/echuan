@@ -1,66 +1,44 @@
 /**
  * 工具名清单与 `exclude` 校验（**唯一真源**）。
  *
- * 本模块只含常量与纯函数，**不依赖** `@deepseek-ai/dsh-tools`，因此可以被
- * 插件入口 `index.ts` 静态引入：配置里的工具名拼错时，`apply` 能在**同步阶段**
- * 直接抛 `TypeError` 让插件激活失败，而不是等到惰性 import 工具层后才变成一条 warning。
+ * V3 工具面：18 个 = 10 写 + 8 读。
+ * - 写：任务执行 6 个（claim/renew/report/create/update/attach）
+ *       项目 4 个（create/close/reopen/product_create）
+ * - 读：inbox / product_list / project_list / project_get /
+ *       task_list / task_get / material_get / worker_info
  *
- * 语义约定：
- * - `TOOL_NAMES` 始终表示**全集**（25 个 = 17 写 + 8 读），不随 `exclude` 变化；
- * - `exclude` 只是「本进程不注册哪些工具」，不影响工具定义与平台 HTTP 契约。
+ * 已删除的 v2 工具：work_*（改名为 task_*）、project_requirement_write、
+ * project_submit、spec_create、spec_revise、plan_submit、project_package。
  */
 
-/** 十七个写工具的名字（顺序即向模型暴露的顺序；不含任何审批动作）。 */
 export const WRITE_TOOL_NAMES = [
-  'echuan_work_claim',
-  'echuan_work_renew',
-  'echuan_work_report',
+  'echuan_task_claim',
+  'echuan_task_renew',
+  'echuan_task_report',
+  'echuan_task_create',
+  'echuan_task_update',
+  'echuan_task_attach',
   'echuan_project_create',
-  'echuan_project_requirement_write',
-  'echuan_project_submit',
-  'echuan_spec_create',
-  'echuan_spec_revise',
-  'echuan_plan_submit',
-  'echuan_work_create',
-  'echuan_work_update',
-  'echuan_work_delete',
-  'echuan_project_update',
+  'echuan_project_close',
+  'echuan_project_reopen',
   'echuan_product_create',
-  'echuan_product_update',
-  'echuan_product_delete',
-  'echuan_project_package',
 ] as const
 
-/** 八个只读工具的名字（顺序即向模型暴露的顺序）。 */
 export const READ_TOOL_NAMES = [
   'echuan_inbox',
   'echuan_product_list',
   'echuan_project_list',
-  'echuan_work_list',
   'echuan_project_get',
-  'echuan_work_get',
+  'echuan_task_list',
+  'echuan_task_get',
   'echuan_material_get',
   'echuan_worker_info',
 ] as const
 
-/** 全部 25 个工具名（17 写 + 8 读）。始终是全集，不受 `exclude` 影响。 */
 export const TOOL_NAMES = [...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES] as const
 
-/** 合法工具名的查找表（用于 O(1) 判断与错误信息）。 */
 const TOOL_NAME_SET: ReadonlySet<string> = new Set(TOOL_NAMES)
 
-/**
- * 归一化并校验 `exclude` 列表。
- *
- * 规则：
- * - 每项做 `trim`；去重（保留首次出现的顺序）；
- * - 空白项（`''` / 纯空格）直接抛 `TypeError`——静默丢弃会让「以为排除了」变成
- *   「其实没排除」，属于配置错误，必须让激活失败；
- * - 未知工具名抛 `TypeError`，错误信息同时列出**未知项**与**合法名单**；
- * - `undefined` / `null` / 空数组都返回 `[]`（等价于不排除）。
- *
- * @throws {TypeError} 含空白项或未知工具名时
- */
 export function validateExclude(exclude?: readonly string[] | null): string[] {
   if (exclude === undefined || exclude === null || exclude.length === 0) return []
 

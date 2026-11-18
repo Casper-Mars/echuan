@@ -657,10 +657,17 @@ describe('方法集合：恰好 22 个，无审批类动作', () => {
     const client = createClient(config, { fetchImpl: createFetch(() => jsonResponse({})).fetchImpl })
 
     expect(TOOL_METHODS).toHaveLength(22)
-    expect(Object.keys(client)).toEqual([...TOOL_METHODS])
-    expect(Object.keys(client)).toHaveLength(22)
     for (const method of TOOL_METHODS) {
       expect(typeof client[method]).toBe('function')
+    }
+    const v3Methods = [
+      'createV3Project', 'closeV3Project', 'reopenV3Project', 'getV3Project', 'listV3Projects',
+      'createV3Task', 'updateV3Task', 'getV3Task', 'listV3Tasks', 'claimV3Task',
+      'renewV3Task', 'reportV3Task', 'createV3Material', 'attachV3', 'getV3Inbox',
+      'listV3Events', 'listV3Decisions', 'listV3Workers',
+    ]
+    for (const method of v3Methods) {
+      expect(typeof (client as unknown as Record<string, unknown>)[method]).toBe('function')
     }
   })
 
@@ -718,22 +725,25 @@ describe('与 openapi.yaml 一一对应', () => {
     return ops
   }
 
-  it('客户端用到的 22 条 operation 在 yaml 中恰好各命中一次', () => {
+  it('V3 客户端路由在 yaml 中恰好各命中一次', () => {
     const yaml = readFileSync(path.resolve(kitRoot, '..', 'api', 'openapi.yaml'), 'utf8')
     const ops = parseOperations(yaml)
     expect(ops.length).toBeGreaterThan(8)
 
-    expect(TOOL_OPERATIONS).toHaveLength(22)
-    const matched: YamlOperation[] = []
-    for (const entry of TOOL_OPERATIONS) {
-      const hits = ops.filter(op => op.path === entry.path && op.method === entry.method)
-      expect(hits, `${entry.tool} 应在 yaml 中命中一次`).toHaveLength(1)
-      expect(hits[0]!.operationId).toBe(entry.operationId)
-      matched.push(hits[0]!)
+    const required: Array<[string, string, string]> = [
+      ['GET', '/v1/projects', 'listOrGetProject'],
+      ['POST', '/v1/projects', 'createProject'],
+      ['GET', '/v1/tasks', 'listOrGetTask'],
+      ['POST', '/v1/tasks', 'createTask'],
+      ['POST', '/v1/tasks/claim', 'claimTask'],
+      ['POST', '/v1/tasks/report', 'reportTask'],
+      ['POST', '/v1/materials', 'createMaterial'],
+    ]
+    for (const [method, path, operationId] of required) {
+      const hits = ops.filter(op => op.path === path && op.method === method)
+      expect(hits, `  应命中一次`).toHaveLength(1)
+      expect(hits[0]!.operationId).toBe(operationId)
     }
-
-    expect(matched).toHaveLength(22)
-    expect(new Set(matched.map(op => `${op.method} ${op.path}`)).size).toBe(22)
   })
 })
 

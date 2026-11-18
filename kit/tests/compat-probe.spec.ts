@@ -8,7 +8,7 @@
  * 运行时探针只断言它自己那份过期列表，CI 于是拿 23 个工具当 25 个来验收。
  *
  * 本文件把这份同步关系钉在 `pnpm test` 里：
- * 1. `EXPECTED_TOOLS` 与 `TOOL_NAMES` 逐项、逐序一致（25 个 = 17 写 + 8 读）；
+ * 1. `EXPECTED_TOOLS` 与 `TOOL_NAMES` 逐项、逐序一致（18 个 = 10 写 + 8 读）；
  * 2. 不一致时报告能指出**首个**不一致项（否则「漏了一项」只会看到一句无信息量的 not equal）；
  * 3. 探针文件保持独立声明，不出现对 `tool-names` 的 import；
  * 4. `EXPECTED_SKILLS` 与 `src/skill.ts` 的 `ECHUAN_SKILL_NAME` 一致。
@@ -61,12 +61,12 @@ function describeMismatch(probeNames: readonly string[], sourceNames: readonly s
 }
 
 describe('兼容探针清单与源码真源一致', () => {
-  it('EXPECTED_TOOLS 与 TOOL_NAMES 逐项一致（25 个 = 17 写 + 8 读，顺序一致）', async () => {
+  it('EXPECTED_TOOLS 与 TOOL_NAMES 逐项一致（18 个 = 10 写 + 8 读，顺序一致）', async () => {
     const { EXPECTED_TOOLS } = await loadProbe()
     const sourceNames = [...TOOL_NAMES]
     const mismatch = describeMismatch(EXPECTED_TOOLS, sourceNames)
 
-    expect(sourceNames).toHaveLength(25)
+    expect(sourceNames).toHaveLength(18)
     expect(
       mismatch,
       `scripts/compat-probe.mjs 的 EXPECTED_TOOLS 与 src/tool-names.ts 的 TOOL_NAMES 不一致：${mismatch}。`
