@@ -145,6 +145,7 @@ export interface V3Client {
     role: 'input' | 'output'
     sort_no?: number
   }): Promise<ApiResult<V3Attachment>>
+  heartbeatV3(input: { worker_id: string; state: "idle" | "busy"; kinds: readonly V3TaskKind[]; metadata: Record<string, unknown> }): Promise<ApiResult<unknown>>
   getV3Inbox(): Promise<ApiResult<V3List<V3Task>>>
   listV3Events(query: { task_id: string; limit?: number }): Promise<ApiResult<V3List<V3Event>>>
   listV3Decisions(query: { task_id: string; limit?: number }): Promise<ApiResult<V3List<V3Decision>>>

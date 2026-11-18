@@ -1438,6 +1438,19 @@ export function createClient(
       return requestJson<V3Attachment>(ctx, { method: 'POST', path: '/v1/tasks/attach', body })
     },
 
+    async heartbeatV3(input) {
+      return requestJson<unknown>(ctx, {
+        method: 'POST',
+        path: '/v1/workers/heartbeat',
+        body: {
+          worker_id: requireNonEmpty(input?.worker_id, 'worker_id'),
+          state: input?.state === 'busy' ? 'busy' : 'idle',
+          kinds: input?.kinds,
+          metadata: input?.metadata ?? {},
+        },
+      })
+    },
+
     async getV3Inbox() {
       return requestJson<V3List<V3Task>>(ctx, { method: 'GET', path: '/v1/inbox' })
     },

@@ -39,7 +39,7 @@ import {
   resolveConfig,
   type ConfigInput,
 } from './config.js'
-import type { WorkerClient } from './client.js'
+import type { PullWorkerLoop } from './pull-worker.js'
 import type { Logger } from './runtime.js'
 import { TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from './tool-names.js'
 import { ECHUAN_SKILL_NAME, registerEchuanSkill } from './skill.js'
@@ -80,7 +80,7 @@ export const name = 'echuan'
  *
  * - `tools` / `skills`：后续阶段注册工具与技能指南；
  * - `agents`：本进程的 agent 注册表。派单按 `project_id` ensureSession 后投给
- *   该会话的 agent；会话 id 即项目号，cwd 取会话数最多的 workspace。
+ *   该会话的 agent；会话 id 为 `<project>:<preset>`，cwd 取会话数最多的 workspace。
  *
  * 三者由 `@deepseek-ai/dsh-base` 提供；缺任一则本插件保持未激活，而不是抛错。
  */
@@ -171,7 +171,7 @@ export function apply(ctx: Context, config?: ConfigInput): void {
 
   // worker_id 的**唯一内存来源**：心跳循环。工具层通过这个 getter 读同一个值，
   // 不自留副本、不读磁盘；循环尚未创建时（poll=false）自然是 undefined。
-  let loop: WorkerLoop | undefined
+  let loop: PullWorkerLoop | undefined
 
   // `echuan_worker_info` 的只读依赖：全部惰性（`loop` 与 `ctx.agents` 都在调用时读），
   // 工具本身零 HTTP，不参与心跳与派单。
@@ -280,24 +280,24 @@ export function apply(ctx: Context, config?: ConfigInput): void {
     // 保证 `--help` 快路径不加载 HTTP / dsh-llm 依赖。
     void (async () => {
       try {
-        const [clientModule, workerModule, sessionModule] = await Promise.all([
+        const [clientModule, pullModule, sessionModule] = await Promise.all([
           import('./client.js'),
-          import('./worker.js'),
+          import('./pull-worker.js'),
           import('./session.js'),
         ])
         if (disposed) return
 
-        const client: WorkerClient = clientModule.createWorkerClient(resolved)
+        const client = clientModule.createClient(resolved)
         const ensureProjectSession = sessionModule.createSessionEnsurer(ctx, {
           warn: message => warn(message),
           info: message => log(message),
         })
-        const nextLoop = workerModule.createWorkerLoop({
+        const nextLoop = pullModule.createPullWorkerLoop({
           config: resolved,
           client,
           // 兼容回退：仅在 ensureSession 未提供时才使用。
           agents: { roots: () => ctx.agents.roots() },
-          // 项目级会话：sessionId = 项目号，cwd 取会话数最多的 workspace。
+          // 项目级会话：sessionId = `<project>:<preset>`，cwd 取会话数最多的 workspace。
           // 服务每次调用时惰性读取，避免插件加载早期服务未就绪。
           ensureSession: async (projectId, presetId) => (await ensureProjectSession(sessionModule.composeSessionId(projectId, presetId ?? 'default'), presetId))?.agent as Agent | undefined,
           logger: toRuntimeLogger(log, warn),

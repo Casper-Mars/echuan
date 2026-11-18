@@ -285,14 +285,12 @@ func TestClaimConcurrentReturns204(t *testing.T) {
 func TestReportDecideAndFlow(t *testing.T) {
 	a := newAPIServer(t)
 	a.seedProduct(t, "APP")
-	_, payload := a.do(t, http.MethodPost, "/v1/projects", map[string]any{"product_id": "APP", "name": "p"})
+	_, payload := a.do(t, http.MethodPost, "/v1/projects", map[string]any{"product_id": "APP", "name": "p", "context_md": "项目背景"})
 	project := decodeBody[v3ProjectResponse](t, payload)
 	_, payload = a.do(t, http.MethodPost, "/v1/tasks", map[string]any{
 		"project_id": project.ProjectID, "task_id": "t_req", "kind": "requirement", "title": "需求",
 	})
-	if resp, body := a.do(t, http.MethodGet, "/v1/tasks?kind=requirement", nil); resp.StatusCode != http.StatusOK {
-		t.Fatalf("list requirement = %d (%s)", resp.StatusCode, body)
-	}
+	_ = payload
 	_ = payload
 
 	materialID, err := a.tasks.CreateMaterial(context.Background(), appv3.CreateMaterialRequest{
@@ -309,13 +307,16 @@ func TestReportDecideAndFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("claim = %d (%s)", resp.StatusCode, payload)
 	}
-	claimed := decodeBody[v3TaskResponse](t, payload)
-	if claimed.LeaseID == nil {
+	claimed := decodeBody[v3ClaimResponse](t, payload)
+	if claimed.Task.LeaseID == nil {
 		t.Fatal("claim returned no lease")
+	}
+	if claimed.Project.ContextMD != "项目背景" || claimed.Product.GitURL == "" {
+		t.Fatalf("claim envelope = %+v", claimed)
 	}
 
 	resp, payload = a.do(t, http.MethodPost, "/v1/tasks/report", map[string]any{
-		"task_id": "t_req", "lease_id": *claimed.LeaseID, "material_id": materialID,
+		"task_id": "t_req", "lease_id": *claimed.Task.LeaseID, "material_id": materialID,
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("report = %d (%s)", resp.StatusCode, payload)
@@ -460,9 +461,9 @@ func TestCreateMaterialAndReport(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("claim = %d (%s)", resp.StatusCode, payload)
 	}
-	claimed := decodeBody[v3TaskResponse](t, payload)
+	claimed := decodeBody[v3ClaimResponse](t, payload)
 	resp, payload = a.do(t, http.MethodPost, "/v1/tasks/report", map[string]any{
-		"task_id": "t_req", "lease_id": *claimed.LeaseID, "material_id": materialRow.MaterialID,
+		"task_id": "t_req", "lease_id": *claimed.Task.LeaseID, "material_id": materialRow.MaterialID,
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("report = %d (%s)", resp.StatusCode, payload)

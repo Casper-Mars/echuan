@@ -481,6 +481,40 @@ func (h *v3Handler) attach(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, attachment)
 }
 
+type v3ClaimResponse struct {
+	Task             v3TaskResponse    `json:"task"`
+	Project          v3ClaimProject    `json:"project"`
+	Product          v3ClaimProduct    `json:"product"`
+	Inputs           []v3ClaimInput    `json:"inputs"`
+	Upstream         []v3ClaimUpstream `json:"upstream"`
+	HasDownstreamDev bool              `json:"has_downstream_dev"`
+}
+
+type v3ClaimProject struct {
+	ProjectID string `json:"project_id"`
+	Name      string `json:"name"`
+	ContextMD string `json:"context_md"`
+}
+
+type v3ClaimProduct struct {
+	ProductID string `json:"product_id"`
+	Name      string `json:"name"`
+	GitURL    string `json:"git_url"`
+}
+
+type v3ClaimInput struct {
+	MaterialID string `json:"material_id"`
+	Title      string `json:"title"`
+	Kind       string `json:"kind"`
+	Role       string `json:"role"`
+}
+
+type v3ClaimUpstream struct {
+	TaskID     string  `json:"task_id"`
+	MaterialID *string `json:"material_id,omitempty"`
+	Title      *string `json:"title,omitempty"`
+}
+
 type v3ClaimRequest struct {
 	WorkerID string `json:"worker_id"`
 	Kind     string `json:"kind"`
@@ -502,7 +536,27 @@ func (h *v3Handler) claim(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, v3TaskDTO(task))
+	envelope, err := h.tasks.ClaimEnvelope(r.Context(), task)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	inputs := make([]v3ClaimInput, 0, len(envelope.Inputs))
+	for _, input := range envelope.Inputs {
+		inputs = append(inputs, v3ClaimInput{
+			MaterialID: input.MaterialID, Title: input.Title, Kind: input.Kind.String(), Role: input.Role.String(),
+		})
+	}
+	writeJSON(w, http.StatusOK, v3ClaimResponse{
+		Task: v3TaskDTO(task),
+		Project: v3ClaimProject{
+			ProjectID: envelope.Project.ProjectID, Name: envelope.Project.Name, ContextMD: envelope.Project.ContextMD,
+		},
+		Product: v3ClaimProduct{
+			ProductID: envelope.Product.ProductID, Name: envelope.Product.Name, GitURL: envelope.Product.GitURL,
+		},
+		Inputs: inputs, Upstream: toClaimUpstream(envelope.Upstream), HasDownstreamDev: envelope.HasDownstreamDev,
+	})
 }
 
 type v3LeaseRequest struct {
@@ -761,4 +815,12 @@ func (h *v3Handler) createMaterial(w http.ResponseWriter, r *http.Request) {
 		Version:    row.Version,
 		Title:      row.Title,
 	})
+}
+
+func toClaimUpstream(values []storev3.UpstreamRef) []v3ClaimUpstream {
+	out := make([]v3ClaimUpstream, 0, len(values))
+	for _, value := range values {
+		out = append(out, v3ClaimUpstream{TaskID: value.TaskID, MaterialID: value.MaterialID, Title: value.Title})
+	}
+	return out
 }
