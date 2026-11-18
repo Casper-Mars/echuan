@@ -48,6 +48,7 @@ export interface ConfigInput {
   worker?: {
     poll?: { enable?: boolean | null } | null
     presetByKind?: Record<string, string> | null
+    sessionKey?: 'project' | 'project-preset' | null
     metadata?: Record<string, unknown> | null
   } | null
 }
@@ -74,6 +75,8 @@ export interface ResolvedConfig {
     kinds: string[]
     /** kind → preset 映射（已 trim）；键即声明的 kinds，空对象表示不启动心跳。 */
     presetByKind: Record<string, string>
+    /** 会话键：project = 一个项目一个会话；project-preset = 项目+角色（默认）。 */
+    sessionKey: 'project' | 'project-preset'
     /** 任意 JSON 对象，原样上报。 */
     metadata: Record<string, unknown>
   }
@@ -87,6 +90,7 @@ export type SchemaConfig = Omit<ResolvedConfig, 'worker'> & {
   worker: {
     poll: { enable: boolean }
     presetByKind: Record<string, string>
+    sessionKey: 'project' | 'project-preset'
     metadata: Record<string, unknown>
   }
 }
@@ -127,6 +131,9 @@ export const Config: Schemastery<ConfigInput, SchemaConfig> = Schema.object({
         + '所以这是唯一的角色/能力配置；默认 requirement=pm, design=cto, '
         + 'breakdown=cto, dev=dev-leader。写空对象表示不接任何卡（不启动心跳）',
       ),
+    sessionKey: Schema.union(['project', 'project-preset'] as const)
+      .default('project-preset')
+      .description('会话键：project = 一个项目一个会话；project-preset = 项目+角色'),
     metadata: Schema.dict(Schema.any())
       .default({})
       .description('任意 JSON 对象，随心跳原样上报（序列化后 ≤ 8KiB）'),
@@ -145,6 +152,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
     poll: { enable: false },
     kinds: Object.keys(DEFAULT_PRESET_BY_KIND),
     presetByKind: { ...DEFAULT_PRESET_BY_KIND },
+    sessionKey: 'project-preset',
     metadata: {},
   },
 }
@@ -173,6 +181,7 @@ export function resolveConfig(input?: ConfigInput | null): ResolvedConfig {
     poll: { enable: resolved.worker.poll.enable },
     presetByKind,
     kinds: Object.keys(presetByKind),
+    sessionKey: resolved.worker.sessionKey,
     metadata: resolved.worker.metadata,
   }
   return {
