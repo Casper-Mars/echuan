@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 
-	storedb "github.com/Casper-Mars/echuan/internal/store"
 	"github.com/Casper-Mars/echuan/internal/domain/enum"
+	storedb "github.com/Casper-Mars/echuan/internal/store"
 )
 
 // MaterialRef is one attachment projected for a dispatch payload.
@@ -102,4 +102,18 @@ func HasDownstreamDev(ctx context.Context, q storedb.Querier, taskPK int64) (boo
 	}
 	count = row.Count
 	return count > 0, nil
+}
+
+// ListTaskAttachmentRefs lists every attachment of one task with the material
+// business id, for the task detail drawer.
+func ListTaskAttachmentRefs(ctx context.Context, q storedb.Querier, taskPK int64) ([]MaterialRef, error) {
+	refs, err := storedb.All[MaterialRef](ctx, q, `
+		SELECT `+materialRefColumns+`
+		  FROM attachments a JOIN materials m ON m.id = a.material_id
+		 WHERE a.task_id = ?
+		 ORDER BY a.role ASC, a.sort_no ASC, a.id ASC`, taskPK)
+	if err != nil {
+		return nil, fmt.Errorf("v3: list task attachments: %w", err)
+	}
+	return refs, nil
 }

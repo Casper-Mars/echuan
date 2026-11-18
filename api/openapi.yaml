@@ -198,6 +198,22 @@ paths:
         '200': { description: reset }
         '404': { description: not found }
         '409': { description: task is not failed }
+  /v1/tasks/dependencies:
+    get:
+      operationId: listTaskDependencies
+      summary: Business ids a task depends on
+      tags: [tasks]
+      responses:
+        '200': { description: dependencies }
+        '400': { description: task_id is required }
+  /v1/tasks/attachments:
+    get:
+      operationId: listTaskAttachments
+      summary: Attachments of one task
+      tags: [tasks]
+      responses:
+        '200': { description: attachments }
+        '400': { description: task_id is required }
   /v1/tasks/events:
     get:
       operationId: listTaskEvents

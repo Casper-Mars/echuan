@@ -48,6 +48,8 @@ var routeSpecsV3 = []routeSpec{
 	{http.MethodPost, "/v1/tasks/decide", "tasks"},
 	{http.MethodPost, "/v1/tasks/reset", "tasks"},
 	{http.MethodGet, "/v1/tasks/events", "tasks"},
+	{http.MethodGet, "/v1/tasks/dependencies", "tasks"},
+	{http.MethodGet, "/v1/tasks/attachments", "tasks"},
 	{http.MethodGet, "/v1/decisions", "tasks"},
 	{http.MethodGet, "/v1/inbox", "tasks"},
 
@@ -121,6 +123,8 @@ func NewRouterV3(logger *slog.Logger, fallback http.Handler, checks []HealthChec
 			handlers["POST /v1/tasks/decide"] = v3Handler.decide
 			handlers["POST /v1/tasks/reset"] = v3Handler.reset
 			handlers["GET /v1/tasks/events"] = v3Handler.events
+			handlers["GET /v1/tasks/dependencies"] = v3Handler.dependencies
+			handlers["GET /v1/tasks/attachments"] = v3Handler.attachments
 			handlers["GET /v1/decisions"] = v3Handler.decisions
 			handlers["GET /v1/inbox"] = v3Handler.inbox
 		}

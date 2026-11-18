@@ -231,7 +231,7 @@ echuan:
 
 ## HTTP API
 
-- 契约文件：[`api/openapi.yaml`](api/openapi.yaml)（OpenAPI 3.0.3，29 个 operation）
+- 契约文件：[`api/openapi.yaml`](api/openapi.yaml)（OpenAPI 3.0.3，31 个 operation）
 - 统一前缀 `/v1`；所有响应带 `X-Request-Id`
 - 错误体统一为 `Error`，`details` 永远是数组（无明细时为 `[]`）
 - 资源列表与详情共用路径，通过 `?id=` 选择详情
@@ -265,7 +265,7 @@ echuan:
 make build      # 编译 ./echuan
 make test       # go test ./... -race
 make lint       # go vet（存在 staticcheck 时一并执行）
-make contract   # 接口契约校验（29 个 operation + 校验器自测）
+make contract   # 接口契约校验（31 个 operation + 校验器自测）
 make web        # 构建前端并同步到 internal/web/dist
 make e2e        # Worker 全链路端到端验收（临时目录 + 随机端口，约 90s）
 ```

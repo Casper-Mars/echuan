@@ -37,7 +37,7 @@ lint:
 		echo "staticcheck 未安装，跳过（安装：go install honnef.co/go/tools/cmd/staticcheck@latest）"; \
 	fi
 
-## contract: 接口契约校验（29 个 operation + 校验器自测）
+## contract: 接口契约校验（31 个 operation + 校验器自测）
 contract:
 	go test ./internal/contract -count=1
 

@@ -387,3 +387,19 @@ func (s *Service) CheckInvariants(ctx context.Context) error {
 func (s *Service) nowString() string { return formatTime(s.now()) }
 
 func formatTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
+
+// Dependencies returns the business ids a task depends on.
+func (s *Service) Dependencies(ctx context.Context, taskID string) ([]string, error) {
+	deps, err := storev3.ListDependencies(ctx, s.st.Read(), taskID)
+	return deps, Translate(err)
+}
+
+// Attachments returns every attachment of one task.
+func (s *Service) Attachments(ctx context.Context, taskID string) ([]storev3.MaterialRef, error) {
+	task, err := storev3.GetTask(ctx, s.st.Read(), taskID)
+	if err != nil {
+		return nil, Translate(err)
+	}
+	refs, err := storev3.ListTaskAttachmentRefs(ctx, s.st.Read(), task.ID)
+	return refs, Translate(err)
+}

@@ -824,3 +824,47 @@ func toClaimUpstream(values []storev3.UpstreamRef) []v3ClaimUpstream {
 	}
 	return out
 }
+
+type v3DependencyList struct {
+	Items []string `json:"items"`
+}
+
+func (h *v3Handler) dependencies(w http.ResponseWriter, r *http.Request) {
+	taskID := strings.TrimSpace(r.URL.Query().Get("task_id"))
+	if taskID == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "task_id is required",
+			[]ErrorDetail{{Field: "task_id", Reason: "is required"}})
+		return
+	}
+	deps, err := h.tasks.Dependencies(r.Context(), taskID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v3DependencyList{Items: deps})
+}
+
+type v3AttachmentList struct {
+	Items []v3ClaimInput `json:"items"`
+}
+
+func (h *v3Handler) attachments(w http.ResponseWriter, r *http.Request) {
+	taskID := strings.TrimSpace(r.URL.Query().Get("task_id"))
+	if taskID == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "task_id is required",
+			[]ErrorDetail{{Field: "task_id", Reason: "is required"}})
+		return
+	}
+	refs, err := h.tasks.Attachments(r.Context(), taskID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	items := make([]v3ClaimInput, 0, len(refs))
+	for _, ref := range refs {
+		items = append(items, v3ClaimInput{
+			MaterialID: ref.MaterialID, Title: ref.Title, Kind: ref.Kind.String(), Role: ref.Role.String(),
+		})
+	}
+	writeJSON(w, http.StatusOK, v3AttachmentList{Items: items})
+}

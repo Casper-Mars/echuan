@@ -2359,3 +2359,41 @@ button {
   text-decoration: underline;
   overflow-wrap: anywhere;
 }
+
+/* ── V3 pages ─────────────────────────────────────────────────────── */
+.v3-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel-solid);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow-soft);
+}
+.v3-table th,
+.v3-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.v3-table th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  background: var(--panel-strong);
+}
+.v3-table tr:last-child td { border-bottom: none; }
+.v3-table tr.clickable { cursor: pointer; }
+.v3-table tr.clickable:hover { background: var(--accent-soft); }
+.v3-detail { display: flex; flex-direction: column; gap: 16px; }
+.v3-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.v3-detail-grid > div { display: flex; flex-direction: column; gap: 2px; }
+.v3-detail-grid .muted { font-size: 12px; }
+.clickable { cursor: pointer; }
+.filter-bar { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }

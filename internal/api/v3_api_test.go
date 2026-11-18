@@ -134,7 +134,7 @@ func TestRoutesV3Contract(t *testing.T) {
 		"GET /healthz", "GET /readyz", "GET /version",
 		"GET /v1/decisions", "GET /v1/inbox", "GET /v1/materials",
 		"GET /v1/products", "GET /v1/projects", "GET /v1/tasks",
-		"GET /v1/tasks/events", "GET /v1/workers",
+		"GET /v1/tasks/events", "GET /v1/tasks/dependencies", "GET /v1/tasks/attachments", "GET /v1/workers",
 		"PATCH /v1/products", "PATCH /v1/projects", "PATCH /v1/tasks",
 		"POST /v1/products", "POST /v1/projects", "POST /v1/projects/close",
 		"POST /v1/projects/reopen", "POST /v1/tasks", "POST /v1/tasks/attach",

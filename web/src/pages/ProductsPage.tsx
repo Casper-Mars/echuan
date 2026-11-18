@@ -1,171 +1,69 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { listProducts } from '../api/client'
+import { api, ApiError } from '../api/client'
 import type { Product } from '../api/types'
-import { itemsOf } from '../api/types'
-import { useDrawer } from '../components/DrawerContext'
-import { ProductFormDialog } from '../components/ProductFormDialog'
-import {
-  EmptyState,
-  ErrorNotice,
-  LoadingState,
-  RefreshBar,
-} from '../components/States'
-import { usePolling } from '../hooks/usePolling'
-import { formatDateTime } from '../lib/format'
-import { isInteractiveTarget } from '../lib/interaction'
-import { repoHref } from '../lib/url'
+import { Modal } from '../components/Modal'
 
-/**
- * 产品列表：卡片展示编号、名称、git 地址、证书与项目数；
- * 支持新建产品、编辑产品（改名等），点击卡片打开产品详情抽屉。
- */
 export function ProductsPage() {
-  const openDrawer = useDrawer()
-  const { data, error, loading, refreshing, lastUpdated, refresh } = usePolling(listProducts, [])
-  const products = itemsOf(data)
-  const [form, setForm] = useState<{ product?: Product } | null>(null)
+  const [items, setItems] = useState<Product[]>([])
+  const [error, setError] = useState('')
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState({ product_id: '', name: '', git_url: '' })
+
+  const load = () => {
+    api.listProducts().then(result => setItems(result.items)).catch(err => setError(message(err)))
+  }
+  useEffect(load, [])
+
+  const submit = async () => {
+    try {
+      await api.createProduct(form)
+      setOpen(false)
+      setForm({ product_id: '', name: '', git_url: '' })
+      load()
+    } catch (err) {
+      setError(message(err))
+    }
+  }
 
   return (
-    <section className="page">
+    <section>
       <header className="page-head">
         <div>
           <h1>产品</h1>
-          <p className="muted">选择一个产品，查看其需求项目与开发任务看板。</p>
+          <p>一个产品对应一个仓库；项目与任务都挂在产品下。</p>
         </div>
         <div className="page-head-actions">
-          <RefreshBar
-            lastUpdated={lastUpdated}
-            refreshing={refreshing}
-            error={error}
-            onRefresh={refresh}
-          />
-          <button type="button" className="action action-primary" onClick={() => setForm({})}>
-            新建产品
-          </button>
+          <button className="action action-primary" onClick={() => setOpen(true)}>新建产品</button>
         </div>
       </header>
-
-      <ErrorNotice error={error} onRetry={refresh} />
-
-      {!data && loading && <LoadingState label="正在加载产品…" />}
-      {!data && !loading && error && (
-        <EmptyState title="产品加载失败" hint="页面会自动重试；也可以点击上方“重试”。" />
-      )}
-      {data && products.length === 0 && (
-        <EmptyState title="还没有产品" hint="点击右上角“新建产品”创建第一个产品。" />
-      )}
-
-      {products.length > 0 && (
-        <div className="grid product-grid">
-          {products.map((product) => (
-            <article
-              key={product.product_id}
-              className="card product-card"
-              onClick={(event) => {
-                if (isInteractiveTarget(event.target)) return
-                openDrawer({
-                  title: `产品 ${product.product_id}`,
-                  body: <ProductDetail product={product} />,
-                })
-              }}
-            >
-              <div className="card-head">
-                <span className="code">{product.product_id}</span>
-                <span className="chip">{product.license || '未设置证书'}</span>
-              </div>
-              <h2 className="card-title">{product.name || product.product_id}</h2>
-              <p className="mono muted ellipsis" title={product.git_url}>
-                {product.git_url || '未设置代码仓库地址'}
-              </p>
-              <p className="muted card-desc">{product.description || '暂无描述'}</p>
-              <footer className="card-foot">
-                <span>{product.project_count} 个项目</span>
-                <div className="card-actions">
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      setForm({ product })
-                    }}
-                  >
-                    编辑
-                  </button>
-                  <Link
-                    className="link"
-                    to={`/products/${encodeURIComponent(product.product_id)}/projects`}
-                  >
-                    查看项目 →
-                  </Link>
-                </div>
-              </footer>
-            </article>
-          ))}
-        </div>
-      )}
-
-      {form && (
-        <ProductFormDialog
-          product={form.product}
-          onClose={() => setForm(null)}
-          onSaved={refresh}
-        />
+      {error && <div className="notice notice-message">{error}</div>}
+      <div className="product-grid">
+        {items.map(product => (
+          <article className="product-card" key={product.product_id}>
+            <h2>{product.name}</h2>
+            <p className="mono">{product.product_id}</p>
+            <p className="muted ellipsis">{product.git_url}</p>
+            <Link className="action" to={`/products/${product.product_id}/projects`}>查看项目</Link>
+          </article>
+        ))}
+        {items.length === 0 && <p className="muted">还没有产品。</p>}
+      </div>
+      {open && (
+        <Modal title="新建产品" onClose={() => setOpen(false)} footer={
+          <button className="action action-primary" onClick={submit}>创建</button>
+        }>
+          <div className="dialog-form">
+            <label className="field">产品编号<input value={form.product_id} onChange={e => setForm({ ...form, product_id: e.target.value })} placeholder="APP" /></label>
+            <label className="field">名称<input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
+            <label className="field">仓库地址<input value={form.git_url} onChange={e => setForm({ ...form, git_url: e.target.value })} placeholder="git@github.com:org/repo.git" /></label>
+          </div>
+        </Modal>
       )}
     </section>
   )
 }
 
-function ProductDetail({ product }: { product: Product }) {
-  // 只有 http(s) 地址渲染成新标签页链接，其余形态保持纯文本。
-  const repoUrl = repoHref(product.git_url)
-  // 纯文本分支：全空白与 null / undefined 一样回退占位符；非空值的原字符串照原样显示，
-  // 含前后空白也不 trim（`git@…`、`ssh://…` 这类登记值必须原样可读）。
-  const repoText = typeof product.git_url === 'string' && product.git_url.trim() ? product.git_url : '—'
-  return (
-    <div className="detail">
-      <div className="detail-summary">
-        <span className="code">{product.product_id}</span>
-        <span>{product.project_count} 个项目</span>
-      </div>
-      <dl className="meta-grid">
-        <div>
-          <dt>名称</dt>
-          <dd>{product.name || '—'}</dd>
-        </div>
-        <div>
-          <dt>证书</dt>
-          <dd>{product.license || '—'}</dd>
-        </div>
-        <div>
-          <dt>创建时间</dt>
-          <dd>{formatDateTime(product.create_time)}</dd>
-        </div>
-        <div>
-          <dt>更新时间</dt>
-          <dd>{formatDateTime(product.update_time)}</dd>
-        </div>
-      </dl>
-      <section className="detail-section">
-        <h3>代码仓库地址</h3>
-        {repoUrl ? (
-          <a
-            className="mono repo-link"
-            href={repoUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={product.git_url}
-          >
-            {repoUrl}
-          </a>
-        ) : (
-          <p className="mono">{repoText}</p>
-        )}
-      </section>
-      <section className="detail-section">
-        <h3>描述</h3>
-        <p className={product.description ? '' : 'muted'}>{product.description || '—'}</p>
-      </section>
-    </div>
-  )
+function message(err: unknown): string {
+  return err instanceof ApiError || err instanceof Error ? err.message : String(err)
 }
