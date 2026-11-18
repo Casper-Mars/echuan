@@ -171,6 +171,14 @@ func TestRejectReturnsToReady(t *testing.T) {
 	if task.Reason == nil || *task.Reason != "范围不清" {
 		t.Errorf("reason = %v", task.Reason)
 	}
+
+	// The rework must be claimable immediately, without an operator touch.
+	if _, err := ClaimTask(ctx, st, ClaimInput{
+		Kind: enum.Requirement, WorkerID: "w_rework", LeaseID: "l_rework",
+		Now: testNow, LeaseUntil: testUntil,
+	}); err != nil {
+		t.Fatalf("re-claim after reject: %v", err)
+	}
 }
 
 func TestClaimRespectsDependencies(t *testing.T) {
