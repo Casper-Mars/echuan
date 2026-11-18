@@ -2,6 +2,7 @@ package v3
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
 
@@ -14,14 +15,17 @@ import (
 // Service is the V3 task use-case layer. It owns validation, time and error
 // translation; persistence stays in store/v3.
 type Service struct {
-	st       *storedb.Store
-	now      func() time.Time
-	leaseTTL time.Duration
+	st          *storedb.Store
+	now         func() time.Time
+	leaseTTL    time.Duration
+	flowEnabled bool
+	materials   MaterialReader
 }
 
-// New returns a service with the real clock and a 60s default lease.
+// New returns a service with the real clock, a 60s default lease and the four
+// flow rules enabled.
 func New(st *storedb.Store) *Service {
-	return &Service{st: st, now: time.Now, leaseTTL: 60 * time.Second}
+	return &Service{st: st, now: time.Now, leaseTTL: 60 * time.Second, flowEnabled: true}
 }
 
 // WithClock replaces the clock (tests).
@@ -222,13 +226,26 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (storev3.Task, 
 		materialPK = &material.ID
 	}
 
+	var hook func(context.Context, *sql.Tx, storev3.Task) error
+	if req.Decision == enum.Approve && s.flowEnabled {
+		current, err := storev3.GetTask(ctx, s.st.Read(), req.TaskID)
+		if err != nil {
+			return storev3.Task{}, Translate(err)
+		}
+		hook, err = s.approveHook(ctx, current)
+		if err != nil {
+			return storev3.Task{}, Translate(err)
+		}
+	}
+
 	task, err := storev3.DecideTask(ctx, s.st, storev3.DecideInput{
-		TaskID:     req.TaskID,
-		Decision:   req.Decision,
-		MaterialID: materialPK,
-		DecidedBy:  req.DecidedBy,
-		Reason:     req.Reason,
-		Now:        s.nowString(),
+		TaskID:       req.TaskID,
+		Decision:     req.Decision,
+		MaterialID:   materialPK,
+		DecidedBy:    req.DecidedBy,
+		Reason:       req.Reason,
+		Now:          s.nowString(),
+		AfterApprove: hook,
 	})
 	return task, Translate(err)
 }

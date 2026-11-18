@@ -7,6 +7,8 @@
 package v3
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 
 	"github.com/Casper-Mars/echuan/internal/domain/enum"
@@ -178,6 +180,10 @@ type DecideInput struct {
 	DecidedBy  string
 	Reason     string
 	Now        string
+	// AfterApprove runs inside the approval transaction after the task is
+	// done and its direct dependents are promoted. The flow engine uses it to
+	// create successor tasks atomically; a hook error rolls the approval back.
+	AfterApprove func(context.Context, *sql.Tx, Task) error
 }
 
 // AttachInput is the write model for Attach.

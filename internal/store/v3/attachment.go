@@ -54,6 +54,22 @@ func GetMaterial(ctx context.Context, q storedb.Querier, materialID string) (Mat
 	return material, nil
 }
 
+// GetMaterialByID loads one material by physical id. Flow hooks hold physical
+// ids (attachments point at them) and need the business id to read the object.
+func GetMaterialByID(ctx context.Context, q storedb.Querier, id int64) (Material, error) {
+	material, err := storedb.One[Material](ctx, q,
+		`SELECT id, material_id, kind, version, title, sha256, size, path, uploaded_by,
+		        previous_material_id, create_time, update_time
+		   FROM materials WHERE id = ?`, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Material{}, fmt.Errorf("%w: id %d", ErrMaterialNotFound, id)
+	}
+	if err != nil {
+		return Material{}, fmt.Errorf("v3: get material %d: %w", id, err)
+	}
+	return material, nil
+}
+
 // Attach links one material to a project or a task. Exactly one owner must be
 // set; the database enforces the same rule.
 func Attach(ctx context.Context, s *storedb.Store, in AttachInput) (Attachment, error) {

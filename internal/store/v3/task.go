@@ -21,12 +21,24 @@ const taskFrom = ` FROM tasks t JOIN projects p ON p.id = t.project_id`
 // CreateTask inserts a task and its dependencies. The initial status is
 // computed once: no unmet dependency means ready, otherwise pending.
 func CreateTask(ctx context.Context, s *storedb.Store, in CreateTaskInput) (Task, error) {
+	var out Task
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		out, err = CreateTaskTx(ctx, tx, in)
+		return err
+	})
+	return out, err
+}
+
+// CreateTaskTx is CreateTask inside a caller-owned transaction. The flow hook
+// uses it to create successors atomically with the approval that triggers them.
+func CreateTaskTx(ctx context.Context, tx *sql.Tx, in CreateTaskInput) (Task, error) {
 	if in.MaxAttempts <= 0 {
 		in.MaxAttempts = 3
 	}
 
 	var out Task
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
+	err := func() error {
 		var (
 			projectPK     int64
 			projectStatus enum.ProjectStatus
@@ -121,7 +133,7 @@ func CreateTask(ctx context.Context, s *storedb.Store, in CreateTaskInput) (Task
 			ProjectCode:   projectCode,
 		}
 		return nil
-	})
+	}()
 	return out, err
 }
 
@@ -344,16 +356,22 @@ func DecideTask(ctx context.Context, s *storedb.Store, in DecideInput) (Task, er
 			return err
 		}
 
-		if in.Decision == enum.Approve {
-			if err := promoteDependents(ctx, tx, pk, in.TaskID, in.Now); err != nil {
-				return err
-			}
-		}
-
 		task, err := loadTaskTx(ctx, tx, pk)
 		if err != nil {
 			return err
 		}
+
+		if in.Decision == enum.Approve {
+			if err := promoteDependents(ctx, tx, pk, in.TaskID, in.Now); err != nil {
+				return err
+			}
+			if in.AfterApprove != nil {
+				if err := in.AfterApprove(ctx, tx, task); err != nil {
+					return err
+				}
+			}
+		}
+
 		out = task
 		return nil
 	})
@@ -558,6 +576,33 @@ func promoteDependents(ctx context.Context, tx *sql.Tx, upstreamPK int64, upstre
 		}
 	}
 	return nil
+}
+
+// AppendEventTx appends one task event inside a caller-owned transaction. The
+// flow engine uses it to mark automatically created tasks.
+func AppendEventTx(ctx context.Context, tx *sql.Tx, taskPK int64, event enum.Event, actor, detail, now string) error {
+	return appendEvent(ctx, tx, taskPK, event, actor, detail, now)
+}
+
+// ListDependencies returns the business ids a task depends on, sorted.
+func ListDependencies(ctx context.Context, q storedb.Querier, taskID string) ([]string, error) {
+	rows, err := storedb.All[struct {
+		TaskID string `db:"task_id"`
+	}](ctx, q, `
+		SELECT u.task_id
+		  FROM task_deps d
+		  JOIN tasks t ON t.id = d.task_id
+		  JOIN tasks u ON u.id = d.depends_on_task_id
+		 WHERE t.task_id = ?
+		 ORDER BY u.task_id ASC`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("v3: list dependencies of %s: %w", taskID, err)
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.TaskID)
+	}
+	return out, nil
 }
 
 func appendEvent(ctx context.Context, tx *sql.Tx, taskPK int64, event enum.Event, actor, detail, now string) error {
