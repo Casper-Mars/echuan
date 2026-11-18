@@ -24,7 +24,7 @@ func CreateProject(ctx context.Context, s *storedb.Store, in CreateProjectInput)
 		if err := tx.QueryRowContext(ctx,
 			`SELECT id FROM products WHERE product_id = ?`, in.ProductID).Scan(&productPK); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("%w: product %s", ErrProjectNotFound, in.ProductID)
+				return fmt.Errorf("%w: product %s", ErrProductNotFound, in.ProductID)
 			}
 			return fmt.Errorf("v3: resolve product %s: %w", in.ProductID, err)
 		}

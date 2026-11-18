@@ -41,8 +41,8 @@ func newTestService(t *testing.T, now *time.Time) (*Service, *storedb.Store) {
 	return svc, st
 }
 
-// seedProject inserts a product and an open project and returns the project id.
-func seedProject(t *testing.T, st *storedb.Store, code string) string {
+// seedProductOnly inserts a product and returns its business id.
+func seedProductOnly(t *testing.T, st *storedb.Store, code string) string {
 	t.Helper()
 	ctx := context.Background()
 	if err := st.Tx(ctx, func(tx *sql.Tx) error {
@@ -57,6 +57,14 @@ func seedProject(t *testing.T, st *storedb.Store, code string) string {
 	}); err != nil {
 		t.Fatalf("seed product: %v", err)
 	}
+	return code
+}
+
+// seedProject inserts a product and an open project and returns the project id.
+func seedProject(t *testing.T, st *storedb.Store, code string) string {
+	t.Helper()
+	seedProductOnly(t, st, code)
+	ctx := context.Background()
 	project, err := storev3.CreateProject(ctx, st, storev3.CreateProjectInput{
 		ProductID: code,
 		Name:      code,

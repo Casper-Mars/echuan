@@ -16,6 +16,7 @@ import (
 // inspect driver strings.
 var (
 	ErrProjectNotFound   = errors.New("v3: project not found")
+	ErrProductNotFound   = errors.New("v3: product not found")
 	ErrProjectClosed     = errors.New("v3: project is closed")
 	ErrProjectNotEmpty   = errors.New("v3: project still has unfinished tasks")
 	ErrTaskNotFound      = errors.New("v3: task not found")

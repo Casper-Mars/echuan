@@ -68,7 +68,8 @@ func Translate(err error) error {
 	switch {
 	case errors.Is(err, storev3.ErrNoWork):
 		return &NoWorkError{}
-	case errors.Is(err, storev3.ErrProjectNotFound), errors.Is(err, storev3.ErrTaskNotFound), errors.Is(err, storev3.ErrMaterialNotFound):
+	case errors.Is(err, storev3.ErrProjectNotFound), errors.Is(err, storev3.ErrProductNotFound),
+		errors.Is(err, storev3.ErrTaskNotFound), errors.Is(err, storev3.ErrMaterialNotFound):
 		return notFound("%s", err.Error())
 	case errors.Is(err, storedb.ErrUniqueViolation):
 		return conflict("%s", err.Error())
