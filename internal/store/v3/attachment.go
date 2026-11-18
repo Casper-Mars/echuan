@@ -46,7 +46,7 @@ func GetMaterial(ctx context.Context, q storedb.Querier, materialID string) (Mat
 		        previous_material_id, create_time, update_time
 		   FROM materials WHERE material_id = ?`, materialID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Material{}, fmt.Errorf("v3: material %s not found", materialID)
+		return Material{}, fmt.Errorf("%w: %s", ErrMaterialNotFound, materialID)
 	}
 	if err != nil {
 		return Material{}, fmt.Errorf("v3: get material %s: %w", materialID, err)

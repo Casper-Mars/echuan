@@ -19,6 +19,7 @@ var (
 	ErrProjectClosed     = errors.New("v3: project is closed")
 	ErrProjectNotEmpty   = errors.New("v3: project still has unfinished tasks")
 	ErrTaskNotFound      = errors.New("v3: task not found")
+	ErrMaterialNotFound  = errors.New("v3: material not found")
 	ErrNoWork            = errors.New("v3: no ready task")
 	ErrLeaseLost         = errors.New("v3: lease lost")
 	ErrInvalidTransition = errors.New("v3: invalid task transition")
