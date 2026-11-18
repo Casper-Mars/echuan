@@ -6,11 +6,14 @@ export function Drawer({
   onClose,
   children,
   footer,
+  eyebrow = 'TASK',
 }: {
   title: string
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
+  /** 抽屉顶字；默认沿用任务详情抽屉的 `TASK`，其它详情按需覆盖。 */
+  eyebrow?: string
 }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -28,7 +31,7 @@ export function Drawer({
       <aside className="drawer" role="dialog" aria-modal="true" aria-label={title}>
         <header className="drawer-header">
           <div>
-            <p className="drawer-eyebrow">TASK</p>
+            <p className="drawer-eyebrow">{eyebrow}</p>
             <h2>{title}</h2>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="关闭">×</button>
