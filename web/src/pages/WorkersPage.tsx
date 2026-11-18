@@ -13,27 +13,33 @@ export function WorkersPage() {
   useEffect(load, [])
 
   return (
-    <section>
-      <header className="page-head">
-        <div><h1>执行节点</h1><p>worker 心跳与当前租约。</p></div>
-        <div className="page-head-actions"><button className="action" onClick={load}>刷新</button></div>
+    <section className="page">
+      <header className="page-hero">
+        <div>
+          <p className="eyebrow">WORKERS</p>
+          <h1>执行节点</h1>
+          <p className="muted">心跳、当前任务与租约。</p>
+        </div>
+        <div className="hero-actions"><button className="btn btn-ghost" onClick={load}>刷新</button></div>
       </header>
-      {error && <div className="notice notice-message">{error}</div>}
-      <table className="v3-table">
-        <thead><tr><th>worker</th><th>状态</th><th>当前任务</th><th>租约</th><th>最后心跳</th></tr></thead>
-        <tbody>
-          {items.map(worker => (
-            <tr key={worker.worker_id}>
-              <td className="mono">{worker.worker_id}</td>
-              <td><span className={`chip ${worker.state === 'busy' ? 'dot-error' : 'dot-ok'}`}>{worker.state}</span></td>
-              <td className="mono">{worker.current_task_id ?? '—'}</td>
-              <td className="mono">{worker.current_lease_id ?? '—'}</td>
-              <td className="muted">{formatTime(worker.last_seen)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {items.length === 0 && <p className="muted">还没有 worker 注册。</p>}
+      {error && <div className="alert alert-error">{error}</div>}
+      <div className="worker-grid">
+        {items.map(worker => (
+          <article className="worker-card" key={worker.worker_id}>
+            <header>
+              <span className={`dot ${worker.state === 'busy' ? 'dot-busy' : 'dot-ok'}`} />
+              <h2 className="mono">{worker.worker_id}</h2>
+              <span className="pill">{worker.state}</span>
+            </header>
+            <dl>
+              <div><dt>当前任务</dt><dd className="mono">{worker.current_task_id ?? '—'}</dd></div>
+              <div><dt>租约</dt><dd className="mono">{worker.current_lease_id ?? '—'}</dd></div>
+              <div><dt>最后心跳</dt><dd>{formatTime(worker.last_seen)}</dd></div>
+            </dl>
+          </article>
+        ))}
+        {items.length === 0 && <div className="empty-state">还没有 worker 注册。</div>}
+      </div>
     </section>
   )
 }
