@@ -4,57 +4,67 @@ SQLite schema scripts. `internal/store` applies them at startup in ascending
 version order; each file runs inside a **single transaction** together with the
 `PRAGMA user_version` write-back.
 
-This repository is the v2 platform (`echuan_v2`): a brand-new project with a
-brand-new database and no compatibility layer. `0001_init.sql` creates the
-initial v2 schema at `user_version = 1`; `0002_gate_decisions.sql` adds the
-append-only gate-decision log and raises the version to 2. There is still no v1
-data import.
+This repository is the v3 platform (`echuan_v2`). V3 is a bottom-up entity
+refactor: the project is only a container, the task is the single execution
+unit, and the workflow is expressed by `task_deps` instead of a project state
+machine.
 
-`0001_init.sql` creates the v2 schema at `user_version = 1`:
+**There is exactly one migration.** `0001_init.sql` creates the complete V3
+schema at `user_version = 1`. There is no incremental chain and no v2 data
+migration: a v2 database (`user_version = 6`) is rejected by the
+`SchemaVersionError` guard at startup, so a development database must be
+recreated from scratch.
+
+## Tables
 
 | Table | Purpose |
 |-------|---------|
 | `products` | 产品 |
-| `materials` | 资料（需求 / 方案 / 报告 / 任务计划，按 `kind` 区分，版本链由 `previous_material_id` 表达） |
-| `projects` | 项目（九态状态机，`status` 0–8） |
-| `project_specs` | 独立方案表（项目下按 `seq_no` 递增） |
-| `work_items` | 统一工作项，v2 唯一的派单实体 |
-| `work_inputs` | 工作项输入资料关联表 |
-| `work_deps` | 工作项依赖 |
-| `work_item_events` | 工作项事件（只追加，时间线与审计） |
-| `workers` | worker 心跳与当前占用的工作项（`current_work_item_id`） |
-| `worker_kinds` | worker 声明的能力（kind 列表），派单的唯一依据 |
+| `materials` | 资料内容与版本链（`previous_material_id`） |
+| `projects` | 项目容器：名称、产品、背景上下文、`open/closed` |
+| `tasks` | 唯一执行与派单单元；四类 kind，七态 status |
+| `task_deps` | 任务依赖 DAG（上游 `done` 才算满足） |
+| `attachments` | 任务/项目的输入与交付物，必须且只能挂一个属主 |
+| `gate_decisions` | 任务级评审决策（只追加，精确指向 material 版本） |
+| `task_events` | 任务事件（只追加，时间线与审计） |
+| `workers` | worker 心跳与当前任务租约（`current_task_id`） |
+| `worker_kinds` | worker 声明的可处理 kind |
+| `im_card` | 飞书卡片投影 |
+| `im_action_log` | 卡片动作幂等 |
+| `im_doc` | material → 飞书文档映射缓存 |
 
-`0002_gate_decisions.sql` adds the gate-decision log at `user_version = 2`:
+## Enums
 
-| Table | Purpose |
-|-------|---------|
-| `gate_decisions` | 人工门禁决策（只追加）：项目/工作项、被审物料版本、结论、决策人、原因、时间 |
+All enums are `INTEGER` and start at 1; 0 is invalid and is rejected by CHECK.
 
-v1 的 `tasks` / `task_deps` 不再创建：队列语义已收口到 `work_items`，
-`work_deps` 取代 `task_deps`。
+| Enum | Values |
+|------|--------|
+| `projects.status` | 1=open, 2=closed |
+| `tasks.kind` | 1=requirement, 2=design, 3=breakdown, 4=dev |
+| `tasks.status` | 1=pending, 2=ready, 3=in_progress, 4=in_review, 5=done, 6=failed, 7=cancelled |
+| `materials.kind` | 1=requirement, 2=design, 3=plan, 4=report, 5=context, 6=other |
+| `attachments.role` | 1=input, 2=output |
+| `gate_decisions.decision` | 1=approve, 2=reject |
+| `task_events.event` | 1=created … 11=reset |
+| `workers.state` | 1=idle, 2=busy |
+| `im_card.subject_kind` | 1=project, 2=task |
 
-索引（名称同时是契约，见技术方案 §6）：
+## Indexes (names are part of the contract)
 
 | Index | Definition |
 |-------|------------|
-| `ix_work_queue` | `work_items(kind, state, priority DESC, seq_no)` |
-| `ix_work_lease` | `work_items(state, lease_until)` |
-| `ux_work_active_phase` | 唯一，`work_items(project_id, kind)`，仅阶段 kind 的活跃态 |
-| `ux_work_worker` | 唯一，`work_items(worker_id)`，仅 `state = 'leased'` |
-| `ix_work_events_item` | `work_item_events(work_item_id, id)` |
-| `ux_workers_current_work_item` | 唯一，`workers(current_work_item_id)`，仅非 NULL |
-| `ix_gate_decisions_subject` | `gate_decisions(subject_type, subject_id, id)` |
-| `ix_gate_decisions_material` | `gate_decisions(material_id)` |
-| `ux_projects_dev_branch` | 唯一，`projects(product_id, dev_branch)`，仅 `dev_branch <> ''` |
-
-`0006_project_dev_branch.sql` adds the project development branch at
-`user_version = 6`: `projects.dev_branch`（`TEXT NOT NULL DEFAULT ''`，空串表示
-尚未生成）与部分唯一索引 `ux_projects_dev_branch(product_id, dev_branch)`。
-存量项目在首次派单时由平台惰性回填。
-
-启动时还会校验 schema 版本：数据库版本高于二进制内置的最新版本时直接报
-`SchemaVersionError`，不尝试兼容。
+| `ix_tasks_queue` | `tasks(kind, status, priority DESC, id)` |
+| `ix_tasks_lease` | `tasks(status, lease_until)` |
+| `ix_tasks_project` | `tasks(project_id, kind, id)` |
+| `ux_tasks_active_doc` | 唯一，`tasks(project_id, kind)`，仅文档类 kind 的活跃态 |
+| `ux_tasks_worker_lease` | 唯一，`tasks(worker_id)`，仅 `status = 3` |
+| `ix_task_deps_upstream` | `task_deps(depends_on_task_id)` |
+| `ix_task_events_task` | `task_events(task_id, id)` |
+| `ix_gate_decisions_task` | `gate_decisions(task_id, id)` |
+| `ix_attachments_task` / `ix_attachments_project` | 附件按属主与角色查询 |
+| `ux_workers_current_task` | 唯一，`workers(current_task_id)`，仅非 NULL |
+| `ix_projects_status` / `ix_projects_product` | 项目列表与产品内序号 |
+| `ix_materials_chain` | `materials(previous_material_id)` |
 
 ## 命名规则
 
@@ -62,24 +72,17 @@ v1 的 `tasks` / `task_deps` 不再创建：队列语义已收口到 `work_items
 NNNN_<description>.sql
 ```
 
-- `NNNN`：4 位零填充版本号，从 `0001` 开始，全局唯一、递增。
+- `NNNN`：4 位零填充版本号，从 `0001` 开始。
 - `<description>`：小写字母/数字/下划线，例如 `0001_init.sql`。
 - 只打包 `migrations/*.sql`（见 `migrations.go` 的 `//go:embed`），
   `README.md` 不会被嵌入。
 - 文件名不符合规则会直接报错，避免拼写错误导致迁移被静默跳过。
 
-## v2 的约定
+## V3 的约定
 
-1. **只增不改**。已发布的迁移文件不可改写；schema 变化必须新增
-   `NNNN_<description>.sql` 并把 `user_version` 加一。旧库在启动时按版本
-   自动补齐，开发库不需要重建。
+1. **只有初始 schema**。V3 未上线，不写增量迁移；schema 变化直接改
+   `0001_init.sql` 并重建开发库。
 2. 只写 DDL/DML，**不要**写 `PRAGMA user_version`（由代码统一回写）。
 3. 文件内可包含多条语句，执行器会按分号拆分（能识别注释与引号）。
 4. 时间字段统一为 RFC3339 毫秒 UTC 字符串，SQL 按字典序比较。
-
-## 现有迁移
-
-| 版本 | 文件 | 内容 |
-|------|------|------|
-| 1 | `0001_init.sql` | v2 完整初始 schema（领域表 + 工作项五表 + workers 外键改造） |
-| 2 | `0002_gate_decisions.sql` | 门禁决策记录表与索引（R3，task-0011） |
+5. 枚举列禁止 0；新增枚举值必须同时改 SQL CHECK、Go 常量与测试。
