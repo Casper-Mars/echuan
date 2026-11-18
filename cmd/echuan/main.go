@@ -18,16 +18,19 @@ import (
 
 	"github.com/Casper-Mars/echuan/internal/api"
 	"github.com/Casper-Mars/echuan/internal/app"
-	"github.com/Casper-Mars/echuan/internal/im"
-	"github.com/Casper-Mars/echuan/internal/im/feishu"
+	appv3 "github.com/Casper-Mars/echuan/internal/app/v3"
 	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
+	storev3 "github.com/Casper-Mars/echuan/internal/store/v3"
 	"github.com/Casper-Mars/echuan/internal/web"
 )
 
 // shutdownTimeout bounds how long in-flight requests may take to finish.
 const shutdownTimeout = 10 * time.Second
+
+// reclaimInterval is how often expired leases are returned to the pool.
+const reclaimInterval = 30 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -46,9 +49,6 @@ func run() error {
 	}
 
 	logger := platform.NewLogger(cfg.LogLevel, os.Stdout)
-	// The banner logger ignores log_level: the effective listen address and
-	// data directories must stay observable even when business logs are
-	// configured to warn/error.
 	banner := platform.NewBannerLogger(os.Stdout)
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
@@ -72,117 +72,33 @@ func run() error {
 		store.NewMigrationChecker(st),
 	}
 
-	application := app.New(cfg, logger, st)
-	defer func() {
-		if err := application.Close(); err != nil {
-			logger.Error("close application", "error", err)
-		}
-	}()
-
+	// Products and material downloads keep their legacy services: the tables
+	// did not change shape in V3.
 	products := app.NewProductService(st)
-
-	// The material writer owns data_dir/objects; the project service writes
-	// requirement rows and the material service serves them back.
-	materials, err := material.NewWriter(cfg.DataDir, cfg.MaterialMaxBytes)
+	materialWriter, err := material.NewWriter(cfg.DataDir, cfg.MaterialMaxBytes)
 	if err != nil {
 		return fmt.Errorf("prepare material store: %w", err)
 	}
-	projects := app.NewProjectService(st, materials)
-	// The task attempt budget is configuration, not a constant: every task
-	// created through the plan or a rework inherits it.
-	projects.SetMaxAttempts(cfg.MaxAttempts)
-	materialService := app.NewMaterialService(st, materials)
+	materialService := app.NewMaterialService(st, materialWriter)
 
-	// Work items are reachable through the board, the worker queue and the
-	// single-card endpoints; the attempt budget is the same configuration the
-	// plan path uses.
-	workItems := app.NewWorkItemService(st, materials)
-	workItems.SetMaxAttempts(cfg.MaxAttempts)
-
-	// Pull mode: workers claim a card, hold a lease and renew it. The reclaimer
-	// returns expired leases to the queue even when nobody is claiming.
-	claims := app.NewClaimService(st, logger, cfg.LeaseTTL)
-
-	// The worker registry and worker-side dispatch. Every option is passed
-	// explicitly: a zero value silently falls back to the service default, so
-	// forgetting one would make the service disagree with the configuration
-	// (worker_ttl, heartbeat_interval, worker_metadata_max_bytes).
-	workers := app.NewWorkerService(st, logger, app.WorkerServiceOptions{
-		LeaseTTL:          cfg.LeaseTTL,
-		WorkerTTL:         cfg.WorkerTTL,
-		HeartbeatInterval: cfg.HeartbeatInterval,
-		MetadataMaxBytes:  cfg.WorkerMetadataMaxBytes,
-	})
-	reclaimer := app.NewReclaimer(st, logger, app.DefaultReclaimInterval)
-	// worker_retention bounds how long an offline, task-free worker row is
-	// kept; the same 30s pass that reclaims leases prunes the registry.
-	reclaimer.SetWorkerRetention(cfg.WorkerRetention)
-	application.SetReclaimer(reclaimer)
-
-	// The inbox is the single human entry point: it re-reads pending reviews
-	// and task decisions on every request, with the stale threshold coming
-	// from configuration (review_stale_hours, default 72).
-	inboxService := app.NewInboxService(st, logger, cfg.ReviewStaleHours)
-
-	// The Feishu bot is an optional module: im.New returns nil when disabled,
-	// so a platform without IM credentials behaves exactly as before. A failure
-	// to start only degrades the card channel; the HTTP API keeps serving.
-	imCfg := im.Config{
-		Enabled:        cfg.IM.Enabled,
-		AppID:          cfg.IM.AppID,
-		AppSecret:      cfg.IM.AppSecret,
-		AllowedChatIDs: cfg.IM.AllowedChatIDs,
-		PollInterval:   cfg.IM.PollInterval,
-		QuietHours:     cfg.IM.QuietHours,
-		MaxCards:       cfg.IM.MaxCards,
-		DocFolderToken: cfg.IM.DocFolderToken,
-	}
-	notifier := im.New(imCfg, logger)
-	if notifier != nil {
-		notifier.SetPoller(im.NewPoller(
-			imCfg,
-			app.NewIMInboxSource(inboxService),
-			app.NewIMSubjectSource(projects, workItems),
-			app.NewIMCardStore(st),
-			notifier.Client(),
-			logger,
-			nil,
-		))
-		if imCfg.DocFolderToken != "" {
-			notifier.SetDocs(im.NewDocs(
-				app.NewIMDocStore(st),
-				app.NewIMMaterialReader(materialService),
-				feishu.NewImporter(imCfg.AppID, imCfg.AppSecret, imCfg.DocFolderToken),
-				logger,
-			))
-		} else {
-			logger.Warn("im doc folder token is empty; cards will carry no full-text link")
-		}
-		notifier.SetActionHandler(im.NewActionHandler(
-			imCfg,
-			app.NewIMActionStore(st),
-			app.NewIMDecider(projects, workItems),
-			logger,
-			nil,
-		))
-		if err := notifier.Start(context.Background()); err != nil {
-			logger.Warn("im runtime failed to start, continuing without it", "error", err)
-		}
-		defer func() {
-			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := notifier.Close(closeCtx); err != nil {
-				logger.Error("close im runtime", "error", err)
-			}
-		}()
-	}
+	// V3 services. The task service needs a reader for the breakdown plan, so
+	// the plan artifact can be materialised in the approval transaction.
+	projectService := appv3.NewProjectService(st)
+	taskService := appv3.New(st).WithMaterialReader(planReader{st: st, dataDir: cfg.DataDir})
+	workerService := appv3.NewWorkerService(st)
 
 	reclaimCtx, stopReclaim := context.WithCancel(context.Background())
 	defer stopReclaim()
-	go reclaimer.Run(reclaimCtx)
+	go reclaimLoop(reclaimCtx, taskService, logger)
 
 	handler := api.Chain(
-		api.NewRouter(logger, web.Handler(), checks, products, projects, workItems, claims, workers, materialService, inboxService),
+		api.NewRouterV3(logger, web.Handler(), checks, api.V3Services{
+			Products:  products,
+			Materials: materialService,
+			Projects:  projectService,
+			Tasks:     taskService,
+			Workers:   workerService,
+		}),
 		api.Recover(logger),
 		api.RequestID(),
 		api.UnifiedErrors(),
@@ -228,20 +144,50 @@ func run() error {
 	// Stop the reclaim loop before the listener drains: a sweep in flight when
 	// the store closes would log a "database is locked" error on the way out.
 	stopReclaim()
-	reclaimer.Stop()
 
-	// Stop accepting new requests, then wait for in-flight ones (≤10s).
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
 
-	if err := application.Close(); err != nil {
-		logger.Error("close application", "error", err)
-	}
 	banner.Info("shutdown complete")
 	return nil
+}
+
+// reclaimLoop returns expired leases to the pool on a fixed interval.
+func reclaimLoop(ctx context.Context, tasks *appv3.Service, logger *slog.Logger) {
+	ticker := time.NewTicker(reclaimInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, err := tasks.ReclaimExpired(ctx)
+			if err != nil {
+				logger.Error("reclaim expired leases", "error", err)
+				continue
+			}
+			if n > 0 {
+				logger.Info("reclaimed expired leases", "count", n)
+			}
+		}
+	}
+}
+
+// planReader reads a material body from data_dir for the breakdown flow rule.
+type planReader struct {
+	st      *store.Store
+	dataDir string
+}
+
+func (p planReader) Read(ctx context.Context, materialID string) ([]byte, error) {
+	m, err := storev3.GetMaterial(ctx, p.st.Read(), materialID)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(filepath.Join(p.dataDir, filepath.FromSlash(m.Path)))
 }
 
 // openStore opens the SQLite file, applies pending migrations and starts the

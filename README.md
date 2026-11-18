@@ -231,29 +231,32 @@ echuan:
 
 ## HTTP API
 
-- 契约文件：[`api/openapi.yaml`](api/openapi.yaml)（OpenAPI 3.0.3，36 个 operation）
+- 契约文件：[`api/openapi.yaml`](api/openapi.yaml)（OpenAPI 3.0.3，28 个 operation）
 - 统一前缀 `/v1`；所有响应带 `X-Request-Id`
 - 错误体统一为 `Error`，`details` 永远是数组（无明细时为 `[]`）
 - 资源列表与详情共用路径，通过 `?id=` 选择详情
+- 枚举在 JSON 里是字符串名（`dev` / `ready`），数据库里是整型
 
 核心端点：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/healthz` / `/readyz` | 存活 / 就绪 |
-| `POST` | `/v1/products` | 创建产品 |
-| `POST` | `/v1/projects` | 创建项目 |
-| `POST` | `/v1/projects/requirement?id=` | 写入需求 |
-| `POST` | `/v1/projects/submit?id=` | 提交需求评审 |
-| `POST` | `/v1/projects/decide?id=` | 审批（approve/reject） |
-| `POST` | `/v1/specs` | 创建技术方案 |
-| `POST` | `/v1/projects/plans?id=` | 提交任务拆分计划 |
-| `POST` | `/v1/workers/heartbeat` | Worker 注册（首次不带 `worker_id`）/ 心跳 / 领取任务 |
-| `POST` | `/v1/work-items/report` | 回传任务报告 |
-| `GET` | `/v1/inbox` | 待评审收件箱 |
+| `POST` / `GET` / `PATCH` / `DELETE` | `/v1/products` | 产品管理 |
+| `POST` / `GET` / `PATCH` | `/v1/projects` | 项目容器（名称 / 产品 / 背景上下文 / open-closed） |
+| `POST` | `/v1/projects/close` / `/v1/projects/reopen` | 关闭 / 重开项目 |
+| `POST` / `GET` / `PATCH` / `DELETE` | `/v1/tasks` | 任务管理（四类 kind、七态） |
+| `POST` | `/v1/tasks/attach` | 给项目或任务挂附件 |
+| `POST` | `/v1/tasks/claim` / `/v1/tasks/lease` | 领取 / 续租（空队列为 204） |
+| `POST` | `/v1/tasks/report` | 写 output 附件并转 in_review |
+| `POST` | `/v1/tasks/decide` | 通过 / 驳回 |
+| `POST` | `/v1/tasks/reset` | 重置失败任务 |
+| `GET` | `/v1/tasks/events` / `/v1/decisions` | 任务时间线 / 评审记录 |
+| `POST` / `GET` | `/v1/workers/heartbeat` / `/v1/workers` | Worker 注册与列表 |
+| `GET` | `/v1/inbox` | 待领取 + 待审核任务 |
 | `GET` | `/v1/materials?id=` | 下载资料正文 |
 
-首次上线的完整 curl 流程（建产品 → 需求 → 方案 → 拆解 → 领取 → 报告 → 验收）
+首次上线的完整 curl 流程（建产品 → 建项目 → 建任务 → 领取 → 报告 → 验收）
 见 [`docs/deploy.md`](docs/deploy.md) 第 9 节。
 
 ## 开发与测试
@@ -262,7 +265,7 @@ echuan:
 make build      # 编译 ./echuan
 make test       # go test ./... -race
 make lint       # go vet（存在 staticcheck 时一并执行）
-make contract   # 接口契约校验（36 个 operation + 校验器自测）
+make contract   # 接口契约校验（28 个 operation + 校验器自测）
 make web        # 构建前端并同步到 internal/web/dist
 make e2e        # Worker 全链路端到端验收（临时目录 + 随机端口，约 90s）
 ```

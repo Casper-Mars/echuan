@@ -14,7 +14,8 @@ import (
 const taskColumns = `t.id, t.task_id, t.project_id, t.parent_task_id, t.kind, t.title,
 	t.description_md, t.context_md, t.priority, t.status, t.attempt, t.max_attempts,
 	t.not_before, t.lease_id, t.lease_until, t.worker_id, t.reason,
-	t.create_time, t.update_time, p.project_id AS project_code`
+	t.create_time, t.update_time, p.project_id AS project_code,
+	(SELECT parent.task_id FROM tasks parent WHERE parent.id = t.parent_task_id) AS parent_code`
 
 const taskFrom = ` FROM tasks t JOIN projects p ON p.id = t.project_id`
 

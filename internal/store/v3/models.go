@@ -31,17 +31,18 @@ var (
 
 // Project is one row of projects.
 type Project struct {
-	ID         int64              `db:"id"`
-	ProjectID  string             `db:"project_id"`
-	ProductID  int64              `db:"product_id"`
-	SeqNo      int                `db:"seq_no"`
-	Name       string             `db:"name"`
-	ContextMD  string             `db:"context_md"`
-	Status     enum.ProjectStatus `db:"status"`
-	CreateTime string             `db:"create_time"`
-	UpdateTime string             `db:"update_time"`
-	ClosedAt   *string            `db:"closed_at"`
-	LastActor  *string            `db:"last_actor"`
+	ID          int64              `db:"id"`
+	ProjectID   string             `db:"project_id"`
+	ProductID   int64              `db:"product_id"`
+	ProductCode string             `db:"product_code"`
+	SeqNo       int                `db:"seq_no"`
+	Name        string             `db:"name"`
+	ContextMD   string             `db:"context_md"`
+	Status      enum.ProjectStatus `db:"status"`
+	CreateTime  string             `db:"create_time"`
+	UpdateTime  string             `db:"update_time"`
+	ClosedAt    *string            `db:"closed_at"`
+	LastActor   *string            `db:"last_actor"`
 }
 
 // Task is one row of tasks.
@@ -50,6 +51,7 @@ type Task struct {
 	TaskID        string          `db:"task_id"`
 	ProjectID     int64           `db:"project_id"`
 	ParentTaskID  *int64          `db:"parent_task_id"`
+	ParentCode    *string         `db:"parent_code"`
 	Kind          enum.TaskKind   `db:"kind"`
 	Title         string          `db:"title"`
 	DescriptionMD string          `db:"description_md"`

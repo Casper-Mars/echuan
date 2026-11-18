@@ -1,0 +1,61 @@
+package v3
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	"github.com/Casper-Mars/echuan/internal/domain/enum"
+	storedb "github.com/Casper-Mars/echuan/internal/store"
+	storev3 "github.com/Casper-Mars/echuan/internal/store/v3"
+)
+
+// WorkerService is the V3 worker registry. It owns registration, heartbeat and
+// the declared kind list; task binding stays in the claim/report path.
+type WorkerService struct {
+	st  *storedb.Store
+	now func() time.Time
+}
+
+// NewWorkerService returns a service with the real clock.
+func NewWorkerService(st *storedb.Store) *WorkerService {
+	return &WorkerService{st: st, now: time.Now}
+}
+
+// WithClock replaces the clock (tests).
+func (s *WorkerService) WithClock(now func() time.Time) *WorkerService {
+	s.now = now
+	return s
+}
+
+// Heartbeat registers or refreshes a worker and replaces its kinds.
+func (s *WorkerService) Heartbeat(ctx context.Context, workerID, metadata string, kinds []enum.TaskKind) error {
+	if strings.TrimSpace(workerID) == "" {
+		return invalid("worker_id is required")
+	}
+	for _, kind := range kinds {
+		if !kind.Valid() {
+			return invalid("kinds: invalid value %d", kind)
+		}
+	}
+	now := formatTime(s.now())
+	if err := storev3.UpsertWorker(ctx, s.st, workerID, metadata, now); err != nil {
+		return Translate(err)
+	}
+	if err := storev3.SetWorkerKinds(ctx, s.st, workerID, kinds); err != nil {
+		return Translate(err)
+	}
+	return nil
+}
+
+// List returns worker rows ordered by last_seen.
+func (s *WorkerService) List(ctx context.Context, limit int) ([]storev3.Worker, error) {
+	workers, err := storev3.ListWorkers(ctx, s.st.Read(), limit)
+	return workers, Translate(err)
+}
+
+// Kinds returns one worker's declared kinds.
+func (s *WorkerService) Kinds(ctx context.Context, workerID string) ([]enum.TaskKind, error) {
+	kinds, err := storev3.ListWorkerKinds(ctx, s.st.Read(), workerID)
+	return kinds, Translate(err)
+}

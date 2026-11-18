@@ -1,0 +1,702 @@
+package api
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	appv3 "github.com/Casper-Mars/echuan/internal/app/v3"
+	"github.com/Casper-Mars/echuan/internal/domain/enum"
+	"github.com/Casper-Mars/echuan/internal/platform"
+	storev3 "github.com/Casper-Mars/echuan/internal/store/v3"
+)
+
+type v3Handler struct {
+	projects *appv3.ProjectService
+	tasks    *appv3.Service
+	workers  *appv3.WorkerService
+	logger   *slog.Logger
+}
+
+func newV3Handler(services V3Services, logger *slog.Logger) *v3Handler {
+	return &v3Handler{
+		projects: services.Projects,
+		tasks:    services.Tasks,
+		workers:  services.Workers,
+		logger:   logger,
+	}
+}
+
+// ── responses ───────────────────────────────────────────────────────────
+
+type v3ProjectResponse struct {
+	ProjectID  string             `json:"project_id"`
+	ProductID  string             `json:"product_id"`
+	SeqNo      int                `json:"seq_no"`
+	Name       string             `json:"name"`
+	ContextMD  string             `json:"context_md"`
+	Status     enum.ProjectStatus `json:"status"`
+	CreateTime string             `json:"create_time"`
+	UpdateTime string             `json:"update_time"`
+	ClosedAt   *string            `json:"closed_at,omitempty"`
+}
+
+type v3ProjectListResponse struct {
+	Items       []v3ProjectResponse `json:"items"`
+	NextAfterID int64               `json:"next_after_id"`
+}
+
+func v3ProjectDTO(p storev3.Project) v3ProjectResponse {
+	return v3ProjectResponse{
+		ProjectID:  p.ProjectID,
+		ProductID:  p.ProductCode,
+		SeqNo:      p.SeqNo,
+		Name:       p.Name,
+		ContextMD:  p.ContextMD,
+		Status:     p.Status,
+		CreateTime: p.CreateTime,
+		UpdateTime: p.UpdateTime,
+		ClosedAt:   p.ClosedAt,
+	}
+}
+
+type v3TaskResponse struct {
+	TaskID        string          `json:"task_id"`
+	ProjectID     string          `json:"project_id"`
+	ParentTaskID  *string         `json:"parent_task_id,omitempty"`
+	Kind          enum.TaskKind   `json:"kind"`
+	Title         string          `json:"title"`
+	DescriptionMD string          `json:"description_md"`
+	ContextMD     string          `json:"context_md"`
+	Priority      int             `json:"priority"`
+	Status        enum.TaskStatus `json:"status"`
+	Attempt       int             `json:"attempt"`
+	MaxAttempts   int             `json:"max_attempts"`
+	LeaseID       *string         `json:"lease_id,omitempty"`
+	LeaseUntil    *string         `json:"lease_until,omitempty"`
+	WorkerID      *string         `json:"worker_id,omitempty"`
+	Reason        *string         `json:"reason,omitempty"`
+	CreateTime    string          `json:"create_time"`
+	UpdateTime    string          `json:"update_time"`
+}
+
+func v3TaskDTO(t storev3.Task) v3TaskResponse {
+	return v3TaskResponse{
+		TaskID:        t.TaskID,
+		ProjectID:     t.ProjectCode,
+		ParentTaskID:  t.ParentCode,
+		Kind:          t.Kind,
+		Title:         t.Title,
+		DescriptionMD: t.DescriptionMD,
+		ContextMD:     t.ContextMD,
+		Priority:      t.Priority,
+		Status:        t.Status,
+		Attempt:       t.Attempt,
+		MaxAttempts:   t.MaxAttempts,
+		LeaseID:       t.LeaseID,
+		LeaseUntil:    t.LeaseUntil,
+		WorkerID:      t.WorkerID,
+		Reason:        t.Reason,
+		CreateTime:    t.CreateTime,
+		UpdateTime:    t.UpdateTime,
+	}
+}
+
+type v3TaskListResponse struct {
+	Items []v3TaskResponse `json:"items"`
+}
+
+type v3WorkerResponse struct {
+	WorkerID       string           `json:"worker_id"`
+	State          enum.WorkerState `json:"state"`
+	CurrentTaskID  *int64           `json:"current_task_id,omitempty"`
+	CurrentLeaseID *string          `json:"current_lease_id,omitempty"`
+	LastSeen       string           `json:"last_seen"`
+}
+
+type v3WorkerListResponse struct {
+	Items []v3WorkerResponse `json:"items"`
+}
+
+type v3EventResponse struct {
+	ID         int64      `json:"id"`
+	Event      enum.Event `json:"event"`
+	Actor      *string    `json:"actor,omitempty"`
+	DetailJSON string     `json:"detail_json"`
+	CreateTime string     `json:"create_time"`
+}
+
+type v3EventListResponse struct {
+	Items []v3EventResponse `json:"items"`
+}
+
+type v3DecisionResponse struct {
+	ID         int64         `json:"id"`
+	TaskID     string        `json:"task_id"`
+	Gate       enum.TaskKind `json:"gate"`
+	MaterialID *int64        `json:"material_id,omitempty"`
+	Decision   enum.Decision `json:"decision"`
+	DecidedBy  string        `json:"decided_by"`
+	Reason     *string       `json:"reason,omitempty"`
+	CreateTime string        `json:"create_time"`
+}
+
+type v3DecisionListResponse struct {
+	Items []v3DecisionResponse `json:"items"`
+}
+
+// ── errors ──────────────────────────────────────────────────────────────
+
+func (h *v3Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
+	if appv3.IsNoWork(err) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	status := appv3.StatusOf(err)
+	code := "internal"
+	switch status {
+	case http.StatusBadRequest:
+		code = "invalid_argument"
+	case http.StatusNotFound:
+		code = "not_found"
+	case http.StatusConflict:
+		code = "conflict"
+	}
+	if status == http.StatusInternalServerError && h.logger != nil {
+		h.logger.Error("v3 request failed",
+			"request_id", RequestIDFromContext(r.Context()),
+			"method", r.Method, "path", r.URL.Path, "error", err)
+	}
+	writeError(w, r, status, code, err.Error(), nil)
+}
+
+func invalidEnum(w http.ResponseWriter, r *http.Request, field, raw string) {
+	writeError(w, r, http.StatusBadRequest, "invalid_argument",
+		fmt.Sprintf("invalid %s", field),
+		[]ErrorDetail{{Field: field, Reason: fmt.Sprintf("unknown value %q", raw)}})
+}
+
+// ── projects ────────────────────────────────────────────────────────────
+
+type v3CreateProjectRequest struct {
+	ProductID string `json:"product_id"`
+	Name      string `json:"name"`
+	ContextMD string `json:"context_md"`
+}
+
+func (h *v3Handler) createProject(w http.ResponseWriter, r *http.Request) {
+	var body v3CreateProjectRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	project, err := h.projects.CreateProject(r.Context(), appv3.CreateProjectRequest{
+		ProductID: body.ProductID,
+		Name:      body.Name,
+		ContextMD: body.ContextMD,
+		Actor:     ActorFromContext(r.Context()),
+	})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Location", "/v1/projects?id="+project.ProjectID)
+	writeJSON(w, http.StatusCreated, v3ProjectDTO(project))
+}
+
+func (h *v3Handler) listOrGetProject(w http.ResponseWriter, r *http.Request) {
+	if id := strings.TrimSpace(r.URL.Query().Get("id")); id != "" {
+		project, err := h.projects.GetProject(r.Context(), id)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, v3ProjectDTO(project))
+		return
+	}
+
+	var status *enum.ProjectStatus
+	if raw := strings.TrimSpace(r.URL.Query().Get("status")); raw != "" {
+		parsed, err := enum.ParseProjectStatus(raw)
+		if err != nil {
+			invalidEnum(w, r, "status", raw)
+			return
+		}
+		status = &parsed
+	}
+	afterID, _ := strconv.ParseInt(r.URL.Query().Get("after_id"), 10, 64)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	projects, err := h.projects.ListProjects(r.Context(), appv3.ProjectFilter{
+		Status: status, AfterID: afterID, Limit: limit,
+	})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	items := make([]v3ProjectResponse, 0, len(projects))
+	for _, project := range projects {
+		items = append(items, v3ProjectDTO(project))
+	}
+	var next int64
+	if len(projects) > 0 {
+		next = projects[len(projects)-1].ID
+	}
+	writeJSON(w, http.StatusOK, v3ProjectListResponse{Items: items, NextAfterID: next})
+}
+
+type v3UpdateProjectRequest struct {
+	Name      string `json:"name"`
+	ContextMD string `json:"context_md"`
+}
+
+func (h *v3Handler) updateProject(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "id is required",
+			[]ErrorDetail{{Field: "id", Reason: "is required"}})
+		return
+	}
+	var body v3UpdateProjectRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	project, err := h.projects.UpdateProject(r.Context(), appv3.UpdateProjectRequest{
+		ProjectID: id, Name: body.Name, ContextMD: body.ContextMD,
+		Actor: ActorFromContext(r.Context()),
+	})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v3ProjectDTO(project))
+}
+
+func (h *v3Handler) closeProject(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "id is required",
+			[]ErrorDetail{{Field: "id", Reason: "is required"}})
+		return
+	}
+	force := r.URL.Query().Get("force")
+	if err := h.projects.CloseProject(r.Context(), id, force == "1" || force == "true", ActorFromContext(r.Context())); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *v3Handler) reopenProject(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "id is required",
+			[]ErrorDetail{{Field: "id", Reason: "is required"}})
+		return
+	}
+	if err := h.projects.ReopenProject(r.Context(), id, ActorFromContext(r.Context())); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── tasks ───────────────────────────────────────────────────────────────
+
+type createTaskRequest struct {
+	ProjectID     string   `json:"project_id"`
+	TaskID        string   `json:"task_id"`
+	ParentTaskID  string   `json:"parent_task_id"`
+	Kind          string   `json:"kind"`
+	Title         string   `json:"title"`
+	DescriptionMD string   `json:"description_md"`
+	ContextMD     string   `json:"context_md"`
+	Priority      int      `json:"priority"`
+	MaxAttempts   int      `json:"max_attempts"`
+	DependsOn     []string `json:"depends_on"`
+}
+
+func (h *v3Handler) createTask(w http.ResponseWriter, r *http.Request) {
+	var body createTaskRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	kind, err := enum.ParseTaskKind(body.Kind)
+	if err != nil {
+		invalidEnum(w, r, "kind", body.Kind)
+		return
+	}
+	taskID := strings.TrimSpace(body.TaskID)
+	if taskID == "" {
+		ulid, err := platform.NewULID(time.Now())
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		taskID = "t_" + ulid
+	}
+	task, err := h.tasks.CreateTask(r.Context(), appv3.CreateTaskRequest{
+		ProjectID:     body.ProjectID,
+		TaskID:        taskID,
+		ParentTaskID:  body.ParentTaskID,
+		Kind:          kind,
+		Title:         body.Title,
+		DescriptionMD: body.DescriptionMD,
+		ContextMD:     body.ContextMD,
+		Priority:      body.Priority,
+		MaxAttempts:   body.MaxAttempts,
+		DependsOn:     body.DependsOn,
+	})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Location", "/v1/tasks?id="+task.TaskID)
+	writeJSON(w, http.StatusCreated, v3TaskDTO(task))
+}
+
+func (h *v3Handler) listOrGetTask(w http.ResponseWriter, r *http.Request) {
+	if id := strings.TrimSpace(r.URL.Query().Get("id")); id != "" {
+		task, err := h.tasks.GetTask(r.Context(), id)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, v3TaskDTO(task))
+		return
+	}
+
+	filter := storev3.TaskFilter{ProjectID: strings.TrimSpace(r.URL.Query().Get("project_id"))}
+	if raw := strings.TrimSpace(r.URL.Query().Get("kind")); raw != "" {
+		kind, err := enum.ParseTaskKind(raw)
+		if err != nil {
+			invalidEnum(w, r, "kind", raw)
+			return
+		}
+		filter.Kind = &kind
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("status")); raw != "" {
+		status, err := enum.ParseTaskStatus(raw)
+		if err != nil {
+			invalidEnum(w, r, "status", raw)
+			return
+		}
+		filter.Status = &status
+	}
+	filter.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
+
+	tasks, err := h.tasks.ListTasks(r.Context(), filter)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	items := make([]v3TaskResponse, 0, len(tasks))
+	for _, task := range tasks {
+		items = append(items, v3TaskDTO(task))
+	}
+	writeJSON(w, http.StatusOK, v3TaskListResponse{Items: items})
+}
+
+type updateTaskRequest struct {
+	Title         string `json:"title"`
+	DescriptionMD string `json:"description_md"`
+	ContextMD     string `json:"context_md"`
+	Priority      int    `json:"priority"`
+}
+
+func (h *v3Handler) updateTask(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "id is required",
+			[]ErrorDetail{{Field: "id", Reason: "is required"}})
+		return
+	}
+	var body updateTaskRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	task, err := h.tasks.UpdateTask(r.Context(), appv3.UpdateTaskRequest{
+		TaskID: id, Title: body.Title, DescriptionMD: body.DescriptionMD,
+		ContextMD: body.ContextMD, Priority: body.Priority,
+	})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v3TaskDTO(task))
+}
+
+func (h *v3Handler) deleteTask(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "id is required",
+			[]ErrorDetail{{Field: "id", Reason: "is required"}})
+		return
+	}
+	if err := h.tasks.DeleteTask(r.Context(), id); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type v3AttachRequest struct {
+	ProjectID  string `json:"project_id"`
+	TaskID     string `json:"task_id"`
+	MaterialID string `json:"material_id"`
+	Role       string `json:"role"`
+	SortNo     int    `json:"sort_no"`
+}
+
+func (h *v3Handler) attach(w http.ResponseWriter, r *http.Request) {
+	var body v3AttachRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	role, err := enum.ParseAttachmentRole(body.Role)
+	if err != nil {
+		invalidEnum(w, r, "role", body.Role)
+		return
+	}
+	attachment, err := h.tasks.Attach(r.Context(), appv3.AttachRequest{
+		ProjectID: body.ProjectID, TaskID: body.TaskID,
+		MaterialID: body.MaterialID, Role: role, SortNo: body.SortNo,
+	})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, attachment)
+}
+
+type v3ClaimRequest struct {
+	WorkerID string `json:"worker_id"`
+	Kind     string `json:"kind"`
+}
+
+func (h *v3Handler) claim(w http.ResponseWriter, r *http.Request) {
+	var body v3ClaimRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	kind, err := enum.ParseTaskKind(body.Kind)
+	if err != nil {
+		invalidEnum(w, r, "kind", body.Kind)
+		return
+	}
+	task, err := h.tasks.Claim(r.Context(), body.WorkerID, kind)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v3TaskDTO(task))
+}
+
+type v3LeaseRequest struct {
+	TaskID  string `json:"task_id"`
+	LeaseID string `json:"lease_id"`
+}
+
+func (h *v3Handler) renewLease(w http.ResponseWriter, r *http.Request) {
+	var body v3LeaseRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	if err := h.tasks.Renew(r.Context(), body.TaskID, body.LeaseID); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"task_id": body.TaskID, "lease_id": body.LeaseID})
+}
+
+type v3ReportRequest struct {
+	TaskID     string `json:"task_id"`
+	LeaseID    string `json:"lease_id"`
+	MaterialID string `json:"material_id"`
+}
+
+func (h *v3Handler) report(w http.ResponseWriter, r *http.Request) {
+	var body v3ReportRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	task, err := h.tasks.Report(r.Context(), body.TaskID, body.LeaseID, body.MaterialID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v3TaskDTO(task))
+}
+
+type v3DecideRequest struct {
+	TaskID     string `json:"task_id"`
+	Decision   string `json:"decision"`
+	MaterialID string `json:"material_id"`
+	DecidedBy  string `json:"decided_by"`
+	Reason     string `json:"reason"`
+}
+
+func (h *v3Handler) decide(w http.ResponseWriter, r *http.Request) {
+	var body v3DecideRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	decision, err := enum.ParseDecision(body.Decision)
+	if err != nil {
+		invalidEnum(w, r, "decision", body.Decision)
+		return
+	}
+	task, err := h.tasks.Decide(r.Context(), appv3.DecideRequest{
+		TaskID: body.TaskID, Decision: decision, MaterialID: body.MaterialID,
+		DecidedBy: body.DecidedBy, Reason: body.Reason,
+	})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v3TaskDTO(task))
+}
+
+type v3ResetRequest struct {
+	TaskID string `json:"task_id"`
+}
+
+func (h *v3Handler) reset(w http.ResponseWriter, r *http.Request) {
+	var body v3ResetRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	task, err := h.tasks.Reset(r.Context(), body.TaskID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v3TaskDTO(task))
+}
+
+func (h *v3Handler) events(w http.ResponseWriter, r *http.Request) {
+	taskID := strings.TrimSpace(r.URL.Query().Get("task_id"))
+	if taskID == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "task_id is required",
+			[]ErrorDetail{{Field: "task_id", Reason: "is required"}})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	events, err := h.tasks.ListEvents(r.Context(), taskID, limit)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	items := make([]v3EventResponse, 0, len(events))
+	for _, event := range events {
+		items = append(items, v3EventResponse{
+			ID: event.ID, Event: event.Event, Actor: event.Actor,
+			DetailJSON: event.DetailJSON, CreateTime: event.CreateTime,
+		})
+	}
+	writeJSON(w, http.StatusOK, v3EventListResponse{Items: items})
+}
+
+func (h *v3Handler) decisions(w http.ResponseWriter, r *http.Request) {
+	taskID := strings.TrimSpace(r.URL.Query().Get("task_id"))
+	if taskID == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "task_id is required",
+			[]ErrorDetail{{Field: "task_id", Reason: "is required"}})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	decisions, err := h.tasks.ListDecisions(r.Context(), taskID, limit)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	items := make([]v3DecisionResponse, 0, len(decisions))
+	for _, decision := range decisions {
+		items = append(items, v3DecisionResponse{
+			ID: decision.ID, TaskID: decision.TaskID, Gate: decision.Gate,
+			MaterialID: decision.MaterialID, Decision: decision.Decision,
+			DecidedBy: decision.DecidedBy, Reason: decision.Reason, CreateTime: decision.CreateTime,
+		})
+	}
+	writeJSON(w, http.StatusOK, v3DecisionListResponse{Items: items})
+}
+
+type v3HeartbeatRequest struct {
+	WorkerID string   `json:"worker_id"`
+	Metadata string   `json:"metadata"`
+	Kinds    []string `json:"kinds"`
+}
+
+func (h *v3Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
+	var body v3HeartbeatRequest
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeDomainError(w, r, h.logger, err)
+		return
+	}
+	kinds := make([]enum.TaskKind, 0, len(body.Kinds))
+	for _, raw := range body.Kinds {
+		kind, err := enum.ParseTaskKind(raw)
+		if err != nil {
+			invalidEnum(w, r, "kinds", raw)
+			return
+		}
+		kinds = append(kinds, kind)
+	}
+	if err := h.workers.Heartbeat(r.Context(), body.WorkerID, body.Metadata, kinds); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *v3Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	workers, err := h.workers.List(r.Context(), limit)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	items := make([]v3WorkerResponse, 0, len(workers))
+	for _, worker := range workers {
+		items = append(items, v3WorkerResponse{
+			WorkerID: worker.WorkerID, State: worker.State,
+			CurrentTaskID: worker.CurrentTaskID, CurrentLeaseID: worker.CurrentLeaseID,
+			LastSeen: worker.LastSeen,
+		})
+	}
+	writeJSON(w, http.StatusOK, v3WorkerListResponse{Items: items})
+}
+
+func (h *v3Handler) inbox(w http.ResponseWriter, r *http.Request) {
+	ctx := context.Background()
+	ready := enum.Ready
+	inReview := enum.InReview
+	tasks, err := h.tasks.ListTasks(r.Context(), storev3.TaskFilter{Status: &ready, Limit: 100})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	review, err := h.tasks.ListTasks(ctx, storev3.TaskFilter{Status: &inReview, Limit: 100})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	tasks = append(tasks, review...)
+	items := make([]v3TaskResponse, 0, len(tasks))
+	for _, task := range tasks {
+		items = append(items, v3TaskDTO(task))
+	}
+	writeJSON(w, http.StatusOK, v3TaskListResponse{Items: items})
+}

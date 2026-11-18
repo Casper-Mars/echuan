@@ -10,8 +10,10 @@ import (
 	storedb "github.com/Casper-Mars/echuan/internal/store"
 )
 
-const projectColumns = `id, project_id, product_id, seq_no, name, context_md, status,
-	create_time, update_time, closed_at, last_actor`
+const projectColumns = `p.id, p.project_id, p.product_id, p.seq_no, p.name, p.context_md, p.status,
+	p.create_time, p.update_time, p.closed_at, p.last_actor, pr.product_id AS product_code`
+
+const projectFrom = ` FROM projects p JOIN products pr ON pr.id = p.product_id`
 
 // CreateProject inserts a project for an existing product. The business id is
 // `<product_id>-<seq_no>`; seq_no is allocated under the write lock so two
@@ -48,15 +50,16 @@ func CreateProject(ctx context.Context, s *storedb.Store, in CreateProjectInput)
 		}
 
 		out = Project{
-			ID:         pk,
-			ProjectID:  projectID,
-			ProductID:  productPK,
-			SeqNo:      seq,
-			Name:       in.Name,
-			ContextMD:  in.ContextMD,
-			Status:     enum.ProjectOpen,
-			CreateTime: in.Now,
-			UpdateTime: in.Now,
+			ID:          pk,
+			ProjectID:   projectID,
+			ProductID:   productPK,
+			ProductCode: in.ProductID,
+			SeqNo:       seq,
+			Name:        in.Name,
+			ContextMD:   in.ContextMD,
+			Status:      enum.ProjectOpen,
+			CreateTime:  in.Now,
+			UpdateTime:  in.Now,
 		}
 		if in.Actor != "" {
 			out.LastActor = &in.Actor
@@ -69,7 +72,7 @@ func CreateProject(ctx context.Context, s *storedb.Store, in CreateProjectInput)
 // GetProject loads one project by business id.
 func GetProject(ctx context.Context, q storedb.Querier, projectID string) (Project, error) {
 	project, err := storedb.One[Project](ctx, q,
-		`SELECT `+projectColumns+` FROM projects WHERE project_id = ?`, projectID)
+		`SELECT `+projectColumns+projectFrom+` WHERE p.project_id = ?`, projectID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, fmt.Errorf("%w: %s", ErrProjectNotFound, projectID)
 	}
@@ -86,11 +89,11 @@ func ListProjects(ctx context.Context, q storedb.Querier, status *enum.ProjectSt
 	}
 	if status == nil {
 		return storedb.All[Project](ctx, q,
-			`SELECT `+projectColumns+` FROM projects WHERE id > ? ORDER BY id ASC LIMIT ?`,
+			`SELECT `+projectColumns+projectFrom+` WHERE p.id > ? ORDER BY p.id ASC LIMIT ?`,
 			afterID, limit)
 	}
 	return storedb.All[Project](ctx, q,
-		`SELECT `+projectColumns+` FROM projects WHERE id > ? AND status = ? ORDER BY id ASC LIMIT ?`,
+		`SELECT `+projectColumns+projectFrom+` WHERE p.id > ? AND p.status = ? ORDER BY p.id ASC LIMIT ?`,
 		afterID, *status, limit)
 }
 
