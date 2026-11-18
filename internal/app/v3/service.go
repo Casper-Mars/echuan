@@ -403,3 +403,17 @@ func (s *Service) Attachments(ctx context.Context, taskID string) ([]storev3.Mat
 	refs, err := storev3.ListTaskAttachmentRefs(ctx, s.st.Read(), task.ID)
 	return refs, Translate(err)
 }
+
+// LatestOutputMaterialID returns the business id of the task's latest output
+// material. IM decisions need the business id, not the attachment's physical id.
+func (s *Service) LatestOutputMaterialID(ctx context.Context, taskID string) (string, error) {
+	attachment, err := storev3.LatestOutput(ctx, s.st.Read(), taskID)
+	if err != nil {
+		return "", Translate(err)
+	}
+	material, err := storev3.GetMaterialByID(ctx, s.st.Read(), attachment.MaterialID)
+	if err != nil {
+		return "", Translate(err)
+	}
+	return material.MaterialID, nil
+}

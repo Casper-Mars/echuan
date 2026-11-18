@@ -31,7 +31,7 @@ type Runtime struct {
 	logger *slog.Logger
 	client *feishu.Client
 	conn   *feishu.Connection
-	poller *Poller
+	poller Runner
 	cancel context.CancelFunc
 	done   chan struct{}
 	wg     sync.WaitGroup
@@ -67,7 +67,9 @@ func (r *Runtime) SetDocs(docs DocProvider) {
 	if r == nil || r.poller == nil {
 		return
 	}
-	r.poller.SetDocs(docs)
+	if setter, ok := r.poller.(interface{ SetDocs(DocProvider) }); ok {
+		setter.SetDocs(docs)
+	}
 }
 
 // SetActionHandler wires the card callback to the decision handler. It must be
@@ -79,8 +81,13 @@ func (r *Runtime) SetActionHandler(h *ActionHandler) {
 	r.conn.SetCardHandler(h.Handle)
 }
 
+// Runner is a poller loop. The v2 Poller and the v3 task poller both satisfy it.
+type Runner interface {
+	Run(ctx context.Context)
+}
+
 // SetPoller attaches the outbound poller. It must be called before Start.
-func (r *Runtime) SetPoller(p *Poller) {
+func (r *Runtime) SetPoller(p Runner) {
 	if r == nil {
 		return
 	}

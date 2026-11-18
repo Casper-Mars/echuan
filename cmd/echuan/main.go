@@ -19,6 +19,7 @@ import (
 	"github.com/Casper-Mars/echuan/internal/api"
 	"github.com/Casper-Mars/echuan/internal/app"
 	appv3 "github.com/Casper-Mars/echuan/internal/app/v3"
+	"github.com/Casper-Mars/echuan/internal/im"
 	"github.com/Casper-Mars/echuan/internal/material"
 	"github.com/Casper-Mars/echuan/internal/platform"
 	"github.com/Casper-Mars/echuan/internal/store"
@@ -86,6 +87,36 @@ func run() error {
 	projectService := appv3.NewProjectService(st)
 	taskService := appv3.New(st).WithMaterialReader(planReader{st: st, dataDir: cfg.DataDir})
 	workerService := appv3.NewWorkerService(st)
+
+	// Feishu bot: optional. The poller turns in_review tasks into cards and
+	// the card callback decides the task through the V3 service.
+	imCfg := im.Config{
+		Enabled:        cfg.IM.Enabled,
+		AppID:          cfg.IM.AppID,
+		AppSecret:      cfg.IM.AppSecret,
+		AllowedChatIDs: cfg.IM.AllowedChatIDs,
+		PollInterval:   cfg.IM.PollInterval,
+		QuietHours:     cfg.IM.QuietHours,
+		MaxCards:       cfg.IM.MaxCards,
+		DocFolderToken: cfg.IM.DocFolderToken,
+	}
+	notifier := im.New(imCfg, logger)
+	if notifier != nil {
+		imStore := im.NewV3Store(st)
+		notifier.SetPoller(im.NewV3Poller(imCfg,
+			im.NewV3TaskSource(taskService, projectService), imStore, notifier.Client(), logger, nil))
+		notifier.SetActionHandler(im.NewActionHandler(imCfg, imStore, im.NewV3Decider(taskService), logger, nil))
+		if err := notifier.Start(context.Background()); err != nil {
+			logger.Warn("im runtime failed to start, continuing without it", "error", err)
+		}
+		defer func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := notifier.Close(closeCtx); err != nil {
+				logger.Error("close im runtime", "error", err)
+			}
+		}()
+	}
 
 	reclaimCtx, stopReclaim := context.WithCancel(context.Background())
 	defer stopReclaim()
