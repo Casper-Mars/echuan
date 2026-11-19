@@ -104,10 +104,6 @@ interface ListToolConfig<TItem> {
   parameters: ParameterSchemaSpec
   /** 列表资源中文名，用于空列表、「拿到详情」与 404 文案。 */
   subject: string
-  /** 空列表时的下一步建议（不含「当前没有…」前缀）。 */
-  emptyHint: string
-  /** 非空且没有 next_cursor 时的下一步建议。 */
-  nextHint: string
   /** 发起只读列表请求；`query` 为空表示不带任何参数。 */
   request(query: QueryParams | undefined): Promise<ApiResult<unknown>>
   /** 渲染非空列表：表头 + 每条一行（或两行）。 */
@@ -158,7 +154,7 @@ function createListTool<TItem>(config: ListToolConfig<TItem>): ToolDefinition {
         if (result.kind === 'empty') {
           return {
             text: `平台对 \`${config.name}\` 返回 204（无内容）：当前没有${config.subject}。`
-              + '下一步：稍后再试，不要把它当错误重试。',
+              + '这是正常空结果，不是错误。',
           }
         }
 
@@ -169,21 +165,20 @@ function createListTool<TItem>(config: ListToolConfig<TItem>): ToolDefinition {
         if (items === undefined) {
           return {
             text: `平台没有返回${config.subject}列表（拿到的是详情或字段不全）。`
-              + '这次拿到的是详情，列表接口应返回 items。'
-              + '下一步：重试一次；若仍是详情，把该现象反馈给平台维护者，不要按详情字段硬读。',
+              + '这次拿到的是详情；列表接口应返回 items，按详情字段硬读会读错。',
           }
         }
 
         if (items.length === 0) {
-          return { text: `当前没有${config.subject}。下一步：${config.emptyHint}` }
+          return { text: `当前没有${config.subject}。` }
         }
 
         const body = config.format(items as TItem[])
         const cursor = isRecord(payload) ? asCursor(payload['next_cursor']) : undefined
-        const tail = cursor === undefined
-          ? `下一步：${config.nextHint}`
-          : `还有更多，可传 cursor=${cursor} 继续（再次调用 \`${config.name}\` 并带上 cursor）。`
-        return { text: `${body}\n${tail}` }
+        if (cursor === undefined) return { text: body }
+        return {
+          text: `${body}\n还有更多，可传 cursor=${cursor} 继续（再次调用 \`${config.name}\` 并带上 cursor）。`,
+        }
       } catch (err) {
         return readError(err, config.subject)
       }
@@ -299,8 +294,6 @@ export function createProductListTool(options: EchuanToolOptions): ToolDefinitio
       },
     },
     subject: '产品',
-    emptyHint: '确认产品是否已在平台创建；稍后再试，不要连续重试。',
-    nextHint: '带 product_id 用 `echuan_project_list` 看该产品的项目。',
     request: query => client.listProducts(query as ProductsQuery | undefined),
     format: formatProductList,
   })
@@ -339,8 +332,6 @@ export function createProjectListTool(options: EchuanToolOptions): ToolDefinitio
       },
     },
     subject: '项目',
-    emptyHint: '核对 product_id / status 筛选是否正确；不确定时去掉筛选再查一次。',
-    nextHint: '带 project_id 用 `echuan_work_list` 看该项目的工作项。',
     request: query => client.listProjects(query as ProjectsQuery | undefined),
     format: formatProjectList,
   })
@@ -385,8 +376,6 @@ export function createWorkItemListTool(options: EchuanToolOptions): ToolDefiniti
       },
     },
     subject: '工作项',
-    emptyHint: '核对 project_id / kind / state 筛选是否正确；不确定时去掉筛选再查一次。',
-    nextHint: '带工作项编号用 `echuan_work_get` 看工作项详情。',
     request: query => client.listWorkItems(query as WorkItemsQuery | undefined),
     format: formatWorkItemList,
   })

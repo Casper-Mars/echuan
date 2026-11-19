@@ -214,6 +214,18 @@ describe('V3 读工具：成功即非空中文文本', () => {
     expect(text).toContain('ECHUAN')
   })
 
+  it('读工具成功输出只给数据：不注入「下一步」这类工作流建议', async () => {
+    const listProducts = vi.fn().mockResolvedValue(ok({ items: [product] }))
+    const listV3Projects = vi.fn().mockResolvedValue(ok({ items: [project] }))
+    const listV3Tasks = vi.fn().mockResolvedValue(ok({ items: [task] }))
+    const { byName } = buildOptions({ listProducts, listV3Projects, listV3Tasks })
+
+    for (const name of ['echuan_product_list', 'echuan_project_list', 'echuan_task_list']) {
+      const { text } = await runAndRender(byName, name)
+      expect(text).not.toContain('下一步')
+    }
+  })
+
   it('project_list 渲染项目编号 / 名称 / 状态，空集有提示', async () => {
     const listV3Projects = vi
       .fn()

@@ -740,10 +740,7 @@ export function formatV3Task(task: V3Task): string {
 /** V3 任务列表：汇总行 + 每条一行（编号 / 标题 / 项目 / 类别 / 状态 / 优先级 / 尝试次数 / 租约）。 */
 export function formatV3TaskList(items: readonly V3Task[]): string {
   if (items.length === 0) {
-    return [
-      '当前没有任务（0 个）。',
-      '下一步：核对 project_id / kind / status 筛选是否正确；不确定时去掉筛选再查一次（`echuan_task_list`）。',
-    ].join('\n')
+    return '当前没有任务（0 个）。'
   }
 
   const lines = [`任务共 ${items.length} 个`]
@@ -762,17 +759,13 @@ export function formatV3TaskList(items: readonly V3Task[]): string {
         + (leaseId === undefined || leaseId === '' ? '' : `｜lease_id=${leaseId}`),
     )
   }
-  lines.push('下一步：带 task_id 用 `echuan_task_get` 看正文与租约；报告正文用 `echuan_material_get` 取。')
   return lines.join('\n')
 }
 
 /** V3 待办（inbox 返回的是任务）：汇总行 + 每条一行。 */
 export function formatV3Inbox(items: readonly V3Task[]): string {
   if (items.length === 0) {
-    return [
-      '当前没有待处理项（0 条）。',
-      '下一步：稍后再用 `echuan_inbox` 看一眼；要盯具体进度可带编号用 `echuan_project_get` / `echuan_task_get`。',
-    ].join('\n')
+    return '当前没有待处理项（0 条）。'
   }
 
   const lines = [`待办共 ${items.length} 条`]
@@ -785,9 +778,6 @@ export function formatV3Inbox(items: readonly V3Task[]): string {
         + `｜状态：${v3TaskStatusLabel(asString(item.status))}`,
     )
   }
-  lines.push(
-    '下一步：带 task_id 用 `echuan_task_get` 看详情；需求/方案/报告正文用 `echuan_material_get` 取。',
-  )
   return lines.join('\n')
 }
 
@@ -813,20 +803,13 @@ export function formatV3Project(project: V3Project): string {
 
   const context = asString(project.context_md)?.trim() ?? ''
   lines.push('', '项目上下文：', context === '' ? '（上下文为空）' : truncateText(context, MATERIAL_MAX_CHARS))
-  lines.push(
-    '下一步：该项目下的任务用 `echuan_task_list`（带 project_id）；'
-      + '任务报告正文用 `echuan_material_get` 按 material_id 取。',
-  )
   return lines.join('\n')
 }
 
 /** V3 项目列表：汇总行 + 每条一行（编号 / 名称 / 产品 / 状态 / 更新时间）。 */
 export function formatV3ProjectList(projects: readonly V3Project[]): string {
   if (projects.length === 0) {
-    return [
-      '当前没有项目（0 个）。',
-      '下一步：核对 status / after_id / limit 筛选是否正确；不确定时去掉 status 再查一次（`echuan_project_list`）。',
-    ].join('\n')
+    return '当前没有项目（0 个）。'
   }
 
   const lines = [`项目共 ${projects.length} 个`]
@@ -841,7 +824,6 @@ export function formatV3ProjectList(projects: readonly V3Project[]): string {
           : `｜更新时间：${asString(project.update_time)}`),
     )
   }
-  lines.push('下一步：带 project_id 用 `echuan_project_get` 看上下文与任务；`echuan_task_list` 看任务队列。')
   return lines.join('\n')
 }
 
@@ -866,16 +848,8 @@ export function extractProducts(value: unknown): Product[] {
  */
 export function formatV3Products(value: unknown): string {
   const products = extractProducts(value)
-  if (products.length === 0) {
-    return [
-      '当前没有产品（0 个）。',
-      '下一步：确认为哪个平台/环境；产品缺失时先用 `echuan_product_create` 建产品，不要猜仓库路径。',
-    ].join('\n')
-  }
-  return [
-    formatProductList(products),
-    '下一步：带 product_id 用 `echuan_project_list` 看该产品的项目；仓库地址（git_url）见上。',
-  ].join('\n')
+  if (products.length === 0) return '当前没有产品（0 个）。'
+  return formatProductList(products)
 }
 
 /* ------------------------- 写工具：成功确认文本 ------------------------- */
