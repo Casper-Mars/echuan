@@ -1,18 +1,21 @@
-import { useEffect, useState } from 'react'
-import { api, ApiError } from '../api/client'
+import { useState } from 'react'
+import { api } from '../api/client'
 import type { Task } from '../api/types'
+import { REFRESH_INTERVALS } from '../lib/refresh'
+import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import { TaskCard } from '../components/TaskCard'
 import { TaskDetail } from '../components/TaskDetail'
 
-export function QueuePage() {
-  const [items, setItems] = useState<Task[]>([])
-  const [error, setError] = useState('')
-  const [selected, setSelected] = useState('')
+/** 无数据时的稳定空数组：避免每渲染新建引用，也避免把空态当成 loading 态。 */
+const EMPTY_TASKS: Task[] = []
 
-  const load = () => {
-    api.listTasks({ status: 'ready', limit: 300 }).then(result => setItems(result.items)).catch(err => setError(message(err)))
-  }
-  useEffect(load, [])
+export function QueuePage() {
+  const { data, error, refresh } = useAutoRefresh({
+    intervalMs: REFRESH_INTERVALS.queue,
+    load: () => api.listTasks({ status: 'ready', limit: 300 }),
+  })
+  const items = data?.items ?? EMPTY_TASKS
+  const [selected, setSelected] = useState('')
 
   const byProject = items.reduce<Record<string, Task[]>>((acc, task) => {
     (acc[task.project_id] ??= []).push(task)
@@ -29,7 +32,7 @@ export function QueuePage() {
         </div>
         <div className="hero-actions">
           <div className="stat-inline"><strong>{items.length}</strong><span>待派发</span></div>
-          <button className="btn btn-ghost" onClick={load}>刷新</button>
+          <button className="btn btn-ghost" onClick={() => refresh('manual')}>刷新</button>
         </div>
       </header>
       {error && <div className="alert alert-error">{error}</div>}
@@ -42,11 +45,7 @@ export function QueuePage() {
         </section>
       ))}
       {items.length === 0 && <div className="empty-state">队列是空的，worker 可以休息一下。</div>}
-      {selected !== '' && <TaskDetail taskId={selected} onClose={() => setSelected('')} onChanged={load} />}
+      {selected !== '' && <TaskDetail taskId={selected} onClose={() => setSelected('')} onChanged={() => refresh('write')} />}
     </section>
   )
-}
-
-function message(err: unknown): string {
-  return err instanceof ApiError || err instanceof Error ? err.message : String(err)
 }
