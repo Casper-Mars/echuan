@@ -1,4 +1,5 @@
 import { Link, Outlet } from 'react-router-dom'
+import { AutoRefreshSwitch } from './AutoRefreshSwitch'
 import { Sidebar } from './Sidebar'
 
 export function Layout() {
@@ -11,6 +12,9 @@ export function Layout() {
             驿传 <em>echuan</em>
           </span>
         </Link>
+        <div className="topbar-end">
+          <AutoRefreshSwitch />
+        </div>
       </header>
       <div className="shell">
         <Sidebar />
