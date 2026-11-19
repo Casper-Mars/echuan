@@ -14,6 +14,7 @@ import type {
   WorkItemDetail,
 } from '../client.js'
 import type { ClaimValue, RenewedValue, ReportedValue } from './write.js'
+import type { V3Attachment, V3ClaimInput, V3Project, V3Task } from '../v3-types.js'
 
 /** render 返回的最小文本块形态（等价于 ContentBlock 的 `text` 分支）。 */
 export interface TextContent {
@@ -147,10 +148,44 @@ export interface TextValue {
   text: string
 }
 
-/** render 的安全投影：value 不是 `{ text }` 时给空串，绝不抛错。 */
+/** 兜底 JSON 序列化的截断上限（字）。 */
+export const FALLBACK_JSON_MAX_CHARS = 4000
+
+/**
+ * 兜底渲染：把拿不到 `{ text }` 的规范值序列化成缩进 JSON。
+ *
+ * 为什么需要：V3 工具返回的是契约原始 JSON（`{ items: [...] }`、`{ kind: 'claimed', task }`），
+ * 没有 `text` 字段。渲染层如果直接给空串，模型会以为「调用成功但什么也没发生」——
+ * 2026-11 的 issue #65 就是这么来的（领到卡却看不到 task_id / lease_id）。
+ *
+ * 纪律：**任何输入都不返回空串**（`undefined` / `null` / 空对象 / 空数组 / 空白字符串
+ * 都一样），序列化失败时退回 `String(value)`，再不行给一句明确说明。
+ */
+export function renderFallbackJSON(value: unknown): string {
+  let serialized = ''
+  try {
+    serialized = JSON.stringify(value, null, 2) ?? ''
+  } catch {
+    serialized = ''
+  }
+  if (serialized.trim() === '') serialized = String(value)
+  if (serialized.trim() === '') {
+    return '（工具调用成功，但平台没有返回任何内容，也没有可序列化的字段。）'
+      + '下一步：核对请求参数后重试；若反复如此，把现象反馈给平台维护者。'
+  }
+  return [
+    '（工具没有提供可读文本，以下是原始返回的 JSON，已按缩进排版）',
+    truncateText(serialized, FALLBACK_JSON_MAX_CHARS),
+  ].join('\n')
+}
+
+/**
+ * render 的安全投影：优先用 `{ text }`；拿不到可读文本时退化为 JSON，**绝不返回空串**。
+ */
 export function renderTextValue(value: unknown): TextContent[] {
   const text = isRecord(value) ? asString(value['text']) : undefined
-  return [textBlock(text ?? '')]
+  if (text !== undefined && text.trim() !== '') return [textBlock(text)]
+  return [textBlock(renderFallbackJSON(value))]
 }
 
 /** 工作项正文的截断上限（字）。 */
@@ -612,4 +647,400 @@ export function missingIdText(subject: string, extra?: string): string {
   if (extra !== undefined) lines.push(extra)
   lines.push('本次已本地拒绝，未发出任何请求。')
   return lines.join('\n')
+}
+
+/* ------------------------------------------------------------------ *
+ * V3 工具面：平台 V3 契约 → 模型可直读文本
+ *
+ * V3 工具返回的是契约原始 JSON（`{ items: [...] }`、`{ kind: 'claimed', task }`），
+ * 没有 `text` 字段。下面这些投影函数把原始 JSON 排成中文多行文本；写工具的确认文本
+ * 固定回显调用者事后核对要用的编号（task_id / lease_id / material_id / product_id /
+ * project_id），这样「领到卡却看不到编号」不会重演（issue #65）。
+ * ------------------------------------------------------------------ */
+
+/** V3 任务状态（`V3Task.status`，七态）的中文名。 */
+const V3_TASK_STATUS_LABELS: Record<string, string> = {
+  pending: '待派发',
+  ready: '待领取',
+  in_progress: '进行中',
+  in_review: '待验收',
+  done: '已完成',
+  failed: '已失败',
+  cancelled: '已取消',
+}
+
+/** V3 任务状态 → `中文名（平台名）`；未知状态原样标出。 */
+export function v3TaskStatusLabel(status: string | undefined): string {
+  if (status === undefined || status === '') return '状态未知'
+  const label = V3_TASK_STATUS_LABELS[status]
+  return label === undefined ? `未知状态 ${status}` : `${label}（${status}）`
+}
+
+/** V3 项目状态（open / closed）的中文名。 */
+const V3_PROJECT_STATUS_LABELS: Record<string, string> = {
+  open: '进行中',
+  closed: '已关闭',
+}
+
+/** V3 项目状态 → `中文名（平台名）`；未知状态原样标出。 */
+export function v3ProjectStatusLabel(status: string | undefined): string {
+  if (status === undefined || status === '') return '状态未知'
+  const label = V3_PROJECT_STATUS_LABELS[status]
+  return label === undefined ? `未知状态 ${status}` : `${label}（${status}）`
+}
+
+/* ------------------------------ 读：任务 ------------------------------ */
+
+/** V3 任务详情：编号 / 项目 / 类别 / 状态 / 尝试次数 / 租约 / 正文 / 上下文。 */
+export function formatV3Task(task: V3Task): string {
+  const taskId = asString(task.task_id) ?? '（编号缺失）'
+  const attempt = asNumber(task.attempt)
+  const maxAttempts = asNumber(task.max_attempts)
+  const lines = [
+    `任务 ${taskId}：${orNone(asString(task.title))}`,
+    `- 类别：${asString(task.kind) ?? '未知'}（${workItemKindLabel(asString(task.kind))}）`,
+    `- 归属项目：${orNone(asString(task.project_id))}`,
+    `- 状态：${v3TaskStatusLabel(asString(task.status))}`,
+    `- 优先级：${asNumber(task.priority) ?? '未知'}｜尝试次数：${attempt ?? '未知'}/${maxAttempts ?? '未知'}`,
+  ]
+
+  const parentTaskId = asString(task.parent_task_id)
+  if (parentTaskId !== undefined && parentTaskId !== '') lines.push(`- 父任务：${parentTaskId}`)
+
+  const leaseId = asString(task.lease_id)
+  const leaseUntil = asString(task.lease_until)
+  if (leaseId !== undefined || leaseUntil !== undefined) {
+    lines.push(`- 租约：lease_id=${leaseId ?? '未知'}，到期 ${leaseUntil ?? '未知'}`)
+  }
+
+  const workerId = asString(task.worker_id)
+  if (workerId !== undefined && workerId !== '') lines.push(`- worker：${workerId}`)
+
+  const reason = asString(task.reason)?.trim() ?? ''
+  if (reason !== '') lines.push(`- 原因说明：${truncateText(reason, LIST_TEXT_MAX_CHARS)}`)
+
+  const created = asString(task.create_time)
+  if (created !== undefined && created !== '') lines.push(`- 创建时间：${created}`)
+  const updated = asString(task.update_time)
+  if (updated !== undefined && updated !== '') lines.push(`- 更新时间：${updated}`)
+
+  const description = asString(task.description_md)?.trim() ?? ''
+  lines.push('', '任务正文：', description === '' ? '（正文为空）' : truncateText(description, WORK_ITEM_BODY_MAX_CHARS))
+
+  const context = asString(task.context_md)?.trim() ?? ''
+  if (context !== '') lines.push('', '上下文：', truncateText(context, WORK_ITEM_BODY_MAX_CHARS))
+
+  lines.push(
+    '下一步：交付用 `echuan_task_report`（需要 task_id + lease_id）；'
+      + '同项目其它卡用 `echuan_task_list` 看。',
+  )
+  return lines.join('\n')
+}
+
+/** V3 任务列表：汇总行 + 每条一行（编号 / 标题 / 项目 / 类别 / 状态 / 优先级 / 尝试次数 / 租约）。 */
+export function formatV3TaskList(items: readonly V3Task[]): string {
+  if (items.length === 0) {
+    return [
+      '当前没有任务（0 个）。',
+      '下一步：核对 project_id / kind / status 筛选是否正确；不确定时去掉筛选再查一次（`echuan_task_list`）。',
+    ].join('\n')
+  }
+
+  const lines = [`任务共 ${items.length} 个`]
+  for (const item of items) {
+    const taskId = asString(item.task_id) ?? '（编号缺失）'
+    const leaseId = asString(item.lease_id)
+    const attempt = asNumber(item.attempt)
+    const maxAttempts = asNumber(item.max_attempts)
+    lines.push(
+      `- ${taskId}：${orNone(asString(item.title))}`
+        + `｜项目：${orNone(asString(item.project_id))}`
+        + `｜类别：${asString(item.kind) ?? '未知'}（${workItemKindLabel(asString(item.kind))}）`
+        + `｜状态：${v3TaskStatusLabel(asString(item.status))}`
+        + `｜优先级：${asNumber(item.priority) ?? '未知'}`
+        + `｜尝试次数：${attempt ?? '未知'}/${maxAttempts ?? '未知'}`
+        + (leaseId === undefined || leaseId === '' ? '' : `｜lease_id=${leaseId}`),
+    )
+  }
+  lines.push('下一步：带 task_id 用 `echuan_task_get` 看正文与租约；报告正文用 `echuan_material_get` 取。')
+  return lines.join('\n')
+}
+
+/** V3 待办（inbox 返回的是任务）：汇总行 + 每条一行。 */
+export function formatV3Inbox(items: readonly V3Task[]): string {
+  if (items.length === 0) {
+    return [
+      '当前没有待处理项（0 条）。',
+      '下一步：稍后再用 `echuan_inbox` 看一眼；要盯具体进度可带编号用 `echuan_project_get` / `echuan_task_get`。',
+    ].join('\n')
+  }
+
+  const lines = [`待办共 ${items.length} 条`]
+  for (const item of items) {
+    const taskId = asString(item.task_id) ?? '（编号缺失）'
+    lines.push(
+      `- ${taskId}：${orNone(asString(item.title))}`
+        + `｜项目：${orNone(asString(item.project_id))}`
+        + `｜类别：${asString(item.kind) ?? '未知'}（${workItemKindLabel(asString(item.kind))}）`
+        + `｜状态：${v3TaskStatusLabel(asString(item.status))}`,
+    )
+  }
+  lines.push(
+    '下一步：带 task_id 用 `echuan_task_get` 看详情；需求/方案/报告正文用 `echuan_material_get` 取。',
+  )
+  return lines.join('\n')
+}
+
+/* ------------------------------ 读：项目 ------------------------------ */
+
+/** V3 项目详情：编号 / 名称 / 产品 / 状态 / 上下文正文。 */
+export function formatV3Project(project: V3Project): string {
+  const projectId = asString(project.project_id) ?? '（编号缺失）'
+  const lines = [
+    `项目 ${projectId}：${orNone(asString(project.name))}`,
+    `- 产品：${orNone(asString(project.product_id))}`,
+    `- 序号：${asNumber(project.seq_no) ?? '未知'}`,
+    `- 状态：${v3ProjectStatusLabel(asString(project.status))}`,
+  ]
+
+  const closedAt = asString(project.closed_at)
+  if (closedAt !== undefined && closedAt !== '') lines.push(`- 关闭时间：${closedAt}`)
+
+  const created = asString(project.create_time)
+  if (created !== undefined && created !== '') lines.push(`- 创建时间：${created}`)
+  const updated = asString(project.update_time)
+  if (updated !== undefined && updated !== '') lines.push(`- 更新时间：${updated}`)
+
+  const context = asString(project.context_md)?.trim() ?? ''
+  lines.push('', '项目上下文：', context === '' ? '（上下文为空）' : truncateText(context, MATERIAL_MAX_CHARS))
+  lines.push(
+    '下一步：该项目下的任务用 `echuan_task_list`（带 project_id）；'
+      + '任务报告正文用 `echuan_material_get` 按 material_id 取。',
+  )
+  return lines.join('\n')
+}
+
+/** V3 项目列表：汇总行 + 每条一行（编号 / 名称 / 产品 / 状态 / 更新时间）。 */
+export function formatV3ProjectList(projects: readonly V3Project[]): string {
+  if (projects.length === 0) {
+    return [
+      '当前没有项目（0 个）。',
+      '下一步：核对 status / after_id / limit 筛选是否正确；不确定时去掉 status 再查一次（`echuan_project_list`）。',
+    ].join('\n')
+  }
+
+  const lines = [`项目共 ${projects.length} 个`]
+  for (const project of projects) {
+    const projectId = asString(project.project_id) ?? '（编号缺失）'
+    lines.push(
+      `- ${projectId}：${orNone(asString(project.name))}`
+        + `｜产品：${orNone(asString(project.product_id))}`
+        + `｜状态：${v3ProjectStatusLabel(asString(project.status))}`
+        + (asString(project.update_time) === undefined
+          ? ''
+          : `｜更新时间：${asString(project.update_time)}`),
+    )
+  }
+  lines.push('下一步：带 project_id 用 `echuan_project_get` 看上下文与任务；`echuan_task_list` 看任务队列。')
+  return lines.join('\n')
+}
+
+/* ------------------------------ 读：产品 ------------------------------ */
+
+/** 平台产品回包可能是列表（`{ items }`）或单个详情；统一取出产品数组。 */
+export function extractProducts(value: unknown): Product[] {
+  if (Array.isArray(value)) {
+    return value.filter(isRecord) as unknown as Product[]
+  }
+  if (!isRecord(value)) return []
+  const items = value['items']
+  if (Array.isArray(items)) return items.filter(isRecord) as unknown as Product[]
+  return asString(value['product_id']) === undefined && asString(value['id']) === undefined
+    ? []
+    : [value as unknown as Product]
+}
+
+/**
+ * V3 产品列表/详情：复用 V2 的 {@link formatProductList}（`产品共 N 个` + 每条
+ * `product_id / name / git_url`），空集给明确中文提示而不是空串。
+ */
+export function formatV3Products(value: unknown): string {
+  const products = extractProducts(value)
+  if (products.length === 0) {
+    return [
+      '当前没有产品（0 个）。',
+      '下一步：确认为哪个平台/环境；产品缺失时先用 `echuan_product_create` 建产品，不要猜仓库路径。',
+    ].join('\n')
+  }
+  return [
+    formatProductList(products),
+    '下一步：带 product_id 用 `echuan_project_list` 看该产品的项目；仓库地址（git_url）见上。',
+  ].join('\n')
+}
+
+/* ------------------------- 写工具：成功确认文本 ------------------------- */
+
+/**
+ * 领卡成功：`task_id` 与 `lease_id` 必须回显。
+ *
+ * 这是 issue #65 里危害最高的一处：`claimed` 分支此前渲染成空串，agent 领到卡
+ * 却看不到 task_id / lease_id，只能误判成「没领到」。
+ */
+export function formatV3Claimed(task: V3Task, inputs: readonly V3ClaimInput[] = []): string {
+  const taskId = asString(task.task_id) ?? '（编号缺失）'
+  const leaseId = asString(task.lease_id)
+  const attempt = asNumber(task.attempt)
+  const maxAttempts = asNumber(task.max_attempts)
+  const lines = [
+    `✅ 已领到任务 ${taskId}：${orNone(asString(task.title))}`,
+    `- task_id：${taskId}`,
+    `- lease_id：${leaseId ?? '（平台未下发租约，先用 `echuan_task_get` 核对）'}`,
+    `- 租约到期：${asString(task.lease_until) ?? '未知'}`,
+    `- 归属项目：${orNone(asString(task.project_id))}`
+      + `｜类别：${asString(task.kind) ?? '未知'}（${workItemKindLabel(asString(task.kind))}）`,
+    `- 状态：${v3TaskStatusLabel(asString(task.status))}｜尝试次数：${attempt ?? '未知'}/${maxAttempts ?? '未知'}`,
+  ]
+
+  if (inputs.length > 0) {
+    lines.push('- 输入物料：')
+    for (const input of inputs) {
+      const materialId = asString(input.material_id) ?? '（编号缺失）'
+      const extra: string[] = []
+      const kind = asString(input.kind)
+      if (kind !== undefined && kind !== '') extra.push(`kind=${kind}`)
+      const role = asString(input.role)
+      if (role !== undefined && role !== '') extra.push(`role=${role}`)
+      lines.push(`  - material_id=${materialId}${extra.length === 0 ? '' : `（${extra.join('，')}）`}：${orNone(asString(input.title))}`)
+    }
+  }
+
+  const description = asString(task.description_md)?.trim() ?? ''
+  if (description !== '') {
+    lines.push('', '任务正文：', truncateText(description, WORK_ITEM_BODY_MAX_CHARS))
+  }
+
+  lines.push(
+    '下一步：按任务正文开工；交付用 `echuan_task_report`（需上面的 task_id + lease_id），'
+      + '租约将到期时用 `echuan_task_renew` 续租。',
+  )
+  return lines.join('\n')
+}
+
+/** 续租成功：回显任务编号与本次可用的 lease_id（平台没回包时沿用传入值并注明）。 */
+export function formatV3Renewed(
+  input: { task_id: string; lease_id: string },
+  value: unknown,
+): string {
+  const record = isRecord(value) ? value : {}
+  const newLeaseId = asString(record['lease_id'])
+  const leaseUntil = asString(record['lease_until'])
+  return [
+    `✅ 续租成功：任务 ${input.task_id}`,
+    newLeaseId === undefined || newLeaseId === ''
+      ? `- lease_id（平台未回包，沿用传入值）：${input.lease_id}`
+      : `- 新 lease_id：${newLeaseId}`,
+    `- 到期时间：${leaseUntil ?? '未知'}`,
+    '下一步：用上面的 lease_id 交报告（`echuan_task_report`）；旧 lease_id 不再可用。',
+  ].join('\n')
+}
+
+/** 交报告成功：回显 task_id / material_id 与平台状态（待验收）。 */
+export function formatV3Reported(input: {
+  task_id: string
+  material_id: string
+  status: string | undefined
+}): string {
+  return [
+    `✅ 报告已提交，任务转入待验收：${input.task_id}`,
+    `- task_id：${input.task_id}`,
+    `- material_id：${input.material_id}`,
+    `- 平台状态：${v3TaskStatusLabel(input.status)}`,
+    '下一步：等待平台验收结论；不要再用旧 lease_id 重复提交同一张卡的结果。',
+  ].join('\n')
+}
+
+/** 建任务成功：回显 task_id / 项目 / 类别 / 状态，便于后续查询与派发。 */
+export function formatV3TaskCreated(task: V3Task): string {
+  return [
+    `✅ 任务已创建：${asString(task.task_id) ?? '（编号缺失）'}`,
+    `- task_id：${asString(task.task_id) ?? '（编号缺失）'}`,
+    `- 归属项目：${orNone(asString(task.project_id))}`
+      + `｜类别：${asString(task.kind) ?? '未知'}（${workItemKindLabel(asString(task.kind))}）`,
+    `- 标题：${orNone(asString(task.title))}`,
+    `- 状态：${v3TaskStatusLabel(asString(task.status))}`,
+    '下一步：用 `echuan_task_list`（带 project_id）核对队列；依赖未满足的卡在平台侧保持 pending。',
+  ].join('\n')
+}
+
+/** 改任务成功：回显 task_id / 标题 / 状态。 */
+export function formatV3TaskUpdated(task: V3Task): string {
+  return [
+    `✅ 任务已更新：${asString(task.task_id) ?? '（编号缺失）'}`,
+    `- task_id：${asString(task.task_id) ?? '（编号缺失）'}`,
+    `- 标题：${orNone(asString(task.title))}`,
+    `- 状态：${v3TaskStatusLabel(asString(task.status))}`,
+    '下一步：用 `echuan_task_get` 复核正文；已领取的任务平台不允许改，需走返工。',
+  ].join('\n')
+}
+
+/** 挂附件成功：回显 material_id / role / 挂载对象。 */
+export function formatV3Attached(
+  input: { project_id?: string | undefined; task_id?: string | undefined; material_id: string; role: string },
+  attachment: V3Attachment,
+): string {
+  const target = input.task_id !== undefined && input.task_id !== ''
+    ? `任务 ${input.task_id}`
+    : `项目 ${input.project_id ?? '（未指定）'}`
+  const lines = [
+    `✅ 附件已挂到${target}`,
+    `- material_id：${input.material_id}`,
+    `- role：${input.role}`,
+  ]
+  const attachmentId = asNumber(attachment.id)
+  if (attachmentId !== undefined) lines.push(`- attachment_id：${attachmentId}`)
+  lines.push('下一步：用 `echuan_material_get` 按 material_id 复核正文；附件不需要重复挂。')
+  return lines.join('\n')
+}
+
+/** 建项目成功：回显 project_id / 名称 / 产品 / 状态。 */
+export function formatV3ProjectCreated(project: V3Project): string {
+  return [
+    `✅ 项目已创建：${asString(project.project_id) ?? '（编号缺失）'}`,
+    `- project_id：${asString(project.project_id) ?? '（编号缺失）'}`,
+    `- 名称：${orNone(asString(project.name))}`,
+    `- 产品：${orNone(asString(project.product_id))}`,
+    `- 状态：${v3ProjectStatusLabel(asString(project.status))}`,
+    '下一步：用 `echuan_task_create` 往这个项目里建任务（项目本身不携带需求正文）。',
+  ].join('\n')
+}
+
+/** 关闭项目成功：回显 project_id，并说明 force 语义（会取消未完成任务）。 */
+export function formatV3ProjectClosed(projectId: string, force: boolean): string {
+  return [
+    `✅ 项目已关闭：${projectId}`,
+    ...(force
+      ? ['- force=true：该项目下未完成的任务已被平台取消（不可自动复活）']
+      : ['- 本次未传 force：若仍有未完成任务，平台会拒绝关闭']),
+    '下一步：用 `echuan_project_list`（status=closed）核对；重开用 `echuan_project_reopen`（已取消的任务不会复活）。',
+  ].join('\n')
+}
+
+/** 重开项目成功：回显 project_id。 */
+export function formatV3ProjectReopened(projectId: string): string {
+  return [
+    `✅ 项目已重开：${projectId}`,
+    '- 已取消的任务不会复活：需要继续的工作要重新建任务。',
+    '下一步：用 `echuan_project_get` 看上下文，`echuan_task_list` 看现有任务。',
+  ].join('\n')
+}
+
+/** 建产品成功：回显 product_id / 名称 / 仓库地址。 */
+export function formatV3ProductCreated(product: Product): string {
+  return [
+    `✅ 产品已创建：${asString(product.product_id) ?? asString(product.id) ?? '（编号缺失）'}`,
+    `- product_id：${asString(product.product_id) ?? asString(product.id) ?? '（编号缺失）'}`,
+    `- 名称：${orNone(asString(product.name))}`,
+    `- 仓库：${orNone(asString(product.git_url))}`,
+    '下一步：用 `echuan_project_create`（带 product_id）建项目容器。',
+  ].join('\n')
 }
