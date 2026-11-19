@@ -207,6 +207,7 @@ export function apply(ctx: Context, config?: ConfigInput): void {
         disposeTools = toolsModule.registerEchuanTools(ctx, {
           client: clientModule.createClient(resolved),
           identity: {
+            pollEnabled: resolved.worker.poll.enable,
             get workerId() {
               return loop?.workerId
             },

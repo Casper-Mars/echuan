@@ -84,6 +84,13 @@ export interface ReportedValue {
 export interface WorkerIdentity {
   readonly workerId: string | undefined
   /**
+   * worker 心跳是否开启（`worker.poll.enable`）。
+   *
+   * 开启时领卡由心跳循环负责；工具层的 `echuan_task_claim` 会本地拒绝，
+   * 避免同一张卡同时被「手动领」与「派单投递」两个持有者处理。
+   */
+  readonly pollEnabled?: boolean
+  /**
    * 报告成功的回调（可选）：由 `index.ts` 接到心跳循环的 `notifyReported`，
    * 用于清除该工作项的 inflight。只在平台 HTTP 成功后调用。
    */

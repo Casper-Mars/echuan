@@ -156,6 +156,15 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
       '领取一张 ready 任务（POST /v1/tasks/claim）。无任务时返回 no_work，不要当错误重试。',
       { kind: { type: 'string', required: true, description: 'requirement / design / breakdown / dev' } },
       async args => {
+        // worker.poll 开启时领卡是心跳循环的职责：再手动 claim 会让同一张卡
+        // 出现两个持有者（本会话 + 派单投递到的会话），两边重复干活。
+        if (identity.pollEnabled === true) {
+          throw new EchuanValidationError(
+            'worker.poll 已开启：领卡由 worker 心跳自动完成，不能手动 claim（会让同一张卡出现两个持有者）。收到派单消息即开工。',
+            'invalid_argument',
+            'kind',
+          )
+        }
         const result = await client.claimV3Task({ worker_id: requireWorker(identity), kind: requireKind(args.kind) })
         if (result.kind === 'empty') return { kind: 'no_work', text: NO_WORK_TEXT }
         const claimed = unwrapClaim(result.data)

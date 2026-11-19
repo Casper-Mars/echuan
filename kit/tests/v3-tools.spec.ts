@@ -56,6 +56,15 @@ describe('V3 写工具', () => {
     expect(empty).toMatchObject({ kind: 'no_work' })
   })
 
+  it('task_claim 在 worker.poll 开启时本地拒绝，零请求', async () => {
+    const claimV3Task = vi.fn()
+    const { byName } = buildOptions({ claimV3Task }, { workerId: 'w_1', pollEnabled: true })
+    await expect(
+      byName.get('echuan_task_claim')!.execute({ kind: 'dev' } as any, {} as any),
+    ).rejects.toThrow(/poll/)
+    expect(claimV3Task).not.toHaveBeenCalled()
+  })
+
   it('task_claim 在 worker 未注册时本地拒绝', async () => {
     const { byName } = buildOptions({ claimV3Task: vi.fn() }, { workerId: undefined })
     await expect(
