@@ -70,6 +70,12 @@ func (s *Service) CreateTask(ctx context.Context, req CreateTaskRequest) (storev
 	if !req.Kind.Valid() {
 		return storev3.Task{}, invalid("kind: invalid value %d", req.Kind)
 	}
+	// 阶段卡的所有权：design / breakdown 只由平台在评审通过时入队（app/decide.go），
+	// API 与 agent 都不能手工创建。允许手工建卡就等于允许跳过评审门，
+	// 也允许把整条流水线一次性铺出来——两张失败的卡都源于此。
+	if req.Kind == enum.Design || req.Kind == enum.Breakdown {
+		return storev3.Task{}, invalid("kind: %s 由平台在评审通过后自动创建，不能手工创建", req.Kind)
+	}
 	for _, dep := range req.DependsOn {
 		if strings.TrimSpace(dep) == "" {
 			return storev3.Task{}, invalid("depends_on contains an empty task id")

@@ -256,9 +256,20 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
         depends_on: { type: 'array', items: { type: 'string' } },
       },
       async args => {
+        const kind = requireKind(args.kind)
+        // 阶段卡的所有权：design / breakdown 由平台在评审通过后入队
+        // （internal/app/decide.go），平台 API 也拒绝手工创建。
+        // 本地先拒绝：省一次往返，并且让错误直接落在「谁该建这张卡」上。
+        if (kind === 'design' || kind === 'breakdown') {
+          throw new EchuanValidationError(
+            `${kind} 卡由平台在评审通过后自动创建，不能手工创建；你要做的是产出本阶段的产物，不是补一张卡。`,
+            'invalid_argument',
+            'kind',
+          )
+        }
         const result = await client.createV3Task(({
           project_id: requireText(args.project_id, 'project_id'),
-          kind: requireKind(args.kind),
+          kind,
           title: requireText(args.title, 'title'),
           task_id: typeof args.task_id === 'string' ? args.task_id : undefined,
           parent_task_id: typeof args.parent_task_id === 'string' ? args.parent_task_id : undefined,

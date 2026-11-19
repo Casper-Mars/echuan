@@ -103,6 +103,28 @@ func TestUpdateTask(t *testing.T) {
 	}
 }
 
+func TestCreateTaskRejectsStageCards(t *testing.T) {
+	now := testClock
+	svc, st := newTestService(t, &now)
+	projectID := seedProject(t, st, "APP")
+
+	for _, kind := range []enum.TaskKind{enum.Design, enum.Breakdown} {
+		_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+			ProjectID: projectID, TaskID: "t_" + kind.String(), Kind: kind, Title: "阶段卡",
+		})
+		if StatusOf(err) != 400 {
+			t.Fatalf("CreateTask %s = %d (%v), want 400", kind, StatusOf(err), err)
+		}
+	}
+
+	// 平台在生产者的阶段仍然可以建卡：requirement 与 dev 走 API 是合法的。
+	if _, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: projectID, TaskID: "t_req", Kind: enum.Requirement, Title: "需求",
+	}); err != nil {
+		t.Fatalf("CreateTask requirement: %v", err)
+	}
+}
+
 func TestDeleteTask(t *testing.T) {
 	now := testClock
 	svc, st := newTestService(t, &now)
@@ -123,7 +145,7 @@ func TestDeleteTask(t *testing.T) {
 		t.Fatalf("create upstream: %v", err)
 	}
 	if _, err := svc.CreateTask(context.Background(), CreateTaskRequest{
-		ProjectID: projectID, TaskID: "t_down", Kind: enum.Design, Title: "下游", DependsOn: []string{"t_up"},
+		ProjectID: projectID, TaskID: "t_down", Kind: enum.Dev, Title: "下游", DependsOn: []string{"t_up"},
 	}); err != nil {
 		t.Fatalf("create downstream: %v", err)
 	}
