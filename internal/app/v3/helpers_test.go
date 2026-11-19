@@ -76,24 +76,6 @@ func seedProject(t *testing.T, st *storedb.Store, code string) string {
 	return project.ProjectID
 }
 
-// seedStageTask inserts a stage card (design / breakdown) straight through the
-// store, exactly like the platform enqueuer does. The API path rejects these
-// kinds on purpose (Service.CreateTask), so tests that need one must seed it
-// the same way the platform does.
-func seedStageTask(t *testing.T, st *storedb.Store, projectID string, kind enum.TaskKind, taskID, title string, deps []string) {
-	t.Helper()
-	if _, err := storev3.CreateTask(context.Background(), st, storev3.CreateTaskInput{
-		ProjectID: projectID,
-		TaskID:    taskID,
-		Kind:      kind,
-		Title:     title,
-		DependsOn: deps,
-		Now:       formatTime(testClock),
-	}); err != nil {
-		t.Fatalf("seed stage task %s: %v", taskID, err)
-	}
-}
-
 func createMaterial(t *testing.T, svc *Service, materialID string) string {
 	t.Helper()
 	got, err := svc.CreateMaterial(context.Background(), CreateMaterialRequest{

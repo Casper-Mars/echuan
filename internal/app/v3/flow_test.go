@@ -118,7 +118,11 @@ func TestEnsureDoesNotDuplicate(t *testing.T) {
 	projectID := seedProject(t, st, "APP")
 
 	// Pre-create an active design task: the ensure rule must reuse it.
-	seedStageTask(t, st, projectID, enum.Design, "t_design_existing", "已有方案", nil)
+	if _, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: projectID, TaskID: "t_design_existing", Kind: enum.Design, Title: "已有方案",
+	}); err != nil {
+		t.Fatalf("CreateTask design: %v", err)
+	}
 	approveRequirement(t, svc, projectID)
 
 	if designs := listKind(t, svc, projectID, enum.Design); len(designs) != 1 {
@@ -146,7 +150,11 @@ func TestDesignCreatesBreakdown(t *testing.T) {
 	now := testClock
 	svc, st := newTestService(t, &now)
 	projectID := seedProject(t, st, "APP")
-	seedStageTask(t, st, projectID, enum.Design, "t_design", "方案", nil)
+	if _, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: projectID, TaskID: "t_design", Kind: enum.Design, Title: "方案",
+	}); err != nil {
+		t.Fatalf("CreateTask design: %v", err)
+	}
 	materialID := createMaterial(t, svc, "m_design")
 	task, err := svc.Claim(context.Background(), "w_design", enum.Design)
 	if err != nil {
@@ -178,7 +186,11 @@ func TestBreakdownMaterializesPlan(t *testing.T) {
 		),
 	}})
 	projectID := seedProject(t, st, "APP")
-	seedStageTask(t, st, projectID, enum.Breakdown, "t_break", "拆分", nil)
+	if _, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: projectID, TaskID: "t_break", Kind: enum.Breakdown, Title: "拆分",
+	}); err != nil {
+		t.Fatalf("CreateTask breakdown: %v", err)
+	}
 
 	planID, err := svc.CreateMaterial(context.Background(), CreateMaterialRequest{
 		MaterialID: "m_plan", Kind: enum.MaterialPlan, Version: 1, Title: "方案",
@@ -250,7 +262,11 @@ func TestBreakdownInvalidPlanRollsBack(t *testing.T) {
 		"m_plan": planBody(planItem{SeqNo: 2, Title: "B", DependsOn: []int{9}}),
 	}})
 	projectID := seedProject(t, st, "APP")
-	seedStageTask(t, st, projectID, enum.Breakdown, "t_break", "拆分", nil)
+	if _, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: projectID, TaskID: "t_break", Kind: enum.Breakdown, Title: "拆分",
+	}); err != nil {
+		t.Fatalf("CreateTask breakdown: %v", err)
+	}
 	planID, err := svc.CreateMaterial(context.Background(), CreateMaterialRequest{
 		MaterialID: "m_plan", Kind: enum.MaterialPlan, Version: 1, Title: "方案",
 		Sha256: "sha", Size: 1, Path: "/tmp/m_plan", UploadedBy: "cto",

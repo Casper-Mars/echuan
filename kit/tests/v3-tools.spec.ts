@@ -396,21 +396,6 @@ describe('V3 写工具：成功即带关键编号的确认文本', () => {
     expect(text).toContain('ECHUAN-2')
   })
 
-  it('task_create 拒绝手工创建 design / breakdown，零请求', async () => {
-    const createV3Task = vi.fn()
-    const { byName } = buildOptions({ createV3Task })
-
-    for (const kind of ['design', 'breakdown']) {
-      await expect(
-        byName.get('echuan_task_create')!.execute(
-          { project_id: 'ECHUAN-2', kind, title: '阶段卡' } as any,
-          {} as any,
-        ),
-      ).rejects.toThrow(/平台/)
-    }
-    expect(createV3Task).not.toHaveBeenCalled()
-  })
-
   it('product_create 成功文本回显 product_id 与仓库地址', async () => {
     const createProduct = vi.fn().mockResolvedValue(ok(product))
     const { byName } = buildOptions({ createProduct })
