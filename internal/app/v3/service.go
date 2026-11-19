@@ -163,14 +163,17 @@ func (s *Service) Claim(ctx context.Context, workerID string, kind enum.TaskKind
 	return task, Translate(err)
 }
 
-// Renew extends a lease by the service TTL.
-func (s *Service) Renew(ctx context.Context, taskID, leaseID string) error {
+// Renew extends a lease by the service TTL and returns the new expiry.
+func (s *Service) Renew(ctx context.Context, taskID, leaseID string) (string, error) {
 	if strings.TrimSpace(taskID) == "" || strings.TrimSpace(leaseID) == "" {
-		return invalid("task_id and lease_id are required")
+		return "", invalid("task_id and lease_id are required")
 	}
 	now := s.now()
-	return Translate(storev3.RenewLease(ctx, s.st, taskID, leaseID,
-		formatTime(now.Add(s.leaseTTL)), formatTime(now)))
+	until := formatTime(now.Add(s.leaseTTL))
+	if err := storev3.RenewLease(ctx, s.st, taskID, leaseID, until, formatTime(now)); err != nil {
+		return "", Translate(err)
+	}
+	return until, nil
 }
 
 // Report writes the output attachment and moves the task to in_review.

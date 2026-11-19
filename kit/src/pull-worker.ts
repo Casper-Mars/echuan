@@ -28,6 +28,7 @@ export interface PullWorkerLogger {
 export interface PullWorkerInflight {
   readonly workId: string
   readonly kind: V3TaskKind
+  readonly leaseId: string
   readonly leaseUntil: string
 }
 
@@ -39,6 +40,10 @@ export interface PullWorkerClient {
     metadata: Record<string, unknown>
   }): Promise<{ kind: string }>
   claimV3Task(input: { worker_id: string; kind: V3TaskKind }): Promise<{ kind: string; data?: any }>
+  renewV3Task(input: { task_id: string; lease_id: string }): Promise<{
+    kind: string
+    data?: { task_id: string; lease_id: string; lease_until: string }
+  }>
 }
 
 export interface PullClaimEnvelope {
@@ -182,7 +187,8 @@ export function createPullWorkerLoop(options: PullWorkerOptions): PullWorkerLoop
       inflight = {
         workId: envelope.task.task_id,
         kind,
-        leaseUntil: envelope.task.lease_until ?? '',
+        leaseId: envelope.task.lease_id ?? "",
+        leaseUntil: envelope.task.lease_until ?? "",
       }
       logger.info(`${TAG} 已投递任务 ${envelope.task.task_id}（kind=${kind}）给项目 ${projectId}`)
       return
@@ -193,9 +199,28 @@ export function createPullWorkerLoop(options: PullWorkerOptions): PullWorkerLoop
     if (disposed) return
     try {
       await heartbeat()
-      if (inflight !== undefined && inflight.leaseUntil !== '' && Date.parse(inflight.leaseUntil) <= Date.now()) {
-        logger.warn(`${TAG} 任务 ${inflight.workId} 的租约已过期，清除 inflight 并等待平台回收`)
-        inflight = undefined
+      if (inflight !== undefined) {
+        if (inflight.leaseUntil !== '' && Date.parse(inflight.leaseUntil) <= Date.now()) {
+          logger.warn(`${TAG} 任务 ${inflight.workId} 的租约已过期，清除 inflight 并等待平台回收`)
+          inflight = undefined
+        } else if (inflight.leaseId !== '') {
+          const current = inflight
+          try {
+            const renewed = await client.renewV3Task({
+              task_id: current.workId,
+              lease_id: current.leaseId,
+            })
+            if (renewed.kind === 'empty' || renewed.data?.lease_until === undefined) {
+              logger.warn(`${TAG} 任务 ${current.workId} 续租无回包，清除 inflight`)
+              inflight = undefined
+            } else {
+              inflight = { ...current, leaseUntil: renewed.data.lease_until }
+            }
+          } catch (err) {
+            logger.warn(`${TAG} 任务 ${current.workId} 续租失败，清除 inflight：${err instanceof Error ? err.message : String(err)}`)
+            inflight = undefined
+          }
+        }
       }
       if (inflight === undefined) await claimOnce()
     } catch (err) {

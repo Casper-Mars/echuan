@@ -52,6 +52,7 @@ export const api = {
   createProduct: (body: { product_id: string; name: string; git_url: string }) =>
     request<Product>('/v1/products', { method: 'POST', body: JSON.stringify(body) }),
 
+  listAllProjects: (status?: 'open' | 'closed') => request<ListResponse<Project>>(`/v1/projects${q({ status })}`),
   listProjects: (productId: string, status?: 'open' | 'closed') =>
     request<ListResponse<Project>>(`/v1/projects${q({ status })}`).then(result => ({
       ...result,

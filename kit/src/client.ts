@@ -1393,7 +1393,7 @@ export function createClient(
     },
 
     async renewV3Task(input) {
-      return requestJson<unknown>(ctx, {
+      return requestJson<{ task_id: string; lease_id: string; lease_until: string }>(ctx, {
         method: 'POST',
         path: '/v1/tasks/lease',
         body: {

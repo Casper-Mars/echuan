@@ -572,11 +572,14 @@ func (h *v3Handler) renewLease(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, h.logger, err)
 		return
 	}
-	if err := h.tasks.Renew(r.Context(), body.TaskID, body.LeaseID); err != nil {
+	until, err := h.tasks.Renew(r.Context(), body.TaskID, body.LeaseID)
+	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"task_id": body.TaskID, "lease_id": body.LeaseID})
+	writeJSON(w, http.StatusOK, map[string]string{
+		"task_id": body.TaskID, "lease_id": body.LeaseID, "lease_until": until,
+	})
 }
 
 type v3ReportRequest struct {

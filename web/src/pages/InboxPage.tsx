@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../api/client'
 import type { Task } from '../api/types'
+import { TaskCard } from '../components/TaskCard'
 import { TaskDetail } from '../components/TaskDetail'
-import { kindLabel, statusLabel } from '../lib/labels'
 
 export function InboxPage() {
-  const navigate = useNavigate()
   const [items, setItems] = useState<Task[]>([])
   const [error, setError] = useState('')
   const [selected, setSelected] = useState('')
@@ -16,31 +14,38 @@ export function InboxPage() {
   }
   useEffect(load, [])
 
+  const review = items.filter(task => task.status === 'in_review')
+  const ready = items.filter(task => task.status === 'ready')
+
   return (
-    <section>
-      <header className="page-head">
+    <section className="page">
+      <header className="page-hero">
         <div>
+          <p className="eyebrow">INBOX</p>
           <h1>收件箱</h1>
-          <p>待领取（ready）与待审核（in_review）的任务。</p>
+          <p className="muted">待审核优先处理；待领取由 worker 自动拉取。</p>
         </div>
-        <div className="page-head-actions"><button className="action" onClick={load}>刷新</button></div>
+        <div className="hero-actions">
+          <div className="stat-inline"><strong>{review.length}</strong><span>待审核</span></div>
+          <div className="stat-inline"><strong>{ready.length}</strong><span>待领取</span></div>
+          <button className="btn btn-ghost" onClick={load}>刷新</button>
+        </div>
       </header>
-      {error && <div className="notice notice-message">{error}</div>}
-      <table className="v3-table">
-        <thead><tr><th>任务</th><th>项目</th><th>类型</th><th>标题</th><th>状态</th></tr></thead>
-        <tbody>
-          {items.map(task => (
-            <tr key={task.task_id} className="clickable" onClick={() => setSelected(task.task_id)}>
-              <td className="mono">{task.task_id}</td>
-              <td className="mono"><button className="link" onClick={event => { event.stopPropagation(); navigate(`/projects/${task.project_id}/tasks`) }}>{task.project_id}</button></td>
-              <td><span className={`chip kind-${task.kind}`}>{kindLabel(task.kind)}</span></td>
-              <td>{task.title}</td>
-              <td>{statusLabel(task.kind, task.status)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {items.length === 0 && <p className="muted">收件箱是空的。</p>}
+      {error && <div className="alert alert-error">{error}</div>}
+      <section className="queue-group">
+        <header><h2>待审核</h2><span className="muted">需要你拍板</span></header>
+        <div className="task-grid">
+          {review.map(task => <TaskCard key={task.task_id} task={task} showProject onClick={() => setSelected(task.task_id)} />)}
+          {review.length === 0 && <p className="muted">没有待审核任务。</p>}
+        </div>
+      </section>
+      <section className="queue-group">
+        <header><h2>待领取</h2><span className="muted">worker 会按 kind 拉取</span></header>
+        <div className="task-grid">
+          {ready.map(task => <TaskCard key={task.task_id} task={task} showProject onClick={() => setSelected(task.task_id)} />)}
+          {ready.length === 0 && <p className="muted">没有待领取任务。</p>}
+        </div>
+      </section>
       {selected !== '' && <TaskDetail taskId={selected} onClose={() => setSelected('')} onChanged={load} />}
     </section>
   )
