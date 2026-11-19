@@ -1,16 +1,18 @@
-import { useEffect, useState } from 'react'
-import { api, ApiError } from '../api/client'
+import { api } from '../api/client'
 import type { Worker } from '../api/types'
+import { REFRESH_INTERVALS } from '../lib/refresh'
+import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import { formatTime } from '../lib/labels'
 
-export function WorkersPage() {
-  const [items, setItems] = useState<Worker[]>([])
-  const [error, setError] = useState('')
+/** 无数据时的稳定空数组：避免每渲染新建引用，也避免把空态当成 loading 态。 */
+const EMPTY_WORKERS: Worker[] = []
 
-  const load = () => {
-    api.listWorkers().then(result => setItems(result.items)).catch(err => setError(message(err)))
-  }
-  useEffect(load, [])
+export function WorkersPage() {
+  const { data, error, refresh } = useAutoRefresh({
+    intervalMs: REFRESH_INTERVALS.workers,
+    load: () => api.listWorkers(),
+  })
+  const items = data?.items ?? EMPTY_WORKERS
 
   return (
     <section className="page">
@@ -20,7 +22,7 @@ export function WorkersPage() {
           <h1>执行节点</h1>
           <p className="muted">心跳、当前任务与租约。</p>
         </div>
-        <div className="hero-actions"><button className="btn btn-ghost" onClick={load}>刷新</button></div>
+        <div className="hero-actions"><button className="btn btn-ghost" onClick={() => refresh('manual')}>刷新</button></div>
       </header>
       {error && <div className="alert alert-error">{error}</div>}
       <div className="worker-grid">
@@ -42,8 +44,4 @@ export function WorkersPage() {
       </div>
     </section>
   )
-}
-
-function message(err: unknown): string {
-  return err instanceof ApiError || err instanceof Error ? err.message : String(err)
 }
