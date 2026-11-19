@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { describeError, nextDelay } from '../lib/refresh'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import {
+  describeError,
+  isAutoRefreshEnabled,
+  nextDelay,
+  subscribeAutoRefresh,
+} from '../lib/refresh'
 
 /** 触发来源：定时器到期 / 写后补拉 / 手动点击 / 切回可见。 */
 type Trigger = 'auto' | 'write' | 'manual' | 'visible'
@@ -30,6 +35,15 @@ interface AutoRefreshState {
  * - `data` 只在成功时整体替换，失败保留上一次的数据（失败不清空）；
  * - 页面不可见时不排下一轮（不累积补发），切回可见只补 1 次；
  *   不可见时挂载/换代则不首拉（也不排定时器），同样等切回可见补跑 1 次。
+ * - **全局开关（`lib/refresh` 的单例，与顶栏 `AutoRefreshSwitch` 同一套 API）**：
+ *   关闭 → 清掉定时器且不再排下一轮，`auto` / `visible` 触发一律不取数（0 自动请求）；
+ *   已经发出的在飞请求不中断，允许自然完成并提交（避免 UI 停在旧数据且无错误提示）；
+ *   `manual` / `write` 触发不受开关影响，页面首拉（挂载即按 `manual` 跑）也照常执行，
+ *   所以关掉开关后页面仍有数据、点「刷新」仍生效。开关切回打开 → **只重排定时器、
+ *   不立即补拉**：§4.3 无此要求，立即补拉会和可见性/写后补拉叠加出额外请求；
+ *   重排用当前退避值 `nextDelay(intervalMs, failures)`，避免关-开一瞬把退避清零后立刻追打。
+ *   开关值只经 `useSyncExternalStore(subscribeAutoRefresh, isAutoRefreshEnabled, () => true)`
+ *   读取，本 hook 不自持第二份开关状态、不直接读写 localStorage。
  *
  * `load` 的调用方契约：**只负责取数并返回 Promise，不得 setState、不得 catch**。
  * 状态与错误文案由本 hook 统一维护。
@@ -51,6 +65,10 @@ export function useAutoRefresh<T>(options: {
   const [data, setData] = useState<T | undefined>(undefined)
   const [error, setError] = useState('')
 
+  // 全局开关：全站唯一的一份状态在 lib/refresh，本 hook 只订阅、只读，不另立开关。
+  // 关闭时定时器不启动（auto / visible 不取数），手动刷新与写后补拉保持不变。
+  const enabled = useSyncExternalStore(subscribeAutoRefresh, isAutoRefreshEnabled, () => true)
+
   // 只服务于「失败时该用哪条错误文案」：成功那一笔会同时更新它，
   // 这样同代补跑（写后补拉）拿到的也是最新是否有数据的判断，而不是上一轮渲染的闭包值。
   const dataRef = useRef<T | undefined>(undefined)
@@ -60,6 +78,9 @@ export function useAutoRefresh<T>(options: {
   loadRef.current = load
   const intervalRef = useRef(intervalMs)
   intervalRef.current = intervalMs
+  // 开关值同样用 ref 转发：schedule / run 只读 ref，开关变化不会让计时被重排。
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
 
   const stateRef = useRef<AutoRefreshState>({
     gen: 0,
@@ -82,6 +103,8 @@ export function useAutoRefresh<T>(options: {
   const schedule = useCallback(
     (delayMs: number) => {
       clearTimer()
+      // 全局开关关闭：不排定时器（手动刷新与写后补拉不经过这里，仍可用）。
+      if (!enabledRef.current) return
       // 不可见就不排下一轮：后台不累积补发，回来时由 visible 触发续排。
       if (typeof document !== 'undefined' && document.hidden) return
       stateRef.current.timer = setTimeout(() => {
@@ -94,6 +117,9 @@ export function useAutoRefresh<T>(options: {
 
   const run = (reason: Trigger) => {
     const state = stateRef.current
+
+    // 开关关闭时只放行手动刷新与写后补拉：定时器到期、切回可见都不取数。
+    if (!enabledRef.current && (reason === 'auto' || reason === 'visible')) return
 
     if (state.inFlight !== 0) {
       // 单飞：按触发来源决定丢弃 / 排队 / 重排，绝不叠发第二笔。
@@ -191,6 +217,23 @@ export function useAutoRefresh<T>(options: {
       stateRef.current.gen += 1
     }
   }, [clearTimer])
+
+  // 全局开关联动：开关关闭 → 立刻清定时器（在飞那一笔不打断，收口时 schedule 会自我拦截）；
+  // 切回打开 → 只重排定时器、不立即补拉（§4.3 未要求补拉；避免与可见性/写路径叠加出额外请求）。
+  // 首帧不在这里排期，挂载与换代的首拉排期由上面的 scope effect 负责，避免重复计时。
+  const prevEnabledRef = useRef(enabled)
+  useEffect(() => {
+    const wasEnabled = prevEnabledRef.current
+    prevEnabledRef.current = enabled
+    if (!enabled) {
+      clearTimer()
+      return
+    }
+    if (wasEnabled) return
+    const state = stateRef.current
+    // 在飞那一笔收口时自己会排下一轮，这里不叠第二条定时器。
+    if (state.inFlight === 0) schedule(nextDelay(intervalRef.current, state.failures))
+  }, [enabled, clearTimer, schedule])
 
   /** 外部触发：缺省 manual；写后补拉请显式传 'write'。 */
   const refresh = useCallback((reason: 'write' | 'manual' = 'manual') => {
