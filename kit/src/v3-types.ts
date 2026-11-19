@@ -44,6 +44,23 @@ export interface V3Task {
   update_time: string
 }
 
+/** 领卡回包里的输入物料（`claim` 的 `inputs[]`）。 */
+export interface V3ClaimInput {
+  material_id: string
+  title?: string
+  kind?: string
+  role?: string
+}
+
+/**
+ * 领卡回包：平台返回的是 envelope（`{ task, project, product, inputs, upstream, … }`），
+ * 不是扁平的任务对象。工具层必须从 `task` 里取 task_id / lease_id。
+ */
+export interface V3ClaimEnvelope {
+  task: V3Task
+  inputs?: V3ClaimInput[]
+}
+
 export interface V3Attachment {
   id: number
   project_id?: number | null

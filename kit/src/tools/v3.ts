@@ -13,10 +13,45 @@ import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { EchuanToolOptions, WorkerIdentity } from './write.js'
 import { EchuanValidationError } from '../errors.js'
 import { createWorkerInfoTool } from './worker-info.js'
-import { NO_WORK_TEXT, renderTextValue, toToolError } from './render.js'
-import type { V3Task, V3TaskKind } from '../v3-types.js'
+import {
+  formatMaterial,
+  formatV3Attached,
+  formatV3Claimed,
+  formatV3Inbox,
+  formatV3Project,
+  formatV3ProjectClosed,
+  formatV3ProjectCreated,
+  formatV3ProjectList,
+  formatV3ProjectReopened,
+  formatV3Products,
+  formatV3ProductCreated,
+  formatV3Reported,
+  formatV3Renewed,
+  formatV3Task,
+  formatV3TaskCreated,
+  formatV3TaskList,
+  formatV3TaskUpdated,
+  isRecord,
+  NO_WORK_TEXT,
+  renderTextValue,
+  toToolError,
+} from './render.js'
+import type { V3ClaimInput, V3Project, V3Task, V3TaskKind } from '../v3-types.js'
 
 const jsonObjectSchema = { type: 'object', additionalProperties: true } as const
+/** 只读工具的规范值 schema：一段渲染好的中文文本。 */
+const textOutputSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    text: { type: 'string', required: true, description: '渲染好的中文文本' },
+  },
+} as const
+
+/**
+ * 所有工具共用的 render：优先取规范值里的 `text`（V3 读工具与写工具都会带），
+ * 拿不到时退化为缩进 JSON —— 任何情况都不返回空串（issue #65）。
+ */
 const renderJSON = (_args: unknown, value: unknown) => renderTextValue(value)
 
 function requireText(value: unknown, field: string): string {
@@ -50,9 +85,18 @@ function requireWorker(identity: WorkerIdentity): string {
   return workerID
 }
 
-function emptyToNoWork<T>(result: { kind: string; data?: T }): T | { kind: 'no_work' } {
-  if (result.kind === 'empty') return { kind: 'no_work' }
-  return result.data as T
+/**
+ * 领卡回包是 envelope（`{ task, project, product, inputs, upstream, … }`），不是扁平任务；
+ * 这里统一取出任务与输入物料，兼容平台将来直接回扁平任务。
+ */
+function unwrapClaim(data: unknown): { task: V3Task; inputs: V3ClaimInput[] } {
+  if (isRecord(data) && isRecord(data['task'])) {
+    const inputs = Array.isArray(data['inputs'])
+      ? (data['inputs'] as V3ClaimInput[])
+      : []
+    return { task: data['task'] as unknown as V3Task, inputs }
+  }
+  return { task: data as V3Task, inputs: [] }
 }
 
 function writeTool(
@@ -76,6 +120,33 @@ function writeTool(
   })
 }
 
+/**
+ * 只读工具工厂：规范值刻意收成 `{ text }`（与 V2 `read.ts` 对齐）。
+ *
+ * 只读工具没有第二个消费方，规范值就是模型要读的那段文本；渲染只有一条路径
+ * （`renderTextValue`），因此不会出现「拿到数据但渲染成空串」的情况。
+ */
+function readTool(
+  name: string,
+  description: string,
+  parameters: Record<string, unknown>,
+  run: (args: Record<string, any>) => Promise<string>,
+): ToolDefinition {
+  return defineTool({
+    name,
+    description,
+    parameters: parameters as any,
+    output: { schema: textOutputSchema, render: renderJSON },
+    async execute(args) {
+      try {
+        return { text: await run(args as Record<string, any>) } as any
+      } catch (err) {
+        return toToolError(err)
+      }
+    },
+  })
+}
+
 export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[] {
   const { client, identity } = options
 
@@ -86,10 +157,10 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
       { kind: { type: 'string', required: true, description: 'requirement / design / breakdown / dev' } },
       async args => {
         const result = await client.claimV3Task({ worker_id: requireWorker(identity), kind: requireKind(args.kind) })
-        const value = emptyToNoWork<V3Task>(result)
-        if ('kind' in value && value.kind === 'no_work') return { kind: 'no_work', text: NO_WORK_TEXT }
-        identity.notifyReported?.(value.task_id)
-        return { kind: 'claimed', task: value }
+        if (result.kind === 'empty') return { kind: 'no_work', text: NO_WORK_TEXT }
+        const claimed = unwrapClaim(result.data)
+        identity.notifyReported?.(claimed.task.task_id)
+        return { kind: 'claimed', task: claimed.task, text: formatV3Claimed(claimed.task, claimed.inputs) }
       },
     ),
     writeTool(
@@ -100,12 +171,17 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
         lease_id: { type: 'string', required: true, description: '当前租约' },
       },
       async args => {
-        const result = await client.renewV3Task({
+        const input = {
           task_id: requireText(args.task_id, 'task_id'),
           lease_id: requireText(args.lease_id, 'lease_id'),
-        })
-        if (result.kind === 'empty') return { kind: 'renewed' }
-        return { kind: 'renewed', result: result.data }
+        }
+        const result = await client.renewV3Task(input)
+        const data = result.kind === 'empty' ? undefined : result.data
+        return {
+          kind: 'renewed',
+          ...(data === undefined ? {} : { result: data }),
+          text: formatV3Renewed(input, data),
+        }
       },
     ),
     writeTool(
@@ -148,7 +224,11 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
         if (result.kind === 'empty') {
           throw new EchuanValidationError('平台对交报告返回 204，没有回包可核对', 'unexpected_empty', 'material_id')
         }
-        return { kind: 'reported', task: result.data }
+        return {
+          kind: 'reported',
+          task: result.data,
+          text: formatV3Reported({ task_id: taskID, material_id: materialID, status: result.data.status }),
+        }
       },
     ),
     writeTool(
@@ -182,7 +262,7 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
         if (result.kind === 'empty') {
           throw new EchuanValidationError('平台对建任务返回 204，没有回包可核对', 'unexpected_empty', 'project_id')
         }
-        return { kind: 'task_created', task: result.data }
+        return { kind: 'task_created', task: result.data, text: formatV3TaskCreated(result.data) }
       },
     ),
     writeTool(
@@ -206,7 +286,7 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
           } as any,
         })
         if (result.kind === 'empty') throw new EchuanValidationError('平台返回 204', 'unexpected_empty', 'id')
-        return { kind: 'task_updated', task: result.data }
+        return { kind: 'task_updated', task: result.data, text: formatV3TaskUpdated(result.data) }
       },
     ),
     writeTool(
@@ -232,7 +312,19 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
           sort_no: typeof args.sort_no === 'number' ? args.sort_no : undefined,
         } as any)
         if (result.kind === 'empty') throw new EchuanValidationError('平台返回 204', 'unexpected_empty', 'material_id')
-        return { kind: 'attached', attachment: result.data }
+        return {
+          kind: 'attached',
+          attachment: result.data,
+          text: formatV3Attached(
+            {
+              project_id: typeof args.project_id === 'string' ? args.project_id : undefined,
+              task_id: typeof args.task_id === 'string' ? args.task_id : undefined,
+              material_id: requireText(args.material_id, 'material_id'),
+              role,
+            },
+            result.data,
+          ),
+        }
       },
     ),
     writeTool(
@@ -250,7 +342,7 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
           context_md: typeof args.context_md === 'string' ? args.context_md : undefined,
         } as any)
         if (result.kind === 'empty') throw new EchuanValidationError('平台返回 204', 'unexpected_empty', 'project_id')
-        return { kind: 'project_created', project: result.data }
+        return { kind: 'project_created', project: result.data, text: formatV3ProjectCreated(result.data) }
       },
     ),
     writeTool(
@@ -261,11 +353,10 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
         force: { type: 'boolean' },
       },
       async args => {
-        const result = await client.closeV3Project({
-          id: requireText(args.id, 'id'),
-          force: args.force === true,
-        })
-        return { kind: result.kind === 'empty' ? 'project_closed' : 'project_closed' }
+        const id = requireText(args.id, 'id')
+        const force = args.force === true
+        await client.closeV3Project({ id, force })
+        return { kind: 'project_closed', text: formatV3ProjectClosed(id, force) }
       },
     ),
     writeTool(
@@ -273,8 +364,9 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
       '重开项目（POST /v1/projects/reopen?id=）。已取消的任务不会复活。',
       { id: { type: 'string', required: true } },
       async args => {
-        await client.reopenV3Project({ id: requireText(args.id, 'id') })
-        return { kind: 'project_reopened' }
+        const id = requireText(args.id, 'id')
+        await client.reopenV3Project({ id })
+        return { kind: 'project_reopened', text: formatV3ProjectReopened(id) }
       },
     ),
     writeTool(
@@ -296,7 +388,7 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
           license: typeof args.license === 'string' ? args.license : undefined,
         } as any)
         if (result.kind === 'empty') throw new EchuanValidationError('平台返回 204', 'unexpected_empty', 'product_id')
-        return { kind: 'product_created', product: result.data }
+        return { kind: 'product_created', product: result.data, text: formatV3ProductCreated(result.data) }
       },
     ),
   ]
@@ -305,18 +397,10 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
 export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] {
   const { client } = options
 
-  const readTool = (
-    name: string,
-    description: string,
-    parameters: Record<string, unknown>,
-    run: (args: Record<string, any>) => Promise<unknown>,
-  ): ToolDefinition => writeTool(name, description, parameters, run)
-
   return [
     readTool('echuan_inbox', '待领取 + 待审核任务（GET /v1/inbox）。', {}, async () => {
       const result = await client.getV3Inbox()
-      if (result.kind === 'empty') return { items: [] }
-      return result.data
+      return formatV3Inbox(result.kind === 'empty' ? [] : (result.data.items ?? []))
     }),
     readTool(
       'echuan_product_list',
@@ -328,7 +412,7 @@ export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] 
           ...(typeof args.after_id === 'number' ? { after_id: args.after_id } : {}),
           ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
         } as any)
-        return result.kind === 'empty' ? { items: [] } : result.data
+        return formatV3Products(result.kind === 'empty' ? undefined : result.data)
       },
     ),
     readTool(
@@ -346,7 +430,7 @@ export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] 
           after_id: typeof args.after_id === 'number' ? args.after_id : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,
         } as any)
-        return result.kind === 'empty' ? { items: [] } : result.data
+        return formatV3ProjectList(result.kind === 'empty' ? [] : (result.data.items ?? []))
       },
     ),
     readTool(
@@ -356,7 +440,7 @@ export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] 
       async args => {
         const result = await client.getV3Project({ id: requireText(args.id, 'id') })
         if (result.kind === 'empty') throw new EchuanValidationError('项目不存在', 'not_found', 'id')
-        return result.data
+        return formatV3Project(result.data)
       },
     ),
     readTool(
@@ -376,7 +460,7 @@ export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] 
           status: typeof args.status === 'string' && args.status !== '' ? (args.status as any) : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,
         } as any)
-        return result.kind === 'empty' ? { items: [] } : result.data
+        return formatV3TaskList(result.kind === 'empty' ? [] : (result.data.items ?? []))
       },
     ),
     readTool(
@@ -386,7 +470,7 @@ export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] 
       async args => {
         const result = await client.getV3Task({ id: requireText(args.id, 'id') })
         if (result.kind === 'empty') throw new EchuanValidationError('任务不存在', 'not_found', 'id')
-        return result.data
+        return formatV3Task(result.data)
       },
     ),
     readTool(
@@ -396,7 +480,7 @@ export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] 
       async args => {
         const result = await client.getMaterials({ id: requireText(args.id, 'id') })
         if (result.kind === 'empty') throw new EchuanValidationError('资料不存在', 'not_found', 'id')
-        return { kind: 'material', ...result.data }
+        return formatMaterial(result.data)
       },
     ),
     createWorkerInfoTool(options),
