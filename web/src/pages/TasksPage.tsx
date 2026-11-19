@@ -6,27 +6,38 @@ import { TaskCard } from '../components/TaskCard'
 import { TaskDetail } from '../components/TaskDetail'
 import { Modal } from '../components/Modal'
 import { KINDS, STATUSES, kindLabel } from '../lib/labels'
+import { REFRESH_INTERVALS } from '../lib/refresh'
+import { useAutoRefresh } from '../hooks/useAutoRefresh'
 
 const COLUMNS: TaskStatus[] = ['pending', 'ready', 'in_progress', 'in_review', 'done', 'failed', 'cancelled']
+
+/** 无数据时的稳定空数组：避免每渲染新建引用，也避免把空态当成 loading 态。 */
+const EMPTY_TASKS: Task[] = []
 
 export function TasksPage() {
   const { projectId = '' } = useParams()
   const [project, setProject] = useState<Project | null>(null)
-  const [items, setItems] = useState<Task[]>([])
   const [kind, setKind] = useState<TaskKind | ''>('')
   const [status, setStatus] = useState<TaskStatus | ''>('')
+  // 页面写操作（新建任务）的错误单独存一份：列表刷新错误由 hook 管，
+  // 两条互不覆盖，错误条按「列表错误在前、写错误在后」渲染。
   const [error, setError] = useState('')
   const [selected, setSelected] = useState('')
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState({ kind: 'dev' as TaskKind, title: '', description_md: '', context_md: '', depends_on: '' })
 
-  const load = () => {
-    api.listTasks({
+  // 筛选组合即换代边界：projectId / kind / status 任一变化 = 新 scope，
+  // hook 负责清定时器、失败计数归零、立即重拉，并丢弃旧代响应。
+  const { data, error: listError, refresh } = useAutoRefresh({
+    intervalMs: REFRESH_INTERVALS.tasks,
+    scope: `${projectId}|${kind}|${status}`,
+    load: () => api.listTasks({
       project_id: projectId, kind: kind || undefined, status: status || undefined, limit: 300,
-    }).then(result => setItems(result.items)).catch(err => setError(message(err)))
-  }
+    }),
+  })
+  const items = data?.items ?? EMPTY_TASKS
+
   useEffect(() => { api.getProject(projectId).then(setProject).catch(() => setProject(null)) }, [projectId])
-  useEffect(load, [projectId, kind, status])
 
   const grouped = useMemo(() => {
     const map = new Map<TaskStatus, Task[]>()
@@ -36,6 +47,8 @@ export function TasksPage() {
   }, [items])
 
   const create = async () => {
+    // 写路径自己负责这条写错误条的生命周期：发起时清掉上一轮的陈旧写错误。
+    setError('')
     try {
       await api.createTask({
         project_id: projectId, kind: form.kind, title: form.title,
@@ -44,7 +57,8 @@ export function TasksPage() {
       })
       setOpen(false)
       setForm({ kind: 'dev', title: '', description_md: '', context_md: '', depends_on: '' })
-      load()
+      // 写后补拉走 hook（'write'）：在飞则排队、本轮收口补跑 1 次，绝不与自动刷新叠发。
+      refresh('write')
     } catch (err) { setError(message(err)) }
   }
 
@@ -73,6 +87,7 @@ export function TasksPage() {
           <button className="btn btn-primary" onClick={() => setOpen(true)}>新建任务</button>
         </div>
       </header>
+      {listError && <div className="alert alert-error">{listError}</div>}
       {error && <div className="alert alert-error">{error}</div>}
 
       <div className="board">
@@ -108,7 +123,7 @@ export function TasksPage() {
           </div>
         </Modal>
       )}
-      {selected !== '' && <TaskDetail taskId={selected} onClose={() => setSelected('')} onChanged={load} />}
+      {selected !== '' && <TaskDetail taskId={selected} onClose={() => setSelected('')} onChanged={() => refresh('write')} />}
     </section>
   )
 }
