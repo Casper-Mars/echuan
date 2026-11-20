@@ -94,12 +94,14 @@ export function InboxPage() {
         ? '收件箱加载失败'
         : '派单队列加载失败'
 
+  // 技术细节：逐路标注是哪一路失败（hook 的文案已含「加载失败 / 自动刷新失败」语义，这里不再重复）
   const errorDetail = [
-    inbox.error === '' ? null : `${inbox.error}（GET /v1/inbox）`,
-    queue.error === '' ? null : `${queue.error}（GET /v1/tasks?status=ready）`,
+    inbox.error === '' ? null : `收件箱：${inbox.error}`,
+    queue.error === '' ? null : `派单队列：${queue.error}`,
+    '（GET /v1/inbox · GET /v1/tasks?status=ready）',
   ]
     .filter((value): value is string => value !== null)
-    .join('；')
+    .join(' ')
 
   return (
     <div className="ix" data-ui="inbox" data-inbox-state={state}>
