@@ -50,6 +50,7 @@ fmt:
 	gofmt -w .
 
 ## web: 构建前端并同步到 internal/web/dist（前端源码位于 web/）
+## 构建内含体积门禁（web/scripts/check-size.mjs）：JS gzip 超 344,056 B 即非 0 退出
 web:
 	@if [ -f web/package.json ]; then \
 		pnpm --dir web build && rm -rf internal/web/dist && cp -r web/dist internal/web/dist && echo "前端产物已同步到 internal/web/dist"; \

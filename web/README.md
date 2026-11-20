@@ -42,6 +42,28 @@ cd .. && make web # 同步到 internal/web/dist，随 go:embed 打进二进制
 
 `VITE_ACTOR` 可覆盖默认的 `X-Actor: human:web`。
 
+## 产物体积门禁
+
+`pnpm build` 末尾串了 `scripts/check-size.mjs`，构建后打印 JS / CSS 的 raw 与 gzip 体积：
+
+```text
+[size] JS  raw=280209 gzip=90302 files=1
+[size] CSS raw=44354 gzip=8836 files=1
+[size] 阈值 JS gzip <= 344056 B（基线 88056 B + 预算 256000 B = 344056 B）
+[size] 通过：JS gzip 90302 B <= 阈值 344056 B（剩余 253754 B）
+```
+
+判据只看 JS gzip 总量：默认阈值 = 基线 88,056 B（ADR-0001 §2 C7 实测，引入 Mantine 前）
++ 预算 250 KB(256,000 B) = **344,056 B**。超阈值即打印超标项并让 `pnpm build` / `make web`
+非 0 退出。阈值可用环境变量覆盖，用于演示失败路径或临时放宽：
+
+```bash
+SIZE_JS_GZIP_MAX=1024 node scripts/check-size.mjs   # 必然超标，退出码 1
+node scripts/check-size.mjs                         # 用默认阈值复跑
+```
+
+gzip 口径为 Node zlib level 9，与 vite build 打印的 gzip 数值一致。
+
 ## 可选：端到端冒烟（CDP）
 
 `scripts/ui-verify.mjs` 用 headless Chrome 验证路由、面包屑、5s 轮询、抽屉与错误提示。
