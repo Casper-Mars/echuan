@@ -17,13 +17,22 @@ Markdown（需求/方案/报告正文）由 `marked` 解析、`DOMPurify` 净化
 
 ## 路由
 
-采用 `HashRouter`，可直接刷新/分享：
+采用 `HashRouter`，可直接刷新/分享。全部路由挂在同一个应用外壳（`src/features/shell/AppFrame`）下，
+壳层负责三形态导航（桌面 240 侧栏 / 平板 64 图标栏 + Tooltip / 移动底部 TabBar）与顶栏：
 
-- `#/products`
-- `#/products/:productId/projects`
-- `#/products/:productId/projects/:projectId/tasks`
+- `#/` — 上次访问的项目看板；无记录时重定向到 `#/products`
+  （记录键：`localStorage['echuan:last-project']`，值是 `project_id`）
+- `#/projects/:projectId/tasks` — 项目看板（缺 `taskId` 一律回这里）
+- `#/projects/:projectId/tasks/:taskId` — 任务详情，独立路由、可直接打开/分享，关闭回看板
+- `#/projects/:projectId` — 归一重定向到该项目看板
+- `#/inbox`、`#/queue`、`#/products`、`#/products/:productId/projects`、`#/workers` — 旧书签保留
 
-根路径与未知 hash 重定向到 `#/products`。
+未知 hash 重定向到 `#/products`。
+
+分层红线（不变）：`src/features/**` 与 `src/pages/**` 只能 import `src/ui`、`src/theme`、`src/api`、
+`src/hooks`，不得直接 `import '@mantine/core'`。唯一例外是应用入口 `src/main.tsx`：它用
+`<AppShell>` 提供 Mantine 的 AppShell 安全上下文（`ui/SidebarNav` 内部是 `AppShell.Navbar`，
+Mantine 要求必须在 `<AppShell>` 里），三形态与几何仍全部由 `src/features/shell` 决定。
 
 ## 开发
 

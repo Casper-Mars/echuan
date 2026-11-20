@@ -1,0 +1,53 @@
+/* features/task-detail —— 详情路由的容器与占位说明样式
+ *
+ * 口径（AC7）：只消费 theme 令牌，不出现 hex / px 字面量。
+ * 抽屉本体（720 桌面 / 移动全屏）由 ui/DetailSheet 负责，这里只排正文与底部操作条。
+ */
+.fx-detail__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  min-width: 0;
+}
+
+.fx-detail__meta {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.fx-detail__meta-row {
+  display: grid;
+  grid-template-columns: var(--ui-layout-rail) 1fr;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-block: var(--space-2);
+  border-block-end: var(--border-width) solid var(--border-subtle);
+}
+
+.fx-detail__meta-row dt {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+.fx-detail__meta-row dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+
+.fx-detail__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-block-start: var(--border-width) solid var(--border-subtle);
+  background-color: var(--surface-raised);
+}
+
+.fx-detail__primary {
+  display: inline-flex;
+  margin-inline-start: auto;
+}
