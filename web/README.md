@@ -77,6 +77,25 @@ Mantine 要求必须在 `<AppShell>` 里），三形态与几何仍全部由 `sr
 - **分层**：三张页面只 import `src/ui`、`src/api`、`src/hooks`、`src/lib`；样式在各自的 `*.css` 里只消费令牌，
   没有 hex / px 字面量（`grep -rnE '#[0-9a-fA-F]{3,8}\b|[0-9]+px\b' web/src/features/{products,projects,workers}` 为空）。
 
+## 附件预览（`src/features/task-detail`，T7）
+
+详情「附件」区点任一附件 → **应用内**开二级预览面板（不新开标签、不跳路由）：
+桌面/平板是详情抽屉内的两栏（左列表 280 + 右正文），移动上下堆叠（列表 ≤32vh、正文吃剩余）。
+头部换成「角色徽标 + 附件标题」，头部关闭键 = 返回详情（二级层退出，详情滚动位置原值写回）。
+
+- **数据源**：`GET /v1/materials?id=`（`text/markdown`，浏览器 HTTP 缓存 immutable + ETag 直接复用）；
+  前端**只做同 `material_id` 的并发去重**（在飞请求共用一条 Promise），不自建缓存。
+- **六态**（`[data-testid="attachment-preview"]` 的 `data-state`）：`default` · `empty`（「附件为空」+「返回详情」）·
+  `loading`（5 行骨架，列表可点但置灰）· `error`（404「附件不存在或已删除」+「在新标签打开原文」）·
+  `oversized`（`Content-Length` > 512 KB：提示大小 +「仍然加载」+ 兜底链接，**不自动渲染**）·
+  `image-placeholder`（正文内嵌图片 → 显式占位，不静默空白）。
+- **降级口径**：8s 超时 → 「加载超时」+「重试」；413 → 「附件过大」；其他非 2xx → 原文提示；
+  渲染异常 → 降级 `<pre>` 原文（错误边界，不白屏）。
+- **验收锚点**：正文区根节点恒带 `data-testid="markdown-viewer"`（`src/ui/MarkdownViewer`），
+  断言「点附件后同页出现该节点」即可证明应用内渲染。
+- **分层**：预览层只用 `src/ui` 组件（`ui/AttachmentRow`、`ui/MarkdownViewer`、`ui/Alert`、`ui/EmptyState`、
+  `ui/SkeletonCard`、`ui/Button`），样式在 `task-detail.css` 里只消费令牌（无 hex / px 字面量）。
+
 ## 开发
 
 ```bash

@@ -261,3 +261,166 @@
     min-height: var(--ui-control-height-touch);
   }
 }
+
+/* ===== 附件预览二级面板（T7，design/screens/attachment-preview.md） ==========
+ *
+ * 几何口径：
+ *   左列表 = calc(--space-10 * 4 + --space-6) = 64×4 + 24 = 280（design「左 280」）；
+ *   面板吃满抽屉正文槽：正文槽自带 --space-5 内边距，这里用等量负外边距抵平，
+ *     再由列表 / 正文各自给内边距（不改 ui/ui.css 的槽几何，避免影响 T6 的详情页）。
+ * 断点：≥768 两栏（列表 + 正文）；<768 上下堆叠，列表 ≤32vh、正文吃剩余高度（design「断点」）。
+ */
+.fx-preview {
+  display: grid;
+  grid-template-columns: calc(var(--space-10) * 4 + var(--space-6)) minmax(0, 1fr);
+  height: calc(100% + var(--space-5) * 2);
+  margin: calc(-1 * var(--space-5));
+  min-height: 0;
+  background-color: var(--surface-canvas);
+}
+
+/* 预览态：详情正文整块撤下（组件状态保留，滚动位置由页面的 layout effect 写回） */
+.fx-detail__body[data-preview='open'] {
+  display: none;
+}
+
+.fx-preview__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  padding: var(--space-3);
+  overflow: auto;
+  border-inline-end: var(--border-width) solid var(--border-subtle);
+}
+
+/* loading 态：列表仍可点（切换附件），但视觉上置灰（design「列表可点但显示为禁用」） */
+.fx-preview__list[data-loading] .ui-attachment-row {
+  opacity: 0.55;
+}
+
+.fx-preview__items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 当前项高亮（design「左：附件列表（当前项高亮）」） */
+.fx-preview__item[data-active] .ui-attachment-row {
+  border-color: var(--border-strong);
+  background-color: var(--surface-overlay);
+}
+
+.fx-preview__body {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4);
+  color: var(--text-primary);
+}
+
+.fx-preview__body:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: calc(-1 * var(--ui-focus-outline-offset));
+}
+
+.fx-preview__markdown {
+  min-width: 0;
+}
+
+/* 渲染异常降级：原文用 mono + 保留换行，仍可读（flows F2「渲染异常 → 降级 <pre> 原文」） */
+.fx-preview__raw {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.fx-preview__raw-text {
+  margin: 0;
+  padding: var(--space-3);
+  overflow: auto;
+  border-radius: var(--radius-8);
+  background-color: var(--surface-overlay);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-size);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 状态位（错误条 / 超限提示 / 空态）：竖向排布，动作按钮跟在文案后 */
+.fx-preview__slot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.fx-preview__hint {
+  display: block;
+  margin-block-end: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+.fx-preview__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* 抽屉头部：角色徽标 + 附件标题（预览态替换详情标题） */
+.fx-preview__head {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.fx-preview__role {
+  flex: 0 0 auto;
+  padding-inline: var(--space-2);
+  padding-block: var(--space-1);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-4);
+  background-color: var(--surface-overlay);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+  font-weight: var(--text-caption-weight);
+}
+
+.fx-preview__title {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--text-h3-size);
+  font-weight: var(--text-h3-weight);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 移动端（< 768）：上下堆叠，列表 ≤32vh、正文吃剩余（design「断点」） */
+@media (max-width: 47.99em) {
+  .fx-preview {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .fx-preview__list {
+    max-height: 32vh;
+    border-inline-end: 0;
+    border-block-end: var(--border-width) solid var(--border-subtle);
+  }
+}
+
+/* 状态位的动作组（仍是加载 / 在新标签打开原文）：与 ref 一致，主动作在前 */
+.fx-preview__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
