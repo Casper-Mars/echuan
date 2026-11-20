@@ -69,7 +69,7 @@ function projectIdOf(pathname: string): string | null {
 export function AppFrame() {
   const layout = useShellLayout()
   const navigate = useNavigate()
-  const { pathname } = useLocation()
+  const { pathname, key: locationKey, search } = useLocation()
   const [moreOpen, setMoreOpen] = useState(false)
 
   // flows F1 第 1 步：进入某个项目看板就记住它，`#/` 与移动 Tab「看板」下次直达。
@@ -163,7 +163,12 @@ export function AppFrame() {
         </header>
 
         <main className="fx-main" id="main">
-          <ErrorBoundary onExit={() => navigate(boardPath(projectId))}>
+          {/* resetKey 用 location.key：任何一次导航（含导航到当前路径）都会换 key，
+              错误态随之重置，用户不会被一条错误条锁死在页面上（D1） */}
+          <ErrorBoundary
+            resetKey={`${locationKey}${pathname}${search}`}
+            onExit={() => navigate(boardPath(projectId))}
+          >
             {/* 路由级 Suspense：详情路由是 lazy chunk，chunk 未到时渲染骨架（壳层 loading 态） */}
             <Suspense fallback={<RouteLoading />}>
               <Outlet />

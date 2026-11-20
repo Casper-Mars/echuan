@@ -40,6 +40,10 @@
   inset-block-start: 0;
   z-index: var(--z-sticky);
   display: flex;
+  /* content-box：min-height 只约束内容盒（60），边框独立占一条 border-width → 总高 61，
+     下边界（含边框）落在 y=60，与 design/refs 实测一致（顶栏内容 0..59 + 一条边框，页面自 y=61 起）。
+     用 border-box 会把边框吃进 60，像素边界少一条（Tester 复核项 D6）。 */
+  box-sizing: content-box;
   align-items: center;
   gap: var(--space-5);
   min-height: calc(var(--space-9) + var(--space-4));
@@ -145,30 +149,67 @@
   text-align: center;
 }
 
-/* ===== 错误条骨架（features/shell/ErrorBar） ========================== */
+/* ===== 错误条骨架（features/shell/ErrorBar） ==========================
+ * 自带表面（D2）：错误条的背景与前景区分开指定、且背景不透明（令牌都是实色 hex），
+ * 因此不依赖宿主页面背景——旧浅色页、详情路由、亮色主题下对比度一致。
+ * 前景/背景配对（暗色令牌实测，见 T4 返工报告）：
+ *   title / message: --text-primary  on --surface-raised
+ *   detail:          --text-muted    on --surface-raised
+ * 选择器用「.fx-error-bar-alert.ui-alert.ui-alert」提到 0,3,0，稳定压过 Mantine 的
+ * light 变体底色（danger 浅底），不依赖样式表顺序。
+ */
+.fx-error-bar-alert.ui-alert.ui-alert {
+  background-color: var(--surface-raised);
+  color: var(--text-primary);
+  border: var(--border-width) solid color-mix(in srgb, var(--feedback-danger) 45%, var(--border-subtle));
+}
+
+.fx-error-bar-alert .mantine-Alert-icon {
+  color: var(--feedback-danger);
+}
+
 .fx-error-bar {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-primary);
+}
+
+.fx-error-bar__title,
+.fx-error-bar__message,
+.fx-error-bar__detail {
+  margin: 0;
+}
+
+.fx-error-bar__title {
+  color: var(--text-primary);
+  font-weight: var(--text-body-strong-weight);
 }
 
 .fx-error-bar__message {
-  margin: 0;
   color: var(--text-primary);
 }
 
 .fx-error-bar__detail {
-  margin: 0;
   color: var(--text-muted);
   font-size: var(--text-small-size);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
 
+/* 动作成组（D7）：同一行、同一对齐（起点）、间距走令牌；窄屏才换行 */
 .fx-error-bar__actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
   gap: var(--space-3);
+  margin-block-start: var(--space-2);
+}
+
+.fx-error-bar__actions > * {
+  flex: 0 0 auto;
 }
 
 .fx-page-error {

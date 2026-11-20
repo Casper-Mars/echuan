@@ -681,6 +681,28 @@ for (const [hash, probe] of [
     return assert(labels.includes('返回看板'), `缺返回看板：${JSON.stringify(labels)}`)
   })
 
+  await check('D2 错误条自带表面：Alert 带 .fx-error-bar-alert 且骨架标记 data-surface=self', () => {
+    const alert = window.document.querySelector('[role="alert"]')
+    assert(alert?.classList.contains('fx-error-bar-alert'), 'Alert 缺 .fx-error-bar-alert')
+    const bar = window.document.querySelector('[data-ui="error-bar"]')
+    return assert(bar?.getAttribute('data-surface') === 'self', `data-surface=${bar?.getAttribute('data-surface')}`)
+  })
+
+  await check('D2 错误条前景/背景成对：title 与 message 是自绘节点（不依赖 ui/Alert 的 title 槽）', () => {
+    const title = window.document.querySelector('.fx-error-bar__title')
+    const message = window.document.querySelector('.fx-error-bar__message')
+    assert(title && text(title) === '页面渲染出错', `title=${text(title)}`)
+    return assert(message !== null, `message 节点存在=${Boolean(message)}`)
+  })
+
+  await check('D7 动作成组：重试与返回看板在同一个 actions 行内', () => {
+    const row = window.document.querySelector('[data-ui="error-bar-actions"]')
+    assert(row, '缺 [data-ui="error-bar-actions"]')
+    const labels = Array.from(row.querySelectorAll('button')).map((node) => text(node))
+    assert(labels.includes('重试'), `行内缺重试：${JSON.stringify(labels)}`)
+    return assert(labels.includes('返回看板'), `行内缺返回看板：${JSON.stringify(labels)}`)
+  })
+
   await check('错误边界 error 态：技术细节可见（不是只有一句「出错了」）', () => {
     const detail = window.document.querySelector('.fx-error-bar__detail')
     return assert(text(detail).includes('boom'), `detail=${text(detail)}`)
@@ -712,6 +734,61 @@ for (const [hash, probe] of [
     await flush(4)
     const recovered = window.document.querySelector('[data-ui="recovered"]')
     return assert(recovered !== null, `recovered=${Boolean(recovered)}`)
+  })
+
+  await unmount()
+}
+
+// ---- 8b. 场景：D1 错误态随导航重置（resetKey 变化即恢复） --------------------
+{
+  setViewport(1440, 900)
+  window.location.hash = '#/products'
+  let shouldThrow = true
+  let resetKey = 'route-a'
+
+  const Boom = () => {
+    if (shouldThrow) throw new Error('boom-D1')
+    return h('p', { 'data-ui': 'route-b-page' }, '路由 B 页面')
+  }
+
+  const view = () =>
+    withProviders(h(ErrorBoundary, { resetKey, onExit: () => {} }, h(Boom)))
+
+  await mount(view())
+
+  await check('D1 前置：先进入 error 态', () => {
+    const err = window.document.querySelector('[data-ui="page-error"]')
+    return assert(err !== null, `page-error=${Boolean(err)}`)
+  })
+
+  await check('D1 导航（resetKey 变化）后错误态自动清掉，新路由内容渲染', async () => {
+    shouldThrow = false
+    resetKey = 'route-b'
+    await act(async () => {
+      root.render(view())
+    })
+    await flush(2)
+    const err = window.document.querySelector('[data-ui="page-error"]')
+    const page = window.document.querySelector('[data-ui="route-b-page"]')
+    assert(err === null, '错误条仍在（D1 复现）')
+    return assert(page !== null, '新路由内容未渲染')
+  })
+
+  await check('D1 反向：resetKey 不变时不擅自清错误（避免掩盖真实故障）', async () => {
+    shouldThrow = true
+    resetKey = 'route-c'
+    await act(async () => {
+      root.render(view())
+    })
+    await flush(1)
+    const err = window.document.querySelector('[data-ui="page-error"]')
+    assert(err !== null, 'error 态应保持')
+    // 同一 resetKey 下再渲染一次（模拟无关重渲染）→ 仍保持 error
+    await act(async () => {
+      root.render(view())
+    })
+    const stillErr = window.document.querySelector('[data-ui="page-error"]')
+    return assert(stillErr !== null, `同一 resetKey 重渲染后错误条=${Boolean(stillErr)}`)
   })
 
   await unmount()
