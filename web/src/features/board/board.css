@@ -1,0 +1,283 @@
+/* features/board —— 看板主路径样式（design/screens/board.md + design/flows.md F4）
+ *
+ * 口径（卡片 AC6）：
+ *   * 只消费 theme 令牌 var(--…)，不出现 hex 与 px 字面量；
+ *   * 几何量由 --space-* / --ui-* 度量推导（注释里写目标像素值，值本身不写 px）；
+ *   * 媒体查询里只能用 em 字面量（CSS 不允许 @media 用 var()）：断点 768 = 48em，
+ *     取值来自 design/tokens.json 的 breakpoint.sm（与 shell 的移动形态 <768 同一处事实）。
+ */
+
+/* ===== 页面骨架 ==========================================================
+ * 看板要「列内滚动、页面不滚」（design/refs：列底贴到内容区底部），并且要自带暗色画布：
+ * 旧 web/src/styles.css（三代视觉叠加，T11 才删）把 body 背景刷成了浅色渐变，
+ * 而验收基准是暗色 refs，所以看板页自己铺满内容区、自己画 canvas（见 .bp 的 margin 负值与 background）。
+ *
+ * 高度 = 视口 − 壳层占用：
+ *   100dvh − 顶栏（space-9 + space-4 + border，见 shell.css .fx-topbar 的 content-box 口径）
+ *          − 移动端底部 TabBar（ui.css .ui-tab-bar__tab 的触控高度 + 一条上边框）
+ * 内容区的上下内边距（space-6 × 2，见 shell.css .fx-main）用负 margin 抵掉，改由本文件的 padding 提供，
+ * 这样底色能盖住整块内容区（含内边距那一圈），页面边界与 design/refs 一致。
+ */
+.bp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  margin: calc(var(--space-6) * -1);
+  background-color: var(--surface-canvas);
+  /* 氛围光（design/components.md「视觉语言 v2」）：与 theme/base.css 的 body 画法同源；
+     旧 styles.css 的浅色 body 渐变把底座那层盖住了，本卡不动旧样式层（T11 收口），这里自绘一份。 */
+  background-image:
+    radial-gradient(
+      closest-side at 12% -12%,
+      color-mix(in srgb, var(--action-primary) 18%, transparent),
+      transparent
+    ),
+    radial-gradient(
+      closest-side at 96% -6%,
+      color-mix(in srgb, var(--feedback-info) 12%, transparent),
+      transparent
+    );
+  background-repeat: no-repeat;
+  block-size: calc(100dvh - var(--space-9) - var(--space-4) - var(--border-width));
+  min-block-size: 0;
+  /* 展开列宽：280 = space-10(64) × 4 + space-6(24)。折叠列宽不在这里给（ui.css 的 56 竖条） */
+  --bp-column-w: calc(var(--space-10) * 4 + var(--space-6));
+}
+
+/* 移动端：让出底部 TabBar（触控高度 + 一条上边框）；左右内边距收窄到 12（space-4），
+ * 列间距同步收窄到 8（space-3）——两者都是 design/refs 移动端的像素实测值（列 1 左边 12、列间距 8）。 */
+@media (max-width: 47.99em) {
+  .bp {
+    block-size: calc(
+      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - var(--ui-control-height-touch) -
+        var(--border-width)
+    );
+    /* 负 margin 必须抵满 shell 的 24，否则收窄内边距只会把整块往里缩；左右内边距再单独收窄到 16 */
+    margin: calc(var(--space-6) * -1);
+    padding-block: var(--space-6);
+    padding-inline: var(--space-4);
+    /* 移动端列宽 min(86vw, 320)，320 = space-10(64) × 5（design/screens/board.md「断点」） */
+    --bp-column-w: min(86vw, calc(var(--space-10) * 5));
+  }
+}
+
+/* ===== 页头（项目名 · 任务数 · 刷新提示 · 筛选 · 新建） ================== */
+.bp-head {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.bp-head__main {
+  min-inline-size: 0;
+}
+
+.bp-head__title {
+  margin: 0;
+  font-size: var(--text-h1-size);
+  font-weight: var(--text-h1-weight);
+  line-height: var(--text-h1-line-height);
+  letter-spacing: var(--text-h1-letter-spacing);
+  /* 标题渐变（design/components.md「视觉语言 v2」）：文字色 → 品牌蓝 → 信息青 */
+  background-image: linear-gradient(90deg, var(--text-primary), var(--action-primary), var(--feedback-info));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.bp-head__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+}
+
+.bp-head__id,
+.bp-head__total,
+.bp-head__refresh {
+  font-variant-numeric: tabular-nums;
+}
+
+.bp-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+/* 两个筛选控件等宽（design/refs 桌面与平板：三个控件一行，等高） */
+.bp-head__actions .ui-select-field {
+  inline-size: calc(var(--space-11) + var(--space-6) + var(--space-5));
+}
+
+/* 移动端把三个控件压进一行：两个筛选吃弹性宽度、按钮按内容宽（design/refs 移动端一行三段） */
+@media (max-width: 47.99em) {
+  .bp-head {
+    align-items: stretch;
+    /* 页头两行（标题+元信息 / 筛选+新建）之间的行距收一档：移动页头高度预算 168（ref 实测），
+     * 12 会让列顶比 ref 低 4（实测），8 对齐。 */
+    gap: var(--space-3);
+  }
+
+  .bp-head__actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    inline-size: 100%;
+  }
+
+  .bp-head__actions .ui-select-field {
+    inline-size: auto;
+    min-inline-size: 0;
+  }
+
+  /* 筛选控件的标签只在移动端收起（design/refs 移动页头没有可见标签，页头高 168）；
+   * 桌面/平板保留可见标签：ref 那两档的列顶是 190，正是带标签时的高度，去掉会引入新偏差。
+   * 用 clip-path 而不是 display:none —— 保留 <label for> 的可访问名（读屏仍念「类型」「状态」）。 */
+  .bp-head__actions .ui-select-field label {
+    position: absolute;
+    overflow: hidden;
+    inline-size: var(--border-width);
+    block-size: var(--border-width);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/* ===== 错误条 ============================================================ */
+.bp-error {
+  flex: 0 0 auto;
+}
+
+/* ===== 未知状态提示（只在数据异常时出现，正常六态截图里不可见） ========== */
+.bp-notice {
+  flex: 0 0 auto;
+}
+
+/* ===== 看板条（列数 · 列指示器 · 滑动提示） ============================== */
+.bp-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line-height);
+}
+
+.bp-bar__total {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「第 N / 7 列」只在移动端出现（design/refs 桌面与平板都没有这一段） */
+.bp-bar__cursor {
+  display: none;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.bp-bar__hint {
+  color: var(--text-muted);
+}
+
+@media (max-width: 47.99em) {
+  .bp-bar__cursor {
+    display: inline;
+  }
+}
+
+/* ===== 横向滚动区 ========================================================
+ * 桌面：7 × 280 + 间隙 > 内容区宽，所以桌面也横向滚动（design/refs 桌面只看到前 4 列）。
+ * 滚动条隐藏（对齐 ref），键盘仍可用：容器 tabIndex=0，方向键横向滚动。
+ */
+.bp-board {
+  display: flex;
+  flex: 1 1 auto;
+  gap: var(--space-4);
+  min-block-size: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  /* 列底留白（design/refs 像素实测：列底下边框 → 视口底 55）：
+   * 内容区下内边距 space-6(24) 已在 .bp 里给，这里再补列底呼吸空间 = space-7 − border×2（30），
+   * 列自身还有 1px 下边框落在 845，所以边界像素到视口底正好 55。 */
+  padding-block-end: calc(var(--space-7) - var(--border-width) * 2);
+}
+
+.bp-board::-webkit-scrollbar {
+  display: none;
+}
+
+.bp-board:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: var(--ui-focus-outline-offset);
+}
+
+/* 列头：状态枚举大写 + 计数推到右端（design/refs 列头是 PENDING · 计数在右） */
+.bp-col .ui-board-column__title {
+  text-transform: uppercase;
+  letter-spacing: var(--text-caption-letter-spacing);
+}
+
+.bp-col .ui-board-column__count {
+  margin-inline-start: auto;
+}
+
+/* 列宽：展开态由本文件的 --bp-column-w 决定；折叠态交给 ui.css 的 56 竖条（不抢同一维度） */
+.bp-col {
+  flex: 0 0 auto;
+}
+
+.bp-col:not(.ui-board-column--collapsed) {
+  inline-size: var(--bp-column-w);
+}
+
+/* 移动端横向切列：scroll-snap + 每列吸附到容器起点（design/flows.md F4 第 1 条） */
+@media (max-width: 47.99em) {
+  .bp-board {
+    scroll-snap-type: x mandatory;
+    /* 列间距 8（ref 像素实测）；列底呼吸空间 space-8(40)：24 + 40 + 列下边框 1 → 边界像素到 TabBar 顶 65 */
+    gap: var(--space-3);
+    padding-block-end: var(--space-8);
+  }
+
+  .bp-col {
+    scroll-snap-align: start;
+  }
+}
+
+/* ===== 空态 ==============================================================
+ * 空态块按内容高（design/refs empty 态：虚线面板只有 200 出头，下方留白），不撑满视口
+ */
+.bp-empty {
+  flex: 0 0 auto;
+}
+
+/* ===== 新建任务面板（features/board/CreateTaskSheet） =================== */
+.bp-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.bp-sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+/* 移动端底部操作条里的按钮吃满一半宽度，触控目标更大（design/flows.md F4 第 3 条：≥44） */
+@media (max-width: 47.99em) {
+  .bp-sheet-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+}

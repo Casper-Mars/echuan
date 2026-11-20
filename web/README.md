@@ -29,6 +29,27 @@ Markdown（需求/方案/报告正文）由 `marked` 解析、`DOMPurify` 净化
 
 未知 hash 重定向到 `#/products`。
 
+## 看板（`src/features/board`，T5 主路径）
+
+`#/projects/:projectId/tasks` 由 `src/features/board/BoardPage` 承载，是应用的主路径：
+
+- **7 列固定枚举**：`pending ready in_progress in_review done failed cancelled`；列内按 `priority` 降序、
+  再按 `update_time` 降序；`in_review` 列品牌描边，其首卡（本列最高优先级）借 `ui/TaskCard` 的 focus
+  描边强调（`design/screens/board.md` default 态「P60 待审卡片高亮描边」）。
+- **列折叠**：`done` / `cancelled` 默认折成 56 竖条（计数仍可读），列头按钮切换。
+  偏好键 **`localStorage['echuan:board:collapsed']`**，值是折叠状态枚举的 JSON 数组
+  （例如 `["done","cancelled"]`）；脏值 / 存储不可用一律按默认值降级，不让看板崩掉。
+- **筛选进 URL**：`#/projects/:projectId/tasks?kind=dev&status=in_review`
+  （`kind` = `requirement|design|breakdown|dev`，`status` = 上面 7 个枚举）。每次切换是 push，
+  所以可分享、后退可用；手改 URL 写错的枚举按「不筛选」处理。
+- **15s 自动刷新**：复用 `src/hooks/useAutoRefresh.ts`（周期取 `lib/refresh` 的 `REFRESH_INTERVALS.tasks`），
+  刷新只替换数据、不动滚动位置与输入焦点；全局开关（`localStorage['echuan:auto-refresh']`）关掉时
+  页头如实显示「自动刷新已关闭」。
+- **移动端 M1**：列宽 `min(86vw, 320)`、`scroll-snap-type: x mandatory`、列头 sticky，
+  看板条上有「第 N / 7 列 · <status>」指示器；列表失败保留上次数据 + `features/shell/ErrorBar` 错误条。
+- **六态**：`default / empty / loading / error / collapsed / long-list`，
+  三视口 × 六态的自检与截图用 `scripts/board-shots.mjs`（见文末「看板自检」）。
+
 分层红线（不变）：`src/features/**` 与 `src/pages/**` 只能 import `src/ui`、`src/theme`、`src/api`、
 `src/hooks`，不得直接 `import '@mantine/core'`。唯一例外是应用入口 `src/main.tsx`：它用
 `<AppShell>` 提供 Mantine 的 AppShell 安全上下文（`ui/SidebarNav` 内部是 `AppShell.Navbar`，
@@ -106,3 +127,34 @@ node scripts/gen-tokens.mjs && git diff --exit-code src/theme/
 ```bash
 ECHUAN_UI_BASE=http://127.0.0.1:18720 CHROME_CDP=http://127.0.0.1:19222 node scripts/ui-verify.mjs
 ```
+
+## 看板自检：三视口 × 六态（CDP + 请求拦截）
+
+`scripts/board-shots.mjs` 用同一个 CDP 思路（原生 WebSocket，无 npm 依赖）做两件事：
+**给 `features/board` 的六态各拍一张 1440/1024/390 截图**，并**量可量化指标**判 PASS/FAIL。
+
+- 被测页面：`web/dist` 的静态托管（先 `pnpm build`；静态托管没有后端，脚本用 CDP `Fetch`
+  拦截伪造 `/v1/projects` 与 `/v1/tasks`，不改后端、也不写死真实数据）
+- 六态怎么造：`default` 12 个任务（2/2/2/2/2/1/1）· `empty` 返回 `items: []` ·
+  `loading` `/v1/tasks` 永不响应（停在 SkeletonCard）· `error` 先成功再让 15s 自动刷新那笔 500
+  （保留上次数据 + 错误条）· `collapsed` 真点列头折叠 → **刷新页面** → 验证粘性 ·
+  `long-list` 每列 9 张卡（列内滚动 + 列头 sticky）
+- 断言口径：7 列 / 展开列 280 / 折叠列 56 / 计数与数据条数一致 / 列头 sticky /
+  文档无横纵溢出 / 移动端 `scrollWidth > clientWidth`、最后一列右边界 ≤ 视口 + 1、
+  列宽 ≥ `min(86vw, 320)`、`scroll-snap` / 自动刷新一轮后滚动位置与输入焦点不变
+
+```bash
+# 1) 构建产物 + 静态托管到 :4191（任选一种静态服务器，必须与浏览器可达）
+pnpm build
+docker run -d --name echuan-preview-t5 -p 127.0.0.1:4191:80 \
+  -v "$PWD/web/dist:/www:ro" busybox:latest httpd -f -p 80 -h /www
+
+# 2) 跑自检（ECHUAN_CDP_WS 是浏览器级 CDP WebSocket，按本地浏览器环境填写）
+ECHUAN_CDP_WS='ws://127.0.0.1:3010?token=<token>' \
+ECHUAN_BOARD_URL='http://127.0.0.1:4191/' \
+node scripts/board-shots.mjs
+```
+
+环境变量：`ECHUAN_CDP_WS`（必需）· `ECHUAN_BOARD_URL`（默认 `http://127.0.0.1:4191/`）·
+`ECHUAN_SHOT_DIR`（默认仓库根 `.shots/`，截图不入库）· `ECHUAN_ONLY`（只跑指定用例，
+如 `mobile:collapsed,desktop:error`）。退出码：0 全过 / 1 有断言失败 / 2 用法或环境错误。
