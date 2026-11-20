@@ -638,9 +638,16 @@ async function reviewProbe(cdp, page, options) {
     dropdown.selected === outputTitles[0],
     `selected="${dropdown.selected}" 期望="${outputTitles[0]}"`,
   )
-  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId)
+  // 关掉下拉：点抽屉标题处（**不能按 Escape**——Esc 是 ui/DetailSheet 的关闭手势，会把详情关掉回看板）
+  await evaluate(
+    cdp,
+    sessionId,
+    `(() => { const title = document.querySelector('.mantine-Drawer-title'); if (title) title.click(); return true })()`,
+  )
+  await sleep(300)
 
   // 驳回必填：意见为空 → 就地标红 + 不发请求
+  await waitFor(cdp, sessionId, `document.querySelectorAll('.fx-detail__actions .ui-button').length > 0`, 5000, '底部操作条按钮')
   const rejectBox = await evaluate(
     cdp,
     sessionId,
@@ -698,7 +705,14 @@ async function conflictProbe(cdp, page, options) {
   check('AC5 找到「通过并关闭」', submitBox !== null, JSON.stringify(submitBox))
   if (!submitBox) return
   await clickAt(cdp, sessionId, submitBox.x, submitBox.y)
-  await waitFor(cdp, sessionId, `!!document.querySelector('.ui-confirm-modal')`, 5000, '二次确认弹窗')
+  // 等弹窗里的确认键真的挂上（Modal 根节点先出现、内容随后挂载，只等根会拿到空列表）
+  await waitFor(
+    cdp,
+    sessionId,
+    `Array.from(document.querySelectorAll('.ui-confirm-modal .ui-button')).some((el) => /确认通过/.test(el.textContent))`,
+    8000,
+    '二次确认弹窗',
+  )
   const confirmBox = await evaluate(
     cdp,
     sessionId,
