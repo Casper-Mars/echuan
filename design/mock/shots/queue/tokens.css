@@ -1,0 +1,133 @@
+/* 由 design-kit/scripts/tokens-to-css.mjs 生成，请勿手改。
+ * 源：design-kit/tokens/baseline.json
+ * 规则：颜色只暴露 semantic；暗色为同一批变量在 [data-theme="dark"] 下重新解析。
+ */
+
+:root {
+  --color-surface-canvas: #fcfdff;
+  --color-surface-raised: #f7fafd;
+  --color-surface-overlay: #eff4f9;
+  --color-border-subtle: #d0dbe7;
+  --color-border-default: #bccadd;
+  --color-border-strong: #9fb0c6;
+  --color-text-primary: #182130;
+  --color-text-muted: #4e6076;
+  --color-text-on-action: #ffffff;
+  --color-action-primary: #2f5bea;
+  --color-action-primary-hover: #2a51d4;
+  --color-action-primary-text: #2b48b0;
+  --color-focus-ring: #8aa6f7;
+  --color-feedback-success: #29a383;
+  --color-feedback-warning: #ffc53d;
+  --color-feedback-danger: #e5484d;
+  --color-feedback-info: #7ce2fe;
+  /* typography */
+  --font-sans: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --text-display-size: 40px;
+  --text-display-weight: 600;
+  --text-display-line-height: 1.2;
+  --text-display-letter-spacing: -0.01em;
+  --text-h1-size: 28px;
+  --text-h1-weight: 600;
+  --text-h1-line-height: 1.29;
+  --text-h1-letter-spacing: -0.01em;
+  --text-h2-size: 22px;
+  --text-h2-weight: 600;
+  --text-h2-line-height: 1.36;
+  --text-h2-letter-spacing: 0;
+  --text-h3-size: 18px;
+  --text-h3-weight: 600;
+  --text-h3-line-height: 1.44;
+  --text-h3-letter-spacing: 0;
+  --text-body-size: 15px;
+  --text-body-weight: 400;
+  --text-body-line-height: 1.57;
+  --text-body-letter-spacing: 0;
+  --text-body-strong-size: 15px;
+  --text-body-strong-weight: 500;
+  --text-body-strong-line-height: 1.57;
+  --text-body-strong-letter-spacing: 0;
+  --text-small-size: 13px;
+  --text-small-weight: 400;
+  --text-small-line-height: 1.54;
+  --text-small-letter-spacing: 0;
+  --text-caption-size: 12px;
+  --text-caption-weight: 400;
+  --text-caption-line-height: 1.5;
+  --text-caption-letter-spacing: 0.01em;
+  --text-mono-size: 13px;
+  --text-mono-weight: 400;
+  --text-mono-line-height: 1.54;
+  --text-mono-letter-spacing: 0;
+
+  /* space */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 48px;
+  --space-10: 64px;
+  --space-11: 80px;
+  --space-12: 96px;
+
+  /* radius */
+  --radius-0: 0px;
+  --radius-2: 2px;
+  --radius-4: 4px;
+  --radius-6: 6px;
+  --radius-8: 8px;
+  --radius-12: 12px;
+  --radius-16: 16px;
+  --radius-pill: 999px;
+
+  /* shadow */
+  --shadow-e1: 0px 1px 2px 0px rgb(0 0 0 / 0.06);
+  --shadow-e2: 0px 4px 12px 0px rgb(0 0 0 / 0.08);
+  --shadow-e3: 0px 12px 32px 0px rgb(0 0 0 / 0.10);
+
+  /* motion */
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 240ms;
+  --duration-slower: 320ms;
+  --easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --easing-emphasized: cubic-bezier(0.2, 0, 0.2, 1.2);
+
+  /* breakpoints（不能用于 media query，仅供 JS / 容器查询参考） */
+  --breakpoint-sm: 768px;
+  --breakpoint-md: 1024px;
+  --breakpoint-lg: 1280px;
+  --breakpoint-xl: 1600px;
+
+  /* z-index */
+  --z-raised: 10;
+  --z-sticky: 100;
+  --z-overlay: 200;
+  --z-dialog: 300;
+  --z-toast: 400;
+}
+
+[data-theme="dark"] {
+  --color-surface-canvas: #070b14;
+  --color-surface-raised: #0b1322;
+  --color-surface-overlay: #101a2b;
+  --color-border-subtle: #1c2a43;
+  --color-border-default: #28405f;
+  --color-border-strong: #3d5a80;
+  --color-text-primary: #e9f0fb;
+  --color-text-muted: #93a7c4;
+  --color-text-on-action: #ffffff;
+  --color-action-primary: #3d6bff;
+  --color-action-primary-hover: #5b83ff;
+  --color-action-primary-text: #9db8ff;
+  --color-focus-ring: #7fa2ff;
+  --color-feedback-success: #2ee6a8;
+  --color-feedback-warning: #ffce4d;
+  --color-feedback-danger: #ff5d6c;
+  --color-feedback-info: #6ee6ff;
+}
