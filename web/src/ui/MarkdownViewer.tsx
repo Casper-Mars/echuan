@@ -4,6 +4,8 @@
 // 状态：rest / hover（链接下划线）/ focus-visible（链接焦点环）/ loading（5 行 Skeleton）/
 //       invalid：内嵌图片必显示占位 [图片：<alt>（平台不存二进制附件，无法预览）]，禁止静默空白。
 // 可访问性：正文 ≥15；表格保留表头；图片占位文本可被读屏读出。
+// 验收锚点：根节点恒定带 `data-testid="markdown-viewer"`（T7 AC2 —— 点附件后同页出现该节点，
+// 不新开标签/窗口；loading / empty / 正常三态都有，懒加载与骨架态同样可断言）。
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useMemo } from 'react'
@@ -46,18 +48,26 @@ export function MarkdownViewer({ source, loading = false, emptyLabel = '暂无�
 
   if (loading) {
     return (
-      <div className={cx('ui-markdown', className)} aria-busy="true">
+      <div className={cx('ui-markdown', className)} data-testid="markdown-viewer" aria-busy="true">
         <SkeletonCard lines={5} />
       </div>
     )
   }
 
   if (!html) {
-    return <p className={cx('ui-markdown__empty', className)}>{emptyLabel}</p>
+    return (
+      <p className={cx('ui-markdown__empty', className)} data-testid="markdown-viewer">
+        {emptyLabel}
+      </p>
+    )
   }
 
   return (
-    <TypographyStylesProvider className={cx('ui-markdown', className)} style={{ fontSize: cssVar('text-body-size') }}>
+    <TypographyStylesProvider
+      className={cx('ui-markdown', className)}
+      data-testid="markdown-viewer"
+      style={{ fontSize: cssVar('text-body-size') }}
+    >
       {/* 内容已由 DOMPurify 净化，见本文件头部说明 */}
       <div dangerouslySetInnerHTML={{ __html: html }} />
     </TypographyStylesProvider>

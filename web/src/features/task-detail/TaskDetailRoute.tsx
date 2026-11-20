@@ -6,12 +6,13 @@
 //     附件 → 描述 → 上下文 → 依赖 → 驳回/失败原因 → 底部操作条）、状态矩阵六态、交互与数据来源；
 //   design/flows.md F1（点卡片进详情、关闭 = URL 回看板）、F3（评审：自动带入 output / 驳回必填 /
 //     非 2xx 错误条 + 重拉）、F4-3（移动端底部固定操作条、二次确认、触控 ≥44）；
-//   design/screens/attachment-preview.md —— 本卡只做附件行的**入口**，正文预览属 T7；
+//   design/screens/attachment-preview.md —— 点附件在**详情内**开二级预览面板（T7）：桌面两栏
+//     （左列表 280 + 右正文），移动上下堆叠；返回详情保留滚动位置，绝不新开标签；
 //   docs/tech/web-ui-redo-v0.1.md §8（并发冲突）、§10（错误边界 / 错误条由 features/shell 统一）。
 //
 // 分层：只 import ui / api / lib / features/shell；不 import Mantine（design/components.md 红线）。
 // 路由（App.tsx）由 T4 接好，本卡不改；T5 的 features/board 只作为抽屉背后的上下文，本卡不碰。
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { AttachmentRef } from '../../api/types'
 import { Alert, Button, ConfirmModal, DetailSheet } from '../../ui'
@@ -28,6 +29,7 @@ import {
   SkeletonBody,
 } from './sections'
 import { isRejected, useTaskDetail } from './use-task-detail'
+import { AttachmentPreview, previewSheetTitle } from './attachment-preview'
 import type { ReviewDecision } from './use-task-detail'
 import './task-detail.css'
 
@@ -39,11 +41,46 @@ export default function TaskDetailRoute() {
 
   // 二次确认（design/screens/task-detail.md「交互」：通过/驳回 → 二次确认 → POST /v1/tasks/decide）
   const [confirm, setConfirm] = useState<ReviewDecision | null>(null)
-  // 入口占位说明（附件预览属 T7、重置/删除属 T11）：本卡只展示入口，不在这里发写请求
+  // 入口占位说明（重置/删除属 T11）：本卡只展示入口，不在这里发写请求；附件预览已由 T7 真正落地
   const [notice, setNotice] = useState('')
 
   const task = detail.task
   const close = () => navigate(boardUrl)
+
+  /**
+   * 附件预览二级层（T7）。
+   *
+   * 形态：预览**不是**第二个抽屉，而是详情抽屉里的二级面板——桌面两栏（左列表 280 + 右正文），
+   * 移动上下堆叠（design/screens/attachment-preview.md「断点」）。头部由抽屉头部承接（角色徽标 + 标题），
+   * 头部的关闭键在预览态即「返回详情」（二级层的退出，不是关掉详情）。
+   */
+  const [preview, setPreview] = useState<AttachmentRef | null>(null)
+  // 详情正文槽的实体（在抽屉内部；滚动位置探测要它，见 scrollSlot）
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  // 进预览前详情滚动槽的位置；返回详情时原值写回（flows F2 第 4 步「滚动位置保留」）
+  const scrollTopRef = useRef(0)
+
+  /**
+   * 找最近的滚动祖先（详情正文槽属于 ui/DetailSheet，页面层不 import 它的 DOM 结构，只能按可滚动性探测）。
+   * 必须从**抽屉内部**的节点往上找：外层容器 `.fx-detail` 在 portal 之外，往上走会摸到看板的滚动容器。
+   */
+  const scrollSlot = (): HTMLElement | null => {
+    let node: HTMLElement | null = bodyRef.current?.parentElement ?? null
+    while (node !== null) {
+      const overflow = window.getComputedStyle(node).overflowY
+      if (overflow === 'auto' || overflow === 'scroll') return node
+      node = node.parentElement
+    }
+    return null
+  }
+
+  // 预览打开时详情正文会撤下（display:none），滚动槽的 scrollTop 会被浏览器夹到 0，
+  // 所以位置在**进入**时记账、在**返回**后的第一帧写回——不依赖浏览器是否保留隐藏子树的滚动值。
+  useLayoutEffect(() => {
+    if (preview !== null) return
+    const slot = scrollSlot()
+    if (slot !== null && scrollTopRef.current > 0) slot.scrollTop = scrollTopRef.current
+  }, [preview])
 
   const askDecision = (next: ReviewDecision) => {
     if (!detail.validate(next)) return
@@ -59,12 +96,20 @@ export default function TaskDetailRoute() {
   }
 
   const openAttachment = (ref: AttachmentRef) => {
-    setNotice(`附件预览（T7）尚未接入：${ref.title || ref.material_id}（material_id ${ref.material_id}）`)
+    // 进入二级层：先记详情滚动位置，再开面板（同一 material_id 的并发请求由 use-attachment-preview 去重）
+    scrollTopRef.current = scrollSlot()?.scrollTop ?? 0
+    setPreview(ref)
   }
+
+  /** 返回详情：清掉预览层，滚动位置由上面的 layout effect 写回 */
+  const closePreview = () => setPreview(null)
 
   const showRejectBanner = task !== null && isRejected(task)
   const footer = buildFooter()
-  const title = task?.title ?? (detail.state === 'loading' ? '加载任务…' : `任务 ${taskId}`)
+  const detailTitle = task?.title ?? (detail.state === 'loading' ? '加载任务…' : `任务 ${taskId}`)
+  // 预览态：头部换成「角色徽标 + 附件标题」；关闭键语义变成「返回详情」
+  const title = preview === null ? detailTitle : previewSheetTitle(preview)
+  const onSheetClose = preview === null ? close : closePreview
 
   /** 底部操作条：与滚动区分离（移动端由 ui.css 的媒体块固定），状态不同操作不同 */
   function buildFooter() {
@@ -148,11 +193,17 @@ export default function TaskDetailRoute() {
       className="fx-detail"
       data-ui="task-detail"
       data-state={detail.state}
+      data-preview={preview === null ? 'closed' : 'open'}
       data-task-id={taskId}
       data-project-id={projectId}
     >
-      <DetailSheet opened title={title} onClose={close} footer={footer}>
-        <div className="fx-detail__body">
+      <DetailSheet opened title={title} onClose={onSheetClose} footer={preview === null ? footer : undefined}>
+        {/* 预览态：详情正文整块撤下（保留组件状态，滚动位置由 layout effect 写回），二级面板顶上 */}
+        <div
+          className="fx-detail__body"
+          data-preview={preview === null ? 'closed' : 'open'}
+          ref={bodyRef}
+        >
           {detail.state === 'loading' ? (
             <SkeletonBody />
           ) : (
@@ -232,6 +283,15 @@ export default function TaskDetailRoute() {
             </>
           )}
         </div>
+
+        {preview === null ? null : (
+          <AttachmentPreview
+            attachments={detail.attachments}
+            current={preview}
+            onSelect={setPreview}
+            onBack={closePreview}
+          />
+        )}
       </DetailSheet>
 
       {/* 二次确认：影响面一句话 + 不可恢复提示；提交中遮罩不可关闭（ui/ConfirmModal loading 态） */}
