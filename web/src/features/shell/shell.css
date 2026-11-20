@@ -236,3 +236,16 @@
   gap: var(--space-3);
   padding: var(--space-5);
 }
+
+/* ===== 移动端触控尺寸兜底（T10） =========================================
+ * design/flows.md F4-3「触控 ≥44×44」：面包屑链接不是主操作，但移动端点它同样要够大。
+ * 只兜命中区尺寸，不动颜色与排布（仍是一行、仍省略）。
+ */
+@media (max-width: 47.99em) {
+  .fx-crumbs__link {
+    display: inline-flex;
+    align-items: center;
+    min-width: var(--ui-control-height-touch);
+    min-height: var(--ui-control-height-touch);
+  }
+}

@@ -940,3 +940,34 @@
   color: var(--text-muted);
   font-size: var(--text-small-size);
 }
+
+/* ===== 移动端触控尺寸兜底（T10） =========================================
+ * 口径：design/flows.md F4-3「触控 ≥44×44」+ design/components.md「md = 36（桌面）/ 44（移动）」。
+ * 为什么用 min-height 而不是改高度变量：ui/Button 把 --button-height 写在行内（style 属性），
+ * 行内变量压过本文件的类选择器，所以移动断点只能在命中区上兜。只兜尺寸，不动颜色/间距/结构。
+ * 判据侧：web/scripts/ui-verify.mjs `--viewports` 的「通用·可点元素」在 <768 要求 44×44，
+ * ≥768 按 design/components.md 的控件基线（md 36 / sm 32），不判 44（桌面是鼠标口径）。
+ */
+@media (max-width: 47.99em) {
+  /* ui/Button md（主操作）/ sm（次级操作） */
+  .ui-button.ui-button[data-ui-size='md'],
+  .ui-button.ui-button[data-ui-size='sm'] {
+    min-height: var(--ui-control-height-touch);
+  }
+
+  /* ui/SelectField（看板筛选、评审附件下拉）：命中区是 Mantine Select 的输入框 */
+  .ui-select-field .mantine-Input-input {
+    min-height: var(--ui-control-height-touch);
+  }
+
+  /* ui/BoardColumn 列头折叠按钮 */
+  .ui-board-column__head.ui-board-column__head {
+    min-height: var(--ui-control-height-touch);
+  }
+
+  /* ui/Segmented 选项：真实命中区是 label，control 一起抬起免得上下列高不一致 */
+  .ui-segmented .mantine-SegmentedControl-control,
+  .ui-segmented .mantine-SegmentedControl-label {
+    min-height: var(--ui-control-height-touch);
+  }
+}
