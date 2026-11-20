@@ -4,10 +4,10 @@ import { AppFrame } from './features/shell/AppFrame'
 import { BoardRedirect } from './features/home/BoardRedirect'
 import { HomeRoute } from './features/home/HomeRoute'
 import { BoardPage } from './features/board/BoardPage'
-import { InboxPage } from './pages/InboxPage'
+import { InboxPage } from './features/inbox/InboxPage'
 import { ProductsPage } from './pages/ProductsPage'
 import { ProjectsPage } from './pages/ProjectsPage'
-import { QueuePage } from './pages/QueuePage'
+import { QueuePage } from './features/queue/QueuePage'
 import { WorkersPage } from './pages/WorkersPage'
 
 // 详情是独立路由，按需加载：既让「详情首次打开」有个真实的 loading 态（壳层骨架），
