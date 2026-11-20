@@ -1,53 +1,263 @@
-/* features/task-detail —— 详情路由的容器与占位说明样式
+/* features/task-detail —— 详情分区排版与底部操作条
  *
- * 口径（AC7）：只消费 theme 令牌，不出现 hex / px 字面量。
- * 抽屉本体（720 桌面 / 移动全屏）由 ui/DetailSheet 负责，这里只排正文与底部操作条。
+ * 口径（AC7）：只消费 theme 令牌，本文件不出现 hex 与 NNpx 字面量。
+ * 媒体查询里的断点只能用 em 字面量（CSS 不允许 @media 内用 var()），
+ * 取值来自 design/tokens.json 的 breakpoint 令牌：sm = 768 → 47.99em（与 ui/ui.css 同一口径）。
+ * 抽屉本体几何（桌面 720 = --ui-layout-sheet / 移动全屏 / 底部操作条固定）由 ui/DetailSheet + ui/ui.css 负责，
+ * 本文件只排正文分区与操作条内部分组。
  */
+
 .fx-detail__body {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
-  padding: var(--space-5);
   min-width: 0;
+  /* padding 由 ui/DetailSheet 的正文槽给出（--space-5），这里不再叠一层 */
 }
 
-.fx-detail__meta {
-  display: grid;
-  gap: var(--space-2);
-  margin: 0;
-}
-
-.fx-detail__meta-row {
-  display: grid;
-  grid-template-columns: var(--ui-layout-rail) 1fr;
+/* ===== 分区底座 ========================================================= */
+.fx-detail__section {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
-  padding-block: var(--space-2);
-  border-block-end: var(--border-width) solid var(--border-subtle);
 }
 
-.fx-detail__meta-row dt {
+/* 卡片型分区（元信息 / 租约条 / 评审区）：半透明画布 + 细描边 + 圆角（design/components.md 视觉语言 v2） */
+.fx-detail__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-4) var(--space-5);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-12);
+  background-color: var(--surface-raised);
+}
+
+.fx-detail__section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.fx-detail__section-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-h3-size);
+  font-weight: var(--text-h3-weight);
+  line-height: var(--text-h3-line-height);
+}
+
+.fx-detail__section-hint {
   color: var(--text-muted);
   font-size: var(--text-small-size);
 }
 
-.fx-detail__meta-row dd {
+.fx-detail__empty {
   margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--text-primary);
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
 }
 
-.fx-detail__actions {
+.fx-detail__mono {
+  font-family: var(--text-mono-font-family);
+  font-size: var(--text-mono-size);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* ===== 元信息：状态 · 类型 · 尝试 · 优先级 ============================== */
+.fx-detail__meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-5);
+  margin: 0;
+}
+
+.fx-detail__meta-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.fx-detail__meta-label {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+.fx-detail__meta-value {
+  margin: 0;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  border-block-start: var(--border-width) solid var(--border-subtle);
-  background-color: var(--surface-raised);
+  min-height: var(--ui-pill-height);
+  color: var(--text-primary);
+  font-size: var(--text-body-size);
+  font-weight: var(--text-body-strong-weight);
 }
 
-.fx-detail__primary {
-  display: inline-flex;
+/* ===== 租约条 =========================================================== */
+.fx-detail__lease {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.fx-detail__lease-dot {
+  width: var(--space-2);
+  height: var(--space-2);
+  flex: 0 0 auto;
+  border-radius: var(--radius-pill);
+  background-color: var(--feedback-info);
+}
+
+.fx-detail__lease-label {
+  color: var(--text-primary);
+  font-size: var(--text-small-size);
+  font-weight: var(--text-body-strong-weight);
+}
+
+.fx-detail__lease-time {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+/* ===== 顶部驳回原因条（rejected 态） ==================================== */
+.fx-detail__banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--feedback-danger);
+  border-radius: var(--radius-8);
+  background-color: color-mix(in srgb, var(--feedback-danger) 12%, transparent);
+  color: var(--text-primary);
+  font-size: var(--text-small-size);
+}
+
+.fx-detail__banner-label {
+  color: var(--feedback-danger);
+  font-weight: var(--text-body-strong-weight);
+}
+
+.fx-detail__banner-text {
+  flex: 1 1 12em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fx-detail__banner-time {
   margin-inline-start: auto;
+  color: var(--text-muted);
+}
+
+/* ===== 评审区 =========================================================== */
+.fx-detail__review {
+  gap: var(--space-4);
+}
+
+.fx-detail__review .ui-segmented {
+  align-self: flex-start;
+  min-width: 0;
+}
+
+/* ===== 附件 ============================================================= */
+.fx-detail__attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ===== 依赖 chips ======================================================= */
+.fx-detail__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fx-detail__chips .ui-chip {
+  max-width: 100%;
+}
+
+/* ===== 驳回/失败原因 ==================================================== */
+.fx-detail__reason-text {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-inline-start: calc(var(--border-width) * 3) solid var(--feedback-danger);
+  border-radius: var(--radius-4);
+  background-color: color-mix(in srgb, var(--feedback-danger) 8%, transparent);
+  color: var(--text-primary);
+  font-size: var(--text-body-size);
+  overflow-wrap: anywhere;
+}
+
+.fx-detail__reason-meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+}
+
+/* ===== loading 骨架 ===================================================== */
+.fx-detail__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+/* ===== 底部操作条内容（容器本体由 ui/DetailSheet 的 footer 槽给出） ===== */
+.fx-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.fx-detail__actions-start {
+  display: inline-flex;
+  gap: var(--space-3);
+}
+
+.fx-detail__actions-end {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-inline-start: auto;
+}
+
+/* ===== 移动端（< 768）：元信息 2×2、操作条按钮等宽排布 ================= */
+@media (max-width: 47.99em) {
+  .fx-detail__meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .fx-detail__actions {
+    flex-wrap: nowrap;
+  }
+
+  .fx-detail__actions-end {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+  }
+
+  /* 触控目标 ≥44×44（design/components.md §ui/Button「md = 高 36（桌面）/ 44（移动）」、
+   * §ui/DetailSheet「底部操作条与滚动区分离」）。
+   * 注意：ui/ui.css 的移动规则写在类选择器里，被 ui/Button 行内的 --button-height 变量压过，
+   * 所以操作条内用 min-height 兜住（不改 ui/**：那是 T3 的契约，已列入未覆盖项）。 */
+  .fx-detail__actions .ui-button {
+    min-height: var(--ui-control-height-touch);
+  }
 }
