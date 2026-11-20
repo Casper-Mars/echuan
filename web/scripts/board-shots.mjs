@@ -673,6 +673,12 @@ async function runCase(cdp, page, viewport, state, options) {
     pixels = { refPixel, shotPixel, refAnchor, myAnchor, minX, refPath }
   }
 
+  // 「第 N / 7 列」指示器（移动端）：最左 1/7、最右 7/7（折叠列照样占号）
+  let cursor = null
+  if (viewport.name === 'mobile' && (state === 'default' || state === 'collapsed')) {
+    cursor = await cursorProbe(cdp, sessionId)
+  }
+
   // ===== 刷新在飞不降级（AC4 口径的补充）：把下一笔 /v1/tasks 拖住 4s，此时 DOM 必须还是「有数据态」=====
   let midflight = null
   if (state === 'default' && viewport.name === 'desktop') {
@@ -711,7 +717,47 @@ async function runCase(cdp, page, viewport, state, options) {
     navigate = { cardLabel: target?.label ?? null, hash }
   }
 
-  return { viewport, state, measure, m1, sticky, refresh, collapse, navigate, midflight, doubleSubmit, unknownStatus, ax, pixels, shotPath }
+  return { viewport, state, measure, m1, sticky, refresh, collapse, navigate, midflight, doubleSubmit, unknownStatus, ax, cursor, pixels, shotPath }
+}
+
+/** 「第 N / 7 列」指示器：最左 = 1/7，最右 = 7/7（默认折叠态与全展开态都要 7/7） */
+async function cursorProbe(cdp, sessionId) {
+  const read = async () => {
+    await sleep(260) // 指示器用 rAF 合并测量，等一帧多一点再读
+    return evaluate(cdp, sessionId, `document.querySelector('[data-ui="board-cursor"]')?.textContent ?? null`)
+  }
+  const scrollTo = (value) =>
+    evaluate(
+      cdp,
+      sessionId,
+      `(() => {
+        const el = document.querySelector('[data-ui="board-scroller"]')
+        if (!el) return null
+        el.scrollLeft = ${value === 'end' ? 'el.scrollWidth' : '0'}
+        return { scrollLeft: Math.round(el.scrollLeft * 100) / 100, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }
+      })()`,
+    )
+
+  const startPos = await scrollTo('start')
+  const atStart = await read()
+  const endPos = await scrollTo('end')
+  const atEnd = await read()
+
+  // 全展开：把 done/cancelled 竖条点开，再滚到最右
+  const expanded = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const heads = Array.from(document.querySelectorAll('.bp-col.ui-board-column--collapsed .ui-board-column__head'))
+      heads.forEach((head) => head.click())
+      return heads.length
+    })()`,
+  )
+  await sleep(350)
+  const allExpandedPos = await scrollTo('end')
+  const atEndAllExpanded = await read()
+
+  return { atStart, atEnd, atEndAllExpanded, expanded, startPos, endPos, allExpandedPos }
 }
 
 /** 筛选控件的可访问名（移动端视觉上收起了标签，读屏必须仍念「类型」「状态」） */
@@ -1120,6 +1166,27 @@ function assertionsOf(record) {
       `${tag} 再点一次展开回 ${Math.round(expectedExpanded)} 并写回偏好`,
       Math.abs(afterExpand.width - expectedExpanded) < 0.51 && afterExpand.pref === '["done","cancelled"]',
       `width=${afterExpand.width}；localStorage=${afterExpand.pref}`,
+    )
+  }
+
+  // ===== 「第 N / 7 列」指示器：序号含折叠列，最右必须 7/7 =====
+  if (record.cursor) {
+    const { atStart, atEnd, atEndAllExpanded, expanded } = record.cursor
+    const ordinal = (text) => Number(String(text ?? '').match(/第 (\d) \/ 7 列/)?.[1] ?? -1)
+    check(
+      `${tag} 指示器：滚到最左 = 第 1 / 7 列`,
+      ordinal(atStart) === 1,
+      `cursor=${JSON.stringify(atStart)}`,
+    )
+    check(
+      `${tag} 指示器：默认折叠态滚到最右 = 第 7 / 7 列`,
+      ordinal(atEnd) === 7,
+      `cursor=${JSON.stringify(atEnd)}`,
+    )
+    check(
+      `${tag} 指示器：全展开态滚到最右 = 第 7 / 7 列`,
+      ordinal(atEndAllExpanded) === 7 && expanded > 0,
+      `新展开 ${expanded} 列；cursor=${JSON.stringify(atEndAllExpanded)}`,
     )
   }
 
