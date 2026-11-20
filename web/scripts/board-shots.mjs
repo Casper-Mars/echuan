@@ -421,14 +421,23 @@ async function runCase(cdp, viewport, state, options) {
     refresh = await refreshProbe(cdp, sessionId, () => taskCalls)
   }
 
-  if (state === 'collapsed') {
-    await evaluate(
-      cdp,
-      sessionId,
-      `(() => { const el = document.querySelector('[data-ui="board-scroller"]'); if (el) el.scrollLeft = el.scrollWidth; return true })()`,
-    )
-    await sleep(400)
-  }
+  // 截图取景：collapsed 滚到最右让 56 竖条入画（对齐 design/refs 的 collapsed 取景）；
+  // 其余态回到 0 起点（前面的 M1 / 刷新探针动过横向与列内滚动，不还原会拍到中途位置）。
+  await evaluate(
+    cdp,
+    sessionId,
+    state === 'collapsed'
+      ? `(() => { const el = document.querySelector('[data-ui="board-scroller"]'); if (el) el.scrollLeft = el.scrollWidth; return true })()`
+      : `(() => {
+          const el = document.querySelector('[data-ui="board-scroller"]')
+          if (el) el.scrollLeft = 0
+          const root = document.querySelector('.bp-col .ui-board-column__body')
+          const body = root ? root.firstElementChild ?? root : null
+          if (body) body.scrollTop = 0
+          return true
+        })()`,
+  )
+  await sleep(400)
 
   const shotDir = options.shotDir
   const shotPath = join(shotDir, `board__${viewport.name}__dark__${state}.png`)
