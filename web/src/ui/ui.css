@@ -591,8 +591,32 @@
   background-color: var(--surface-raised);
 }
 
+/* 关闭键配色（T6 返工）：Mantine CloseButton 的前景色在暗色头像上与头部底色同值
+ * （实测 rgb(11,19,34) = --surface-raised，图标等于隐形）。这里按 design/components.md
+ * §ui/DetailSheet「hover 关闭键淡底」与 §ui/IconButton 的 rest/hover 口径改回令牌色。
+ * 对比度：--text-muted 对 --surface-raised = 7.6:1（非文本控件下限 3:1），见任务自检脚本。 */
+.ui-detail-sheet .mantine-Drawer-close {
+  color: var(--text-muted);
+}
+
+.ui-detail-sheet .mantine-Drawer-close:hover {
+  color: var(--text-primary);
+  background-color: var(--surface-overlay);
+}
+
 /* 移动端：抽屉全屏，底部操作条固定 */
 @media (max-width: 47.99em) {
+  /* T6 修复 D5（721–767 档抽屉仍 720 而非全屏）：
+   * `--drawer-size` 由 ui/DetailSheet 写在 style 属性里（Mantine 变量走 inline style），
+   * 媒体块内的普通声明压不过行内值，因此这里必须 !important；
+   * 同时覆盖 width，避免 Mantine 的 `width: var(--drawer-size)` 在同档位残留。
+   * 口径来源：design/screens/task-detail.md「<768 移动全屏 sheet」+ components.md §ui/DetailSheet。 */
+  .ui-detail-sheet .mantine-Drawer-content {
+    --drawer-size: 100% !important;
+    width: 100%;
+    max-width: 100%;
+  }
+
   .ui-detail-sheet__layout {
     min-height: 100%;
   }
@@ -601,6 +625,13 @@
     position: sticky;
     inset-block-end: 0;
     padding-block-end: calc(var(--space-4) + env(safe-area-inset-bottom));
+  }
+
+  /* 移动端关闭区 ≥44（design/components.md §ui/DetailSheet「移动端关闭区 ≥44」）：
+   * Mantine CloseButton 默认 28 见方，这里用触控令牌兜住命中区。 */
+  .ui-detail-sheet .mantine-Drawer-close {
+    min-width: var(--ui-control-height-touch);
+    min-height: var(--ui-control-height-touch);
   }
 }
 
