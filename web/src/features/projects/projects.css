@@ -154,6 +154,17 @@
   }
 
   .pj-card .ui-data-table tbody tr {
+    /* 卡片内边距按 design/refs 移动端实测（≈24，ui/DataTable 默认给的是 space-3=8）：
+     * 12（页面内边距）+ 24 = 字段名左边界 36（ref 38）；再加 label 列 80 + gap 4 = 值左边界 120（ref 121）。 */
+    padding: var(--space-6);
     background-color: var(--surface-raised);
+  }
+
+  /* 项目名与 project_id 在移动端同一行（design/refs：「Web UI 重做（issue #76）  echuan-1」），桌面仍是两行 */
+  .pj-name {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
   }
 }

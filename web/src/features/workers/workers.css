@@ -122,6 +122,21 @@
   text-transform: none;
 }
 
+/* 「查看任务」是禁用态（接口没有 project_id，拼不出详情路由）：
+ * 按钮 + 一行可见原因，配 .wk-actions-note，避免「可点但没反应」。 */
+.wk-actions-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.wk-actions-note {
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line-height);
+}
+
 /* ===== 移动端（<768）：表格转卡片行 =====================================
  * 卡片行本体由 ui/DataTable 的媒体块负责（每格 data-label 字段名）；这里只补外层卡片让位与行底色。
  * stale 行在移动端同样保留淡底（tr[data-warn] 的规则作用在 td 上，媒体块没有清掉它）。
@@ -160,6 +175,9 @@
   }
 
   .wk-card .ui-data-table tbody tr {
+    /* 卡片内边距按 design/refs 移动端实测（≈24，ui/DataTable 默认给的是 space-3=8）：
+     * 12（页面内边距）+ 24 = 字段名左边界 36（ref 38）；再加 label 列 80 + gap 4 = 值左边界 120（ref 121）。 */
+    padding: var(--space-6);
     background-color: var(--surface-raised);
   }
 }

@@ -32,6 +32,13 @@ const SKELETON_CARDS = 3
 export const STALE_AFTER_MS = 90_000
 
 /**
+ * 「查看任务」不可用的原因（按钮 disabled + 行内可见文案 + title 同一句）：
+ * /v1/workers 只返回 current_task_id，没有 project_id，`#/projects/:projectId/tasks/:taskId` 拼不出来。
+ * 原设计稿的按钮是空实现（点击无反应），这里改成禁用 + 说明，避免「可点但没反应」。
+ */
+const WORKER_TASK_DISABLED_REASON = '接口未提供项目上下文'
+
+/**
  * 「查看部署说明」入口按 design/refs 展示，但仓库里没有部署页路由（不在本卡范围），
  * 所以按钮不带副作用，见交付的「未覆盖项」。
  */
@@ -106,12 +113,16 @@ export function WorkersPage() {
       key: 'actions',
       header: '操作',
       // 不设 actions: true —— design/refs 移动端卡片里「操作」也带字段名（data-label）。
-      // 不跳转：/v1/workers 只给 current_task_id、不给 project_id，构造不出
-      // `#/projects/:projectId/tasks/:taskId` 的真实路由（见本卡「未覆盖项」，不靠猜项目 id）。
+      // 按钮**禁用**而不是「可点但无反应」：/v1/workers 只给 current_task_id、不给 project_id，
+      // 构造不出 `#/projects/:projectId/tasks/:taskId` 的真实路由（不靠猜项目 id）。
+      // 行内一行小字说明为什么点不了，title 保留同一句（hover / 读屏都能读到原因）。
       render: () => (
-        <Button variant="default" size="sm" title="接口未提供项目上下文，暂不能直接打开任务详情">
-          查看任务
-        </Button>
+        <span className="wk-actions-cell">
+          <Button variant="default" size="sm" disabled title={WORKER_TASK_DISABLED_REASON}>
+            查看任务
+          </Button>
+          <span className="wk-actions-note">{WORKER_TASK_DISABLED_REASON}</span>
+        </span>
       ),
     },
   ]
