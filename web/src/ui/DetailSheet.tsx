@@ -41,7 +41,10 @@ export function DetailSheet({
       onClose={onClose}
       position="right"
       title={title}
-      overlayProps={{ backgroundOpacity: 0.6, blur: 2 }}
+      // 遮罩口径（T6 验收返工）：桌面 720 抽屉要**保留看板上下文**（design/screens/task-detail.md「断点」），
+      // 原来的 0.6 + blur 2 把背后看板压成不可读的一片，与 ref（背后列与卡片清晰可辨）相抵。
+      // 改成轻暗化：0.35 无模糊——抽屉层次靠 surface.canvas 底色 + shadow.e3 + 左侧描边维持。
+      overlayProps={{ backgroundOpacity: 0.35, blur: 0 }}
       closeButtonProps={{ 'aria-label': '关闭详情' }}
       styles={{
         content: cssProps({
