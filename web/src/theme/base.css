@@ -1,0 +1,158 @@
+/* echuan Web 全局视觉底座（手写层，非生成物）
+ *
+ * 分工：
+ *   tokens.css  生成物：唯一令牌层（暗色即默认，亮色由 html[data-theme='light'] 覆写）
+ *   base.css    本文件：元素级底座 + Mantine 变量桥接 + 由令牌推导的度量
+ *   ui/ui.css   组件层样式（只消费 var(--…)）
+ *
+ * 口径（AC4）：本文件不写任何媒体查询块内的自定义属性定义，也不写 hex / px 字面量；
+ * 元素级颜色/间距一律 var(--…)，结构量一律由 space / radius / border-width 令牌推导。
+ *
+ * 画布的唯一来源：删掉旧 web/src/styles.css（三代视觉叠加）后，底色 / 氛围光 / 细网格全部落在
+ * 本文件的 body 层（components.md「视觉语言 v2」：氛围光是「页面固定一层」），
+ * features/** 的页面根节点不再各自铺一层底色。
+ */
+
+/* ---- Mantine 变量桥接：让 Mantine 组件内部颜色变量指向令牌 -------------------
+ * 选择器说明：Mantine 的默认变量写在 :root[data-mantine-color-scheme='…'] 里（特异性 0,2,0），
+ * 这里用 html:root[data-theme]（0,2,1）稳定压过它，不依赖样式表顺序、也不用 !important。
+ * 桥接后 Mantine 组件的 body/text/border/disabled 等颜色随 tokens.css 自动切亮暗。
+ */
+html:root[data-theme] {
+  --mantine-color-text: var(--text-primary);
+  --mantine-color-body: var(--surface-canvas);
+  --mantine-color-dimmed: var(--text-muted);
+  --mantine-color-bright: var(--text-primary);
+  --mantine-color-placeholder: var(--text-muted);
+  --mantine-color-error: var(--feedback-danger);
+  --mantine-color-anchor: var(--action-primary-text);
+  --mantine-color-default: var(--surface-canvas);
+  --mantine-color-default-hover: var(--surface-overlay);
+  --mantine-color-default-color: var(--text-primary);
+  --mantine-color-default-border: var(--border-default);
+  --mantine-color-disabled: var(--surface-overlay);
+  --mantine-color-disabled-color: var(--text-muted);
+  --mantine-color-disabled-border: var(--border-subtle);
+
+  --mantine-primary-color-filled: var(--action-primary);
+  --mantine-primary-color-filled-hover: var(--action-primary-hover);
+  --mantine-primary-color-light: color-mix(in srgb, var(--action-primary) 14%, transparent);
+  --mantine-primary-color-light-hover: color-mix(in srgb, var(--action-primary) 20%, transparent);
+  --mantine-primary-color-light-color: var(--action-primary-text);
+  --mantine-primary-color-contrast: var(--text-on-action);
+
+  /* ---- 由令牌推导的度量（注释里是目标 px，值全部来自 space / border-width） ---- */
+  --ui-focus-outline-width: calc(var(--border-width) * 2); /* 2 焦点环 */
+  --ui-focus-outline-offset: var(--space-1); /* 2 偏移 */
+  --ui-control-height-sm: var(--space-7); /* 32 */
+  --ui-control-height-md: calc(var(--space-7) + var(--space-2)); /* 36 */
+  --ui-control-height-touch: calc(var(--space-8) + var(--space-2)); /* 44 */
+  --ui-icon-box: var(--space-8); /* 40 */
+  --ui-pill-height: calc(var(--space-5) + var(--space-3) - var(--space-1)); /* 22 */
+  --ui-status-bar: calc(var(--border-width) * 3); /* 3 任务卡状态条 */
+  --ui-grid-cell: calc(var(--space-8) + var(--space-5)); /* 56 细网格 */
+  --ui-layout-sidebar: calc(var(--space-12) * 2 + var(--space-9)); /* 240 桌面侧栏 */
+  --ui-layout-rail: var(--space-10); /* 64 折叠图标栏 */
+  --ui-layout-rail-strip: calc(var(--space-8) + var(--space-5)); /* 56 折叠列竖条 */
+  --ui-layout-sheet: calc(var(--space-12) * 6 + var(--space-11) + var(--space-10)); /* 720 桌面抽屉 */
+  --ui-glass-surface: color-mix(in srgb, var(--surface-canvas) 82%, transparent);
+  --ui-glass-highlight: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+/* color-scheme 单独放同级选择器；写成 html:root[…] 与上面 Mantine 桥接同写法，也不与 tokens.css 同名 */
+html[data-theme] {
+  color-scheme: dark;
+}
+
+html:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+/* ---- 元素级底座 ---------------------------------------------------------- */
+
+html {
+  background-color: var(--surface-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-body-size);
+  font-weight: var(--text-body-weight);
+  line-height: var(--text-body-line-height);
+  -webkit-font-smoothing: antialiased;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  color: var(--text-primary);
+  /* isolation：让 body 成层叠上下文，负 z-index 的网格层才会画在画布之上、内容之下 */
+  isolation: isolate;
+  /* 氛围光（左上品牌蓝 / 右上信息青），全部由令牌 color-mix 推导 */
+  background-color: var(--surface-canvas);
+  background-image:
+    radial-gradient(
+      closest-side at 12% -12%,
+      color-mix(in srgb, var(--action-primary) 18%, transparent),
+      transparent
+    ),
+    radial-gradient(
+      closest-side at 96% -6%,
+      color-mix(in srgb, var(--feedback-info) 12%, transparent),
+      transparent
+    );
+  background-attachment: fixed;
+}
+
+/* ---- 细网格（视觉语言 v2：56px 网格 + 顶部居中径向遮罩衰减，衰减后下半部分回到纯画布色）-- */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      color-mix(in srgb, var(--border-subtle) 38%, transparent) 0,
+      color-mix(in srgb, var(--border-subtle) 38%, transparent) var(--border-width),
+      transparent var(--border-width),
+      transparent var(--ui-grid-cell)
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--border-subtle) 38%, transparent) 0,
+      color-mix(in srgb, var(--border-subtle) 38%, transparent) var(--border-width),
+      transparent var(--border-width),
+      transparent var(--ui-grid-cell)
+    );
+  /* 遮罩是 0/1 的 alpha 通道，与主题无关，因此用 rgb() 而非令牌 */
+  mask-image: radial-gradient(120% 70% at 50% 0%, rgb(0 0 0) 0%, rgb(0 0 0) 30%, transparent 68%);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--action-primary) 34%, transparent);
+  color: var(--text-primary);
+}
+
+:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: var(--ui-focus-outline-offset);
+}
+
+a {
+  color: var(--action-primary-text);
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-size);
+}

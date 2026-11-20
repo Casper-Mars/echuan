@@ -1,0 +1,187 @@
+/* features/products —— 产品列表样式（design/screens/products.md + design/refs/products__*__dark__*.png）
+ *
+ * 口径（验收 grep）：只消费 theme 令牌 var(--…)，文件里不出现 hex 与 px 字面量；
+ * 几何量由 --space-* / --radius-* / --border-width 推导；媒体查询只能用 em 字面量
+ * （CSS 的 @media 不接受 var()），断点 768 = 48em，与 design/tokens.json 的 breakpoint.sm 同源。
+ */
+
+/* ===== 页面画布 ==========================================================
+ * 画布（暗色底 + 氛围光 + 细网格）由 theme/base.css 的 body 层统一提供（components.md「视觉语言 v2」：
+ * 氛围光是「页面固定一层」），页面根节点**不再自绘底色**——壳层 .fx-main 是透明的，本文件只负责
+ * 用负 margin 抵掉壳层内边距、按设计给出内边距与最小高度，让内容铺满整块内容区。
+ *
+ * 高度 = 视口 − 壳层占用（顶栏 = space-9 + space-4 + 一条边框，口径同 shell.css .fx-topbar）；
+ * 移动端再减掉底部 TabBar 的触控高度与它的一条上边框。
+ */
+.pd-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-6);
+  margin: calc(var(--space-6) * -1);
+  min-block-size: calc(100dvh - var(--space-9) - var(--space-4) - var(--border-width));
+}
+
+/* ===== 页头：产品数 + 项目总数 + 筛选 + 新建产品 ========================= */
+.pd-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+}
+
+.pd-head__main {
+  min-inline-size: 0;
+}
+
+.pd-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-h1-size);
+  font-weight: var(--text-h1-weight);
+  line-height: var(--text-h1-line-height);
+  letter-spacing: var(--text-h1-letter-spacing);
+}
+
+.pd-sub {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+}
+
+.pd-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* 筛选框宽度按 design/refs 的内容宽度（128 = space-10 × 2）；文案已自解释，
+ * 视觉标签隐藏但保留在无障碍树上（读屏仍读「按项目状态筛选」）。 */
+.pd-filter {
+  inline-size: calc(var(--space-10) * 2);
+}
+
+.pd-filter label {
+  position: absolute;
+  inline-size: var(--border-width);
+  block-size: var(--border-width);
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+/* ===== 表格卡片 ========================================================= */
+.pd-card {
+  flex: 0 0 auto;
+  padding: var(--space-5);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-12);
+  background-color: var(--surface-raised);
+  box-shadow: var(--shadow-e1);
+}
+
+/* 骨架行之间留出与真行一致的间距 */
+.pd-card--skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* ===== 单元格 =========================================================== */
+/* 首列：产品名（加粗，ui/DataTable 的 td[data-first] 已给字重）+ product_id（mono 副标题） */
+.pd-name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+.pd-name__id {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line-height);
+}
+
+/* 仓库地址：等宽字体，长地址在窄屏允许换行（不靠横向滚动） */
+.pd-mono {
+  display: block;
+  max-inline-size: calc(var(--space-12) * 4);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-size);
+  line-height: var(--text-mono-line-height);
+  overflow-wrap: anywhere;
+}
+
+.pd-count {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 移动端（<768）：表格转卡片行 =====================================
+ * 卡片行本体由 ui/DataTable 的媒体块负责（每格带 data-label 的字段名）；
+ * 这里只补两条：外层卡片让位给行卡片、行卡片给出自己的底色。
+ */
+@media (max-width: 47.99em) {
+  .pd-page {
+    min-block-size: calc(
+      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - var(--ui-control-height-touch) -
+        var(--border-width)
+    );
+    gap: var(--space-4);
+    padding-block: var(--space-5);
+    padding-inline: var(--space-4);
+  }
+
+  .pd-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .pd-title {
+    font-size: var(--text-h2-size);
+    line-height: var(--text-h2-line-height);
+  }
+
+  .pd-actions {
+    inline-size: 100%;
+  }
+
+  /* 筛选下拉吃掉剩余宽度，按钮按内容宽度（触控高度由 ui/Button 的指针媒体规则提到 44） */
+  .pd-filter {
+    flex: 1 1 0;
+    inline-size: auto;
+  }
+
+  .pd-card {
+    padding: 0;
+    border: 0;
+    background-color: transparent;
+    box-shadow: none;
+  }
+
+  .pd-card .ui-data-table tbody tr {
+    /* 卡片内边距按 design/refs 移动端实测（≈24，ui/DataTable 默认给的是 space-3=8）：
+     * 12（页面内边距）+ 24 = 字段名左边界 36（ref 38）；再加 label 列 80 + gap 4 = 值左边界 120（ref 121）。 */
+    padding: var(--space-6);
+    background-color: var(--surface-raised);
+  }
+
+  /* 产品名与 product_id 在移动端同一行（design/refs：「驿传 Echuan  echuan」），桌面仍是两行 */
+  .pd-name {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+
+  .pd-mono {
+    max-inline-size: none;
+  }
+}

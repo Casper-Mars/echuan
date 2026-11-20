@@ -1,0 +1,141 @@
+/* 由 web/scripts/gen-tokens.mjs 从 design/tokens.json 生成，请勿手改。
+ * 生成命令：node web/scripts/gen-tokens.mjs
+ *
+ * 主题口径：暗色即默认——下方唯一的根块写的是 tokens.json 的暗色解析值；
+ * 亮色不是第二套设计，而是同一批变量的重新解析，写在 html[data-theme='light'] 里。
+ * 令牌层口径（AC4）：新增令牌层内恰好一个根块，且没有任何媒体查询块内的自定义属性定义。
+ * 旧 web/src/styles.css（三代视觉叠加，多个根块）本卡不动，由 T11 收口。
+ *
+ * 颜色只暴露 semantic 角色；primitive 只经 semantic 间接进入 CSS。
+ * --border-width 是结构常量（描边宽度，tokens.json 无对应 primitive），是本文件唯一非令牌值。
+ */
+
+:root {
+  /* semantic 颜色（暗色解析 = 默认） */
+  --surface-canvas: #070b14;
+  --surface-raised: #0b1322;
+  --surface-overlay: #101a2b;
+  --border-subtle: #1c2a43;
+  --border-default: #28405f;
+  --border-strong: #3d5a80;
+  --text-primary: #e9f0fb;
+  --text-muted: #93a7c4;
+  --text-on-action: #ffffff;
+  --action-primary: #3d6bff;
+  --action-primary-hover: #5b83ff;
+  --action-primary-text: #9db8ff;
+  --focus-ring: #7fa2ff;
+  --feedback-success: #2ee6a8;
+  --feedback-warning: #ffce4d;
+  --feedback-danger: #ff5d6c;
+  --feedback-info: #6ee6ff;
+
+  /* 字体与字阶 */
+  --font-sans: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --text-display-size: 40px;
+  --text-display-weight: 600;
+  --text-display-line-height: 1.2;
+  --text-display-letter-spacing: -0.01em;
+  --text-display-font-family: var(--font-sans);
+  --text-h1-size: 28px;
+  --text-h1-weight: 600;
+  --text-h1-line-height: 1.29;
+  --text-h1-letter-spacing: -0.01em;
+  --text-h1-font-family: var(--font-sans);
+  --text-h2-size: 22px;
+  --text-h2-weight: 600;
+  --text-h2-line-height: 1.36;
+  --text-h2-letter-spacing: 0;
+  --text-h2-font-family: var(--font-sans);
+  --text-h3-size: 18px;
+  --text-h3-weight: 600;
+  --text-h3-line-height: 1.44;
+  --text-h3-letter-spacing: 0;
+  --text-h3-font-family: var(--font-sans);
+  --text-body-size: 15px;
+  --text-body-weight: 400;
+  --text-body-line-height: 1.57;
+  --text-body-letter-spacing: 0;
+  --text-body-font-family: var(--font-sans);
+  --text-body-strong-size: 15px;
+  --text-body-strong-weight: 500;
+  --text-body-strong-line-height: 1.57;
+  --text-body-strong-letter-spacing: 0;
+  --text-body-strong-font-family: var(--font-sans);
+  --text-small-size: 13px;
+  --text-small-weight: 400;
+  --text-small-line-height: 1.54;
+  --text-small-letter-spacing: 0;
+  --text-small-font-family: var(--font-sans);
+  --text-caption-size: 12px;
+  --text-caption-weight: 400;
+  --text-caption-line-height: 1.5;
+  --text-caption-letter-spacing: 0.01em;
+  --text-caption-font-family: var(--font-sans);
+  --text-mono-size: 13px;
+  --text-mono-weight: 400;
+  --text-mono-line-height: 1.54;
+  --text-mono-letter-spacing: 0;
+  --text-mono-font-family: var(--font-mono);
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 48px;
+  --space-10: 64px;
+  --space-11: 80px;
+  --space-12: 96px;
+  --radius-0: 0px;
+  --radius-2: 2px;
+  --radius-4: 4px;
+  --radius-6: 6px;
+  --radius-8: 8px;
+  --radius-12: 12px;
+  --radius-16: 16px;
+  --radius-pill: 999px;
+  --shadow-e1: 0px 1px 2px 0px rgb(0 0 0 / 0.06);
+  --shadow-e2: 0px 4px 12px 0px rgb(0 0 0 / 0.08);
+  --shadow-e3: 0px 12px 32px 0px rgb(0 0 0 / 0.10);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 240ms;
+  --duration-slower: 320ms;
+  --easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --easing-emphasized: cubic-bezier(0.2, 0, 0.2, 1.2);
+  --breakpoint-sm: 768px;
+  --breakpoint-md: 1024px;
+  --breakpoint-lg: 1280px;
+  --breakpoint-xl: 1600px;
+  --z-raised: 10;
+  --z-sticky: 100;
+  --z-overlay: 200;
+  --z-dialog: 300;
+  --z-toast: 400;
+  --border-width: 1px;
+}
+
+html[data-theme='light'] {
+  /* semantic 颜色（亮色解析） */
+  --surface-canvas: #fcfdff;
+  --surface-raised: #f7fafd;
+  --surface-overlay: #eff4f9;
+  --border-subtle: #d0dbe7;
+  --border-default: #bccadd;
+  --border-strong: #9fb0c6;
+  --text-primary: #182130;
+  --text-muted: #4e6076;
+  --text-on-action: #ffffff;
+  --action-primary: #2f5bea;
+  --action-primary-hover: #2a51d4;
+  --action-primary-text: #2b48b0;
+  --focus-ring: #8aa6f7;
+  --feedback-success: #29a383;
+  --feedback-warning: #ffc53d;
+  --feedback-danger: #e5484d;
+  --feedback-info: #7ce2fe;
+}

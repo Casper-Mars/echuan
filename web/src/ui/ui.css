@@ -1,0 +1,968 @@
+/* echuan ui 封装层样式（手写层）
+ *
+ * 规则（硬）：
+ *   * 只消费令牌：颜色/间距/圆角/阴影/动效一律 var(--…)，由 theme/tokens.css 提供；
+ *   * 不出现 hex 与 NNpx 字面量；几何量由 --space-* / --border-width 推导（见 theme/base.css 的 --ui-* 度量）；
+ *   * 覆盖 Mantine 内部样式时用「.ui-x.ui-x」或「.ui-x .ui-x__slot」提升特异性，
+ *     避免与 Mantine 的哈希类顺序耦合（Mantine 变量走 style 属性，见各组件源码注释）。
+ *   * 媒体查询里的断点值只能用 em 字面量（CSS 不允许在 @media 里用 var()），
+ *     取值来自 design/tokens.json 的 breakpoint 令牌（sm=768 → 48em、md=1024 → 64em）。
+ */
+
+/* ===== Button ============================================================ */
+.ui-button.ui-button {
+  font-weight: var(--text-body-strong-weight);
+  letter-spacing: var(--text-body-letter-spacing);
+  padding-inline: var(--button-padding-x);
+}
+
+.ui-button:active {
+  /* design/components.md：active 不做位移，避免移动端误触反馈过大 */
+  transform: none;
+}
+
+/* 移动端主按钮 44 高（触控目标） */
+@media (max-width: 47.99em) {
+  .ui-button.ui-button[data-ui-size='md'] {
+    --button-height: var(--ui-control-height-touch);
+  }
+}
+
+.ui-button__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--ui-pill-height);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-pill);
+  background-color: color-mix(in srgb, currentColor 18%, transparent);
+  color: inherit;
+  font-size: var(--text-caption-size);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== IconButton ======================================================= */
+.ui-icon-button:active {
+  transform: none;
+}
+
+.ui-icon-button svg {
+  display: block;
+}
+
+/* ===== StatusPill / KindBadge =========================================== */
+.ui-status-pill.ui-status-pill {
+  font-weight: var(--text-body-strong-weight);
+  letter-spacing: var(--text-caption-letter-spacing);
+}
+
+.ui-status-pill .ui-status-pill__dot {
+  display: inline-block;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-pill);
+  background-color: currentColor;
+}
+
+.ui-kind-badge.ui-kind-badge {
+  text-transform: none;
+  letter-spacing: var(--text-caption-letter-spacing);
+}
+
+/* ===== Chip ============================================================= */
+.ui-chip.ui-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  overflow: hidden;
+  padding-inline: var(--space-3);
+  background-color: var(--surface-raised);
+  border: var(--border-width) solid var(--border-subtle);
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ui-chip--mono {
+  font-family: var(--font-mono);
+}
+
+.ui-chip--action {
+  cursor: pointer;
+}
+
+.ui-chip--action:hover {
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.ui-chip--action:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: var(--ui-focus-outline-offset);
+}
+
+/* ===== TaskCard ========================================================= */
+.ui-task-card.ui-task-card {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--ui-glass-surface);
+  backdrop-filter: blur(var(--space-4));
+  border: var(--border-width) solid var(--border-subtle);
+  box-shadow: var(--shadow-e1), inset 0 var(--border-width) 0 var(--ui-glass-highlight);
+  transition:
+    border-color var(--duration-fast) var(--easing-standard),
+    box-shadow var(--duration-fast) var(--easing-standard);
+}
+
+/* 左侧状态色条 + 微弱外发光（视觉语言 v2「状态条」） */
+.ui-task-card::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: var(--ui-status-bar);
+  background-color: var(--task-status-color);
+  box-shadow: 0 0 var(--space-4) color-mix(in srgb, var(--task-status-color) 55%, transparent);
+}
+
+.ui-task-card {
+  --task-status-color: var(--border-strong);
+}
+
+.ui-task-card[data-status='ready'],
+.ui-task-card[data-status='in_progress'] {
+  --task-status-color: var(--feedback-info);
+}
+
+.ui-task-card[data-status='in_review'] {
+  --task-status-color: var(--feedback-warning);
+}
+
+.ui-task-card[data-status='done'] {
+  --task-status-color: var(--feedback-success);
+}
+
+.ui-task-card[data-status='failed'] {
+  --task-status-color: var(--feedback-danger);
+}
+
+.ui-task-card[data-status='cancelled'] {
+  --task-status-color: var(--text-muted);
+}
+
+.ui-task-card:hover {
+  border-color: var(--border-default);
+}
+
+.ui-task-card[data-focused] {
+  border-color: var(--action-primary);
+  box-shadow: var(--shadow-e2);
+}
+
+.ui-task-card__hit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3);
+  padding-inline-start: calc(var(--space-3) + var(--ui-status-bar));
+  color: var(--text-primary);
+}
+
+/* 焦点环包裹整卡（向内收，避免被 overflow 裁掉） */
+.ui-task-card__hit:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: calc(var(--ui-focus-outline-offset) * -1);
+}
+
+.ui-task-card__title {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--text-body-size);
+  font-weight: var(--text-body-strong-weight);
+  line-height: var(--text-body-line-height);
+}
+
+.ui-task-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+}
+
+.ui-task-card__num,
+.ui-task-card__time {
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-task-card__id {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-size);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ===== BoardColumn ====================================================== */
+.ui-board-column.ui-board-column {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background-color: var(--surface-raised);
+  border: var(--border-width) solid var(--border-subtle);
+}
+
+/* 列顶部渐变线（视觉语言 v2「列骨架」） */
+.ui-board-column::before {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 0;
+  z-index: var(--z-raised);
+  height: calc(var(--border-width) * 2);
+  background-image: linear-gradient(90deg, var(--action-primary), var(--feedback-info));
+}
+
+.ui-board-column[data-accent] {
+  border-color: var(--action-primary);
+}
+
+.ui-board-column[data-accent]::before {
+  height: var(--ui-status-bar);
+  background-image: linear-gradient(90deg, var(--feedback-warning), var(--action-primary));
+}
+
+.ui-board-column__head.ui-board-column__head {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--z-raised);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3);
+  padding-block-start: calc(var(--space-3) + var(--border-width) * 2);
+  background-color: inherit;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.ui-board-column__head:disabled {
+  cursor: default;
+}
+
+.ui-board-column__head:hover:not(:disabled) {
+  background-color: var(--surface-overlay);
+}
+
+.ui-board-column__head:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: calc(var(--ui-focus-outline-offset) * -1);
+}
+
+.ui-board-column__title {
+  font-size: var(--text-small-size);
+  font-weight: var(--text-body-strong-weight);
+}
+
+.ui-board-column__count {
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-pill);
+  background-color: var(--surface-overlay);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-board-column__chevron {
+  display: inline-flex;
+  margin-inline-start: auto;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--easing-standard);
+}
+
+/* design/components.md：列头折叠按钮 hover / 聚焦才显形 */
+.ui-board-column__head:hover .ui-board-column__chevron,
+.ui-board-column__head:focus-visible .ui-board-column__chevron {
+  opacity: 1;
+}
+
+.ui-board-column__body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ui-board-column__stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+/* 折叠态：56 竖条，标题竖排，计数与文案都保留（读屏不会以为任务丢了） */
+.ui-board-column--collapsed.ui-board-column--collapsed {
+  width: var(--ui-layout-rail-strip);
+  align-items: center;
+}
+
+.ui-board-column--collapsed .ui-board-column__head {
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  padding-block-start: calc(var(--space-3) + var(--border-width) * 2);
+}
+
+.ui-board-column--collapsed .ui-board-column__title {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+.ui-board-column--collapsed .ui-board-column__chevron {
+  margin-inline-start: 0;
+  opacity: 1;
+}
+
+/* ===== DataTable ======================================================== */
+.ui-data-table.ui-data-table {
+  width: 100%;
+  color: var(--text-primary);
+  font-size: var(--text-small-size);
+}
+
+.ui-data-table thead th {
+  padding-block: var(--space-2);
+  border-bottom: var(--border-width) solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+  font-weight: var(--text-body-strong-weight);
+  letter-spacing: var(--text-caption-letter-spacing);
+  text-transform: uppercase;
+}
+
+.ui-data-table tbody td {
+  border-bottom: var(--border-width) solid var(--border-subtle);
+  vertical-align: middle;
+}
+
+.ui-data-table th[data-align='right'],
+.ui-data-table td[data-align='right'] {
+  text-align: end;
+}
+
+.ui-data-table th[data-align='center'],
+.ui-data-table td[data-align='center'] {
+  text-align: center;
+}
+
+.ui-data-table td[data-first] {
+  font-weight: var(--text-body-strong-weight);
+}
+
+.ui-data-table tbody tr:hover td {
+  background-color: var(--surface-overlay);
+}
+
+.ui-data-table tbody tr[data-warn] td {
+  background-color: color-mix(in srgb, var(--feedback-warning) 12%, transparent);
+}
+
+.ui-data-table tbody tr[data-disabled] td {
+  color: var(--text-muted);
+}
+
+.ui-data-table tbody tr:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: calc(var(--ui-focus-outline-offset) * -1);
+}
+
+.ui-data-table td[data-empty='true'] {
+  padding-block: var(--space-9);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* 移动端：表格转卡片式，字段名走 data-label（不许横向滚动当解决方案） */
+@media (max-width: 47.99em) {
+  .ui-data-table.ui-data-table thead {
+    display: none;
+  }
+
+  .ui-data-table.ui-data-table,
+  .ui-data-table tbody,
+  .ui-data-table tr,
+  .ui-data-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .ui-data-table tbody tr {
+    margin-block-end: var(--space-3);
+    padding: var(--space-3);
+    border: var(--border-width) solid var(--border-subtle);
+    border-radius: var(--radius-12);
+  }
+
+  .ui-data-table tbody td {
+    display: flex;
+    gap: var(--space-2);
+    padding-inline: 0;
+    border-bottom: 0;
+  }
+
+  .ui-data-table tbody td[data-label]::before {
+    content: attr(data-label);
+    min-width: var(--space-11);
+    color: var(--text-muted);
+    font-size: var(--text-caption-size);
+  }
+}
+
+/* ===== TextField / TextArea / SelectField =============================== */
+.ui-text-field input,
+.ui-text-area textarea,
+.ui-select-field input {
+  min-height: var(--ui-control-height-md);
+  background-color: var(--surface-raised);
+  border: var(--border-width) solid var(--border-default);
+  border-radius: var(--radius-8);
+  color: var(--text-primary);
+  /* 移动端字号 ≥15 防 iOS 聚焦缩放 */
+  font-size: var(--text-body-size);
+  transition:
+    border-color var(--duration-fast) var(--easing-standard),
+    box-shadow var(--duration-fast) var(--easing-standard);
+}
+
+.ui-text-field input:hover,
+.ui-text-area textarea:hover,
+.ui-select-field input:hover {
+  border-color: var(--border-strong);
+}
+
+.ui-text-field input:focus,
+.ui-text-area textarea:focus,
+.ui-select-field input:focus {
+  border-color: var(--action-primary);
+  box-shadow: 0 0 0 var(--border-width) var(--focus-ring);
+}
+
+.ui-text-field input:disabled,
+.ui-text-area textarea:disabled,
+.ui-select-field input:disabled {
+  background-color: var(--surface-overlay);
+  color: var(--text-muted);
+}
+
+.ui-text-field--mono input {
+  font-family: var(--font-mono);
+}
+
+.ui-text-field label,
+.ui-text-area label,
+.ui-select-field label {
+  margin-block-end: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+/* ===== Alert ============================================================ */
+.ui-alert.ui-alert {
+  align-items: flex-start;
+  border-radius: var(--radius-8);
+}
+
+.ui-alert__body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+  justify-content: space-between;
+  width: 100%;
+}
+
+.ui-alert__text {
+  color: var(--text-primary);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+}
+
+/* ===== EmptyState ======================================================= */
+.ui-empty-state.ui-empty-state {
+  padding: var(--space-9);
+  border: var(--border-width) dashed var(--border-default);
+  border-radius: var(--empty-state-radius);
+  background-color: var(--surface-raised);
+  text-align: center;
+}
+
+.ui-empty-state[data-tone='danger'] {
+  border-color: color-mix(in srgb, var(--feedback-danger) 55%, var(--border-default));
+}
+
+.ui-empty-state__title {
+  color: var(--text-primary);
+  font-size: var(--text-h3-size);
+  font-weight: var(--text-h3-weight);
+  line-height: var(--text-h3-line-height);
+}
+
+.ui-empty-state__description {
+  max-width: calc(var(--space-12) * 5);
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+}
+
+/* ===== SkeletonCard ===================================================== */
+.ui-skeleton-card.ui-skeleton-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-8);
+  background-color: var(--surface-overlay);
+}
+
+/* 呼吸块的着色：接管 Mantine 默认的 gray/dark 混色 */
+.ui-skeleton-card .ui-skeleton::after {
+  background-color: var(--border-subtle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-skeleton-card .ui-skeleton::after {
+    animation: none;
+  }
+}
+
+/* ===== ConfirmModal / DetailSheet ======================================= */
+.ui-confirm-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  color: var(--text-primary);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line-height);
+}
+
+.ui-confirm-modal__impact {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+.ui-confirm-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.ui-detail-sheet__layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.ui-detail-sheet__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-5);
+  color: var(--text-primary);
+}
+
+.ui-detail-sheet__footer {
+  flex: 0 0 auto;
+  padding: var(--space-4) var(--space-5);
+  border-block-start: var(--border-width) solid var(--border-subtle);
+  background-color: var(--surface-raised);
+}
+
+/* 关闭键配色（T6 返工）：Mantine CloseButton 的前景色在暗色头像上与头部底色同值
+ * （实测 rgb(11,19,34) = --surface-raised，图标等于隐形）。这里按 design/components.md
+ * §ui/DetailSheet「hover 关闭键淡底」与 §ui/IconButton 的 rest/hover 口径改回令牌色。
+ * 对比度：--text-muted 对 --surface-raised = 7.6:1（非文本控件下限 3:1），见任务自检脚本。 */
+.ui-detail-sheet .mantine-Drawer-close {
+  color: var(--text-muted);
+}
+
+.ui-detail-sheet .mantine-Drawer-close:hover {
+  color: var(--text-primary);
+  background-color: var(--surface-overlay);
+}
+
+/* 移动端：抽屉全屏，底部操作条固定 */
+@media (max-width: 47.99em) {
+  /* T6 修复 D5（721–767 档抽屉仍 720 而非全屏）：
+   * `--drawer-size` 由 ui/DetailSheet 写在 style 属性里（Mantine 变量走 inline style），
+   * 媒体块内的普通声明压不过行内值，因此这里必须 !important；
+   * 同时覆盖 width，避免 Mantine 的 `width: var(--drawer-size)` 在同档位残留。
+   * 口径来源：design/screens/task-detail.md「<768 移动全屏 sheet」+ components.md §ui/DetailSheet。 */
+  .ui-detail-sheet .mantine-Drawer-content {
+    --drawer-size: 100% !important;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .ui-detail-sheet__layout {
+    min-height: 100%;
+  }
+
+  .ui-detail-sheet__footer {
+    position: sticky;
+    inset-block-end: 0;
+    padding-block-end: calc(var(--space-4) + env(safe-area-inset-bottom));
+  }
+
+  /* 移动端关闭区 ≥44（design/components.md §ui/DetailSheet「移动端关闭区 ≥44」）：
+   * Mantine CloseButton 默认 28 见方，这里用触控令牌兜住命中区。 */
+  .ui-detail-sheet .mantine-Drawer-close {
+    min-width: var(--ui-control-height-touch);
+    min-height: var(--ui-control-height-touch);
+  }
+}
+
+/* ===== TabBar（移动专属） =============================================== */
+.ui-tab-bar.ui-tab-bar {
+  position: sticky;
+  inset-block-end: 0;
+  z-index: var(--z-sticky);
+  border-block-start: var(--border-width) solid var(--border-subtle);
+  background-color: var(--surface-raised);
+  padding-block-end: env(safe-area-inset-bottom);
+}
+
+.ui-tab-bar .ui-tab-bar__list {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0;
+  width: 100%;
+  border: 0;
+}
+
+.ui-tab-bar .ui-tab-bar__tab {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: center;
+  justify-content: center;
+  min-height: var(--ui-control-height-touch);
+  padding-block: var(--space-2);
+  border: 0;
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+  font-weight: var(--text-caption-weight);
+}
+
+.ui-tab-bar .ui-tab-bar__tab[aria-current='page'] {
+  color: var(--action-primary-text);
+  font-weight: var(--text-body-strong-weight);
+}
+
+.ui-tab-bar .ui-tab-bar__tab:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: calc(var(--ui-focus-outline-offset) * -1);
+}
+
+/* ===== SidebarNav ======================================================= */
+.ui-sidebar-nav.ui-sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: var(--ui-layout-sidebar);
+}
+
+.ui-sidebar-nav--collapsed.ui-sidebar-nav--collapsed {
+  width: var(--ui-layout-rail);
+}
+
+.ui-sidebar-nav__header,
+.ui-sidebar-nav__footer {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+.ui-sidebar-nav__list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 0;
+  overflow: auto;
+}
+
+.ui-sidebar-nav .ui-sidebar-nav__link {
+  position: relative;
+  min-height: var(--ui-control-height-md);
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-8);
+  color: var(--text-primary);
+  font-size: var(--text-small-size);
+}
+
+.ui-sidebar-nav .ui-sidebar-nav__link:hover {
+  background-color: var(--surface-overlay);
+}
+
+.ui-sidebar-nav .ui-sidebar-nav__link[data-active] {
+  background-color: color-mix(in srgb, var(--action-primary) 12%, transparent);
+  font-weight: var(--text-body-strong-weight);
+}
+
+/* active：左侧品牌竖条 */
+.ui-sidebar-nav .ui-sidebar-nav__link[data-active]::before {
+  content: '';
+  position: absolute;
+  inset-block: var(--space-1);
+  inset-inline-start: 0;
+  width: calc(var(--border-width) * 2);
+  border-radius: var(--radius-2);
+  background-color: var(--action-primary);
+}
+
+.ui-sidebar-nav .ui-sidebar-nav__link:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: calc(var(--ui-focus-outline-offset) * -1);
+}
+
+@media (max-width: 63.99em) {
+  .ui-sidebar-nav.ui-sidebar-nav {
+    width: var(--ui-layout-rail);
+  }
+}
+
+/* ===== Segmented ======================================================== */
+.ui-segmented.ui-segmented {
+  padding: var(--space-1);
+  border-radius: var(--radius-8);
+  background-color: var(--surface-overlay);
+}
+
+.ui-segmented label {
+  min-height: var(--ui-control-height-sm);
+  padding-inline: var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+.ui-segmented label[data-active] {
+  color: var(--text-primary);
+  font-weight: var(--text-body-strong-weight);
+}
+
+.ui-segmented--danger label[data-active] {
+  background-image: linear-gradient(135deg, var(--feedback-danger), var(--feedback-warning));
+  color: var(--text-on-action);
+}
+
+.ui-segmented label:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: calc(var(--ui-focus-outline-offset) * -1);
+}
+
+/* ===== AttachmentRow ==================================================== */
+.ui-attachment-row.ui-attachment-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--ui-control-height-touch);
+  padding: var(--attachment-row-padding);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--attachment-row-radius);
+  background-color: var(--surface-raised);
+  color: var(--text-primary);
+  transition:
+    border-color var(--duration-fast) var(--easing-standard),
+    background-color var(--duration-fast) var(--easing-standard);
+}
+
+.ui-attachment-row:hover:not([data-disabled]) {
+  border-color: var(--border-default);
+  background-color: var(--surface-overlay);
+}
+
+.ui-attachment-row:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: var(--ui-focus-outline-offset);
+}
+
+.ui-attachment-row[data-disabled] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.ui-attachment-row__role {
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-4);
+  background-color: var(--surface-overlay);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+}
+
+.ui-attachment-row__title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-size: var(--text-small-size);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ui-attachment-row__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== MarkdownViewer =================================================== */
+.ui-markdown.ui-markdown {
+  color: var(--text-primary);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line-height);
+}
+
+.ui-markdown h1 {
+  font-size: var(--text-h1-size);
+  font-weight: var(--text-h1-weight);
+  line-height: var(--text-h1-line-height);
+  letter-spacing: var(--text-h1-letter-spacing);
+}
+
+.ui-markdown h2 {
+  font-size: var(--text-h2-size);
+  font-weight: var(--text-h2-weight);
+  line-height: var(--text-h2-line-height);
+  letter-spacing: var(--text-h2-letter-spacing);
+}
+
+.ui-markdown h3,
+.ui-markdown h4,
+.ui-markdown h5,
+.ui-markdown h6 {
+  font-size: var(--text-h3-size);
+  font-weight: var(--text-h3-weight);
+  line-height: var(--text-h3-line-height);
+}
+
+.ui-markdown a {
+  color: var(--action-primary-text);
+  text-decoration: none;
+}
+
+.ui-markdown a:hover {
+  text-decoration: underline;
+}
+
+.ui-markdown a:focus-visible {
+  outline: var(--ui-focus-outline-width) solid var(--focus-ring);
+  outline-offset: var(--ui-focus-outline-offset);
+}
+
+.ui-markdown code {
+  padding-inline: var(--space-1);
+  border-radius: var(--radius-4);
+  background-color: var(--surface-overlay);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-size);
+}
+
+.ui-markdown pre {
+  overflow: auto;
+  padding: var(--space-3);
+  border-radius: var(--radius-8);
+  background-color: var(--surface-overlay);
+}
+
+.ui-markdown pre code {
+  padding-inline: 0;
+  background-color: transparent;
+}
+
+.ui-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-small-size);
+}
+
+.ui-markdown th,
+.ui-markdown td {
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  text-align: start;
+}
+
+.ui-markdown th {
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+  text-transform: uppercase;
+}
+
+.ui-markdown ul,
+.ui-markdown ol {
+  padding-inline-start: var(--space-6);
+}
+
+.ui-markdown blockquote {
+  margin-inline: 0;
+  padding-inline-start: var(--space-3);
+  border-inline-start: calc(var(--border-width) * 3) solid var(--border-subtle);
+  color: var(--text-muted);
+}
+
+.ui-markdown .ui-markdown__image-placeholder {
+  display: inline-block;
+  padding-inline: var(--space-2);
+  border: var(--border-width) dashed var(--border-strong);
+  border-radius: var(--radius-4);
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+.ui-markdown__empty {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+/* ===== 移动端触控尺寸兜底（T10） =========================================
+ * 口径：design/flows.md F4-3「触控 ≥44×44」+ design/components.md「md = 36（桌面）/ 44（移动）」。
+ * 为什么用 min-height 而不是改高度变量：ui/Button 把 --button-height 写在行内（style 属性），
+ * 行内变量压过本文件的类选择器，所以移动断点只能在命中区上兜。只兜尺寸，不动颜色/间距/结构。
+ * 判据侧：web/scripts/ui-verify.mjs `--viewports` 的「通用·可点元素」在 <768 要求 44×44，
+ * ≥768 按 design/components.md 的控件基线（md 36 / sm 32），不判 44（桌面是鼠标口径）。
+ */
+@media (max-width: 47.99em) {
+  /* ui/Button md（主操作）/ sm（次级操作） */
+  .ui-button.ui-button[data-ui-size='md'],
+  .ui-button.ui-button[data-ui-size='sm'] {
+    min-height: var(--ui-control-height-touch);
+  }
+
+  /* ui/SelectField（看板筛选、评审附件下拉）：命中区是 Mantine Select 的输入框 */
+  .ui-select-field .mantine-Input-input {
+    min-height: var(--ui-control-height-touch);
+  }
+
+  /* ui/BoardColumn 列头折叠按钮 */
+  .ui-board-column__head.ui-board-column__head {
+    min-height: var(--ui-control-height-touch);
+  }
+
+  /* ui/Segmented 选项：真实命中区是 label，control 一起抬起免得上下列高不一致 */
+  .ui-segmented .mantine-SegmentedControl-control,
+  .ui-segmented .mantine-SegmentedControl-label {
+    min-height: var(--ui-control-height-touch);
+  }
+}

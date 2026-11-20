@@ -1,0 +1,167 @@
+/* features/inbox —— 收件箱三区（design/screens/inbox.md）
+ *
+ * 口径：
+ *   * 只消费 theme 令牌 var(--…)，不出现 hex 与 px 字面量（AC6 的 grep 断言）；
+ *   * 几何量由 --space-* / --text-* / --radius-* 推导，注释里写目标像素值，值本身不写 px；
+ *   * 媒体查询里只能用 em 字面量（CSS 不允许 @media 用 var()）：断点 768 = 47.99em，
+ *     取值来自 design/tokens.json 的 breakpoint.sm（与壳层的移动形态 <768 同一处事实）。
+ */
+
+/* ===== 页面骨架 =========================================================
+ * 底色 / 氛围光 / 细网格由 theme/base.css 的 body 层统一提供（视觉语言 v2「页面固定一层」），
+ * 页面根节点不自绘 canvas —— 与 features/board、features/queue 同一口径。
+ *
+ * 高度 = 视口 − 壳层占用（顶栏 = space-9 + space-4 + border，见 shell.css .fx-topbar 的 content-box 口径）；
+ * 内容区的上下内边距（space-6，见 shell.css .fx-main）用负 margin 抵掉，改由本文件的 padding 提供。
+ * 用 min-block-size 而不是 block-size：收件箱内容会长于视口（队列区展开），页面要能自然变高并由文档滚动。
+ */
+.ix {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-6);
+  margin: calc(var(--space-6) * -1);
+  min-block-size: calc(100dvh - var(--space-9) - var(--space-4) - var(--border-width));
+}
+
+/* 移动端：内边距收窄到 12（space-4，design/refs 移动端卡片左边距实测），
+ * 并让出底部 TabBar（触控高度 + 一条上边框）。 */
+@media (max-width: 47.99em) {
+  .ix {
+    padding-inline: var(--space-4);
+    min-block-size: calc(
+      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - var(--ui-control-height-touch) -
+        var(--border-width)
+    );
+  }
+}
+
+/* ===== 页头（标题 + 说明 + 刷新） ======================================= */
+.ix-head {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.ix-head__main {
+  min-inline-size: 0;
+}
+
+.ix-head__title {
+  margin: 0;
+  font-size: var(--text-h1-size);
+  font-weight: var(--text-h1-weight);
+  line-height: var(--text-h1-line-height);
+  letter-spacing: var(--text-h1-letter-spacing);
+  /* 标题渐变（design/components.md「视觉语言 v2」）：与看板页头同源 */
+  background-image: linear-gradient(90deg, var(--text-primary), var(--action-primary), var(--feedback-info));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.ix-head__sub {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+}
+
+.ix-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* 移动端：页头两行（标题+说明 / 刷新），刷新落在下一行左端（design/refs 移动端实测） */
+@media (max-width: 47.99em) {
+  .ix-head {
+    align-items: flex-start;
+  }
+
+  .ix-head__actions {
+    inline-size: 100%;
+  }
+}
+
+/* ===== 错误条 / 异常提示 ================================================ */
+.ix-error,
+.ix-notice {
+  flex: 0 0 auto;
+}
+
+/* ===== 三区 ============================================================= */
+.ix-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-inline-size: 0;
+}
+
+.ix-section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-inline-size: 0;
+}
+
+.ix-section__title {
+  margin: 0;
+  font-size: var(--text-h3-size);
+  font-weight: var(--text-h3-weight);
+  line-height: var(--text-h3-line-height);
+  letter-spacing: var(--text-h3-letter-spacing);
+}
+
+/* `2 个 · 需要你拍板`：计数与说明同一条，弱化到 muted/small（design/refs 实测） */
+.ix-section__count {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 本区为空时的行内文案（design/refs：居中、caption、上下留白） */
+.ix-section__empty {
+  margin: 0;
+  padding-block: var(--space-5);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line-height);
+  letter-spacing: var(--text-caption-letter-spacing);
+  text-align: center;
+}
+
+/* ===== 卡片网格 =========================================================
+ * 列数由容器宽度决定（design/screens/inbox.md「断点」）：auto-fill + 最小列宽 260，
+ * 实测 1440 → 4 列（内容区 1152）、1024 → 3 列（内容区 912）、390 → 1 列（内容区 366）。
+ * 260 = space-10(64) × 4 + space-1(2) × 2；间隙 12（space-4）与 design/refs 实测一致。
+ */
+.ix-grid {
+  display: grid;
+  /* 260 = space-10(64) × 4 + space-1(2) × 2 */
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--space-10) * 4 + var(--space-1) * 2), 1fr));
+  gap: var(--space-4);
+  min-inline-size: 0;
+}
+
+.ix-card {
+  min-inline-size: 0;
+}
+
+/* 骨架卡高度对齐任务卡（design/refs loading 态实测 88 = space-8(40) × 2 + space-3(8)） */
+.ix-skeleton {
+  min-block-size: calc(var(--space-8) * 2 + var(--space-3));
+}
+
+/* ===== 整块空态 =========================================================
+ * 按内容高（design/refs empty 态：虚线面板只有 200 出头，下方留白），不撑满视口
+ */
+.ix-empty {
+  flex: 0 0 auto;
+}

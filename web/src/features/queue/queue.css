@@ -1,0 +1,168 @@
+/* features/queue —— 派单队列（按项目分组，design/screens/queue.md）
+ *
+ * 口径：
+ *   * 只消费 theme 令牌 var(--…)，不出现 hex 与 px 字面量（AC6 的 grep 断言）；
+ *   * 几何量与 features/inbox 同源（同一套列表页骨架），注释里写目标像素值，值本身不写 px；
+ *   * 媒体查询里只能用 em 字面量：断点 768 = 47.99em（design/tokens.json 的 breakpoint.sm）。
+ */
+
+/* ===== 页面骨架 =========================================================
+ * 与 features/inbox 同一口径：底色 / 氛围光 / 细网格由 theme/base.css 的 body 层提供，
+ * 页面根节点不自绘 canvas。
+ */
+.qx {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-6);
+  margin: calc(var(--space-6) * -1);
+  min-block-size: calc(100dvh - var(--space-9) - var(--space-4) - var(--border-width));
+}
+
+@media (max-width: 47.99em) {
+  .qx {
+    padding-inline: var(--space-4);
+    min-block-size: calc(
+      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - var(--ui-control-height-touch) -
+        var(--border-width)
+    );
+  }
+}
+
+/* ===== 页头（标题 + 说明 + 待派发计数 + 刷新） ========================== */
+.qx-head {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.qx-head__main {
+  min-inline-size: 0;
+}
+
+.qx-head__title {
+  margin: 0;
+  font-size: var(--text-h1-size);
+  font-weight: var(--text-h1-weight);
+  line-height: var(--text-h1-line-height);
+  letter-spacing: var(--text-h1-letter-spacing);
+  background-image: linear-gradient(90deg, var(--text-primary), var(--action-primary), var(--feedback-info));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.qx-head__sub {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+}
+
+.qx-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* `2 待派发`：计数在刷新按钮左侧，弱化到 muted/small（design/refs 实测） */
+.qx-head__count {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 移动端：页头两行（标题+说明 / 计数+刷新），操作行左对齐（design/refs 移动端实测） */
+@media (max-width: 47.99em) {
+  .qx-head {
+    align-items: flex-start;
+  }
+
+  .qx-head__actions {
+    inline-size: 100%;
+  }
+}
+
+/* ===== 错误条 ============================================================ */
+.qx-error {
+  flex: 0 0 auto;
+}
+
+/* ===== 项目分组 ========================================================== */
+.qx-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-inline-size: 0;
+}
+
+.qx-section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-inline-size: 0;
+}
+
+/* 分组标题就是项目 id：mono（design/screens/queue.md「使用 token」里的 font-mono） */
+.qx-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.qx-section__title {
+  margin: 0;
+  font-size: var(--text-h3-size);
+  font-weight: var(--text-h3-weight);
+  line-height: var(--text-h3-line-height);
+  letter-spacing: var(--text-h3-letter-spacing);
+}
+
+.qx-section__count {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+}
+
+/* ===== 卡片网格 =========================================================
+ * 与收件箱同一套网格：auto-fill + 最小列宽 260（space-10 × 4 + space-1 × 2），间隙 12（space-4）。
+ * 实测 1440 → 4 列、1024 → 3 列、390 → 1 列（design/refs 三视口实测）。
+ */
+.qx-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--space-10) * 4 + var(--space-1) * 2), 1fr));
+  gap: var(--space-4);
+  min-inline-size: 0;
+}
+
+.qx-card {
+  min-inline-size: 0;
+}
+
+/* ===== loading：一个面板里 4 个骨架（design/refs loading 实测：虚线之外的单一面板） ==== */
+.qx-loading {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-12);
+  background-color: var(--surface-raised);
+  box-shadow: var(--shadow-e1);
+}
+
+/* 骨架高 76 = space-10(64) + space-4(12)（design/refs loading 态实测） */
+.qx-skeleton {
+  min-block-size: calc(var(--space-10) + var(--space-4));
+}
+
+/* ===== 整块空态 ========================================================== */
+.qx-empty {
+  flex: 0 0 auto;
+}
