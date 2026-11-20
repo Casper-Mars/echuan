@@ -3,11 +3,11 @@ import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppFrame } from './features/shell/AppFrame'
 import { BoardRedirect } from './features/home/BoardRedirect'
 import { HomeRoute } from './features/home/HomeRoute'
+import { BoardPage } from './features/board/BoardPage'
 import { InboxPage } from './pages/InboxPage'
 import { ProductsPage } from './pages/ProductsPage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { QueuePage } from './pages/QueuePage'
-import { TasksPage } from './pages/TasksPage'
 import { WorkersPage } from './pages/WorkersPage'
 
 // 详情是独立路由，按需加载：既让「详情首次打开」有个真实的 loading 态（壳层骨架），
@@ -39,7 +39,7 @@ export function App() {
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/products/:productId/projects" element={<ProjectsPage />} />
           <Route path="/projects/:projectId" element={<BoardRedirect />} />
-          <Route path="/projects/:projectId/tasks" element={<TasksPage />} />
+          <Route path="/projects/:projectId/tasks" element={<BoardPage />} />
           <Route path="/projects/:projectId/tasks/:taskId" element={<TaskDetailRoute />} />
           <Route path="/workers" element={<WorkersPage />} />
         </Route>
