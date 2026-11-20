@@ -6,10 +6,10 @@ import { BoardRedirect } from './features/home/BoardRedirect'
 import { HomeRoute } from './features/home/HomeRoute'
 import { BoardPage } from './features/board/BoardPage'
 import { InboxPage } from './features/inbox/InboxPage'
-import { ProductsPage } from './pages/ProductsPage'
-import { ProjectsPage } from './pages/ProjectsPage'
+import { ProductsPage } from './features/products/ProductsPage'
+import { ProjectsPage } from './features/projects/ProjectsPage'
 import { QueuePage } from './features/queue/QueuePage'
-import { WorkersPage } from './pages/WorkersPage'
+import { WorkersPage } from './features/workers/WorkersPage'
 
 // 详情按需加载：既让「详情首次打开」有个真实的 loading 态（抽屉内骨架），
 // 也让首屏 JS 不背详情页的代码。
@@ -46,16 +46,21 @@ function BoardWithDetail() {
 /**
  * 路由表（HashRouter，可直接刷新 / 分享）：
  *
- *   新增（T4 / T6）：
- *   `#/`                                        → 上次访问的项目看板；无记录 → 产品页（flows F1）
- *   `#/projects/:projectId`                     → 该项目看板（旧收藏缺段时归一）
- *   `#/projects/:projectId/tasks/:taskId?`      → 看板（常驻）+ 详情抽屉（可选段），关闭回看板
- *   保留（旧书签）：
- *   `#/inbox` `#/queue` `#/products`
- *   `#/products/:productId/projects` `#/projects/:projectId/tasks` `#/workers`
+ *   全部由 `features/**` 承载：
+ *   `#/`                                        → 上次访问的项目看板；无记录 → 产品页（flows F1，T4）
+ *   `#/inbox`                                   → 收件箱（features/inbox，T8）
+ *   `#/queue`                                   → 派单队列（features/queue，T8）
+ *   `#/products`                                → 产品列表（features/products，T9）
+ *   `#/products/:productId/projects`            → 该产品下的项目列表（features/projects，T9）
+ *   `#/projects/:projectId`                     → 该项目看板（旧收藏缺段时归一，T4）
+ *   `#/projects/:projectId/tasks/:taskId?`      → 看板（常驻）+ 详情抽屉（可选段，T6），关闭回看板
+ *   `#/workers`                                 → 执行节点（features/workers，T9）
+ *   `*`                                         → 重定向到 `#/products`
  *
+ * 详情不是独立同级路由，而是看板挂载点里的可选段：抽屉背后始终保留看板上下文（T6）。
  * 全部路由都挂在 `features/shell/AppFrame` 下：壳层（三形态导航 + 顶栏 + 页级错误边界）只有一份。
- * 旧壳 `components/Layout.tsx` + `components/Sidebar.tsx` 因此失去引用，已删除（见 T4 报告）。
+ * 旧壳 `components/Layout.tsx` + `components/Sidebar.tsx` 因此失去引用，已删除（见 T4 报告）；
+ * 旧 `pages/{Inbox,Queue,Products,Projects,Workers}Page.tsx` 也失去引用（T8 / T9 收口）。
  */
 export function App() {
   return (
