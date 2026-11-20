@@ -6,9 +6,9 @@
  */
 
 /* ===== 页面画布 ==========================================================
- * 列表页自带暗色画布与顶部氛围光：壳层 .fx-main 不带底色，而旧 styles.css（T11 才删）
- * 把 body 刷成了浅色渐变。画布用负 margin 抵掉壳层内边距后自绘，保证与 design/refs 的
- * 暗色底一致，且底色覆盖到内容区四边。
+ * 画布（暗色底 + 氛围光 + 细网格）由 theme/base.css 的 body 层统一提供（components.md「视觉语言 v2」：
+ * 氛围光是「页面固定一层」），页面根节点**不再自绘底色**——壳层 .fx-main 是透明的，本文件只负责
+ * 用负 margin 抵掉壳层内边距、按设计给出内边距与最小高度，让内容铺满整块内容区。
  *
  * 高度 = 视口 − 壳层占用（顶栏 = space-9 + space-4 + 一条边框，口径同 shell.css .fx-topbar）；
  * 移动端再减掉底部 TabBar 的触控高度与它的一条上边框。
@@ -20,19 +20,6 @@
   padding: var(--space-6);
   margin: calc(var(--space-6) * -1);
   min-block-size: calc(100dvh - var(--space-9) - var(--space-4) - var(--border-width));
-  background-color: var(--surface-canvas);
-  background-image:
-    radial-gradient(
-      closest-side at 12% -12%,
-      color-mix(in srgb, var(--action-primary) 18%, transparent),
-      transparent
-    ),
-    radial-gradient(
-      closest-side at 96% -6%,
-      color-mix(in srgb, var(--feedback-info) 12%, transparent),
-      transparent
-    );
-  background-repeat: no-repeat;
 }
 
 /* ===== 页头：产品数 + 项目总数 + 筛选 + 新建产品 ========================= */

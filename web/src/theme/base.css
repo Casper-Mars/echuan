@@ -8,8 +8,9 @@
  * 口径（AC4）：本文件不写任何媒体查询块内的自定义属性定义，也不写 hex / px 字面量；
  * 元素级颜色/间距一律 var(--…)，结构量一律由 space / radius / border-width 令牌推导。
  *
- * 注意：旧 web/src/styles.css（三代视觉叠加）本卡不动，由 T11 收口；它在 main.tsx 里
- * 最后引入，因此旧页面视觉不变。等 T11 删掉旧样式层，下面的画布与氛围光自动生效。
+ * 画布的唯一来源：删掉旧 web/src/styles.css（三代视觉叠加）后，底色 / 氛围光 / 细网格全部落在
+ * 本文件的 body 层（components.md「视觉语言 v2」：氛围光是「页面固定一层」），
+ * features/** 的页面根节点不再各自铺一层底色。
  */
 
 /* ---- Mantine 变量桥接：让 Mantine 组件内部颜色变量指向令牌 -------------------
@@ -58,12 +59,12 @@ html:root[data-theme] {
   --ui-glass-highlight: color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
 
-/* color-scheme 单独放同级选择器：亮色规则在后面，靠顺序覆写即可 */
+/* color-scheme 单独放同级选择器；写成 html:root[…] 与上面 Mantine 桥接同写法，也不与 tokens.css 同名 */
 html[data-theme] {
   color-scheme: dark;
 }
 
-html[data-theme='light'] {
+html:root[data-theme='light'] {
   color-scheme: light;
 }
 
@@ -84,7 +85,9 @@ body {
   margin: 0;
   min-height: 100%;
   color: var(--text-primary);
-  /* 氛围光（左上品牌蓝 / 右上信息青）+ 细网格，全部由令牌 color-mix 推导 */
+  /* isolation：让 body 成层叠上下文，负 z-index 的网格层才会画在画布之上、内容之下 */
+  isolation: isolate;
+  /* 氛围光（左上品牌蓝 / 右上信息青），全部由令牌 color-mix 推导 */
   background-color: var(--surface-canvas);
   background-image:
     radial-gradient(
@@ -96,7 +99,18 @@ body {
       closest-side at 96% -6%,
       color-mix(in srgb, var(--feedback-info) 12%, transparent),
       transparent
-    ),
+    );
+  background-attachment: fixed;
+}
+
+/* ---- 细网格（视觉语言 v2：56px 网格 + 顶部居中径向遮罩衰减，衰减后下半部分回到纯画布色）-- */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
     repeating-linear-gradient(
       to right,
       color-mix(in srgb, var(--border-subtle) 38%, transparent) 0,
@@ -111,7 +125,8 @@ body {
       transparent var(--border-width),
       transparent var(--ui-grid-cell)
     );
-  background-attachment: fixed;
+  /* 遮罩是 0/1 的 alpha 通道，与主题无关，因此用 rgb() 而非令牌 */
+  mask-image: radial-gradient(120% 70% at 50% 0%, rgb(0 0 0) 0%, rgb(0 0 0) 30%, transparent 68%);
 }
 
 *,

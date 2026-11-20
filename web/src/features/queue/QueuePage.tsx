@@ -121,6 +121,7 @@ export function QueuePage() {
                   status={task.status}
                   priority={task.priority}
                   attempts={task.attempt}
+                  maxAttempts={task.max_attempts}
                   updatedAt={timeOf(task.update_time)}
                   ariaLabel={`${task.title}（${group.projectId}）`}
                   onClick={() => navigate(detailPath(task))}

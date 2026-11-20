@@ -1,13 +1,14 @@
 # echuan web
 
-驿传平台的 React + Vite 前端（任务-15：三页面与决策交互）。
+驿传平台的 React + Vite 前端。8 屏 + 壳层由 `src/features/*` 承载，组件层 `src/ui`、令牌层 `src/theme`。
 
 ## 目录
 
 - `src/api` — 同源请求层（X-Actor / If-Match / 统一错误体）与契约类型。
 - `src/hooks` — 5s 轮询封装 `usePolling`（写操作后立即补拉）、产品名称。
-- `src/components` — 布局、面包屑、抽屉、弹窗、Markdown 安全渲染、详情与动作组件。
-- `src/pages` — 产品列表 / 项目列表 / 任务看板；所有跳转只靠点击，不要求手输 ID。
+- `src/ui` — 21 个自有组件（唯一允许 import `@mantine/core` 的层）；`src/theme` — 令牌层 + 元素级底座。
+- `src/features/*` — 8 屏（board / task-detail / attachment-preview / inbox / queue / products / projects / workers）+ shell。
+- `src/components` — 上一代页面组件（已无引用，但不在 T11 的删除白名单里，留给后续卡）；旧 `src/pages/*` 已于 T11 删除。
 
 Markdown（需求/方案/报告正文）由 `marked` 解析、`DOMPurify` 净化后渲染。
 
@@ -47,17 +48,18 @@ Markdown（需求/方案/报告正文）由 `marked` 解析、`DOMPurify` 净化
   页头如实显示「自动刷新已关闭」。
 - **移动端 M1**：列宽 `min(86vw, 320)`、`scroll-snap-type: x mandatory`、列头 sticky，
   看板条上有「第 N / 7 列 · <status>」指示器；列表失败保留上次数据 + `features/shell/ErrorBar` 错误条。
-- **六态**：`default / empty / loading / error / collapsed / long-list`，
-  三视口 × 六态的自检与截图用 `scripts/board-shots.mjs`（见文末「看板自检」）。
+- **六态**：`default / empty / loading / error / collapsed / long-list`；
+  可复跑的自动化门禁是 `scripts/ui-verify.mjs --viewports`（见文末「三视口移动端回归」），
+  逐屏截图对照由当次任务按需跑一次性脚本，不入库（T11 已退役 `board-shots / task-detail-shots`）。
 
-分层红线（不变）：`src/features/**` 与 `src/pages/**` 只能 import `src/ui`、`src/theme`、`src/api`、
+分层红线（不变）：`src/features/**` 只能 import `src/ui`、`src/theme`、`src/api`、
 `src/hooks`，不得直接 `import '@mantine/core'`。唯一例外是应用入口 `src/main.tsx`：它用
 `<AppShell>` 提供 Mantine 的 AppShell 安全上下文（`ui/SidebarNav` 内部是 `AppShell.Navbar`，
 Mantine 要求必须在 `<AppShell>` 里），三形态与几何仍全部由 `src/features/shell` 决定。
 
 ## 列表页（`src/features/products`、`projects`、`workers`，T9）
 
-产品 / 项目 / 执行节点三张列表页已从旧 `src/pages/*` 迁到 `src/features/*`，形态统一：
+产品 / 项目 / 执行节点三张列表页在 `src/features/*`（旧 `src/pages/*` 已于 T11 整体删除），形态统一：
 
 - **结构**：页头（标题 + 一句计数说明 + 该屏动作）→ `ui/DataTable` 卡片。列定义照 `design/screens/<screen>.md`：
   产品（产品名 + `product_id` 副标题 / 仓库 mono / 项目数 / 查看项目）、
@@ -169,36 +171,33 @@ node scripts/gen-tokens.mjs && git diff --exit-code src/theme/
 ECHUAN_UI_BASE=http://127.0.0.1:18720 CHROME_CDP=http://127.0.0.1:19222 node scripts/ui-verify.mjs
 ```
 
-## 看板自检：三视口 × 六态（CDP + 请求拦截）
+## 样式债门禁（`scripts/style-debt.mjs`，T11）
 
-`scripts/board-shots.mjs` 用同一个 CDP 思路（原生 WebSocket，无 npm 依赖）做两件事：
-**给 `features/board` 的六态各拍一张 1440/1024/390 截图**，并**量可量化指标**判 PASS/FAIL。
-
-- 被测页面：`web/dist` 的静态托管（先 `pnpm build`；静态托管没有后端，脚本用 CDP `Fetch`
-  拦截伪造 `/v1/projects` 与 `/v1/tasks`，不改后端、也不写死真实数据）
-- 六态怎么造：`default` 12 个任务（2/2/2/2/2/1/1）· `empty` 返回 `items: []` ·
-  `loading` `/v1/tasks` 永不响应（停在 SkeletonCard）· `error` 先成功再让 15s 自动刷新那笔 500
-  （保留上次数据 + 错误条）· `collapsed` 真点列头折叠 → **刷新页面** → 验证粘性 ·
-  `long-list` 每列 9 张卡（列内滚动 + 列头 sticky）
-- 断言口径：7 列 / 展开列 280 / 折叠列 56 / 计数与数据条数一致 / 列头 sticky /
-  文档无横纵溢出 / 移动端 `scrollWidth > clientWidth`、最后一列右边界 ≤ 视口 + 1、
-  列宽 ≥ `min(86vw, 320)`、`scroll-snap` / 自动刷新一轮后滚动位置与输入焦点不变
+旧视觉层（`src/styles.css` 2,613 行）与旧页面（`src/pages/*.tsx`）已在 T11 删除，
+「样式债出清」不再靠 review 时的肉眼判断，而是落成可复跑的门禁，并**串进 `make web`**（在
+`pnpm --dir web build` 之前跑，任一指标不达标即非 0 退出，构建不会产出新产物）：
 
 ```bash
-# 1) 构建产物 + 静态托管到 :4191（任选一种静态服务器，必须与浏览器可达）
-pnpm build
-docker run -d --name echuan-preview-t5 -p 127.0.0.1:4191:80 \
-  -v "$PWD/web/dist:/www:ro" busybox:latest httpd -f -p 80 -h /www
-
-# 2) 跑自检（ECHUAN_CDP_WS 是浏览器级 CDP WebSocket，按本地浏览器环境填写）
-ECHUAN_CDP_WS='ws://127.0.0.1:3010?token=<token>' \
-ECHUAN_BOARD_URL='http://127.0.0.1:4191/' \
-node scripts/board-shots.mjs
+node web/scripts/style-debt.mjs                          # 6 项指标 + 阈值判定
+STYLE_DEBT_UNUSED_MAX=0 node web/scripts/style-debt.mjs  # 覆盖「未引用类名占比」阈值，演示失败路径
 ```
 
-环境变量：`ECHUAN_CDP_WS`（必需）· `ECHUAN_BOARD_URL`（默认 `http://127.0.0.1:4191/`）·
-`ECHUAN_SHOT_DIR`（默认仓库根 `.shots/`，截图不入库）· `ECHUAN_ONLY`（只跑指定用例，
-如 `mobile:collapsed,desktop:error`）。退出码：0 全过 / 1 有断言失败 / 2 用法或环境错误。
+| # | 指标 | 口径 | 阈值 |
+|---|---|---|---|
+| ① | 未引用类名占比 | 扫描面 `src/**/*.css` 里定义的类名，在 `src/**/*.{ts,tsx}` + `index.html` 中「出现过」即算被引用（动态拼接可覆盖，偏宽松）；`mantine-*` 是组件库类名，不计入分母 | **< 20%** |
+| ② | 重复定义选择器 | 同一层叠上下文（顶层，或同一个 `@media` 块）内同一条选择器出现 > 1 次 | **= 0** |
+| ③ | 令牌层口径 | 顶层 `:root` 规则数 / 令牌层（`theme/*.css`）在 `@media` 内声明自定义属性的条数；组件/页面自己按断点调局部变量（`--button-height` / `--bp-column-w`）不算令牌覆写，单列展示 | **:root = 1**、**媒体查询内令牌覆写 = 0** |
+| ④ | 全局样式层行数 | `theme/*.css` 物理行数之和（页面级底座；`ui/ui.css` 与 `features/*/*.css` 作组件层/页面层单列展示，不计入本门禁） | **≤ 300 行** |
+| ⑤ | 断点套数 | 全部 `@media` 断点值去重后必须只剩一套：`47.99em`（tokens `breakpoint.sm` 768）与 `63.99em`（`md` 1024） | **1 套** |
+| ⑥ | 死类子系统 | `.board-column* / .row-* / .notice-* / .state-panel / .spinner` 在扫描面里的命中数 | **= 0** |
+
+画布（暗底 + 氛围光 + 细网格）只有一处来源：`src/theme/base.css` 的 `body` / `body::before`。
+各 `features/*` 页面根节点不再自绘底色（那层是当年为了盖住旧 `styles.css` 的浅色 body 才加的），
+细网格按 `design/components.md`「顶部居中径向遮罩衰减」实现，页面下半部分回到纯画布色。
+
+一次性截图脚本（`board-shots.mjs` / `task-detail-shots.mjs` / `ui-shell-check.mjs` /
+`ui-selfcheck-product-drawer.mjs`）已在 T11 退役：它们各自带一份 CDP 实现与一份 mock 数据，
+真正的门禁只剩 `ui-verify.mjs --viewports`（断言）与当次任务按需写的临时截图脚本（不入库）。
 
 ## 移动端三条专项回归：三视口（M1 / M2 / M3 + 通用项）
 

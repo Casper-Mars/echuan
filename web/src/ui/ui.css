@@ -474,10 +474,6 @@
   font-size: var(--text-small-size);
 }
 
-.ui-select-field .ui-select-field__option {
-  font-size: var(--text-small-size);
-}
-
 /* ===== Alert ============================================================ */
 .ui-alert.ui-alert {
   align-items: flex-start;
@@ -752,7 +748,6 @@
   background-color: var(--surface-overlay);
 }
 
-.ui-segmented .ui-segmented__label,
 .ui-segmented label {
   min-height: var(--ui-control-height-sm);
   padding-inline: var(--space-4);

@@ -6,9 +6,9 @@
  *   * 媒体查询里只能用 em 字面量：断点 768 = 47.99em（design/tokens.json 的 breakpoint.sm）。
  */
 
-/* ===== 页面骨架（自绘画布） ==============================================
- * 与 features/inbox 同一口径：旧 styles.css（T11 才删）把 body 刷成浅色渐变，
- * 而验收基准是暗色 refs，所以列表页自己铺满内容区、自己画 canvas。
+/* ===== 页面骨架 =========================================================
+ * 与 features/inbox 同一口径：底色 / 氛围光 / 细网格由 theme/base.css 的 body 层提供，
+ * 页面根节点不自绘 canvas。
  */
 .qx {
   display: flex;
@@ -16,19 +16,6 @@
   gap: var(--space-5);
   padding: var(--space-6);
   margin: calc(var(--space-6) * -1);
-  background-color: var(--surface-canvas);
-  background-image:
-    radial-gradient(
-      closest-side at 12% -12%,
-      color-mix(in srgb, var(--action-primary) 18%, transparent),
-      transparent
-    ),
-    radial-gradient(
-      closest-side at 96% -6%,
-      color-mix(in srgb, var(--feedback-info) 12%, transparent),
-      transparent
-    );
-  background-repeat: no-repeat;
   min-block-size: calc(100dvh - var(--space-9) - var(--space-4) - var(--border-width));
 }
 

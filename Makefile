@@ -50,9 +50,12 @@ fmt:
 	gofmt -w .
 
 ## web: 构建前端并同步到 internal/web/dist（前端源码位于 web/）
-## 构建内含体积门禁（web/scripts/check-size.mjs）：JS gzip 超 344,056 B 即非 0 退出
+## 构建前跑样式债门禁（web/scripts/style-debt.mjs）：未引用类名 ≥20% / 重复选择器 >0 /
+##   顶层 :root ≠1 / 媒体查询内令牌覆写 >0 / 全局样式层 >300 行 / 断点不止 1 套 / 死类子系统非空 → 非 0 退出
+## 构建内含体积门禁（web/scripts/check-size.mjs）：JS gzip 超 344,056 B 即非 0 退出，并打印 JS/CSS 的 raw 与 gzip
 web:
 	@if [ -f web/package.json ]; then \
+		node web/scripts/style-debt.mjs && \
 		pnpm --dir web build && rm -rf internal/web/dist && cp -r web/dist internal/web/dist && echo "前端产物已同步到 internal/web/dist"; \
 	else \
 		echo "web/ 缺少 package.json，保留 internal/web/dist 现有产物"; \

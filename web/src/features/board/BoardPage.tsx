@@ -176,6 +176,7 @@ export function BoardPage() {
                 status={task.status}
                 priority={task.priority}
                 attempts={task.attempt}
+                maxAttempts={task.max_attempts}
                 updatedAt={timeOf(task.update_time)}
                 // design/screens/board.md default 态：「P60 待审卡片高亮描边」——
                 // in_review 列首卡（本列最高优先级）借 TaskCard 的 focus 变体做强调，不是「当前打开的任务」。
