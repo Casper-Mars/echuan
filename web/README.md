@@ -199,3 +199,62 @@ node scripts/board-shots.mjs
 环境变量：`ECHUAN_CDP_WS`（必需）· `ECHUAN_BOARD_URL`（默认 `http://127.0.0.1:4191/`）·
 `ECHUAN_SHOT_DIR`（默认仓库根 `.shots/`，截图不入库）· `ECHUAN_ONLY`（只跑指定用例，
 如 `mobile:collapsed,desktop:error`）。退出码：0 全过 / 1 有断言失败 / 2 用法或环境错误。
+
+## 移动端三条专项回归：三视口（M1 / M2 / M3 + 通用项）
+
+`scripts/ui-verify.mjs --viewports` 是**同一个脚本**的三视口模式：一条命令把「移动端好用」跑成断言，
+一次覆盖 1440×900 / 834×1112 / 390×844，逐条打印 `PASS/FAIL`，**任一失败退出码 1**。数据全部由
+请求拦截伪造（`/v1/*` 本地应答，静态托管没有后端），不打真实服务、不改后端、不落任何文件。
+
+```bash
+# 1) 产物 + 静态托管（静态托管没有后端，`/v1/*` 由脚本拦截伪造；重启无需重跑 build，bind mount 生效）
+pnpm build
+docker run -d --name echuan-preview-t10 -p 127.0.0.1:4198:80 \
+  -v "$PWD/web/dist:/www:ro" busybox:latest httpd -f -p 80 -h /www
+
+# 2) 一次跑完三视口（默认视口就是 1440x900,834x1112,390x844）
+node scripts/ui-verify.mjs --viewports 1440x900,834x1112,390x844
+# 等价的默认写法：node scripts/ui-verify.mjs --viewports
+# 只跑一条：node scripts/ui-verify.mjs --viewports 390x844
+```
+
+断言口径（每条都带原始数值，失败行会枚举不达标项）：
+
+| 组 | 断言 |
+|---|---|
+| M1 横向切列 | 看板容器 `scrollWidth > clientWidth`；列宽（<768 `min(86vw,320)`，≥768 桌面 280）；列内卡片栈滚到底后列头 `top` 不变（sticky）；滚到最右最后一列 `right ≤ 视口宽 + 1` |
+| M2 读附件 | 详情深链 → 点附件行 → `[data-testid=attachment-preview]` 内出现 `[data-testid=markdown-viewer]`；`browser.pages()` 不增（不新开标签）；正文 `clientHeight > 0` 且文本命中 |
+| M3 推进状态 | `in_review` 下评审区可见（驳回/通过按钮都在）；驳回不带意见被就地拦下且 `POST /v1/tasks/decide` 计数 0；填意见 → 二次确认 → 恰好 1 次 `POST /v1/tasks/decide` |
+| 通用项 | `document.scrollWidth === clientWidth`（无横向溢出）；正文容器 `fontSize ≥ 15px`；可点元素尺寸**按断点判**：`<768` **所有**可点元素 `boundingBox ≥ 44×44`（触控口径，逐项枚举不达标项）；`≥768` 按 `design/components.md` 的控件基线（`ui/Button` md 36 / sm 32、`ui/IconButton` 40、`ui/AttachmentRow` 44、`ui/TabBar` 44），**不判 44** |
+
+### 可点元素的判据为什么分断点
+
+计划里 AC 的原文是「所有可点元素 boundingBox ≥44×44」，这句出自**触控目标**语境（`design/flows.md` F4-3
+「触控 ≥44×44」+ `design/components.md §ui/Button`「md = 高 36（桌面）/ 44（移动）」）。桌面/平板是鼠标口径，
+36 / 32 是设计明确规定的尺寸，硬套 44 会把**设计正确**的界面判成红，门禁随即失去意义。所以脚本按断点判：
+`<768` 一律 44（真实触控尺寸），`≥768` 只对设计规定了尺寸的组件组判基线；设计没规定尺寸的元素
+（面包屑链接、Mantine 关闭键等）在 `≥768` 只统计、不计入门禁，逐项列在 `PASS` 行的 detail 里。
+
+移动断点的 44 兜底落在两处纯尺寸声明里（`@media (max-width: 47.99em)` 内，不动颜色 / 间距 / 结构 / 令牌）：
+`src/ui/ui.css`（`ui/Button` md+sm 的 `min-height`、`ui/SelectField` 输入框、`ui/BoardColumn` 列头按钮、
+`ui/Segmented` 的 control+label）与 `src/features/shell/shell.css`（面包屑链接 `min-width/min-height`）。
+`ui/Button` 的高度来自行内 `--button-height`（行内变量压过类选择器），所以兜的是命中区 `min-height`，不改变量本身。
+
+环境变量（都不指向仓库内路径；token 是本机一次性凭证，不入库）：
+
+- `ECHUAN_UI_BASE` — 被测静态站点，默认 `http://host.docker.internal:4198`（浏览器在容器里，
+  `127.0.0.1` 指浏览器自己，所以用 `host.docker.internal`）
+- `DSH_BROWSER_CDP_URL` — 浏览器级 ws 端点（含 token），给了就不再读 token 文件
+- `ECHUAN_BROWSER_TOKEN_FILE` — browserless token 文件，默认 `/workspace/.agent-env/echuan/browser-token`，
+  端点拼成 `ws://host.docker.internal:3010?token=<token>`
+- `ECHUAN_BROWSER_TOOLS` — `puppeteer-core` 所在目录，默认 `/workspace/.agent-env/browser-tools`
+  （**刻意不写进 `package.json`**：浏览器驱动属于 agent 侧工具，不进前端依赖与 lock）
+
+失败传播：把任意断言用的选择器改坏（例：`.ui-task-card__title` → `.ui-task-card__title-BROKEN`），
+脚本会打印 `FAIL` 行并以退出码 1 结束，不会静默通过；还原后回到 `48/48`、退出码 0。
+
+> 首次落脚本时的扫描结论（已修）：`ui/Button` 行内 `--button-height` 压过 `ui.css` 的移动媒体规则，
+> 移动端 `md` 仍是 36（与设计「44（移动）」冲突）；同类还有 `ui/SelectField` 36、`ui/BoardColumn`
+> 列头 38.4、`ui/Segmented` 选项 label 32、shell 面包屑链接 26×20.4。已在本卡用上面的移动断点
+> `min-height` 兜底修掉（`ui/**` 与 `features/shell` 各一处纯尺寸声明），三视口现为 48/48。
+
