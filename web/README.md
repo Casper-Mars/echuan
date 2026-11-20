@@ -64,6 +64,30 @@ node scripts/check-size.mjs                         # 用默认阈值复跑
 
 gzip 口径为 Node zlib level 9，与 vite build 打印的 gzip 数值一致。
 
+## 设计令牌层与 ui 封装层（T3 底座）
+
+`design/tokens.json` 是唯一令牌源，代码里不出现第二份视觉常量：
+
+```bash
+node scripts/gen-tokens.mjs            # design/tokens.json → src/theme/tokens.css + src/theme/tokens.ts
+node scripts/gen-tokens.mjs --check    # 只校验产物是否与令牌源一致（漂移即退出码 1）
+node scripts/ui-imports-check.mjs      # 真实打包 src/ui/index.ts，断言 21 个组件全部可 import
+```
+
+- `src/theme/tokens.css`：生成物。暗色即默认（令牌层只有一个根块 = 暗色解析），亮色由
+  `html[data-theme='light']` 覆写同一批变量；`index.html` 静态写 `data-theme="dark"`，首屏不闪白。
+- `src/theme/base.css`：元素级底座 + Mantine 变量桥接 + 由令牌推导的度量（`--ui-*`）。
+- `src/theme/mantine-theme.ts`：令牌 → Mantine theme（字体/字号/间距/圆角/阴影/断点/色阶/变体解析）。
+- `src/theme/color-scheme.ts`：`setThemeMode('light'|'dark')`，落 localStorage 并通知订阅者。
+- `src/ui/**`：21 个封装组件（与 `design/components.md` 总览表一一对应），只从 `src/ui/index.ts` 导出；
+  页面层禁止直接 `import '@mantine/core'`。
+
+令牌产物漂移检测（CI/本地均可）：
+
+```bash
+node scripts/gen-tokens.mjs && git diff --exit-code src/theme/
+```
+
 ## 可选：端到端冒烟（CDP）
 
 `scripts/ui-verify.mjs` 用 headless Chrome 验证路由、面包屑、5s 轮询、抽屉与错误提示。
