@@ -57,7 +57,9 @@ node <kit>/design-kit/scripts/check.mjs design
 
 ## design_ref
 
-- design_ref：`<本卡 design 入库 commit，见紧随其后的回填提交>`
+- design_ref：`032c2ca243dd1229a569ccc9f0bc1a03fed56231`
+
+该 sha 是 **design 物料入库 commit**（`git log --oneline 032c2ca243dd1229a569ccc9f0bc1a03fed56231` = `docs(task-01/design): 入库 Web UI 重做 ADR、技术方案、任务拆分与设计契约 v0.3`）；本任务 PR 的合并 sha 由人工点合并产生、无法预写，因此不在本行记录。
 
 design_ref 指 `design/` 物料入库的仓库 commit：`design/screens/*.md`、`design/tokens.json`、`design/components.md`、`design/flows.md` 与 `design/refs/` 的 240 张截图在该 commit 下可逐字节检出，是后续所有 dev 卡实现与视觉回归的唯一对照源（`git cat-file -e <design_ref>^{commit}` 可解析）。
 

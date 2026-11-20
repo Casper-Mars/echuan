@@ -5,7 +5,7 @@
 - 日期：2026-11-19
 - 输入：ADR-0001 `<docs/decisions/ADR-0001-web-ui-stack.md>`；代码 `<Casper-Mars/echuan@3cdc89e>`
 - 上游：[issue #76](https://github.com/Casper-Mars/echuan/issues/76) + 决策人 2026-11-19 三项范围答复
-- design_ref：`<本卡 design 入库 commit，见紧随其后的回填提交>`（design/ 物料入库 commit；对照图见 design/refs）
+- design_ref：`032c2ca243dd1229a569ccc9f0bc1a03fed56231`（design/ 物料入库 commit；对照图见 design/refs。PR 合并 sha 由人工合并产生，不回写本行）
 
 ## 1 结论
 
