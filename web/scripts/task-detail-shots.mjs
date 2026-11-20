@@ -233,6 +233,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const pausedRequestIds = new Set()
 
 const results = []
+
+/** 两个 CSS 颜色字符串（rgb()/rgba()）的 WCAG 对比度；解析失败返回 null */
+function contrastRatio(foreground, background) {
+  const parse = (value) => {
+    if (!value) return null
+    const m = /rgba?\(([^)]+)\)/.exec(value)
+    if (!m) return null
+    const [r, g, b] = m[1].split(',').map((part) => Number.parseFloat(part.trim()))
+    if ([r, g, b].some((n) => !Number.isFinite(n))) return null
+    const lum = [r, g, b].map((channel) => {
+      const c = channel / 255
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+    })
+    return 0.2126 * lum[0] + 0.7152 * lum[1] + 0.0722 * lum[2]
+  }
+  const a = parse(foreground)
+  const b = parse(background)
+  if (a === null || b === null) return null
+  const [hi, lo] = a >= b ? [a, b] : [b, a]
+  return (hi + 0.05) / (lo + 0.05)
+}
 function check(name, ok, detail = '') {
   results.push({ name, ok, detail })
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`)
@@ -318,6 +339,34 @@ const MEASURE = `(() => {
     select: select ? { tag: select.tagName, name: select.name, readOnly: select.readOnly, value: select.value, role: select.getAttribute('role') } : null,
     materialInputs: document.querySelectorAll('input[name*="material" i]').length,
     notice: text('[data-ui="detail-notice"]'),
+    // 抽屉背后的看板上下文（AC：桌面/平板「保留看板上下文」）
+    board: (() => {
+      const el = document.querySelector('[data-ui="board"]')
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return {
+        state: el.dataset.boardState ?? null,
+        cards: el.querySelectorAll('.ui-task-card').length,
+        left: Math.round(r.left),
+        width: Math.round(r.width),
+        marker: el.dataset.probeMarker ?? null,
+      }
+    })(),
+    // 关闭键：前景色 / 头部底色 / 图标是否存在 / 命中区
+    close: (() => {
+      const el = document.querySelector('[aria-label="关闭详情"]')
+      if (!el) return null
+      const cs = getComputedStyle(el)
+      const r = el.getBoundingClientRect()
+      const header = document.querySelector('.mantine-Drawer-header')
+      return {
+        color: cs.color,
+        headerBg: header ? getComputedStyle(header).backgroundColor : null,
+        hasIcon: !!el.querySelector('svg path'),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+      }
+    })(),
   }
 })()`
 
@@ -427,6 +476,15 @@ async function runCase(cdp, page, viewport, state, options) {
     await waitFor(cdp, sessionId, `document.querySelector('[data-ui="task-detail"]').dataset.state !== 'loading'`, 15_000, '详情离开 loading')
     await sleep(500)
   }
+  // 抽屉背后的看板先出卡片，再截图（失败由断言兜住，不在这里中断用例）
+  await waitFor(
+    cdp,
+    sessionId,
+    `(document.querySelector('[data-ui="board"]')?.querySelectorAll('.ui-task-card').length ?? 0) > 0`,
+    10_000,
+    '背后看板卡片',
+  ).catch(() => undefined)
+
   // 字体就绪后再截图，避免与 ref 对照时字宽漂移
   await evaluate(cdp, sessionId, 'document.fonts ? document.fonts.ready.then(() => true) : true')
   await sleep(200)
@@ -469,6 +527,28 @@ function assertionsOf(record) {
   const state = record.state
 
   check(`${key} 挂载与状态`, m.state === state, `data-state=${m.state}`)
+
+  // 关闭键：图标存在 + 前景/头部底色对比度（非文本控件下限 3:1）
+  const closeContrast = m.close ? contrastRatio(m.close.color, m.close.headerBg) : null
+  check(
+    `${key} 关闭键可见（对比度 ≥3:1）`,
+    m.close !== null && m.close.hasIcon && closeContrast !== null && closeContrast >= 3,
+    m.close ? `color=${m.close.color} on ${m.close.headerBg} → ${closeContrast?.toFixed(2)}:1，icon=${m.close.hasIcon}，命中区 ${m.close.width}×${m.close.height}` : '找不到关闭键',
+  )
+
+  // 抽屉背后的看板上下文（design/screens/task-detail.md「保留看板上下文」）
+  check(
+    `${key} 看板上下文挂载`,
+    m.board !== null && m.board.state !== null,
+    m.board ? `data-board-state=${m.board.state} 卡片=${m.board.cards} left=${m.board.left} width=${m.board.width}` : '背后无看板',
+  )
+  if (record.viewport.name !== 'mobile') {
+    check(
+      `${key} 抽屉左侧可见看板列与卡片`,
+      m.board !== null && m.board.cards > 0 && m.board.width > 0,
+      m.board ? `卡片=${m.board.cards}，看板宽=${m.board.width}` : '背后无看板',
+    )
+  }
 
   const drawerWidth = m.drawer?.width ?? -1
   if (state === 'loading' && m.state === null) return
@@ -621,11 +701,18 @@ async function reviewProbe(cdp, page, options) {
   const dropdown = await evaluate(
     cdp,
     sessionId,
-    `(() => ({
-      options: Array.from(document.querySelectorAll('[role="option"]')).map((el) => el.textContent.trim()),
-      selected: document.querySelector('#td-review-material')?.value ?? null,
-      selectedOptions: Array.from(document.querySelectorAll('[role="option"][data-combobox-selected], [role="option"][aria-selected="true"]')).map((el) => el.textContent.trim()),
-    }))()`,
+    `(() => {
+      // 只看**可见**的 option：看板筛选（kind/status）的下拉在背后也渲染了 role=option，
+      // 全量 querySelectorAll 会把它们算进来（AC3 的 options 必须只来自本次打开的评审下拉）
+      const visible = Array.from(document.querySelectorAll('[role="option"]')).filter(
+        (el) => el.getClientRects().length > 0 && el.closest('[aria-hidden="true"]') === null,
+      )
+      return {
+        options: visible.map((el) => el.textContent.trim()),
+        selected: document.querySelector('#td-review-material')?.value ?? null,
+        selectedOptions: visible.filter((el) => el.getAttribute('aria-selected') === 'true').map((el) => el.textContent.trim()),
+      }
+    })()`,
   )
   const outputTitles = OUTPUT_ATTACHMENTS.map((item) => item.title)
   check(
@@ -691,6 +778,7 @@ async function conflictProbe(cdp, page, options) {
   await waitFor(cdp, sessionId, `document.querySelector('[data-ui="review"]') !== null`, 20_000, '评审区出现')
   await sleep(500)
   const before = fixture.taskGets
+  await evaluate(cdp, sessionId, `(() => { const b = document.querySelector('[data-ui="board"]'); if (b) b.dataset.probeMarker = 'conflict'; return true })()`)
 
   const submitBox = await evaluate(
     cdp,
@@ -738,6 +826,7 @@ async function conflictProbe(cdp, page, options) {
         metaPresent: !!document.querySelector('[data-ui="detail-meta"]'),
         hash: window.location.hash,
         dialogOpen: !!document.querySelector('.ui-confirm-modal'),
+        boardMarker: document.querySelector('[data-ui="board"]')?.dataset.probeMarker ?? null,
       }
     })()`,
   )
@@ -748,25 +837,95 @@ async function conflictProbe(cdp, page, options) {
     `POST /v1/tasks/decide=${fixture.decidePosts} 次；GET /v1/tasks?id= ${before} → ${fixture.taskGets}`,
   )
   check('AC5 重拉后不整屏转空', after.metaPresent === true, `meta 分区存在=${after.metaPresent}`)
+  check(
+    'AC5 冲突后看板未被重挂',
+    after.boardMarker === 'conflict',
+    `board marker=${after.boardMarker}`,
+  )
 }
 
 /** AC2：深链直达 + 关闭回看板 */
 async function closeProbe(cdp, page, options) {
   const { sessionId } = page
+  const deepUrl = `${options.url}#/projects/${PROJECT_ID}/tasks/${TASK_ID}`
+  const boardUrl = `#/projects/${PROJECT_ID}/tasks`
   await installFetcher(cdp, sessionId, () => 'default', {})
-  await cdp.send('Page.navigate', { url: `${options.url}#/projects/${PROJECT_ID}/tasks/${TASK_ID}` }, sessionId)
+  await cdp.send('Page.navigate', { url: deepUrl }, sessionId)
   await waitFor(cdp, sessionId, `document.querySelector('[data-ui="detail-meta"]') !== null`, 20_000, '深链直达详情')
+  await waitFor(cdp, sessionId, `(document.querySelector('[data-ui="board"]')?.querySelectorAll('.ui-task-card').length ?? 0) > 0`, 10_000, '背后看板卡片')
+
   const deep = await evaluate(
     cdp,
     sessionId,
-    `(() => ({ hash: window.location.hash, title: document.querySelector('.mantine-Drawer-title')?.textContent ?? null, meta: !!document.querySelector('[data-ui="detail-meta"]') }))()`,
+    `(() => {
+      const board = document.querySelector('[data-ui="board"]')
+      board.dataset.probeMarker = 'deep-link'
+      return {
+        hash: window.location.hash,
+        title: document.querySelector('.mantine-Drawer-title')?.textContent ?? null,
+        meta: !!document.querySelector('[data-ui="detail-meta"]'),
+        boardState: board.dataset.boardState ?? null,
+        boardCards: board.querySelectorAll('.ui-task-card').length,
+      }
+    })()`,
   )
-  check('AC2 深链直接打开详情', deep.hash === `#/projects/${PROJECT_ID}/tasks/${TASK_ID}` && deep.meta, `hash=${deep.hash} title="${deep.title}"`)
+  check(
+    'AC2 深链直接打开详情',
+    deep.hash === `#/projects/${PROJECT_ID}/tasks/${TASK_ID}` && deep.meta,
+    `hash=${deep.hash} title="${deep.title}"`,
+  )
+  check(
+    'AC2 深链打开时背后看板已挂载',
+    deep.boardState !== null && deep.boardCards > 0,
+    `data-board-state=${deep.boardState} 卡片=${deep.boardCards}`,
+  )
+
+  // 关闭路径 1：点头部 ×
   await evaluate(cdp, sessionId, `document.querySelector('[aria-label="关闭详情"]').click()`)
-  await waitFor(cdp, sessionId, `!document.querySelector('.mantine-Drawer-content')`, 8000, '抽屉关闭')
+  await waitFor(cdp, sessionId, `!document.querySelector('.mantine-Drawer-content')`, 8000, '抽屉关闭（×）')
   await sleep(400)
-  const closed = await evaluate(cdp, sessionId, `({ hash: window.location.hash, hasBoard: !!document.querySelector('[data-ui="board"]') })`)
-  check('AC2 关闭回看板', closed.hash === `#/projects/${PROJECT_ID}/tasks`, `hash=${closed.hash} 看板挂载=${closed.hasBoard}`)
+  const closed = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const board = document.querySelector('[data-ui="board"]')
+      return {
+        hash: window.location.hash,
+        hasBoard: !!board,
+        marker: board?.dataset.probeMarker ?? null,
+        cards: board ? board.querySelectorAll('.ui-task-card').length : 0,
+      }
+    })()`,
+  )
+  check('AC2 点 × 关闭回看板（hash）', closed.hash === boardUrl, `hash=${closed.hash}`)
+  check(
+    'AC2 关闭后看板未重挂（同一 DOM 节点，不白屏）',
+    closed.marker === 'deep-link' && closed.cards > 0,
+    `marker=${closed.marker} 卡片=${closed.cards}`,
+  )
+
+  // 关闭路径 2：Esc（ui/DetailSheet 的键盘关闭手势）
+  await evaluate(cdp, sessionId, `(() => { window.location.hash = '#/projects/${PROJECT_ID}/tasks/${TASK_ID}'; return true })()`)
+  await waitFor(cdp, sessionId, `document.querySelector('[data-ui="detail-meta"]') !== null`, 10_000, '再次打开详情')
+  await evaluate(cdp, sessionId, `(() => { document.querySelector('[data-ui="board"]').dataset.probeMarker = 'esc-path'; return true })()`)
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId)
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId)
+  await waitFor(cdp, sessionId, `!document.querySelector('.mantine-Drawer-content')`, 8000, '抽屉关闭（Esc）')
+  await sleep(400)
+  const escaped = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const board = document.querySelector('[data-ui="board"]')
+      return { hash: window.location.hash, marker: board?.dataset.probeMarker ?? null, cards: board ? board.querySelectorAll('.ui-task-card').length : 0 }
+    })()`,
+  )
+  check('AC2 按 Esc 关闭回看板（hash）', escaped.hash === boardUrl, `hash=${escaped.hash}`)
+  check(
+    'AC2 Esc 关闭后看板未重挂',
+    escaped.marker === 'esc-path' && escaped.cards > 0,
+    `marker=${escaped.marker} 卡片=${escaped.cards}`,
+  )
 }
 
 /** AC4：移动端底部操作条滚动 300 后仍在视口内 */
