@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { MantineProvider } from '@mantine/core'
+import { AppShell, MantineProvider } from '@mantine/core'
 import { App } from './App'
 // Mantine 底座样式必须在最前面，令牌层与 base.css 才能稳定压过它的默认值
 import '@mantine/core/styles.css'
@@ -30,7 +30,19 @@ function ThemeRoot() {
 
   return (
     <MantineProvider theme={mantineTheme} forceColorScheme={mode} defaultColorScheme="dark">
-      <App />
+      {/*
+        AppShell 只做一件事：提供 Mantine 的 AppShell 安全上下文。
+        ui/SidebarNav 内部是 AppShell.Navbar，Mantine 要求它必须挂在 <AppShell> 里（否则
+        createSafeContext 直接抛错）。而 features/** 禁止 import '@mantine/core'（分层红线 AC7），
+        所以这一层接线只能留在应用入口——三形态、几何与顶栏仍然全由 features/shell 决定。
+      */}
+      <AppShell
+        withBorder={false}
+        padding={0}
+        navbar={{ width: 'var(--ui-layout-sidebar)', breakpoint: 'sm', collapsed: { mobile: true } }}
+      >
+        <App />
+      </AppShell>
     </MantineProvider>
   )
 }

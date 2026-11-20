@@ -1,0 +1,238 @@
+/* features/shell —— 应用外壳（三形态）样式
+ *
+ * 口径（AC7）：本文件只消费 theme 令牌（var(--…)），不出现 hex 与 px 字面量；
+ * 几何量由 --ui-layout-* / --space-* / --border-width 推导（见 theme/base.css）。
+ * 三形态由根节点 data-layout 决定（断点判定在 use-layout.ts，取值来自 theme/tokens.ts），
+ * 因此本文件**不含媒体查询**——断点只有一处来源，CSS 与 JS 不会各写一份。
+ */
+
+.fx-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+/* ui/SidebarNav 内层是 position:fixed 的 AppShell.Navbar，不占文档流，
+ * 所以内容区用 padding-inline-start 让出 240（桌面）/ 64（平板）的宽度。 */
+.fx-shell__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.fx-shell[data-layout='desktop'] .fx-shell__body {
+  padding-inline-start: var(--ui-layout-sidebar);
+}
+
+.fx-shell[data-layout='tablet'] .fx-shell__body {
+  padding-inline-start: var(--ui-layout-rail);
+}
+
+/* ===== 顶栏（面包屑 + 次级动作） ======================================
+ * 高度 60 = space-9(48) + space-4(12)：与 design/refs 三种视口实测的顶栏一致
+ * （board__{desktop,tablet,mobile}__dark__default.png 里 y=0..59 为顶栏、y=60 起为页面；
+ * 旧 styles.css 的 --topbar-h 随旧壳一起退役）。
+ */
+.fx-topbar {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  /* content-box：min-height 只约束内容盒（60），边框独立占一条 border-width → 总高 61，
+     下边界（含边框）落在 y=60，与 design/refs 实测一致（顶栏内容 0..59 + 一条边框，页面自 y=61 起）。
+     用 border-box 会把边框吃进 60，像素边界少一条（Tester 复核项 D6）。 */
+  box-sizing: content-box;
+  align-items: center;
+  gap: var(--space-5);
+  min-height: calc(var(--space-9) + var(--space-4));
+  padding-inline: var(--space-6);
+  border-block-end: var(--border-width) solid var(--border-subtle);
+  background-color: var(--surface-raised);
+}
+
+.fx-crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  white-space: nowrap;
+}
+
+.fx-crumbs__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fx-crumbs__link {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.fx-crumbs__link:hover {
+  color: var(--action-primary-text);
+}
+
+.fx-crumbs__sep {
+  color: var(--text-muted);
+}
+
+.fx-crumbs__current {
+  color: var(--text-primary);
+  font-weight: var(--text-body-strong-weight);
+}
+
+.fx-topbar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-inline-start: auto;
+}
+
+/* ===== 内容区 =========================================================
+ * min-width: 0 + overflow-x: clip 是 AC4（三视口无横向溢出）的静态保证：
+ * 页面里任何宽度算错的内容都收敛在内容区内部，不会把 document 撑宽；
+ * 看板列自身的横向滚动条仍在列容器里（T5）。
+ */
+.fx-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-inline: var(--space-6);
+  padding-block: var(--space-6);
+  overflow-x: clip;
+}
+
+/* ===== 侧栏品牌 / 版本备注 ============================================ */
+.fx-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  color: var(--text-primary);
+  font-weight: var(--text-body-strong-weight);
+}
+
+.fx-brand__mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  inline-size: var(--space-8);
+  block-size: var(--space-8);
+  border-radius: var(--radius-8);
+  background-color: var(--action-primary);
+  color: var(--text-on-action);
+}
+
+.fx-brand__text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 折叠态（平板 64 图标栏）底部的版本备注：design/refs 平板截图里是竖排文字 */
+.fx-sidebar-note {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+.fx-sidebar-note[data-collapsed] {
+  writing-mode: vertical-rl;
+  text-align: center;
+}
+
+/* ===== 错误条骨架（features/shell/ErrorBar） ==========================
+ * 自带表面（D2）：错误条的背景与前景区分开指定、且背景不透明（令牌都是实色 hex），
+ * 因此不依赖宿主页面背景——旧浅色页、详情路由、亮色主题下对比度一致。
+ * 前景/背景配对（暗色令牌实测，见 T4 返工报告）：
+ *   title / message: --text-primary  on --surface-raised
+ *   detail:          --text-muted    on --surface-raised
+ * 选择器用「.fx-error-bar-alert.ui-alert.ui-alert」提到 0,3,0，稳定压过 Mantine 的
+ * light 变体底色（danger 浅底），不依赖样式表顺序。
+ */
+.fx-error-bar-alert.ui-alert.ui-alert {
+  background-color: var(--surface-raised);
+  color: var(--text-primary);
+  border: var(--border-width) solid color-mix(in srgb, var(--feedback-danger) 45%, var(--border-subtle));
+}
+
+.fx-error-bar-alert .mantine-Alert-icon {
+  color: var(--feedback-danger);
+}
+
+.fx-error-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-primary);
+}
+
+.fx-error-bar__title,
+.fx-error-bar__message,
+.fx-error-bar__detail {
+  margin: 0;
+}
+
+.fx-error-bar__title {
+  color: var(--text-primary);
+  font-weight: var(--text-body-strong-weight);
+}
+
+.fx-error-bar__message {
+  color: var(--text-primary);
+}
+
+.fx-error-bar__detail {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* 动作成组（D7）：同一行、同一对齐（起点）、间距走令牌；窄屏才换行 */
+.fx-error-bar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-3);
+  margin-block-start: var(--space-2);
+}
+
+.fx-error-bar__actions > * {
+  flex: 0 0 auto;
+}
+
+.fx-page-error {
+  max-inline-size: var(--ui-layout-sheet);
+}
+
+/* ===== 路由级加载骨架（features/shell/RouteLoading） ================== */
+.fx-route-loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.fx-route-loading__text {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+}
+
+/* ===== 移动「更多」二级层 ============================================== */
+.fx-more {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+}
