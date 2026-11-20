@@ -49,14 +49,21 @@ export function DetailSheet({
           backgroundColor: cssVar('surface-canvas'),
           boxShadow: cssVar('shadow-e3'),
           borderLeft: `${cssVar('border-width')} solid ${cssVar('border-subtle')}`,
+          // T6 修复（D5 同源几何）：Mantine 的 Drawer content 是 block 容器，
+          // body 的 flex:1 不生效 → 正文按内容长高，底部操作条被顶到视口外（1440×900 实测 footer bottom 916）。
+          // 这里把 content 收成定高 flex 列、body 收成可收缩的滚动槽，操作条才会始终钉在抽屉底部。
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
         }),
         header: cssProps({
           backgroundColor: cssVar('surface-raised'),
           borderBottom: `${cssVar('border-width')} solid ${cssVar('border-subtle')}`,
           paddingInline: cssVar('space-5'),
           paddingBlock: cssVar('space-4'),
+          flex: '0 0 auto',
         }),
-        body: cssProps({ padding: 0, height: '100%' }),
+        body: cssProps({ padding: 0, flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }),
         title: cssProps({ fontSize: cssVar('text-h3-size'), fontWeight: cssVar('text-h3-weight') }),
       }}
     >

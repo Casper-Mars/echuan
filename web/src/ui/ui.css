@@ -593,6 +593,17 @@
 
 /* 移动端：抽屉全屏，底部操作条固定 */
 @media (max-width: 47.99em) {
+  /* T6 修复 D5（721–767 档抽屉仍 720 而非全屏）：
+   * `--drawer-size` 由 ui/DetailSheet 写在 style 属性里（Mantine 变量走 inline style），
+   * 媒体块内的普通声明压不过行内值，因此这里必须 !important；
+   * 同时覆盖 width，避免 Mantine 的 `width: var(--drawer-size)` 在同档位残留。
+   * 口径来源：design/screens/task-detail.md「<768 移动全屏 sheet」+ components.md §ui/DetailSheet。 */
+  .ui-detail-sheet .mantine-Drawer-content {
+    --drawer-size: 100% !important;
+    width: 100%;
+    max-width: 100%;
+  }
+
   .ui-detail-sheet__layout {
     min-height: 100%;
   }
