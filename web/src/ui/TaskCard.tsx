@@ -16,7 +16,13 @@ export interface TaskCardProps {
   /** 状态只用于左侧状态色条（状态的文字表达交给 StatusPill，页面按需放在元信息行） */
   status?: string
   priority?: number
+  /**
+   * 尝试次数。给了 `maxAttempts` 时按 design/refs 的「尝试 2/3」呈现；
+   * 单独给 attempts（无上限）时退化为「尝试 2」——两者都没有则整段不出现。
+   */
   attempts?: number
+  /** 尝试上限（`task.max_attempts`）；design/refs 的卡片元信息是「尝试 N/M」 */
+  maxAttempts?: number
   updatedAt?: string
   /** 变体 focus：当前打开的任务（品牌描边） */
   focused?: boolean
@@ -33,6 +39,7 @@ export function TaskCard({
   status,
   priority,
   attempts,
+  maxAttempts,
   updatedAt,
   focused = false,
   ariaLabel,
@@ -58,7 +65,12 @@ export function TaskCard({
         <span className="ui-task-card__meta">
           {kind ? <KindBadge kind={kind} /> : null}
           {priority !== undefined ? <span className="ui-task-card__num">P{priority}</span> : null}
-          {attempts !== undefined ? <span className="ui-task-card__num">尝试 {attempts}</span> : null}
+          {attempts !== undefined ? (
+            <span className="ui-task-card__num">
+              尝试 {attempts}
+              {maxAttempts !== undefined ? `/${maxAttempts}` : ''}
+            </span>
+          ) : null}
           {updatedAt ? <span className="ui-task-card__time">{updatedAt}</span> : null}
         </span>
         {taskId ? (

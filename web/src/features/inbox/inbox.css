@@ -7,14 +7,13 @@
  *     取值来自 design/tokens.json 的 breakpoint.sm（与壳层的移动形态 <768 同一处事实）。
  */
 
-/* ===== 页面骨架（自绘画布） ==============================================
- * 旧 web/src/styles.css（三代视觉叠加，T11 才删）把 body 背景刷成了浅色渐变，
- * 而验收基准是暗色 refs，所以列表页自己铺满内容区、自己画 canvas —— 与 features/board 同一口径。
+/* ===== 页面骨架 =========================================================
+ * 底色 / 氛围光 / 细网格由 theme/base.css 的 body 层统一提供（视觉语言 v2「页面固定一层」），
+ * 页面根节点不自绘 canvas —— 与 features/board、features/queue 同一口径。
  *
  * 高度 = 视口 − 壳层占用（顶栏 = space-9 + space-4 + border，见 shell.css .fx-topbar 的 content-box 口径）；
- * 内容区的上下内边距（space-6，见 shell.css .fx-main）用负 margin 抵掉，改由本文件的 padding 提供，
- * 这样底色能盖住整块内容区（含内边距那一圈）。用 min-block-size 而不是 block-size：
- * 收件箱内容会长于视口（队列区展开），页面要能自然变高并由文档滚动。
+ * 内容区的上下内边距（space-6，见 shell.css .fx-main）用负 margin 抵掉，改由本文件的 padding 提供。
+ * 用 min-block-size 而不是 block-size：收件箱内容会长于视口（队列区展开），页面要能自然变高并由文档滚动。
  */
 .ix {
   display: flex;
@@ -22,20 +21,6 @@
   gap: var(--space-5);
   padding: var(--space-6);
   margin: calc(var(--space-6) * -1);
-  background-color: var(--surface-canvas);
-  /* 氛围光（design/components.md「视觉语言 v2」）：与 theme/base.css 的 body 画法同源 */
-  background-image:
-    radial-gradient(
-      closest-side at 12% -12%,
-      color-mix(in srgb, var(--action-primary) 18%, transparent),
-      transparent
-    ),
-    radial-gradient(
-      closest-side at 96% -6%,
-      color-mix(in srgb, var(--feedback-info) 12%, transparent),
-      transparent
-    );
-  background-repeat: no-repeat;
   min-block-size: calc(100dvh - var(--space-9) - var(--space-4) - var(--border-width));
 }
 

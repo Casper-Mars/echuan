@@ -186,6 +186,7 @@ export function InboxPage() {
                       status={task.status}
                       priority={task.priority}
                       attempts={task.attempt}
+                      maxAttempts={task.max_attempts}
                       updatedAt={timeOf(task.update_time)}
                       // design/refs default 态：待审核首卡（本区最高优先级）品牌描边强调，与看板 in_review 首卡同一口径
                       focused={spec.key === 'review' && index === 0}

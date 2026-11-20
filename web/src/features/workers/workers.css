@@ -6,8 +6,8 @@
  */
 
 /* ===== 页面画布 ==========================================================
- * 与产品 / 项目页同一套画布口径（负 margin 抵掉壳层内边距后自绘暗色底 + 顶部氛围光），
- * 高度 = 视口 − 顶栏（space-9 + space-4 + 一条边框）；移动端再减掉 TabBar。
+ * 与产品 / 项目页同一套口径：底色 / 氛围光 / 细网格由 theme/base.css 的 body 层提供，页面根节点不自绘；
+ * 负 margin 抵掉壳层内边距，高度 = 视口 − 顶栏（space-9 + space-4 + 一条边框）；移动端再减掉 TabBar。
  */
 .wk-page {
   display: flex;
@@ -16,19 +16,6 @@
   padding: var(--space-6);
   margin: calc(var(--space-6) * -1);
   min-block-size: calc(100dvh - var(--space-9) - var(--space-4) - var(--border-width));
-  background-color: var(--surface-canvas);
-  background-image:
-    radial-gradient(
-      closest-side at 12% -12%,
-      color-mix(in srgb, var(--action-primary) 18%, transparent),
-      transparent
-    ),
-    radial-gradient(
-      closest-side at 96% -6%,
-      color-mix(in srgb, var(--feedback-info) 12%, transparent),
-      transparent
-    );
-  background-repeat: no-repeat;
 }
 
 /* ===== 页头：忙碌 / 空闲 / 过期计数 + 刷新 ============================== */

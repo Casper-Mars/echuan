@@ -6,8 +6,6 @@ import { App } from './App'
 import '@mantine/core/styles.css'
 import './theme/tokens.css'
 import './theme/base.css'
-// 旧样式层（三代视觉叠加）：本卡不动，T11 才删；放在最后保证旧页面视觉不变
-import './styles.css'
 import { applyThemeMode, readThemeMode, subscribeThemeMode } from './theme/color-scheme'
 import { mantineTheme } from './theme/mantine-theme'
 import type { ThemeMode } from './theme/tokens'

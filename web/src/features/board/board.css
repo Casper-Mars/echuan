@@ -8,15 +8,14 @@
  */
 
 /* ===== 页面骨架 ==========================================================
- * 看板要「列内滚动、页面不滚」（design/refs：列底贴到内容区底部），并且要自带暗色画布：
- * 旧 web/src/styles.css（三代视觉叠加，T11 才删）把 body 背景刷成了浅色渐变，
- * 而验收基准是暗色 refs，所以看板页自己铺满内容区、自己画 canvas（见 .bp 的 margin 负值与 background）。
+ * 看板要「列内滚动、页面不滚」（design/refs：列底贴到内容区底部）。底色 / 氛围光 / 细网格由
+ * theme/base.css 的 body 层统一提供（视觉语言 v2「页面固定一层」），本文件不自绘 canvas。
  *
  * 高度 = 视口 − 壳层占用：
  *   100dvh − 顶栏（space-9 + space-4 + border，见 shell.css .fx-topbar 的 content-box 口径）
  *          − 移动端底部 TabBar（ui.css .ui-tab-bar__tab 的触控高度 + 一条上边框）
  * 内容区的上下内边距（space-6 × 2，见 shell.css .fx-main）用负 margin 抵掉，改由本文件的 padding 提供，
- * 这样底色能盖住整块内容区（含内边距那一圈），页面边界与 design/refs 一致。
+ * 页面边界与 design/refs 一致。
  */
 .bp {
   display: flex;
@@ -24,21 +23,6 @@
   gap: var(--space-4);
   padding: var(--space-6);
   margin: calc(var(--space-6) * -1);
-  background-color: var(--surface-canvas);
-  /* 氛围光（design/components.md「视觉语言 v2」）：与 theme/base.css 的 body 画法同源；
-     旧 styles.css 的浅色 body 渐变把底座那层盖住了，本卡不动旧样式层（T11 收口），这里自绘一份。 */
-  background-image:
-    radial-gradient(
-      closest-side at 12% -12%,
-      color-mix(in srgb, var(--action-primary) 18%, transparent),
-      transparent
-    ),
-    radial-gradient(
-      closest-side at 96% -6%,
-      color-mix(in srgb, var(--feedback-info) 12%, transparent),
-      transparent
-    );
-  background-repeat: no-repeat;
   block-size: calc(100dvh - var(--space-9) - var(--space-4) - var(--border-width));
   min-block-size: 0;
   /* 展开列宽：280 = space-10(64) × 4 + space-6(24)。折叠列宽不在这里给（ui.css 的 56 竖条） */
