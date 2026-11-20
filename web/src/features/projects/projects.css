@@ -1,0 +1,159 @@
+/* features/projects —— 项目列表样式（design/screens/projects.md + design/refs/projects__*__dark__*.png）
+ *
+ * 口径（验收 grep）：只消费 theme 令牌 var(--…)，文件里不出现 hex 与 px 字面量；
+ * 几何量由 --space-* / --radius-* / --border-width 推导；媒体查询只能用 em 字面量（断点 768 = 48em）。
+ */
+
+/* ===== 页面画布 ==========================================================
+ * 与产品页同一套画布口径（负 margin 抵掉壳层内边距后自绘暗色底 + 顶部氛围光），
+ * 高度 = 视口 − 顶栏（space-9 + space-4 + 一条边框）；移动端再减掉 TabBar。
+ */
+.pj-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-6);
+  margin: calc(var(--space-6) * -1);
+  min-block-size: calc(100dvh - var(--space-9) - var(--space-4) - var(--border-width));
+  background-color: var(--surface-canvas);
+  background-image:
+    radial-gradient(
+      closest-side at 12% -12%,
+      color-mix(in srgb, var(--action-primary) 18%, transparent),
+      transparent
+    ),
+    radial-gradient(
+      closest-side at 96% -6%,
+      color-mix(in srgb, var(--feedback-info) 12%, transparent),
+      transparent
+    );
+  background-repeat: no-repeat;
+}
+
+/* ===== 页头：产品名 + 项目数 + 新建项目 ================================= */
+.pj-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+}
+
+.pj-head__main {
+  min-inline-size: 0;
+}
+
+.pj-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-h1-size);
+  font-weight: var(--text-h1-weight);
+  line-height: var(--text-h1-line-height);
+  letter-spacing: var(--text-h1-letter-spacing);
+}
+
+.pj-sub {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+}
+
+.pj-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* ===== 表格卡片 ========================================================= */
+.pj-card {
+  flex: 0 0 auto;
+  padding: var(--space-5);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-12);
+  background-color: var(--surface-raised);
+  box-shadow: var(--shadow-e1);
+}
+
+.pj-card--skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* ===== 单元格 =========================================================== */
+/* 序号「#1」：design/refs 里是弱化的等宽序号（首列默认加粗，这里按 ref 压回常规字重） */
+.pj-seq {
+  color: var(--text-muted);
+  font-weight: var(--text-small-weight);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 项目名 + project_id（mono 副标题） */
+.pj-name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+.pj-name__title {
+  color: var(--text-primary);
+  font-weight: var(--text-body-strong-weight);
+}
+
+.pj-name__id {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line-height);
+}
+
+.pj-time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ===== 移动端（<768）：表格转卡片行 =====================================
+ * 卡片行本体由 ui/DataTable 的媒体块负责（每格 data-label 字段名）；这里只补外层卡片让位与行底色。
+ */
+@media (max-width: 47.99em) {
+  .pj-page {
+    min-block-size: calc(
+      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - var(--ui-control-height-touch) -
+        var(--border-width)
+    );
+    gap: var(--space-4);
+    padding-block: var(--space-5);
+    padding-inline: var(--space-4);
+  }
+
+  .pj-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .pj-title {
+    font-size: var(--text-h2-size);
+    line-height: var(--text-h2-line-height);
+  }
+
+  .pj-actions {
+    inline-size: 100%;
+  }
+
+  .pj-card {
+    padding: 0;
+    border: 0;
+    background-color: transparent;
+    box-shadow: none;
+  }
+
+  .pj-card .ui-data-table tbody tr {
+    background-color: var(--surface-raised);
+  }
+}

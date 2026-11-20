@@ -5,10 +5,10 @@ import { BoardRedirect } from './features/home/BoardRedirect'
 import { HomeRoute } from './features/home/HomeRoute'
 import { BoardPage } from './features/board/BoardPage'
 import { InboxPage } from './pages/InboxPage'
-import { ProductsPage } from './pages/ProductsPage'
-import { ProjectsPage } from './pages/ProjectsPage'
+import { ProductsPage } from './features/products/ProductsPage'
+import { ProjectsPage } from './features/projects/ProjectsPage'
 import { QueuePage } from './pages/QueuePage'
-import { WorkersPage } from './pages/WorkersPage'
+import { WorkersPage } from './features/workers/WorkersPage'
 
 // 详情是独立路由，按需加载：既让「详情首次打开」有个真实的 loading 态（壳层骨架），
 // 也让首屏 JS 不背详情页的代码。T6 会在这里挂真实的元信息 / 附件 / 评审。

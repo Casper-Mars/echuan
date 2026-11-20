@@ -55,6 +55,28 @@ Markdown（需求/方案/报告正文）由 `marked` 解析、`DOMPurify` 净化
 `<AppShell>` 提供 Mantine 的 AppShell 安全上下文（`ui/SidebarNav` 内部是 `AppShell.Navbar`，
 Mantine 要求必须在 `<AppShell>` 里），三形态与几何仍全部由 `src/features/shell` 决定。
 
+## 列表页（`src/features/products`、`projects`、`workers`，T9）
+
+产品 / 项目 / 执行节点三张列表页已从旧 `src/pages/*` 迁到 `src/features/*`，形态统一：
+
+- **结构**：页头（标题 + 一句计数说明 + 该屏动作）→ `ui/DataTable` 卡片。列定义照 `design/screens/<screen>.md`：
+  产品（产品名 + `product_id` 副标题 / 仓库 mono / 项目数 / 查看项目）、
+  项目（序号 / 名称 + `project_id` / 状态 `ui/StatusPill` / 更新时间 `MM-DD HH:mm` / 打开看板）、
+  执行节点（节点 mono / 状态 / 当前任务 mono / 心跳 / 查看任务）。
+- **状态矩阵**：产品与项目 `default / empty / loading / error`；执行节点多一个 `stale`。
+  `empty` 用 `ui/EmptyState`，`loading` 用 `ui/SkeletonCard`，`error` 用 `ui/Alert`（danger + 重试）。
+  非 default 态下页头不出现「新建」动作（与 `design/refs` 一致）。
+- **心跳过期**：`src/features/workers/WorkersPage` 的 `STALE_AFTER_MS = 90000`（3 个 30s 心跳周期）。
+  过期的行整行淡底（`ui/DataTable` 的 warn-row 变体，行上有 `data-warn`），心跳格换成 `ui/StatusPill`
+  的 danger 徽标并明写「心跳过期」——不只靠颜色表达。
+- **移动端（<768）**：`ui/DataTable` 自带的卡片式媒体块生效，每格 `data-label` 就是字段名（产品 / 仓库 /
+  项目 / 操作 …），页面不靠横向滚动；外层卡片在该断点让位给逐行卡片。
+- **数据**：只用既有接口——`GET /v1/products`（页头产品数与 `project_count`）、
+  `GET /v1/projects`（项目页主数据；产品页另取一次用于项目数精确计数与「按项目状态」筛选）、
+  `GET /v1/workers`。写操作一律不接：新建产品 / 新建项目只展示，关闭重开项目与终止 worker 不出现入口。
+- **分层**：三张页面只 import `src/ui`、`src/api`、`src/hooks`、`src/lib`；样式在各自的 `*.css` 里只消费令牌，
+  没有 hex / px 字面量（`grep -rnE '#[0-9a-fA-F]{3,8}\b|[0-9]+px\b' web/src/features/{products,projects,workers}` 为空）。
+
 ## 开发
 
 ```bash
