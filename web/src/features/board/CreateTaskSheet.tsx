@@ -5,7 +5,7 @@
 // 只做最小创建（类型 / 标题 / 描述），不搬详情里的上下文与依赖编排（详情属 T6）。
 //
 // 分层：只用 ui/ 组件与 api/client；不直接 import Mantine 的包（design/components.md 红线，验收靠 grep）。
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../../api/client'
 import type { TaskKind } from '../../api/types'
 import { KINDS, kindLabel } from '../../lib/labels'
@@ -29,6 +29,9 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
   const [description, setDescription] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  // 同一 JS tick 内连点两次时，busy 这个 state 还没落地（React 批处理），
+  // 只有 ref 是同步可读的——所以「已提交」用 ref 守门，state 只负责 UI 的 loading/禁用。
+  const submittingRef = useRef(false)
 
   // 每次重新打开都是干净表单：残留的标题 / 错误不影响下一次创建。
   useEffect(() => {
@@ -38,10 +41,12 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
     setDescription('')
     setError('')
     setBusy(false)
+    submittingRef.current = false
   }, [opened])
 
   const submit = async () => {
-    if (busy || title.trim() === '') return
+    if (submittingRef.current || title.trim() === '') return
+    submittingRef.current = true
     setBusy(true)
     setError('')
     try {
@@ -55,6 +60,7 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
     } catch (err) {
       setError(err instanceof ApiError || err instanceof Error ? err.message : String(err))
     } finally {
+      submittingRef.current = false
       setBusy(false)
     }
   }

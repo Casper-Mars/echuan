@@ -45,7 +45,8 @@
   --bp-column-w: calc(var(--space-10) * 4 + var(--space-6));
 }
 
-/* 移动端：让出底部 TabBar（触控高度 + 一条上边框），左右内边距收窄到 16（design/refs 移动端 x=16 起排） */
+/* 移动端：让出底部 TabBar（触控高度 + 一条上边框）；左右内边距收窄到 12（space-4），
+ * 列间距同步收窄到 8（space-3）——两者都是 design/refs 移动端的像素实测值（列 1 左边 12、列间距 8）。 */
 @media (max-width: 47.99em) {
   .bp {
     block-size: calc(
@@ -55,7 +56,7 @@
     /* 负 margin 必须抵满 shell 的 24，否则收窄内边距只会把整块往里缩；左右内边距再单独收窄到 16 */
     margin: calc(var(--space-6) * -1);
     padding-block: var(--space-6);
-    padding-inline: var(--space-5);
+    padding-inline: var(--space-4);
     /* 移动端列宽 min(86vw, 320)，320 = space-10(64) × 5（design/screens/board.md「断点」） */
     --bp-column-w: min(86vw, calc(var(--space-10) * 5));
   }
@@ -121,6 +122,9 @@
 @media (max-width: 47.99em) {
   .bp-head {
     align-items: stretch;
+    /* 页头两行（标题+元信息 / 筛选+新建）之间的行距收一档：移动页头高度预算 168（ref 实测），
+     * 12 会让列顶比 ref 低 4（实测），8 对齐。 */
+    gap: var(--space-3);
   }
 
   .bp-head__actions {
@@ -133,10 +137,27 @@
     inline-size: auto;
     min-inline-size: 0;
   }
+
+  /* 筛选控件的标签只在移动端收起（design/refs 移动页头没有可见标签，页头高 168）；
+   * 桌面/平板保留可见标签：ref 那两档的列顶是 190，正是带标签时的高度，去掉会引入新偏差。
+   * 用 clip-path 而不是 display:none —— 保留 <label for> 的可访问名（读屏仍念「类型」「状态」）。 */
+  .bp-head__actions .ui-select-field label {
+    position: absolute;
+    overflow: hidden;
+    inline-size: var(--border-width);
+    block-size: var(--border-width);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
 /* ===== 错误条 ============================================================ */
 .bp-error {
+  flex: 0 0 auto;
+}
+
+/* ===== 未知状态提示（只在数据异常时出现，正常六态截图里不可见） ========== */
+.bp-notice {
   flex: 0 0 auto;
 }
 
@@ -185,6 +206,10 @@
   overflow-y: hidden;
   scrollbar-width: none;
   overscroll-behavior-x: contain;
+  /* 列底留白（design/refs 像素实测：列底下边框 → 视口底 55）：
+   * 内容区下内边距 space-6(24) 已在 .bp 里给，这里再补列底呼吸空间 = space-7 − border×2（30），
+   * 列自身还有 1px 下边框落在 845，所以边界像素到视口底正好 55。 */
+  padding-block-end: calc(var(--space-7) - var(--border-width) * 2);
 }
 
 .bp-board::-webkit-scrollbar {
@@ -219,6 +244,9 @@
 @media (max-width: 47.99em) {
   .bp-board {
     scroll-snap-type: x mandatory;
+    /* 列间距 8（ref 像素实测）；列底呼吸空间 space-8(40)：24 + 40 + 列下边框 1 → 边界像素到 TabBar 顶 65 */
+    gap: var(--space-3);
+    padding-block-end: var(--space-8);
   }
 
   .bp-col {

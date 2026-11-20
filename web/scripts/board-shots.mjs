@@ -24,7 +24,7 @@
 //   long-list  每列 9 张卡 → 列内滚动 + 列头 sticky
 //
 // 退出码：0 全部通过；1 有断言失败；2 环境/用法错误。
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -46,6 +46,9 @@ const COLUMNS = ['pending', 'ready', 'in_progress', 'in_review', 'done', 'failed
 const COLLAPSED_KEY = 'echuan:board:collapsed'
 
 const AUTO_REFRESH_MS = 15_000
+
+/** design/refs 里移动端 TabBar 高度（设计口径 57；实现侧的 45 是已知遗留 D4，与看板几何无关） */
+const REF_MOBILE_TABBAR = 57
 
 const PROJECT = {
   project_id: 'echuan-1',
@@ -109,6 +112,11 @@ class CDP {
     this.seq = 0
     this.pending = new Map()
     this.listeners = new Map()
+    // 连接意外断开：把所有挂起的 CDP 命令 reject 掉，脚本以明确错误退出而不是静默挂死
+    ws.addEventListener('close', () => {
+      for (const { reject } of this.pending.values()) reject(new Error('CDP 连接已关闭'))
+      this.pending.clear()
+    })
     ws.addEventListener('message', (event) => {
       const msg = JSON.parse(event.data)
       if (msg.id && this.pending.has(msg.id)) {
@@ -138,13 +146,28 @@ class CDP {
     const payload = { id, method, params }
     if (sessionId) payload.sessionId = sessionId
     this.ws.send(JSON.stringify(payload))
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }))
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error(`CDP 命令超时（20s）：${method}`))
+      }, 20_000)
+      const settle = (fn) => (value) => {
+        clearTimeout(timer)
+        fn(value)
+      }
+      this.pending.set(id, { resolve: settle(resolve), reject: settle(reject) })
+    })
   }
 
   on(method, handler, sessionId) {
     const key = `${sessionId ?? ''}:${method}`
     if (!this.listeners.has(key)) this.listeners.set(key, [])
     this.listeners.get(key).push(handler)
+  }
+
+  /** 复用同一个 tab 时，每个用例开始前清掉上一轮的监听（否则拦截器会叠加） */
+  clearListeners() {
+    this.listeners.clear()
   }
 
   close() {
@@ -158,21 +181,155 @@ class CDP {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/** 被 Fetch 拦下但还没响应的请求 id：loading 用例故意挂住它，下一用例开头必须收掉 */
+const pausedRequestIds = new Set()
+
 const results = []
 function check(name, ok, detail = '') {
   results.push({ name, ok, detail })
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`)
 }
 
+
+/**
+ * 截图像素边界分析（在本页 canvas 里跑，与 design/refs 用同一套算法）：
+ *   * 列左右边框是贯穿列高的 1px 亮线（lum >= 25），卡片边框只有卡片那么高 → 只认长亮线；
+ *   * 列顶/列底由亮线段的起止给出（受 12 圆角影响，两端各缺约一个圆角，ref 与实现同等裁剪，比较差值即可）；
+ *   * bottomAnchor = 桌面视口底 / 移动 TabBar 顶，用来算「列底留白」。
+ */
+async function analyzeShot({ url, bottomAnchor, minX }) {
+  const img = new Image()
+  img.src = url
+  await img.decode()
+  const canvas = document.createElement('canvas')
+  canvas.width = img.naturalWidth
+  canvas.height = img.naturalHeight
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  ctx.drawImage(img, 0, 0)
+  const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const lum = (x, y) => {
+    const i = (y * width + x) * 4
+    return 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]
+  }
+  const lines = []
+  for (let x = 0; x < width; x += 1) {
+    let best = { len: 0, from: -1, to: -1 }
+    let start = null
+    for (let y = 0; y <= height; y += 1) {
+      const on = y < height && lum(x, y) >= 25
+      if (on && start === null) start = y
+      if (!on && start !== null) {
+        if (y - start > best.len) best = { len: y - start, from: start, to: y - 1 }
+        start = null
+      }
+    }
+    if (x >= minX && best.len > Math.max(400, 0.5 * height)) lines.push({ x, ...best })
+  }
+  const groups = []
+  for (const line of lines) {
+    const last = groups[groups.length - 1]
+    if (last && line.x - last.x2 <= 1) {
+      last.x2 = line.x
+      last.to = Math.max(last.to, line.to)
+      last.from = Math.min(last.from, line.from)
+    } else groups.push({ x1: line.x, x2: line.x, from: line.from, to: line.to })
+  }
+  const columns = []
+  for (let i = 0; i < groups.length; i += 1) {
+    const left = groups[i]
+    const right = groups[i + 1]
+    if (!right) break
+    const columnWidth = right.x1 - left.x1 + 1
+    if (columnWidth < 100) continue
+    columns.push({
+      left: left.x1,
+      right: right.x2,
+      width: columnWidth,
+      top: Math.min(left.from, right.from),
+      bottom: Math.max(left.to, right.to) + 1,
+    })
+    i += 1
+  }
+  const first = columns[0]
+  const gaps = []
+  for (let i = 1; i < columns.length; i += 1) gaps.push(columns[i].left - columns[i - 1].right - 1)
+
+  // 横向扫描：取列底上方 30px（卡片之下的空白带），列左右边框是孤立的 1px 亮线
+  let rowLines = []
+  if (first) {
+    const scanY = first.bottom - 30
+    let start = null
+    for (let x = 0; x <= width; x += 1) {
+      const on = x < width && x >= minX && lum(x, scanY) >= 25
+      if (on && start === null) start = x
+      if (!on && start !== null) {
+        rowLines.push(Math.round((start + x - 1) / 2))
+        start = null
+      }
+    }
+  }
+  const rowCols = []
+  for (let i = 0; i + 1 < rowLines.length; i += 2) {
+    const l = rowLines[i]
+    const r = rowLines[i + 1]
+    if (r - l + 1 >= 100) rowCols.push({ left: l, right: r, width: r - l + 1 })
+  }
+  const rowFirst = rowCols[0]
+  // 间距按相邻边框线算（列 1 右边框 → 列 2 左边框），不依赖两侧列都完整可见
+  const rowGaps = []
+  for (let i = 2; i <= rowLines.length - 1; i += 2) {
+    const gap = rowLines[i] - rowLines[i - 1] - 1
+    if (gap >= 0 && gap < 100) rowGaps.push(gap)
+  }
+
+  return {
+    rowCols: rowCols.length,
+    rowColLeft: rowFirst ? rowFirst.left : null,
+    rowColWidth: rowFirst ? rowFirst.width : null,
+    rowColGap: rowGaps.length ? rowGaps[0] : null,
+    width,
+    height,
+    columns: columns.length,
+    colLeft: first ? first.left : null,
+    colWidth: first ? first.width : null,
+    colGap: gaps.length ? gaps[0] : null,
+    colTop: first ? first.top : null,
+    colBottom: first ? first.bottom : null,
+    bottomGap: first ? Math.round(bottomAnchor) - first.bottom : null,
+  }
+}
+
+/** 图片 → 像素几何（refs 与我的截图走同一个函数） */
+async function pixelMetrics(cdp, sessionId, pngBytes, options) {
+  const url = `data:image/png;base64,${pngBytes.toString('base64')}`
+  const args = JSON.stringify({ url, bottomAnchor: options.bottomAnchor, minX: options.minX })
+  return evaluate(cdp, sessionId, `(${analyzeShot.toString()})(${args})`)
+}
+
 /** ---------------- 一次「视口 × 状态」的完整观测 ---------------- */
 
-async function createPage(cdp) {
-  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' })
-  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true })
-  return { targetId, sessionId }
+async function createPage(cdp, attempts = 3) {
+  let lastError = null
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' })
+      const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true })
+      return { targetId, sessionId }
+    } catch (err) {
+      lastError = err
+      await sleep(1000 * (i + 1))
+    }
+  }
+  throw lastError ?? new Error('Target.createTarget 失败')
 }
 
 async function closePage(cdp, targetId) {
+  try {
+    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true })
+    if (sessionId) await cdp.send('Target.detachFromTarget', { sessionId }, sessionId).catch(() => undefined)
+  } catch {
+    // 目标可能已不存在
+  }
   try {
     await cdp.send('Target.closeTarget', { targetId })
   } catch {
@@ -236,6 +393,11 @@ const MEASURE = `(() => {
       clientHeight: document.documentElement.clientHeight,
     },
     boardHeight: board ? Math.round(board.getBoundingClientRect().height * 100) / 100 : null,
+    // 底部锚点：桌面/平板 = 视口底；移动 = 看板块底边（正好是 TabBar 顶，见 board.css）
+    boardBottom: board ? Math.round(board.getBoundingClientRect().bottom * 100) / 100 : null,
+    sidebarRight: document.querySelector('.ui-sidebar-nav')?.getBoundingClientRect().right ?? 0,
+    notice: document.querySelector('[data-ui="board-unknown"]')?.textContent ?? null,
+    totalNumber: Number(document.querySelector('[data-ui="board-total"]')?.textContent?.match(/\\d+/)?.[0] ?? -1),
     scroller: scroller
       ? {
           scrollWidth: scroller.scrollWidth,
@@ -259,10 +421,34 @@ const MEASURE = `(() => {
   }
 })()`
 
-async function runCase(cdp, viewport, state, options) {
-  const { sessionId, targetId } = await createPage(cdp)
+async function runCase(cdp, page, viewport, state, options) {
+  const { sessionId } = page
+  // 复用同一个 tab：先回 about:blank、清 localStorage，再把设备指标与拦截器重新装上。
+  // （每用例新建 target 会在 browserless 上累积会话，跑到第 16 个用例连接会被断开。）
+  // 上一用例故意挂住的请求（loading 态）会让 Fetch.disable 卡住，先逐个收尾再继续
+  for (const requestId of [...pausedRequestIds]) {
+    await cdp
+      .send('Fetch.failRequest', { requestId, errorReason: 'Aborted' }, sessionId)
+      .catch(() => undefined)
+    pausedRequestIds.delete(requestId)
+  }
+  await cdp.send('Page.navigate', { url: 'about:blank' }, sessionId)
+  await cdp.send('Page.enable', {}, sessionId)
+  await cdp.send('Runtime.enable', {}, sessionId)
+  try {
+    await cdp.send('Storage.clearDataForOrigin', { origin: new URL(options.url).origin, storageTypes: 'local_storage' }, sessionId)
+  } catch {
+    // 清存储失败不影响用例（脏值会被实现按默认值降级）
+  }
+  await cdp.send('Fetch.disable', {}, sessionId).catch(() => undefined)
+  cdp.clearListeners()
   const shape = state === 'long-list' ? LONG_SHAPE : DEFAULT_SHAPE
-  const tasks = state === 'empty' ? [] : makeTasks(shape)
+  // fixture 可改：未知状态注入（AC10）、下一笔延迟（验证刷新不降级）、POST 计数（双击守卫）
+  const fixture = {
+    tasks: state === 'empty' ? [] : makeTasks(shape),
+    delayNextMs: 0,
+    posts: 0,
+  }
   let taskCalls = 0
 
   await cdp.send('Page.enable', {}, sessionId)
@@ -272,6 +458,7 @@ async function runCase(cdp, viewport, state, options) {
     { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: viewport.name === 'mobile' },
     sessionId,
   )
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }, sessionId)
   await cdp.send('Network.enable', {}, sessionId)
   await cdp.send('Network.setCacheDisabled', { cacheDisabled: true }, sessionId)
 
@@ -286,6 +473,8 @@ async function runCase(cdp, viewport, state, options) {
     async ({ requestId, request }) => {
       const url = request.url
       const headers = [{ name: 'content-type', value: 'application/json' }]
+      if (process.env.ECHUAN_DEBUG && url.includes('/v1/')) console.log('[debug] paused', request.method, url)
+      pausedRequestIds.add(requestId)
       const fulfill = (responseCode, body) =>
         cdp
           .send(
@@ -294,21 +483,41 @@ async function runCase(cdp, viewport, state, options) {
             sessionId,
           )
           .catch(() => undefined)
+          .then(() => {
+            pausedRequestIds.delete(requestId)
+          })
 
       if (url.includes('/v1/projects')) {
         await fulfill(200, JSON.stringify(PROJECT))
         return
       }
       if (url.includes('/v1/tasks')) {
+        // 新建任务（POST）：单独计数，用来验证「同一 tick 双击只发 1 个 POST」
+        if (request.method === 'POST') {
+          fixture.posts += 1
+          await fulfill(200, JSON.stringify(makeTasks({ pending: 1 })[0]))
+          return
+        }
         taskCalls += 1
-        // loading：第一笔请求永不响应 → 页面停在 SkeletonCard（列头与筛选保持稳定）
-        if (state === 'loading') return
+        // loading：把这一笔拖到 60s（远长于本用例的观测窗口）→ 页面停在 SkeletonCard；
+        // 不能「永不响应」：永远挂着的 paused 请求会让后续用例的 Fetch/Runtime 命令卡死。
+        if (state === 'loading') {
+          await sleep(20_000)
+          await fulfill(200, JSON.stringify({ items: [] }))
+          return
+        }
         // error：先成功一次，再让自动刷新那一笔 500 → 保留上次数据 + 错误条
         if (state === 'error' && taskCalls > 1) {
           await fulfill(500, JSON.stringify({ message: 'internal error' }))
           return
         }
-        await fulfill(200, JSON.stringify({ items: tasks }))
+        // 需要「刷新在飞」的用例：把这一笔真的拖住（页面必须保留上次数据、不降级）
+        if (fixture.delayNextMs > 0) {
+          const delay = fixture.delayNextMs
+          fixture.delayNextMs = 0
+          await sleep(delay)
+        }
+        await fulfill(200, JSON.stringify({ items: fixture.tasks }))
         return
       }
       await fulfill(404, JSON.stringify({ message: 'not found' }))
@@ -340,6 +549,8 @@ async function runCase(cdp, viewport, state, options) {
   }
 
   const measure = await evaluate(cdp, sessionId, MEASURE)
+  // 筛选控件的可访问名（标签在移动端视觉收起，可访问性不能牺牲）
+  const ax = state === 'default' ? await axProbe(cdp, sessionId) : null
 
   // 移动端 M1：滚到最右，最后一列右边界必须落在视口内（AC2）
   let m1 = null
@@ -442,7 +653,43 @@ async function runCase(cdp, viewport, state, options) {
   const shotDir = options.shotDir
   const shotPath = join(shotDir, `board__${viewport.name}__dark__${state}.png`)
   const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId)
-  writeFileSync(shotPath, Buffer.from(shot.data, 'base64'))
+  const shotBytes = Buffer.from(shot.data, 'base64')
+  writeFileSync(shotPath, shotBytes)
+
+  // ===== 像素量化：我的截图 vs design/refs（同一套边界算法），只对 default 态做 =====
+  let pixels = null
+  if (state === 'default') {
+    const minX = Math.round(measure.sidebarRight) + 2
+    const refAnchor = viewport.name === 'mobile' ? viewport.height - REF_MOBILE_TABBAR : viewport.height
+    const myAnchor = Math.round(measure.boardBottom)
+    const shotPixel = await pixelMetrics(cdp, sessionId, shotBytes, { bottomAnchor: myAnchor, minX })
+    const refPath = join(REPO_DIR, 'design', 'refs', `board__${viewport.name}__dark__default.png`)
+    let refPixel = null
+    try {
+      refPixel = await pixelMetrics(cdp, sessionId, readFileSync(refPath), { bottomAnchor: refAnchor, minX })
+    } catch {
+      refPixel = null
+    }
+    pixels = { refPixel, shotPixel, refAnchor, myAnchor, minX, refPath }
+  }
+
+  // ===== 刷新在飞不降级（AC4 口径的补充）：把下一笔 /v1/tasks 拖住 4s，此时 DOM 必须还是「有数据态」=====
+  let midflight = null
+  if (state === 'default' && viewport.name === 'desktop') {
+    midflight = await midflightProbe(cdp, sessionId, fixture, () => taskCalls)
+  }
+
+  // ===== 同一 tick 双击「创建」只发 1 个 POST（CreateTaskSheet 的 ref 守门）=====
+  let doubleSubmit = null
+  if (state === 'default' && viewport.name === 'desktop') {
+    doubleSubmit = await doubleSubmitProbe(cdp, sessionId, fixture)
+  }
+
+  // ===== 未知 status 不静默记账：页头总数必须等于七列计数之和（AC10）=====
+  let unknownStatus = null
+  if (state === 'default' && viewport.name === 'desktop') {
+    unknownStatus = await unknownStatusProbe(cdp, sessionId, fixture, options.url)
+  }
 
   // 点卡片 → 详情独立路由（design/screens/board.md「交互」：点卡片 → #/projects/:pid/tasks/:tid）
   // 放在截图之后：这一步会离开看板，不能影响已拍到的画面。
@@ -464,8 +711,161 @@ async function runCase(cdp, viewport, state, options) {
     navigate = { cardLabel: target?.label ?? null, hash }
   }
 
-  await closePage(cdp, targetId)
-  return { viewport, state, measure, m1, sticky, refresh, collapse, navigate, shotPath }
+  return { viewport, state, measure, m1, sticky, refresh, collapse, navigate, midflight, doubleSubmit, unknownStatus, ax, pixels, shotPath }
+}
+
+/** 筛选控件的可访问名（移动端视觉上收起了标签，读屏必须仍念「类型」「状态」） */
+async function axProbe(cdp, sessionId) {
+  await cdp.send('DOM.enable', {}, sessionId)
+  await cdp.send('Accessibility.enable', {}, sessionId)
+  const { root } = await cdp.send('DOM.getDocument', { depth: -1 }, sessionId)
+  const names = {}
+  for (const id of ['bp-filter-kind', 'bp-filter-status']) {
+    const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#' + id }, sessionId)
+    if (!nodeId) {
+      names[id] = null
+      continue
+    }
+    const tree = await cdp.send('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false }, sessionId)
+    const node = tree.nodes?.[0]
+    names[id] = { role: node?.role?.value ?? null, name: node?.name?.value ?? null }
+  }
+  return names
+}
+
+/** 刷新在飞：拖住下一笔 /v1/tasks，断言页面仍是「有数据态」（不降级成 loading / 不清计数） */
+async function midflightProbe(cdp, sessionId, fixture, taskCallCount) {
+  const callsBefore = taskCallCount()
+  fixture.delayNextMs = 4000
+  // 等自动刷新那一笔真的进到拦截器（在飞）
+  const deadline = Date.now() + AUTO_REFRESH_MS + 8000
+  while (Date.now() < deadline && taskCallCount() === callsBefore) await sleep(100)
+  const inFlight = taskCallCount() > callsBefore
+  const during = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const board = document.querySelector('[data-ui="board"]')
+      const cols = Array.from(document.querySelectorAll('.bp-col'))
+      return {
+        state: board?.dataset.boardState ?? null,
+        total: document.querySelector('[data-ui="board-total"]')?.textContent ?? null,
+        countSum: cols.reduce((sum, el) => sum + Number(el.querySelector('.ui-board-column__count')?.textContent ?? 0), 0),
+        cards: document.querySelectorAll('.ui-task-card').length,
+        skeletons: document.querySelectorAll('.ui-skeleton-card').length,
+      }
+    })()`,
+  )
+  // 等在飞那笔落地，别把未完成的请求留给后续用例
+  await sleep(4200)
+  return { inFlight, during }
+}
+
+/** 双击守门：同一 JS tick 里连点两次「创建」，只允许 1 个 POST /v1/tasks */
+async function doubleSubmitProbe(cdp, sessionId, fixture) {
+  const opened = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const button = Array.from(document.querySelectorAll('.bp-head__actions button'))
+        .find((el) => el.textContent.includes('新建任务'))
+      if (!button) return false
+      button.click()
+      return true
+    })()`,
+  )
+  if (!opened) return null
+  await sleep(500)
+  // 用真实输入事件（CDP Input.insertText）而不是改 value 再派发合成事件：
+  // React 的受控输入对合成 input 事件不可靠，前者才是「用户输入」的真实路径。
+  const doc = await cdp.send('DOM.getDocument', { depth: -1 }, sessionId)
+  const inputNode = await cdp.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#bp-create-title' }, sessionId)
+  if (inputNode.nodeId) await cdp.send('DOM.focus', { nodeId: inputNode.nodeId }, sessionId)
+  await cdp.send('Input.insertText', { text: '双击守门用例' }, sessionId)
+  await sleep(300)
+  const typed = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const input = document.querySelector('#bp-create-title')
+      return Boolean(input) && input.value === '双击守门用例'
+    })()`,
+  )
+  if (!typed) return { opened, typed, clicked: false, posts: fixture.posts, buttonState: null }
+  const before = fixture.posts
+  // 同一 tick 连点两次（busy 这个 state 还没落地，只有 ref 能挡住）
+  const clicked = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const buttons = Array.from(document.querySelectorAll('.ui-detail-sheet__footer button'))
+      const submit = buttons.find((el) => el.textContent.includes('创建'))
+      if (!submit) return false
+      submit.click()
+      submit.click()
+      return true
+    })()`,
+  )
+  if (!clicked) return { opened, typed, clicked, posts: fixture.posts - before }
+  const buttonState = await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const buttons = Array.from(document.querySelectorAll('.ui-detail-sheet__footer button'))
+      const submit = buttons.find((el) => el.textContent.includes('创建'))
+      return submit ? { text: submit.textContent, disabled: submit.disabled } : null
+    })()`,
+  )
+  await sleep(1200)
+  if (process.env.ECHUAN_DEBUG) {
+    const dbg = await evaluate(cdp, sessionId, `(() => {
+      const sheet = document.querySelector('.ui-detail-sheet')
+      const submit = Array.from(document.querySelectorAll('.ui-detail-sheet__footer button')).find((el) => el.textContent.includes('创建'))
+      return {
+        sheetText: sheet ? sheet.textContent.slice(0, 200) : null,
+        submit: submit ? { text: submit.textContent, disabled: submit.disabled, busy: submit.getAttribute('aria-busy'), cls: submit.className.slice(0, 80) } : null,
+        inputValue: document.querySelector('#bp-create-title')?.value ?? null,
+      }
+    })()`)
+    console.log('[debug] posts =', fixture.posts, JSON.stringify(dbg))
+  }
+  // 关掉面板（创建成功后组件自己会关；这里兜底）
+  await evaluate(
+    cdp,
+    sessionId,
+    `(() => {
+      const close = document.querySelector('.ui-detail-sheet button[aria-label="关闭详情"]')
+      if (close) close.click()
+      return true
+    })()`,
+  )
+  await sleep(300)
+  return { opened, typed, clicked, posts: fixture.posts - before, buttonState }
+}
+
+/** 未知 status：注入 2 条 7 列枚举外的状态，断言页头总数 = 七列计数之和（且给出提示，不静默丢） */
+async function unknownStatusProbe(cdp, sessionId, fixture, url) {
+  const known = makeTasks(DEFAULT_SHAPE)
+  fixture.tasks = [
+    ...known,
+    { ...known[0], task_id: 't_unknown_status_1', status: 'archived', title: '异常状态任务 A' },
+    { ...known[1], task_id: 't_unknown_status_2', status: 'deleted', title: '异常状态任务 B' },
+  ]
+  // 上一步「点卡片进详情」把路由切走了，这里必须重新导航回看板（reload 会停在详情路由）
+  await cdp.send('Page.navigate', { url: `${url}#/projects/echuan-1/tasks` }, sessionId)
+  await sleep(300)
+  // 只改 hash 属同一文档导航（不会重新取数），必须整页 reload 才会用新的 fixture 再拉一次
+  await cdp.send('Page.reload', {}, sessionId)
+  await waitFor(cdp, sessionId, `document.querySelector('[data-ui="board"]') !== null`, 20_000, '未知状态用例重载')
+  await sleep(800)
+  const measured = await evaluate(cdp, sessionId, MEASURE)
+  const columns = measured.columns ?? []
+  return {
+    rawItems: fixture.tasks.length,
+    total: measured.totalNumber,
+    countSum: columns.reduce((sum, column) => sum + column.count, 0),
+    notice: measured.notice,
+  }
 }
 
 /** 桌面 default / long-list：滚动到中段 + 聚焦筛选输入 → 等一轮自动刷新 → 比对前后 */
@@ -723,6 +1123,86 @@ function assertionsOf(record) {
     )
   }
 
+  // ===== 与 design/refs 的像素边界对照（第 1/3 项返工的主证据）=====
+  if (record.pixels?.refPixel) {
+    const { refPixel, shotPixel } = record.pixels
+    const domLeft = columns[0]?.left ?? null
+    const domGap = columns.length > 1 ? Math.round(columns[1].left - columns[0].right) : null
+    const near = (a, b, tol) => a !== null && b !== null && Math.abs(a - b) <= tol
+    const refLeft = refPixel.rowColLeft ?? refPixel.colLeft
+    const refGap = refPixel.rowColGap ?? refPixel.colGap
+    const refWidth = refPixel.rowColWidth ?? refPixel.colWidth
+    check(
+      `${tag} 列 1 左边 = ${refLeft}（ref 像素）`,
+      near(domLeft, refLeft, 1) && near(shotPixel.rowColLeft ?? shotPixel.colLeft, refLeft, 1),
+      `DOM=${domLeft} 截图=${shotPixel.rowColLeft ?? shotPixel.colLeft} ref=${refLeft}`,
+    )
+    check(
+      `${tag} 列间距 = ${refGap}（ref 像素）`,
+      near(domGap, refGap, 1) && near(shotPixel.rowColGap ?? shotPixel.colGap, refGap, 1),
+      `DOM=${domGap} 截图=${shotPixel.rowColGap ?? shotPixel.colGap} ref=${refGap}`,
+    )
+    check(
+      `${tag} 列宽 = ${refWidth}（ref 像素）`,
+      near(domLeft !== null ? columns[0].width : null, refWidth, 1) &&
+        near(shotPixel.rowColWidth ?? shotPixel.colWidth, refWidth, 1),
+      `DOM=${columns[0]?.width} 截图=${shotPixel.rowColWidth ?? shotPixel.colWidth} ref=${refWidth}`,
+    )
+    check(
+      `${tag} 列顶 = ${refPixel.colTop}±2（ref 像素，页头高度）`,
+      near(shotPixel.colTop, refPixel.colTop, 2),
+      `截图=${shotPixel.colTop} ref=${refPixel.colTop}`,
+    )
+    check(
+      `${tag} 列底留白 = ${refPixel.bottomGap}±2（ref 像素）`,
+      near(shotPixel.bottomGap, refPixel.bottomGap, 2),
+      `截图=${shotPixel.bottomGap}（锚点 ${record.pixels.myAnchor}）ref=${refPixel.bottomGap}（锚点 ${record.pixels.refAnchor}）`,
+    )
+  } else if (state === 'default') {
+    check(`${tag} 与 ref 的像素对照`, false, `读不到 design/refs/${viewport.name} 基准图`)
+  }
+
+  // ===== 筛选控件的可访问名（移动端视觉收起标签，但 <label for> 仍在，读屏必须念得出）=====
+  if (record.ax) {
+    const kind = record.ax['bp-filter-kind']
+    const status = record.ax['bp-filter-status']
+    check(
+      `${tag} 筛选控件可访问名（AX）：类型 / 状态`,
+      // Mantine Select 的输入框在 AX 树里是 textbox/combobox（版本/场景不同），这里只断言「有可访问名」
+      kind?.name === '类型' && status?.name === '状态' && Boolean(kind?.role) && Boolean(status?.role),
+      `kind=${kind?.role}/${kind?.name} status=${status?.role}/${status?.name}`,
+    )
+  }
+
+  // ===== 刷新在飞不降级：有数据时刷新期间不得回到 loading / 不丢计数 =====
+  if (record.midflight) {
+    const { inFlight, during } = record.midflight
+    check(
+      `${tag} 刷新在飞时保留上次计数与卡片（不降级成 loading）`,
+      inFlight && during.state === 'default' && during.cards > 0 && during.skeletons === 0,
+      `在飞=${inFlight} state=${during.state} 页头=${during.total} 列计数和=${during.countSum} 卡片=${during.cards} 骨架=${during.skeletons}`,
+    )
+  }
+
+  // ===== 同一 tick 双击「创建」只发 1 个 POST =====
+  if (record.doubleSubmit) {
+    check(
+      `${tag} 同一 tick 双击创建只发 1 个 POST`,
+      record.doubleSubmit.posts === 1,
+      `POST /v1/tasks 次数=${record.doubleSubmit.posts}（opened=${record.doubleSubmit.opened} typed=${record.doubleSubmit.typed} clicked=${record.doubleSubmit.clicked} button=${JSON.stringify(record.doubleSubmit.buttonState)}）`,
+    )
+  }
+
+  // ===== 未知 status：页头总数 = 七列计数之和，且显式提示被排除的条数 =====
+  if (record.unknownStatus) {
+    const { rawItems, total, countSum, notice } = record.unknownStatus
+    check(
+      `${tag} 未知 status 不计入页头：页头总数 == 七列计数之和`,
+      total === countSum && countSum === rawItems - 2 && /2 条任务的状态不在 7 列枚举内/.test(notice ?? ''),
+      `原始 ${rawItems} 条 → 页头 ${total} / 列计数和 ${countSum}；提示=${JSON.stringify(notice)}`,
+    )
+  }
+
   if (m1) {
     check(
       `${tag} scrollWidth > clientWidth`,
@@ -796,34 +1276,58 @@ async function main() {
 
   const cdp = await CDP.connect(wsUrl)
   const records = []
+  // 一个用例一个 tab：同一 tab 连续跑多个用例后 Chromium 侧会变慢甚至卡死（实测），
+  // 用例之间不共享状态（localStorage 由 runCase 每次清），换 tab 的代价远小于整轮挂掉；
+  // 单用例失败时再换一个新 tab 重试一次，仍失败才记 FAIL（不会被 infra 抖动伪装成通过）。
   try {
     for (const viewport of VIEWPORTS) {
       for (const state of STATES) {
         const key = `${viewport.name}:${state}`
-        if (only.length > 0 && !only.includes(key) && !only.includes(viewport.name) && !only.includes(state)) continue
+        if (only.length > 0 && !only.includes(key) && !only.includes(viewport.name) && !only.includes(state)) {
+          continue
+        }
         console.log(`\n[board] ${key} —— ${viewport.width}×${viewport.height}`)
-        const record = await runCase(cdp, viewport, state, { url, shotDir })
+        let record = null
+        let page = await createPage(cdp)
+        try {
+          record = await runCase(cdp, page, viewport, state, { url, shotDir })
+        } catch (err) {
+          await closePage(cdp, page.targetId).catch(() => undefined)
+          page = await createPage(cdp)
+          try {
+            record = await runCase(cdp, page, viewport, state, { url, shotDir })
+          } catch (err2) {
+            check(
+              `${key} 用例执行`,
+              false,
+              `${err2 instanceof Error ? err2.message : String(err2)}（首次失败：${err instanceof Error ? err.message : String(err)}）`,
+            )
+            await closePage(cdp, page.targetId).catch(() => undefined)
+            continue
+          }
+        }
+        await closePage(cdp, page.targetId).catch(() => undefined)
         records.push(record)
+        console.log(`[board] 截图 ${record.shotPath}`)
         console.log(
-          `[board] 截图 ${record.shotPath}`,
+          `[board] 度量 ${JSON.stringify({
+            state: record.measure.state,
+            total: record.measure.total,
+            bar: record.measure.bar,
+            cursor: record.measure.cursor,
+            scroller: record.measure.scroller,
+            columns: record.measure.columns.map((column) => ({
+              status: column.status,
+              width: column.width,
+              count: column.count,
+              cards: column.cards,
+              collapsed: column.collapsed,
+            })),
+            m1: record.m1,
+            sticky: record.sticky,
+            refresh: record.refresh,
+          })}`,
         )
-        console.log(`[board] 度量 ${JSON.stringify({
-          state: record.measure.state,
-          total: record.measure.total,
-          bar: record.measure.bar,
-          cursor: record.measure.cursor,
-          scroller: record.measure.scroller,
-          columns: record.measure.columns.map((column) => ({
-            status: column.status,
-            width: column.width,
-            count: column.count,
-            cards: column.cards,
-            collapsed: column.collapsed,
-          })),
-          m1: record.m1,
-          sticky: record.sticky,
-          refresh: record.refresh,
-        })}`)
         assertionsOf(record)
       }
     }

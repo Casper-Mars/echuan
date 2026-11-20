@@ -16,7 +16,7 @@ import type { Project, Task, TaskStatus } from '../../api/types'
 import { useAutoRefresh } from '../../hooks/useAutoRefresh'
 import { KINDS, kindLabel } from '../../lib/labels'
 import { REFRESH_INTERVALS, isAutoRefreshEnabled, subscribeAutoRefresh } from '../../lib/refresh'
-import { BoardColumn, Button, EmptyState, SelectField, TaskCard } from '../../ui'
+import { Alert, BoardColumn, Button, EmptyState, SelectField, TaskCard } from '../../ui'
 import type { SelectOption } from '../../ui'
 import { ErrorBar } from '../shell/ErrorBar'
 import { BOARD_COLUMNS, readCollapsed, writeCollapsed } from './collapsed'
@@ -91,16 +91,30 @@ export function BoardPage() {
 
   const tasks = data?.items ?? EMPTY_TASKS
 
-  // 7 列分桶 + 列内排序：priority 降序，其次 update_time 降序（design/screens/board.md「数据来源」）。
-  const grouped = useMemo(() => {
+  // 归桶 + 列内排序（design/screens/board.md「数据来源」：7 列固定枚举，列内 priority 降序、update_time 降序）。
+  // 关键点：status 不在 7 个枚举内的任务**不进任何列**，因此也不进页头/看板条的计数——
+  // 页头总数恒等于「七列计数之和」，异常数据不会造成「页头 14、7 列加起来 12」这种对不上的账。
+  // 被排除的条目单独提示（不静默丢弃），正常数据下这段提示不出现。
+  const { grouped, dropped } = useMemo(() => {
     const map = new Map<TaskStatus, Task[]>()
     for (const column of BOARD_COLUMNS) map.set(column, [])
-    for (const task of tasks) map.get(task.status)?.push(task)
+    let unknown = 0
+    for (const task of tasks) {
+      const bucket = map.get(task.status)
+      if (!bucket) {
+        unknown += 1
+        continue
+      }
+      bucket.push(task)
+    }
     for (const list of map.values()) {
       list.sort((a, b) => b.priority - a.priority || b.update_time.localeCompare(a.update_time))
     }
-    return map
+    return { grouped: map, dropped: unknown }
   }, [tasks])
+
+  // 已归桶条目数 = 页头总数 = 七列计数之和（AC：三者必须一致）
+  const bucketed = tasks.length - dropped
 
   const cursor = useColumnCursor(BOARD_COLUMNS.length)
 
@@ -123,7 +137,7 @@ export function BoardPage() {
 
   // 状态判定（六态里的 default / empty / loading / error 由数据推得；collapsed / long-list 由偏好与数据量表达）
   const loading = data === undefined && error === ''
-  const isEmpty = data !== undefined && tasks.length === 0
+  const isEmpty = data !== undefined && bucketed === 0
   const state: BoardState = error !== '' && data !== undefined ? 'error' : loading ? 'loading' : isEmpty ? 'empty' : 'default'
 
   const openTask = (taskId: string) => navigate(`/projects/${projectId}/tasks/${taskId}`)
@@ -186,7 +200,7 @@ export function BoardPage() {
               {' · '}
             </span>
             <span className="bp-head__total" data-ui="board-total">
-              {data === undefined ? '—' : `${tasks.length} 个任务`}
+              {data === undefined ? '—' : `${bucketed} 个任务`}
             </span>
             <span className="bp-head__sep" aria-hidden="true">
               {' · '}
@@ -229,10 +243,18 @@ export function BoardPage() {
         />
       )}
 
+      {dropped === 0 ? null : (
+        <Alert tone="info" className="bp-notice">
+          <span data-ui="board-unknown">
+            {dropped} 条任务的状态不在 7 列枚举内，已从看板排除（不计入页头与列计数）
+          </span>
+        </Alert>
+      )}
+
       {isEmpty && !loading ? null : (
         <div className="bp-bar" data-ui="board-bar">
           <span className="bp-bar__total">
-            {BOARD_COLUMNS.length} 列 · {data === undefined ? '—' : `${tasks.length} 个任务`}
+            {BOARD_COLUMNS.length} 列 · {data === undefined ? '—' : `${bucketed} 个任务`}
             {' '}
           </span>
           <span className="bp-bar__cursor" data-ui="board-cursor">
