@@ -30,6 +30,8 @@
 | `mock/` | 原型（`index.html?screen=&state=&theme=`），状态写入 `document.documentElement.dataset.state` |
 | `refs/` | 240 张截图（暗色 120 基准 + 亮色 120 对照）：8 屏 × 状态 × 三视口（desktop 1440×900 / tablet 1024×768 / mobile 390×844）× 双主题 |
 
+refs 数量口径：**240 张**（暗 120 + 亮 120）。issue #102 偏差登记 42 张，待补（认账：设计侧）。
+
 ## 复核方式
 
 ```bash
@@ -64,6 +66,13 @@ node <kit>/design-kit/scripts/check.mjs design
 design_ref 指 `design/` 物料入库的仓库 commit：`design/screens/*.md`、`design/tokens.json`、`design/components.md`、`design/flows.md` 与 `design/refs/` 的 240 张截图在该 commit 下可逐字节检出，是后续所有 dev 卡实现与视觉回归的唯一对照源（`git cat-file -e <design_ref>^{commit}` 可解析）。
 
 `design/MANIFEST.sha256`（内容哈希）保留为物料完整性凭据，但**不是 design_ref**——它是内容哈希而非仓库 commit，无法用 `git cat-file` / `git ls-tree` 解析。
+
+**MANIFEST 处理结论（issue #102 四条契约同步时登记）：保留旧值，不重算 ——「MANIFEST 待 U-06 决议后统一重算」。**
+
+- 原因：仓库内没有生成该哈希的脚本，复算口径不可复现（issue #102 方案 U-06；实测 8 种常见递归/拼接口径与 git 树对象口径均未命中）。
+- 认账人：设计侧（`design/` 物料维护人）。
+- 补的时点：issue #102 四条合并进 `main` 之后、下一轮全量视觉回归之前；与上面「42 张 refs 偏差」挂在**同一条跟踪项**上一起补。
+- 在重算之前，MANIFEST 的值与当前 `design/` 内容不一致属已知状态，物料完整性以 git 版本（`design_ref` 及其后的 commit）为准。
 
 ## 视觉方向（已定：B 暗色仪表盘）
 
