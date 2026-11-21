@@ -29,12 +29,13 @@
   --bp-column-w: calc(var(--space-10) * 4 + var(--space-6));
 }
 
-/* 移动端：让出底部 TabBar（触控高度 + 一条上边框）；左右内边距收窄到 12（space-4），
+/* 移动端：让出底部 TabBar（单项 space-8+space-5 = 56 + 一条上边框 = 57，口径同 ui.css
+ * `.ui-tab-bar__tab` 的 min-height）；左右内边距收窄到 12（space-4），
  * 列间距同步收窄到 8（space-3）——两者都是 design/refs 移动端的像素实测值（列 1 左边 12、列间距 8）。 */
 @media (max-width: 47.99em) {
   .bp {
     block-size: calc(
-      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - var(--ui-control-height-touch) -
+      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - calc(var(--space-8) + var(--space-5)) -
         var(--border-width)
     );
     /* 负 margin 必须抵满 shell 的 24，否则收窄内边距只会把整块往里缩；左右内边距再单独收窄到 16 */
