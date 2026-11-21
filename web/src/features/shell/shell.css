@@ -394,3 +394,54 @@
     min-height: var(--ui-control-height-touch);
   }
 }
+
+/* ===== 只读详情抽屉的键值网格（features/shell/DetailFields） ============
+ * 规格：design/components.md §「屏内私有详情抽屉」——产品（6 字段）与项目（9 字段）共用同一套排版，
+ * 落在壳层、不属于 ui/ 导出面（`ui-imports-check` 仍是 21 个组件）。
+ * 只做排版、只消费令牌：颜色取 text 角色，几何取 --space-*（字段名列宽 = space-11 = 80）。
+ * 正文区的内边距与滚动由 ui/DetailSheet 的 .ui-detail-sheet__body 提供（space-5 + overflow:auto），
+ * 这里不再叠加 padding，避免两层内边距。
+ */
+.fx-detail-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+}
+
+/* 逐行两列：字段名定宽、值吃剩余宽度（minmax(0,1fr) 让长仓库地址换行而不是撑破抽屉） */
+.fx-detail-fields__row {
+  display: grid;
+  grid-template-columns: var(--space-11) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-5);
+}
+
+.fx-detail-fields__label {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+}
+
+.fx-detail-fields__value {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line-height);
+  /* 长 ID / 长仓库地址按字符断行，不产生横向滚动 */
+  overflow-wrap: anywhere;
+}
+
+/* 等宽：编号、仓库地址这类需要逐字符比对的字段 */
+.fx-detail-fields__value[data-mono='on'] {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-size);
+  line-height: var(--text-mono-line-height);
+}
+
+/* 多行正文（描述 / 上下文）：保留原始换行 */
+.fx-detail-fields__value[data-multiline='on'] {
+  white-space: pre-wrap;
+}
+
