@@ -50,8 +50,10 @@ export function ErrorBar({
       className={className ? `fx-error-bar-alert ${className}` : 'fx-error-bar-alert'}
     >
       <div className="fx-error-bar" data-ui="error-bar" data-surface="self">
-        {/* 单行横幅（issue #89 B1）：标题 / 说明 / 技术细节内联在同一行，动作组贴右 */}
-        <p className="fx-error-bar__text">
+        {/* 单行横幅（issue #89 B1）：标题 / 说明 / 技术细节内联在同一行，动作组贴右。
+            data-detail 让 CSS 知道「这一行有没有技术细节」：有细节时溢出一律由细节吸收，
+            没有细节时才让标题 / 说明自己收缩（review B1-1 / B1-2）。 */}
+        <p className="fx-error-bar__text" data-detail={detail ? 'on' : 'off'}>
           <span className="fx-error-bar__title">{title}</span>
           {message ? <span className="fx-error-bar__message">{message}</span> : null}
           {detail ? <span className="fx-error-bar__detail">{detail}</span> : null}

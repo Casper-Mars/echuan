@@ -228,24 +228,46 @@
 }
 
 .fx-error-bar__title {
+  /* review B1-2：标题不再按固有宽度霸位。默认不收缩（收缩哪怕 0.5px 就会触发省略号，
+     白白把「评审没有提交成功」截掉一个字），空间不够时由下面的 __detail 先让位；
+     真的只剩标题和说明（没有技术细节）时才允许两者一起收缩，见 data-detail='off' 规则。
+     min-width 兜住可读下限，窄屏换行（见文末媒体查询）。 */
   flex: 0 0 auto;
+  min-width: var(--space-11);
+  overflow: hidden;
   color: var(--text-primary);
   font-weight: var(--text-body-strong-weight);
+  text-overflow: ellipsis;
 }
 
 .fx-error-bar__message {
-  min-width: 0;
+  /* 服务端 message 是这条横幅里最要紧的一句：同样默认不收缩 + 80 的宽度下限
+     （AC「message 宽 ≥ 80」），有技术细节时优先牺牲细节。 */
+  flex: 1 0 auto;
+  min-width: var(--space-11);
   overflow: hidden;
   color: var(--text-primary);
   text-overflow: ellipsis;
 }
 
 .fx-error-bar__detail {
-  flex: 0 0 auto;
+  /* review B1-1：技术细节最后让位——可收缩（flex-shrink 100，几乎独占溢出）+ 省略号，
+     不再按固有宽度占位把服务端 message 挤成 0 宽。 */
+  flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-muted);
   font-size: var(--text-small-size);
   font-family: var(--font-mono);
   overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+}
+
+/* 没有技术细节时，溢出只能由标题与说明自己消化（窄抽屉里「长标题 + 长说明」的组合）：
+   这时才允许它们收缩并省略，任何一句都不会被压成 0 宽。 */
+.fx-error-bar__text[data-detail='off'] .fx-error-bar__title,
+.fx-error-bar__text[data-detail='off'] .fx-error-bar__message {
+  flex-shrink: 1;
 }
 
 /* 动作成组（D7 → B1）：重试与额外动作同一行、同一右对齐；没有动作时整块不渲染（不留空占位） */
@@ -276,7 +298,20 @@
     white-space: normal;
   }
 
+  /* review B1-2：窄屏标题必须留在文本列内换行（原来 flex: 0 0 auto 会按固有宽度溢出，
+     越过列边界压到右侧「重试 / 在新标签打开原文」上）。这里放开收缩下限，交给换行解决。 */
+  .fx-error-bar__title {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+
   .fx-error-bar__message {
+    /* 窄屏让说明也能收缩到换行宽度（base 是 flex-shrink: 0，不放开就会顶出文本列） */
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: visible;
     text-overflow: clip;
   }
