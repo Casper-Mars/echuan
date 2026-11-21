@@ -6,7 +6,7 @@
 //                                「交互」行点击 → 只读详情抽屉（6 字段，0 请求，字段取当前行），行内「查看项目」只导航不开抽屉。
 //   design/components.md         §ui/DataTable（表体换骨架行 / 移动端 data-label / onRowClick）、§ui/EmptyState、
 //                                §ui/SkeletonCard、§ui/Alert（danger 可重试）、§ui/Button、§ui/SelectField、
-//                                §ui/DetailSheet（只读复用它）、§「屏内私有详情抽屉」（共用键值网格 = features/shell/DetailFields）。
+//                                §ui/DetailSheet（`readonly` 变体 + 字段键值网格）、§「屏内私有详情抽屉」（共用键值网格 = features/shell/DetailFields）。
 //   docs/tech/web-ui-redo-v0.1.md §7   数据源不新增接口：GET /v1/products（project_count）+ GET /v1/projects（按需）。
 //   docs/tech/web-ui-102-interaction-fix-v0.1.md §7.2（D1）/ §7.3（D2）/ §7.8（一次点击一个结果）。
 //
@@ -214,11 +214,11 @@ export function ProductsPage() {
         </div>
       )}
 
-      {/* 只读详情抽屉（design/screens/products.md「交互」）：复用 ui/DetailSheet，0 请求、字段取当前行。
-          抽屉内不放任何动作（footer 不传）——动作只留在列表行，避免同一动作两处可见（docs/tech §7.2）。
-          DetailSheet 现有 variant 只有 detail|preview，契约写的 readonly 变体不新增（不改 ui/**），
-          这里用 detail + 字段网格（features/shell/DetailFields）表达只读语义。 */}
+      {/* 只读详情抽屉（design/screens/products.md「交互」）：复用 ui/DetailSheet 的 readonly 变体
+          （design/components.md §ui/DetailSheet「变体」），0 请求、字段取当前行。
+          抽屉内不放任何动作（footer 不传）——动作只留在列表行，避免同一动作两处可见（docs/tech §7.2）。 */}
       <DetailSheet
+        variant="readonly"
         opened={detailProduct !== undefined}
         title={detailProduct?.name ?? ''}
         onClose={() => setDetailId(null)}
