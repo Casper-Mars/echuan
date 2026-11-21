@@ -60,22 +60,13 @@ func (s *WorkerService) Kinds(ctx context.Context, workerID string) ([]enum.Task
 	return kinds, Translate(err)
 }
 
-// CurrentWorkItemID resolves a worker's held task row (workers.current_task_id,
-// a row id) to the task business id (`t_...`) that every public contract speaks.
+// CurrentWorkItemID is the business id (`t_...`) of the task a worker holds,
+// or nil when it holds nothing.
 //
-// Idle workers return nil. So does a dangling pointer (task row deleted while
-// the worker still points at it): one bad row must not fail the whole registry
-// listing, and "no work item" is the honest reading of that state.
-func (s *WorkerService) CurrentWorkItemID(ctx context.Context, worker storev3.Worker) (*string, error) {
-	if worker.CurrentTaskID == nil {
-		return nil, nil
-	}
-	code, ok, err := storev3.TaskCodeByPK(ctx, s.st.Read(), *worker.CurrentTaskID)
-	if err != nil {
-		return nil, Translate(err)
-	}
-	if !ok {
-		return nil, nil
-	}
-	return &code, nil
+// It is already resolved by store/v3.ListWorkers' LEFT JOIN (Worker.CurrentTaskCode),
+// so the listing stays one query for the whole page instead of one per worker
+// (issue #89 C1/E4 review: N+1). A dangling pointer (task row gone) maps to nil,
+// exactly like "no work item", and never fails the listing.
+func (s *WorkerService) CurrentWorkItemID(worker storev3.Worker) *string {
+	return worker.CurrentTaskCode
 }

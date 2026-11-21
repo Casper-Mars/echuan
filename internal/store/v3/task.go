@@ -151,28 +151,6 @@ func GetTask(ctx context.Context, q storedb.Querier, taskID string) (Task, error
 	return task, nil
 }
 
-// TaskCodeByPK resolves a task primary key to its business id (`t_...`).
-//
-// workers.current_task_id stores the row id, while every public contract (task
-// payloads, claim envelopes, the legacy /v1/workers) speaks the business id.
-// A missing row reports ok=false instead of an error, so the caller decides
-// whether a dangling worker pointer degrades to "no work item" or surfaces.
-func TaskCodeByPK(ctx context.Context, q storedb.Querier, pk int64) (string, bool, error) {
-	row, err := storedb.One[taskCodeRow](ctx, q, `SELECT task_id FROM tasks WHERE id = ?`, pk)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("v3: task code for row %d: %w", pk, err)
-	}
-	return row.TaskID, true, nil
-}
-
-// taskCodeRow is the one-column projection TaskCodeByPK scans into.
-type taskCodeRow struct {
-	TaskID string `db:"task_id"`
-}
-
 // ListTasks lists tasks with optional project/kind/status filters.
 func ListTasks(ctx context.Context, q storedb.Querier, filter TaskFilter) ([]Task, error) {
 	if filter.Limit <= 0 {

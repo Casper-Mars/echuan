@@ -21,6 +21,7 @@ import (
 	"github.com/Casper-Mars/echuan/internal/domain/enum"
 	"github.com/Casper-Mars/echuan/internal/material"
 	storedb "github.com/Casper-Mars/echuan/internal/store"
+	storev3 "github.com/Casper-Mars/echuan/internal/store/v3"
 )
 
 type apiServer struct {
@@ -565,6 +566,238 @@ func TestWorkersExposeCurrentWorkItemID(t *testing.T) {
 			if got := string(item.CurrentWorkItemID); got != "null" {
 				t.Errorf("w_idle raw current_work_item_id = %s, want null", got)
 			}
+		}
+	}
+}
+
+// countingQuerier 是 storedb.Querier 的计数包装器（测试专用）：记录每条经过读接缝的 SQL，
+// 用来证明「任务业务标识解析」不随节点数增长（review：N+1）。
+//
+// 接缝说明：store/v3 的函数都吃 storedb.Querier，所以在 store 接缝上计数就能覆盖
+// ListWorkers 的全部读；app/v3.WorkerService 依赖具体 *storedb.Store（Read() 返回 *sql.DB），
+// 没有可注入点，端到端行为另由 TestWorkersExposeCurrentWorkItemID /
+// TestWorkersCurrentWorkItemIDDanglingTask 覆盖。
+type countingQuerier struct {
+	inner *sql.DB
+	mu    sync.Mutex
+	sqls  []string
+}
+
+func (c *countingQuerier) record(query string) {
+	c.mu.Lock()
+	c.sqls = append(c.sqls, query)
+	c.mu.Unlock()
+}
+
+func (c *countingQuerier) reset() {
+	c.mu.Lock()
+	c.sqls = nil
+	c.mu.Unlock()
+}
+
+func (c *countingQuerier) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.sqls...)
+}
+
+func (c *countingQuerier) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	c.record(query)
+	return c.inner.QueryContext(ctx, query, args...)
+}
+
+func (c *countingQuerier) Query(query string, args ...any) (*sql.Rows, error) {
+	c.record(query)
+	return c.inner.Query(query, args...)
+}
+
+func (c *countingQuerier) QueryRow(query string, args ...any) *sql.Row {
+	c.record(query)
+	return c.inner.QueryRow(query, args...)
+}
+
+func (c *countingQuerier) Exec(query string, args ...any) (sql.Result, error) {
+	c.record(query)
+	return c.inner.Exec(query, args...)
+}
+
+// seedBusyWorker 造一个「忙碌节点」：建一张 dev 卡 + 注册 worker，并把 workers.current_task_id
+// 直接绑到该卡上（绕开 claim 的排队语义，只为了造这一状态）。
+func (a *apiServer) seedBusyWorker(t *testing.T, projectID, workerID, taskID, now string) {
+	t.Helper()
+	ctx := context.Background()
+	task, err := storev3.CreateTask(ctx, a.store, storev3.CreateTaskInput{
+		ProjectID: projectID, TaskID: taskID, Kind: enum.Dev, Title: "N+1 取证", Now: now,
+	})
+	if err != nil {
+		t.Fatalf("create task %s: %v", taskID, err)
+	}
+	if err := storev3.UpsertWorker(ctx, a.store, workerID, "{}", now); err != nil {
+		t.Fatalf("upsert worker %s: %v", workerID, err)
+	}
+	if _, err := a.store.Write().ExecContext(ctx,
+		`UPDATE workers SET state = ?, current_task_id = ? WHERE worker_id = ?`,
+		enum.WorkerBusy, task.ID, workerID); err != nil {
+		t.Fatalf("bind worker %s: %v", workerID, err)
+	}
+}
+
+// TestListWorkersTaskMappingDoesNotScale 锁住「一次列表请求里任务标识解析不随节点数增长」。
+//
+// 上一版在 handler 里逐节点调 CurrentWorkItemID（每次一条 `SELECT task_id FROM tasks WHERE id = ?`）：
+// 默认 100 个忙碌节点就是 100 次串行查询（review 的 N+1）。现在映射并进 ListWorkers 的
+// LEFT JOIN，整页列表 1 条 SQL，任务标识也在这一条里取到 → 解析相关的额外查询 0 条。
+func TestListWorkersTaskMappingDoesNotScale(t *testing.T) {
+	a := newAPIServer(t)
+	a.seedProduct(t, "APP")
+	_, payload := a.do(t, http.MethodPost, "/v1/projects", map[string]any{"product_id": "APP", "name": "p"})
+	project := decodeBody[v3ProjectResponse](t, payload)
+
+	ctx := context.Background()
+	now := "2026-11-18T00:00:00.000Z"
+	cq := &countingQuerier{inner: a.store.Read()}
+	counts := make(map[int][]string, 2)
+	bound := 0
+	for _, n := range []int{3, 30} {
+		for i := 0; i < n; i++ {
+			bound++
+			a.seedBusyWorker(t,
+				project.ProjectID,
+				fmt.Sprintf("w_n1_%02d", bound),
+				fmt.Sprintf("t_n1_%02d", bound),
+				now)
+		}
+
+		cq.reset()
+		workers, err := storev3.ListWorkers(ctx, cq, 1000)
+		if err != nil {
+			t.Fatalf("N=%d list workers: %v", n, err)
+		}
+		sqls := cq.snapshot()
+		counts[n] = sqls
+		if len(sqls) != 1 {
+			t.Fatalf("N=%d 的列表查询数 = %d，want 1（SQL：%v）", n, len(sqls), sqls)
+		}
+		if !strings.Contains(strings.ToLower(sqls[0]), "left join tasks") {
+			t.Errorf("N=%d 的列表 SQL 没有 LEFT JOIN tasks：%s", n, sqls[0])
+		}
+		if len(workers) != bound {
+			t.Fatalf("N=%d 的列表条数 = %d，want %d", n, len(workers), bound)
+		}
+		for _, worker := range workers {
+			if worker.CurrentTaskID == nil {
+				continue
+			}
+			if worker.CurrentTaskCode == nil {
+				t.Fatalf("%s（行 id %d）的任务业务标识没在列表查询里取到", worker.WorkerID, *worker.CurrentTaskID)
+			}
+			if !strings.HasPrefix(*worker.CurrentTaskCode, "t_n1_") {
+				t.Errorf("%s current_task_code = %q, want t_n1_ 前缀", worker.WorkerID, *worker.CurrentTaskCode)
+			}
+		}
+	}
+	if len(counts[3]) != len(counts[30]) {
+		t.Fatalf("任务标识解析随节点数变化：N=3 → %d 条查询，N=30 → %d 条查询", len(counts[3]), len(counts[30]))
+	}
+	for _, n := range []int{3, 30} {
+		workers, tasks, other := 0, 0, 0
+		for _, statement := range counts[n] {
+			lower := strings.ToLower(statement)
+			switch {
+			case strings.Contains(lower, "from tasks") && !strings.Contains(lower, "join tasks"):
+				tasks++
+			case strings.Contains(lower, "from workers"):
+				workers++
+			default:
+				other++
+			}
+		}
+		// 原始计数（按 SQL 前缀分类）：改前是 workers=1、tasks=N（逐节点解析任务标识）。
+		t.Logf("N=%d 原始计数：SELECT … FROM workers = %d 条（含 LEFT JOIN tasks）；单独 FROM tasks（逐节点解析任务标识）= %d 条；其它 = %d 条",
+			n, workers, tasks, other)
+	}
+}
+
+// TestWorkersCurrentWorkItemIDDanglingTask 保留「悬空指针」的行为：worker 指向已删任务行时，
+// 列表仍 200，该节点的 current_work_item_id 为 null（不能 500，也不能把行 id 当标识吐出去）。
+func TestWorkersCurrentWorkItemIDDanglingTask(t *testing.T) {
+	a := newAPIServer(t)
+	a.seedProduct(t, "APP")
+	_, payload := a.do(t, http.MethodPost, "/v1/projects", map[string]any{"product_id": "APP", "name": "p"})
+	project := decodeBody[v3ProjectResponse](t, payload)
+
+	resp, payload := a.do(t, http.MethodPost, "/v1/tasks", map[string]any{
+		"project_id": project.ProjectID, "task_id": "t_dangling", "kind": "dev", "title": "会被硬删的任务",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create task = %d (%s)", resp.StatusCode, payload)
+	}
+	resp, payload = a.do(t, http.MethodPost, "/v1/workers/heartbeat", map[string]any{
+		"worker_id": "w_dangling", "kinds": []string{"dev"},
+	})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("heartbeat = %d (%s)", resp.StatusCode, payload)
+	}
+	resp, payload = a.do(t, http.MethodPost, "/v1/tasks/claim", map[string]any{
+		"worker_id": "w_dangling", "kind": "dev",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("claim = %d (%s)", resp.StatusCode, payload)
+	}
+
+	// 造「任务行被硬删、worker 指针还留着」：workers.current_task_id REFERENCES tasks(id)，
+	// 写连接开了 foreign_keys，删除前临时关掉（写池 MaxOpenConns=1，PRAGMA 作用在同一连接上）。
+	ctx := context.Background()
+	for _, stmt := range []string{
+		`PRAGMA foreign_keys = OFF`,
+		`DELETE FROM tasks WHERE task_id = 't_dangling'`,
+		`PRAGMA foreign_keys = ON`,
+	} {
+		if _, err := a.store.Write().ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+
+	resp, payload = a.do(t, http.MethodGet, "/v1/workers", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("悬空指针下的列表 = %d (%s)，want 200", resp.StatusCode, payload)
+	}
+	list := decodeBody[v3WorkerListResponse](t, payload)
+	var found bool
+	for _, worker := range list.Items {
+		if worker.WorkerID != "w_dangling" {
+			continue
+		}
+		found = true
+		if worker.CurrentTaskID == nil {
+			t.Errorf("w_dangling current_task_id = nil，want 悬空行 id 仍在")
+		}
+		if worker.CurrentWorkItemID != nil {
+			t.Errorf("w_dangling current_work_item_id = %q，want null", *worker.CurrentWorkItemID)
+		}
+	}
+	if !found {
+		t.Fatalf("w_dangling 不在列表里：%+v", list.Items)
+	}
+
+	var raw struct {
+		Items []struct {
+			WorkerID          string          `json:"worker_id"`
+			CurrentWorkItemID json.RawMessage `json:"current_work_item_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatalf("decode raw workers: %v", err)
+	}
+	for _, item := range raw.Items {
+		if item.WorkerID != "w_dangling" {
+			continue
+		}
+		if len(item.CurrentWorkItemID) == 0 {
+			t.Fatalf("w_dangling: current_work_item_id 键缺失（契约要求显式 null）")
+		}
+		if got := string(item.CurrentWorkItemID); got != "null" {
+			t.Errorf("w_dangling raw current_work_item_id = %s, want null", got)
 		}
 	}
 }

@@ -749,16 +749,12 @@ func (h *v3Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
 		for _, kind := range kinds {
 			kindNames = append(kindNames, kind.String())
 		}
-		// 占用口径是行 id（workers.current_task_id），对外契约要业务标识 `t_...`：
-		// 不在这里做映射的话，真后端下前端「当前任务」永远拿不到值（issue #89 C1/E4）。
-		workItemID, err := h.workers.CurrentWorkItemID(r.Context(), worker)
-		if err != nil {
-			h.fail(w, r, err)
-			return
-		}
+		// 占用口径是行 id（workers.current_task_id），对外契约要业务标识 `t_...`（issue #89 C1/E4）。
+		// 映射已经并进 ListWorkers 的 LEFT JOIN（一条 SQL 取完整页），这里不再逐节点查任务，
+		// 否则 100 个忙碌节点就是 100 次串行 SELECT（review：N+1）。
 		items = append(items, v3WorkerResponse{
 			WorkerID: worker.WorkerID, Kinds: kindNames, State: worker.State,
-			CurrentTaskID: worker.CurrentTaskID, CurrentWorkItemID: workItemID,
+			CurrentTaskID: worker.CurrentTaskID, CurrentWorkItemID: h.workers.CurrentWorkItemID(worker),
 			CurrentLeaseID: worker.CurrentLeaseID,
 			LastSeen:       worker.LastSeen,
 		})
