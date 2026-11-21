@@ -70,8 +70,12 @@
 }
 
 /* ===== Chip ============================================================= */
+/* Mantine Pill 自带 `flex: 0`（= 0 1 0%），一旦 Chip 成为 flex 子项（详情租约条），
+ * flex-basis: 0% 会把它压到只剩内距，再叠 overflow: hidden 就把 mono 文本整段裁掉（issue #89 A1）。
+ * 这里把基准改成按内容撑开、且不被压缩：过长时仍由 max-width + 省略号兜底。 */
 .ui-chip.ui-chip {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: var(--space-2);
   max-width: 100%;
