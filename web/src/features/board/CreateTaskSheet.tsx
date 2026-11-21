@@ -15,6 +15,40 @@ import { ErrorBar } from '../shell/ErrorBar'
 
 const KIND_OPTIONS: SelectOption[] = KINDS.map((kind) => ({ value: kind, label: kindLabel(kind) }))
 
+/** 错误条口径（方案 §9.1 表格 + §7.8 E9）：主文案中文，服务端原文只进 detail */
+interface SubmitError {
+  title: string
+  message: string
+  detail: string
+  /** 409（后端已拦 closed 项目）重试无意义 → 动作是「关闭」；其它失败 → 「重新提交」 */
+  action: 'close' | 'retry'
+}
+
+// `POST /v1/tasks` 唯一的 409 是 closed 项目（store/v3/task.go:56-58 的 ErrProjectClosed）——
+// 所以按状态码分类，不解析英文原文（后端改文案也不会退化成「创建失败 + 重新提交」）。
+function toSubmitError(err: unknown): SubmitError {
+  if (err instanceof ApiError && err.status === 409) {
+    return {
+      title: '项目已关闭',
+      // 文案口径（方案 §7.8 表格）：标题「项目已关闭」+ 说明「不能新建任务，请先在项目列表重开」，
+      // 两处关键信息都在主文案里。表格全文（「该项目已关闭，不能新建任务；如需继续，请先在项目列表重开」）
+      // 在 720 抽屉的单行错误条里会把「重开」压成省略号（实测 clientWidth 285 / 内容 286），
+      // 而标题已写「项目已关闭」，故说明去掉重复主语与中段，保证关键动作完整可见。
+      message: '不能新建任务，请先在项目列表重开',
+      // 服务端原文（含 project_id）只在 detail；它会按单行横幅的既有取舍先让位（出省略号），
+      // 完整原文仍在 DOM 里，E9 的「原文只进 detail」成立。
+      detail: `HTTP ${err.status} · ${err.message}`,
+      action: 'close',
+    }
+  }
+  return {
+    title: '创建失败',
+    message: '任务没有提交成功，上一步填写的内容还在，可以直接重试。',
+    detail: err instanceof Error ? err.message : String(err),
+    action: 'retry',
+  }
+}
+
 export interface CreateTaskSheetProps {
   opened: boolean
   projectId: string
@@ -27,7 +61,7 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
   const [kind, setKind] = useState<TaskKind>('dev')
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [error, setError] = useState('')
+  const [error, setError] = useState<SubmitError | null>(null)
   const [busy, setBusy] = useState(false)
   // 同一 JS tick 内连点两次时，busy 这个 state 还没落地（React 批处理），
   // 只有 ref 是同步可读的——所以「已提交」用 ref 守门，state 只负责 UI 的 loading/禁用。
@@ -39,7 +73,7 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
     setKind('dev')
     setTitle('')
     setDescription('')
-    setError('')
+    setError(null)
     setBusy(false)
     submittingRef.current = false
   }, [opened])
@@ -48,7 +82,7 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
     if (submittingRef.current || title.trim() === '') return
     submittingRef.current = true
     setBusy(true)
-    setError('')
+    setError(null)
     try {
       await api.createTask({
         project_id: projectId,
@@ -58,7 +92,7 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
       })
       onCreated()
     } catch (err) {
-      setError(err instanceof ApiError || err instanceof Error ? err.message : String(err))
+      setError(toSubmitError(err))
     } finally {
       submittingRef.current = false
       setBusy(false)
@@ -105,14 +139,22 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
           value={description}
           onChange={setDescription}
         />
-        {error === '' ? null : (
+        {error === null ? null : (
           <ErrorBar
-            title="创建失败"
-            message="任务没有提交成功，上一步填写的内容还在，可以直接重试。"
-            detail={error}
+            title={error.title}
+            message={error.message}
+            detail={error.detail}
             retryLabel="重新提交"
-            onRetry={submit}
+            // 409 时重试必然再撞同一堵墙：不给重试，只留「关闭」（方案 §9.1「动作: 关闭」）
+            onRetry={error.action === 'retry' ? submit : undefined}
             retrying={busy}
+            extraActions={
+              error.action === 'close' ? (
+                <Button variant="default" size="sm" onClick={onClose}>
+                  关闭
+                </Button>
+              ) : undefined
+            }
           />
         )}
       </div>

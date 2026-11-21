@@ -74,6 +74,20 @@
   color: transparent;
 }
 
+/* 标题行：项目名 + 已关闭标识（design/screens/board.md「结构」第二段）。
+ * 标识与标题同排垂直居中；窄屏自动折到标题下一行，不挤压项目名。 */
+.bp-head__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-inline-size: 0;
+}
+
+.bp-head__closed {
+  flex: 0 0 auto;
+}
+
 .bp-head__meta {
   display: flex;
   flex-wrap: wrap;

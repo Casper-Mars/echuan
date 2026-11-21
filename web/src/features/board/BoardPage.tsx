@@ -16,7 +16,7 @@ import type { Project, Task, TaskStatus } from '../../api/types'
 import { useAutoRefresh } from '../../hooks/useAutoRefresh'
 import { KINDS, kindLabel } from '../../lib/labels'
 import { REFRESH_INTERVALS, isAutoRefreshEnabled, subscribeAutoRefresh } from '../../lib/refresh'
-import { Alert, BoardColumn, Button, EmptyState, SelectField, TaskCard } from '../../ui'
+import { Alert, BoardColumn, Button, EmptyState, SelectField, StatusPill, TaskCard } from '../../ui'
 import type { SelectOption } from '../../ui'
 import { ErrorBar } from '../shell/ErrorBar'
 import { BOARD_COLUMNS, readCollapsed, writeCollapsed } from './collapsed'
@@ -90,6 +90,13 @@ export function BoardPage() {
   }, [projectId])
 
   const tasks = data?.items ?? EMPTY_TASKS
+
+  // 只读口径（方案 §7.4 / E8·E9）：只有项目**确实取到且 status=closed** 才拦「新建任务」。
+  // 项目还在取或取数失败（project === null）一律不禁用——不知道状态就不做假拦截，
+  // 真撞上后端拦截（409）时由 CreateTaskSheet 给中文错误条（E9）。
+  // 除新建任务外的写操作（评审/重置/删除）后端不拦，本页同样不拦（方案 U-02），避免假只读。
+  const closed = project?.status === 'closed'
+  const productId = project?.product_id ?? ''
 
   // 归桶 + 列内排序（design/screens/board.md「数据来源」：7 列固定枚举，列内 priority 降序、update_time 降序）。
   // 关键点：status 不在 7 个枚举内的任务**不进任何列**，因此也不进页头/看板条的计数——
@@ -194,7 +201,15 @@ export function BoardPage() {
     <div className="bp" data-ui="board" data-board-state={state}>
       <header className="bp-head" data-ui="board-head">
         <div className="bp-head__main">
-          <h1 className="bp-head__title">{project?.name ?? projectId}</h1>
+          {/* design/screens/board.md「结构」：项目名 · 已关闭标识（closed 项目）· 任务数 · 自动刷新提示。
+              「已关闭」沿用项目列表的同一枚 StatusPill（status=cancelled / label=已关闭，ProjectsPage.tsx:98），
+              不新增变体；文案只说「已关闭」不说「只读」——后端只拦新建任务（方案 R-05 / U-02）。 */}
+          <div className="bp-head__line">
+            <h1 className="bp-head__title">{project?.name ?? projectId}</h1>
+            {closed ? (
+              <StatusPill className="bp-head__closed" status="cancelled" label="已关闭" />
+            ) : null}
+          </div>
           <p className="bp-head__meta">
             <span className="bp-head__id">{projectId}</span>
             <span className="bp-head__sep" aria-hidden="true">
@@ -228,7 +243,15 @@ export function BoardPage() {
             placeholder="全部状态"
             clearable
           />
-          <Button onClick={() => setCreateOpen(true)}>新建任务</Button>
+          {/* E8：closed 项目「新建任务」为原生 disabled（Tab 不可聚焦、点击无动作、零请求），
+              hover 用原生 title 说明为什么不能点以及去哪里重开。 */}
+          <Button
+            disabled={closed}
+            title={closed ? '项目已关闭，请先在项目列表重开' : undefined}
+            onClick={() => setCreateOpen(true)}
+          >
+            新建任务
+          </Button>
         </div>
       </header>
 
@@ -266,13 +289,25 @@ export function BoardPage() {
       )}
 
       {isEmpty && !filters.active ? (
-        <EmptyState
-          className="bp-empty"
-          title="这个项目还没有任务"
-          description="任务卡会按状态落进 7 列。先新建一条，或把 pending 的任务推到 ready。"
-          actionLabel="新建任务"
-          onAction={() => setCreateOpen(true)}
-        />
+        // E8：closed 项目不提供「新建任务」（后端必拒），空态下一步改成回项目列表重开；
+        // open 项目保持原动作不变（design/screens/board.md「状态矩阵 · empty」）。
+        closed ? (
+          <EmptyState
+            className="bp-empty"
+            title="这个项目还没有任务"
+            description="项目已关闭，不能再新建任务。需要继续，先在项目列表重开这个项目。"
+            actionLabel="返回项目列表"
+            onAction={() => navigate(`/products/${productId}/projects`)}
+          />
+        ) : (
+          <EmptyState
+            className="bp-empty"
+            title="这个项目还没有任务"
+            description="任务卡会按状态落进 7 列。先新建一条，或把 pending 的任务推到 ready。"
+            actionLabel="新建任务"
+            onAction={() => setCreateOpen(true)}
+          />
+        )
       ) : isEmpty ? (
         <EmptyState
           className="bp-empty"
