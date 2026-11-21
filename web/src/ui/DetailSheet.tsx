@@ -49,7 +49,9 @@ export function DetailSheet({
       styles={{
         content: cssProps({
           '--drawer-size': cssVar('ui-layout-sheet'),
-          backgroundColor: cssVar('surface-canvas'),
+          // 详情面板底色（issue #89 D3）：抽屉是 overlay 表面 → --surface-overlay（ref #0f141e）；
+          // 原先取 --surface-canvas(#070b14)，比 ref 深一档。颜色仍只来自令牌，不写死色值。
+          backgroundColor: cssVar('surface-overlay'),
           boxShadow: cssVar('shadow-e3'),
           borderLeft: `${cssVar('border-width')} solid ${cssVar('border-subtle')}`,
           // T6 修复（D5 同源几何）：Mantine 的 Drawer content 是 block 容器，
