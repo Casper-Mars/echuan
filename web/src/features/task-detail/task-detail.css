@@ -367,11 +367,45 @@
   font-size: var(--text-small-size);
 }
 
+/* loading 态骨架（issue #89 A6）：4 条独立骨架条，无卡片外壳、等距排列。
+ * 取值依据 design/mock/styles.css 的 .sk + .sk-line（refs 由 design/mock 生成）：
+ * 条高 12 = space-4、圆角 8 = radius-8、条间距 12 = space-4、细描边 border-subtle + overlay 底。
+ * 呼吸感用 opacity 动画（色调与 ui/SkeletonCard 一致）；时长仍从令牌推导（≈2.2s 一个来回，
+ * 贴近 Mantine Skeleton 的呼吸节奏），prefers-reduced-motion 下不动画。 */
 .fx-preview__skeleton {
+  --fx-skeleton-pulse: calc(var(--duration-slower) * 7);
+
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   min-width: 0;
+}
+
+.fx-preview__skeleton-line {
+  display: block;
+  inline-size: 100%;
+  block-size: var(--space-4);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-8);
+  background-color: var(--surface-overlay);
+  animation: fx-preview-skeleton-pulse var(--fx-skeleton-pulse) var(--easing-standard) infinite;
+}
+
+@keyframes fx-preview-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.65;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-preview__skeleton-line {
+    animation: none;
+  }
 }
 
 /* 抽屉头部：角色徽标 + 附件标题（预览态替换详情标题） */

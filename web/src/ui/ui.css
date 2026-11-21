@@ -947,13 +947,22 @@
   color: var(--text-muted);
 }
 
+/* 内嵌图片占位（issue #89 A5）：ref 是「虚线圆角块」，不是内联小 chip。
+ * 取值依据 design/mock/styles.css 的 .img-placeholder（refs 由 design/mock 生成）：
+ * padding space-2 / space-3（上下 4、左右 8）、radius-8、1px dashed border-strong、
+ * surface-raised 底。inline-flex 让它在段落里成块但仍随文字行内排版；
+ * max-width + overflow-wrap 保证窄屏长 alt 文案换行、不撑出横向滚动。 */
 .ui-markdown .ui-markdown__image-placeholder {
-  display: inline-block;
-  padding-inline: var(--space-2);
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: var(--space-2) var(--space-3);
   border: var(--border-width) dashed var(--border-strong);
-  border-radius: var(--radius-4);
+  border-radius: var(--radius-8);
+  background-color: var(--surface-raised);
   color: var(--text-muted);
   font-size: var(--text-small-size);
+  overflow-wrap: anywhere;
 }
 
 .ui-markdown__empty {
