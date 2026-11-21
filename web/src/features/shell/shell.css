@@ -72,12 +72,32 @@
   text-overflow: ellipsis;
 }
 
-/* 各段取舍：首段（产品）保持原宽（移动端还有 44px 触控下限），其余段可压缩。
- * 省略号落在段内**文本**元素上 —— 父级是 inline-flex，光靠它的 text-overflow 只能硬裁
- * （超长任务标识曾整段被切掉、没有省略号，issue #89 B2 / AC4）。
- * 链接不参与这条规则：动它的 min-width 会把移动端 44×44 触控区压小。 */
+/* 各段取舍（issue #102-4 收口）：面包屑现在装的是**名字**，窄屏必然出现超长段，
+ * 压缩必须由段内文本自己出省略号，不许交给父级 `.fx-crumbs__item { overflow: hidden }` 硬切
+ * （硬裁没有省略号，等于回到 issue #89 B2 / AC4 那个「超长标识整段被切掉」的旧账）。
+ *   - 首段（产品）：不压缩，保持原宽（移动端还有 44px 触控下限）；
+ *   - 短名字段（≤12 字符，且同行有长名字时标 --keep）：不压缩，让长名字承担全部溢出；
+ *   - 长名字段：按内容宽度等比压缩，自己出省略号；
+ *   - 标识段（任务 id，标 --token）：0.05，优先保标识，但保留可压缩性。
+ * 为什么不让中间段固定先让位、末段固定不让位：390 + 两个超长名字时宽度是硬约束，
+ * 中间段压到 44px 只剩「…」、末段照样要裁；分档后短名字（「订单服务」）完整、
+ * 长名字留可读前缀 + 省略号，且任何一段都不会被父级硬切。
+ * 省略号选择器覆盖 .fx-crumbs__label / __current：链接段与文本段共用同一套文本盒。 */
 .fx-crumbs__item:first-child {
   flex: 0 0 auto;
+}
+
+/* 短名字段（≤12 字符、且同行有长名字时才标）：不参与压缩，让长名字承担全部压缩，
+ * 「订单服务」这类常见项目名在 390 上保持完整。不会撑出父级：标 keep 的前提是同行有长名字，
+ * 长名字的 min-width 为 0（桌面）/ 44px（移动触控下限），足以吸收剩余溢出。 */
+.fx-crumbs__item--keep {
+  flex-shrink: 0;
+}
+
+/* 标识段（任务 id）：压缩权重 0.05，名字段先让位；仍可压缩到 0 并自己出省略号，
+ * 所以「极窄 + 超长 task id」也不会变成父级硬切。 */
+.fx-crumbs__item--token {
+  flex-shrink: 0.05;
 }
 
 .fx-crumbs__label,
@@ -88,7 +108,12 @@
   white-space: nowrap;
 }
 
+/* 链接段也走同一套：min-width: 0 让它能参与压缩，文本盒（.fx-crumbs__label）负责出省略号。
+ * 移动端 44×44 触控下限仍由下面媒体查询里的 min-width: --ui-control-height-touch 兜住。 */
 .fx-crumbs__link {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
   color: var(--text-muted);
   text-decoration: none;
 }
@@ -98,12 +123,20 @@
 }
 
 .fx-crumbs__sep {
+  flex: 0 0 auto;
   color: var(--text-muted);
 }
 
 .fx-crumbs__current {
   color: var(--text-primary);
   font-weight: var(--text-body-strong-weight);
+}
+
+/* 名字没取到、标签退回原始 ID（方案 §7.7 D6 / P4-3、P4-4）：mono 让「标识」和「名字」一眼可分，
+ * title 由 AppFrame 挂上原始 ID 作可读性兜底。名字齐全时这条类不出现。
+ * 只消费令牌：字体取 --font-mono，不写字面量。 */
+.fx-crumbs__id {
+  font-family: var(--font-mono);
 }
 
 .fx-topbar__actions {

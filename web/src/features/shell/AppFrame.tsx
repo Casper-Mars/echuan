@@ -17,6 +17,8 @@ import { ErrorBoundary } from './ErrorBoundary'
 import { RouteLoading } from './RouteLoading'
 import { SIDEBAR_NAV, TAB_NAV, MORE_NAV, RefreshIcon, activeKeyOf } from './nav'
 import { useShellLayout } from './use-layout'
+import { useCrumbNames } from './use-crumb-names'
+import type { CrumbNames } from './use-crumb-names'
 import { boardPath, rememberLastProject } from '../home/last-project'
 import './shell.css'
 
@@ -26,6 +28,12 @@ const BUILD_NOTE = 'v0.1 · 单二进制 · 内网'
 interface Crumb {
   label: string
   to?: string
+  /** 标签是「名字没取到时的原始 ID」→ 加 mono 字体并用 title 兜底可读性（D6 / P4-3、P4-4） */
+  fallbackId?: string
+  /** 标识段（任务 id）：窄屏压缩时优先保它，名字段先让位（见 shell.css 的 --token） */
+  token?: boolean
+  /** 短名字段：窄屏压缩时不让位，把宽度让给同行的长名字（见 shell.css 的 --keep） */
+  keep?: boolean
 }
 
 const SECTION_LABEL: Record<string, string> = {
@@ -36,11 +44,27 @@ const SECTION_LABEL: Record<string, string> = {
 }
 
 /**
- * 顶栏面包屑（design/refs：桌面/平板/移动顶栏左侧都是「产品 / <产品> / <项目>」）。
- * 只从 URL 段推导，不额外请求接口：顶栏属于壳层，不能因为某个接口失败就塌掉。
- * 产品名 / 项目名由 T5+ 的页面在页面头里展示（board.md「页头」），壳层不重复取数。
+ * 短名字阈值（字符数）：不超过它、且同行有长名字时标 `keep`（不压缩），
+ * 让长名字承担全部溢出。中文项目名通常 4–8 字（「订单服务」「供应链协同管理平台」9 字），
+ * 12 字以内基本能在一行里读全；更长的名字必然压缩，由它自己出省略号。
+ * 放在这里而不是 CSS 里：CSS 无法按内容长度分档，硬编码在样式里看不出意图。
  */
-function crumbsOf(pathname: string): Crumb[] {
+const SHORT_LABEL_MAX = 12
+
+/** 名字段是否「短」（短名字优先完整显示，见 shell.css 的 --keep） */
+const isShortLabel = (label: string) => label.length <= SHORT_LABEL_MAX
+
+/**
+ * 顶栏面包屑（design/refs：桌面/平板/移动顶栏左侧都是「产品 / <产品> / <项目>」）。
+ *
+ * 两段信息源（方案 §7.7 D6）：
+ *   - 结构（有没有第四段 taskId、哪段可点）只从 URL 段推导，**不依赖请求**；
+ *   - 名字（产品名 / 项目名）与 product_id 由 useCrumbNames 反查，取不到就退回 ID：
+ *     项目失败 → `产品 / <project_id>`（与今天一致，中间段不出现）；
+ *     产品失败 → `产品 / <productId>`（该段仍链到项目列表）/ `<项目名>`。
+ * 渲染不因取数失败而变：壳层把它当「可选装饰」，失败时保持 ID 形态（B2 想要的稳态）。
+ */
+function crumbsOf(pathname: string, names: CrumbNames): Crumb[] {
   const parts = pathname.split('/').filter(Boolean)
   if (parts.length === 0) return [{ label: '产品' }]
 
@@ -51,9 +75,44 @@ function crumbsOf(pathname: string): Crumb[] {
   }
 
   if (parts[0] === 'projects') {
+    const projectId = parts[1]
     const crumbs: Crumb[] = [{ label: '产品', to: '/products' }]
-    if (parts[1]) crumbs.push({ label: parts[1] })
-    if (parts[2] === 'tasks' && parts[3]) crumbs.push({ label: parts[3] })
+    if (!projectId) return crumbs
+
+    const taskId = parts[2] === 'tasks' && parts[3] ? parts[3] : ''
+
+    if (names.productId === '') {
+      // 项目反查失败（或首帧未回）：今天的形态，中间没有「项目列表」段
+      crumbs.push({ label: projectId, fallbackId: projectId })
+    } else {
+      const listTo = `/products/${names.productId}/projects`
+      // 中间段 = 产品（可点回项目列表）；名字没取到就显示 productId，链接照旧可用（P4-4）
+      crumbs.push(
+        names.productName === ''
+          ? { label: names.productId, to: listTo, fallbackId: names.productId }
+          : { label: names.productName, to: listTo },
+      )
+      // 项目段：没有 taskId 时它是末段（文本、不可点）；带 taskId 时它变成链接（P4-2）
+      const projectLabel = names.projectName === '' ? projectId : names.projectName
+      crumbs.push({
+        label: projectLabel,
+        to: taskId ? listTo : undefined,
+        fallbackId: names.projectName === '' ? projectId : undefined,
+      })
+    }
+
+    // 任务段是**标识**不是名字：窄屏优先保它（shrink 0.05），名字段先让位；
+    // 它自己也有 min-width: 0 + 省略号，极端情况下不会被父级硬切。
+    if (taskId) crumbs.push({ label: taskId, token: true })
+
+    // 只有「同行确实存在长名字」时才让短名字拒绝压缩：此时长名字能吸收全部溢出，
+    // 短名字（「订单服务」）保持完整，不会出现「订单…」这种半个词。
+    // 全是短名字时（如两段各 12 字）一律等比压缩 —— 否则没有可让位的段，会撑出父级硬切。
+    const nameCrumbs = crumbs.filter((crumb) => crumb !== crumbs[0] && !crumb.token)
+    if (nameCrumbs.some((crumb) => crumb.label.length > SHORT_LABEL_MAX)) {
+      for (const crumb of nameCrumbs) if (isShortLabel(crumb.label)) crumb.keep = true
+    }
+
     return crumbs
   }
 
@@ -78,9 +137,12 @@ export function AppFrame() {
     if (projectId) rememberLastProject(projectId)
   }, [projectId])
 
+  // 名字反查只在 `/projects/*` 启用；其它路由 projectId 为 null，hook 内直接返回空态、不发请求。
+  const crumbNames = useCrumbNames(projectId)
+
   const activeKey = activeKeyOf(pathname)
   const collapsed = layout === 'tablet'
-  const crumbs = crumbsOf(pathname)
+  const crumbs = crumbsOf(pathname, crumbNames)
 
   const go = (key: string) => {
     if (key === 'inbox') navigate('/inbox')
@@ -136,19 +198,38 @@ export function AppFrame() {
             {crumbs.map((crumb, index) => {
               const last = index === crumbs.length - 1
               return (
-                <span className="fx-crumbs__item" key={`${crumb.label}-${index}`}>
+                <span
+                  className={`fx-crumbs__item${crumb.token ? ' fx-crumbs__item--token' : ''}${
+                    crumb.keep ? ' fx-crumbs__item--keep' : ''
+                  }`}
+                  key={`${crumb.label}-${index}`}
+                >
                   {index > 0 ? (
                     <span className="fx-crumbs__sep" aria-hidden="true">
                       /
                     </span>
                   ) : null}
                   {crumb.to && !last ? (
-                    <Link className="fx-crumbs__link" to={crumb.to}>
-                      {crumb.label}
+                    <Link
+                      className={crumb.fallbackId === undefined ? 'fx-crumbs__link' : 'fx-crumbs__link fx-crumbs__id'}
+                      title={crumb.fallbackId}
+                      to={crumb.to}
+                    >
+                      {/* 链接段自带文本盒：面包屑现在装的是**名字**，窄屏压缩时省略号必须落在
+                          段内文本上（链接是 inline-flex，裸文本会成匿名 flex 子项、吃不到 text-overflow）。 */}
+                      <span className="fx-crumbs__label">{crumb.label}</span>
                     </Link>
                   ) : (
-                    // 文本段：末段加粗、非末段用 _label —— 两者都自己承担省略号（窄屏超长标识单行省略）
-                    <span className={last ? 'fx-crumbs__current' : 'fx-crumbs__label'}>{crumb.label}</span>
+                    // 文本段：末段加粗、非末段用 _label —— 两者都自己承担省略号（窄屏超长标识单行省略）。
+                    // `--id` 只在「名字没取到、退回原始 ID」时加（mono + title），名字齐全时不加。
+                    <span
+                      className={`${last ? 'fx-crumbs__current' : 'fx-crumbs__label'}${
+                        crumb.fallbackId === undefined ? '' : ' fx-crumbs__id'
+                      }`}
+                      title={crumb.fallbackId}
+                    >
+                      {crumb.label}
+                    </span>
                   )}
                 </span>
               )
