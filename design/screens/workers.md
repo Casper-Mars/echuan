@@ -17,6 +17,11 @@
 | error | 错误条 + 重试 | refs/workers__{desktop,tablet,mobile}__dark__error.png |
 | stale | 心跳过期行整行淡底 + 红色心跳徽标（4m12s 前） | refs/workers__{desktop,tablet,mobile}__dark__stale.png |
 
-- 交互：行内「查看任务」跳到该 worker 当前任务的详情路由。
+- 交互：行内「查看任务」跳到该 worker 当前任务的详情路由。`GET /v1/workers` 只给
+  `current_work_item_id`（`t_...`）、没有 `project_id`，所以一次点击**先反查一次**
+  `GET /v1/tasks?id=<tid>` 取 `project_id`，再跳 `#/projects/<pid>/tasks/<tid>`（详情抽屉）；
+  反查在飞时按钮 loading、不可重复点。反查失败（404 / 响应缺 `project_id` / 网络异常）或
+  节点本来没有当前任务时，按钮**禁用 + 行内可见原因**（`title` 同一句），页面不跳转——
+  不猜 `project_id`，也不出现「可点但没反应」。
 - 数据来源：`GET /v1/workers`（`worker_id` / `state` / `current_task_id`）。
 - 不做：远程终止 worker、改 lease（属后端能力，不在本期纯前端范围）。

@@ -148,7 +148,8 @@ export function AppFrame() {
                       {crumb.label}
                     </Link>
                   ) : (
-                    <span className={last ? 'fx-crumbs__current' : undefined}>{crumb.label}</span>
+                    // 文本段：末段加粗、非末段用 _label —— 两者都自己承担省略号（窄屏超长标识单行省略）
+                    <span className={last ? 'fx-crumbs__current' : 'fx-crumbs__label'}>{crumb.label}</span>
                   )}
                 </span>
               )

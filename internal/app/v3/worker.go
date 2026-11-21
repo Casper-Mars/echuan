@@ -59,3 +59,14 @@ func (s *WorkerService) Kinds(ctx context.Context, workerID string) ([]enum.Task
 	kinds, err := storev3.ListWorkerKinds(ctx, s.st.Read(), workerID)
 	return kinds, Translate(err)
 }
+
+// CurrentWorkItemID is the business id (`t_...`) of the task a worker holds,
+// or nil when it holds nothing.
+//
+// It is already resolved by store/v3.ListWorkers' LEFT JOIN (Worker.CurrentTaskCode),
+// so the listing stays one query for the whole page instead of one per worker
+// (issue #89 C1/E4 review: N+1). A dangling pointer (task row gone) maps to nil,
+// exactly like "no work item", and never fails the listing.
+func (s *WorkerService) CurrentWorkItemID(worker storev3.Worker) *string {
+	return worker.CurrentTaskCode
+}

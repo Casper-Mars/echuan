@@ -72,6 +72,22 @@
   text-overflow: ellipsis;
 }
 
+/* 各段取舍：首段（产品）保持原宽（移动端还有 44px 触控下限），其余段可压缩。
+ * 省略号落在段内**文本**元素上 —— 父级是 inline-flex，光靠它的 text-overflow 只能硬裁
+ * （超长任务标识曾整段被切掉、没有省略号，issue #89 B2 / AC4）。
+ * 链接不参与这条规则：动它的 min-width 会把移动端 44×44 触控区压小。 */
+.fx-crumbs__item:first-child {
+  flex: 0 0 auto;
+}
+
+.fx-crumbs__label,
+.fx-crumbs__current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .fx-crumbs__link {
   color: var(--text-muted);
   text-decoration: none;
@@ -162,24 +178,83 @@
   background-color: var(--surface-raised);
   color: var(--text-primary);
   border: var(--border-width) solid color-mix(in srgb, var(--feedback-danger) 45%, var(--border-subtle));
+  /* 单行横幅的竖直内距收到 space-3（8px）：条高 50px，与 ref 的量级一致（改前 134px） */
+  padding-block: var(--space-3);
 }
 
 .fx-error-bar-alert .mantine-Alert-icon {
   color: var(--feedback-danger);
 }
 
+/* ui/Alert 的正文槽与 Mantine 的 body 都是 flex 项且没有 min-width: 0：单行不换行的错误文案
+ * 会把它们的 min-content 撑成整段文本，横幅内容因此溢出到容器外（抽屉里实测动作被推出可视区）。
+ * 这里只对本错误条生效，把整条链路压回可收缩宽度。 */
+.fx-error-bar-alert .mantine-Alert-body,
+.fx-error-bar-alert .ui-alert__body {
+  min-width: 0;
+}
+
+.fx-error-bar-alert .ui-alert__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+}
+
+/* 单行横幅（issue #89 B1）：文本一段、动作一段，动作贴右；文本内部同样单行，超长才省略。
+ * 旧实现是「三行文本 + 动作另起一行靠左」，与 ref（单行 + 重试右置）相反。 */
 .fx-error-bar {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-4);
   min-width: 0;
   color: var(--text-primary);
 }
 
+.fx-error-bar__text {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ===== 错误条文本优先级（issue #89 B1，review 第 3 轮）=========================
+ * 不变式（验收口径）：
+ *   ① `.fx-error-bar__text` 永不溢出：任何宿主、任何 message / detail 长度下
+ *      `scrollWidth <= clientWidth`；
+ *   ② 被压缩的段一律「自己」出省略号（`overflow: hidden` + `text-overflow: ellipsis`），
+ *      不许出现父级硬切；
+ *   ③ 优先级按「这段丢了损失多大」排，见下面两条分支。
+ *
+ * 各分支的取舍（括号内为实测值）：
+ *   * 有技术细节（任务详情 / 看板 / 收件箱 / 派单队列）：标题是固定短标签
+ *     （「评审没有提交成功」7 字 ≈104），**不收缩**，只封顶在
+ *     「容器 − 细节下限 − 两条 gap」，保证结构上不会溢出；技术细节（HTTP 状态 + 端点 +
+ *     附加说明，信息最可丢）先让位并保留 40 的下限（至少露出「HTTP 500 · …」）；
+ *     说明（服务端原话，最要紧）拿剩下的全部宽度，只有「标题 + 细节下限」之外还不够时才自己省略。
+ *     抽屉 540 文本列 + 74 字符 message（lease lost 原文，475）的实测：
+ *     标题 104/104 完整、说明 388/475 省略号、细节 40/534 省略号、容器 540/540 不溢出。
+ *     代价：说明与技术细节同时收缩时按比例分摊，普通文案可能被压掉 1px 而出现末尾省略号
+ *     （实测「服务端错误（取证伪造）」142/143）——这是「容器绝不溢出」的必然代价，
+ *     比硬切掉半句服务端原话损失更小。
+ *   * 没有技术细节（附件预览）：溢出只能由标题与说明消化。标题保底 80
+ *     （至少露出错误种类，`（HTTP 413/500）` 有机会保留在头部），说明吃剩下的宽度，
+ *     两者都参与收缩、都出省略号，任何一段都不会被压成 0 宽。
+ *     156 文本列（双动作）实测：标题 80/143、说明 72/494、容器 156/156；
+ *     216 文本列（HTTP 500，单动作）实测：标题 80/161、说明 132/364、容器 216/216。
+ *     桌面窄栏保不住标题尾部的 HTTP 码（216 栏放不下 17 字标题 + 26 字说明，单行 50 高是硬约束），
+ *     移动 390 换行后完整可见——这是刻意的取舍：桌面形态优先。
+ */
 .fx-error-bar__title,
 .fx-error-bar__message,
 .fx-error-bar__detail {
   margin: 0;
+  /* 不变式②：谁被压窄，谁自己出省略号（父级 overflow: hidden 只当最后一道保险） */
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fx-error-bar__title {
@@ -198,18 +273,88 @@
   overflow-wrap: anywhere;
 }
 
-/* 动作成组（D7）：同一行、同一对齐（起点）、间距走令牌；窄屏才换行 */
+/* 有技术细节：标题不收缩（但封顶在「容器 − 细节下限 − 两条 gap」，保证结构上不溢出），
+   细节先让位、保底 40，说明吃剩下的宽度。 */
+.fx-error-bar__text[data-detail='on'] .fx-error-bar__title {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: calc(100% - var(--space-8) - var(--space-2) * 2);
+}
+
+.fx-error-bar__text[data-detail='on'] .fx-error-bar__message {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.fx-error-bar__text[data-detail='on'] .fx-error-bar__detail {
+  flex: 0 100 auto;
+  min-width: var(--space-8);
+}
+
+/* 没有技术细节：标题保底 80（至少露出错误种类，含 HTTP 码的机会最大），说明吃掉剩下的宽度；
+   两者都等权参与收缩、都出省略号，任何一段都不会被压成 0 宽。 */
+.fx-error-bar__text[data-detail='off'] .fx-error-bar__title {
+  flex: 0 1 auto;
+  min-width: var(--space-11);
+}
+
+.fx-error-bar__text[data-detail='off'] .fx-error-bar__message {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 动作成组（D7 → B1）：重试与额外动作同一行、同一右对齐；没有动作时整块不渲染（不留空占位） */
 .fx-error-bar__actions {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: flex-end;
   gap: var(--space-3);
-  margin-block-start: var(--space-2);
+  margin-inline-start: auto;
 }
 
 .fx-error-bar__actions > * {
   flex: 0 0 auto;
+}
+
+/* 窄屏：文案放不下就换行（不省略掉「下一步怎么做」），动作仍贴右 */
+@media (max-width: 47.99em) {
+  .fx-error-bar {
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .fx-error-bar__text {
+    flex-wrap: wrap;
+    overflow: visible;
+    white-space: normal;
+  }
+
+  /* review B1-2：窄屏标题必须留在文本列内换行（原来 flex: 0 0 auto 会按固有宽度溢出，
+     越过列边界压到右侧「重试 / 在新标签打开原文」上）。这里放开收缩下限，交给换行解决。
+     选择器带 [data-detail] 是为了与上面的优先级规则同权重（0,3,0），靠源码顺序在窄屏生效。 */
+  .fx-error-bar__text[data-detail] .fx-error-bar__title {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+
+  .fx-error-bar__text[data-detail] .fx-error-bar__message {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+
+  .fx-error-bar__text[data-detail] .fx-error-bar__detail {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
 }
 
 .fx-page-error {

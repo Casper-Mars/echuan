@@ -11,7 +11,7 @@ export type ThemeMode = 'dark' | 'light'
 export const semanticDark = {
   "surface-canvas": "#070b14",
   "surface-raised": "#0b1322",
-  "surface-overlay": "#101a2b",
+  "surface-overlay": "#0f141e",
   "border-subtle": "#1c2a43",
   "border-default": "#28405f",
   "border-strong": "#3d5a80",
@@ -112,7 +112,7 @@ export const paletteDark = {
   "slate": {
     "1": "#070b14",
     "2": "#0b1322",
-    "3": "#101a2b",
+    "3": "#0f141e",
     "4": "#e7eef6",
     "5": "#dde6f0",
     "6": "#1c2a43",

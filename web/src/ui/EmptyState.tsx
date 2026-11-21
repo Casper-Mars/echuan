@@ -34,13 +34,15 @@ export function EmptyState({
   children,
   className,
 }: EmptyStateProps) {
+  // 块内节奏按 ref（issue #89 A4）：标题 / 说明 / 操作之间 gap = space-4(12)。
+  // ref 的 .empty 是 gap 8 + 标题 <p> 自带上下 margin；Mantine Text 清掉了 margin，这里补进 gap。
   return (
     <Stack
       className={cx('ui-empty-state', className)}
       data-tone={tone}
       align="center"
       justify="center"
-      gap={cssVar('space-3')}
+      gap={cssVar('space-4')}
       style={cssVars({ '--empty-state-radius': cssVar('radius-12') })}
     >
       <Text component="p" className="ui-empty-state__title">

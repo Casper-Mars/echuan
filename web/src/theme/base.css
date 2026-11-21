@@ -82,6 +82,9 @@ html {
 }
 
 body {
+  /* 氛围光强度（暗色基准，亮色档覆写在文件末尾） */
+  --ui-glow-primary: 26%;
+  --ui-glow-info: 20%;
   margin: 0;
   min-height: 100%;
   color: var(--text-primary);
@@ -89,17 +92,10 @@ body {
   isolation: isolate;
   /* 氛围光（左上品牌蓝 / 右上信息青），全部由令牌 color-mix 推导 */
   background-color: var(--surface-canvas);
+  /* 光晕：显式半径（旧 closest-side 把半径裁到 ~108px，光带几乎不出画，issue #89 D1）；强度走变量 */
   background-image:
-    radial-gradient(
-      closest-side at 12% -12%,
-      color-mix(in srgb, var(--action-primary) 18%, transparent),
-      transparent
-    ),
-    radial-gradient(
-      closest-side at 96% -6%,
-      color-mix(in srgb, var(--feedback-info) 12%, transparent),
-      transparent
-    );
+    radial-gradient(52% 46% at 12% -12%, color-mix(in srgb, var(--action-primary) var(--ui-glow-primary), transparent), transparent),
+    radial-gradient(46% 42% at 96% -6%, color-mix(in srgb, var(--feedback-info) var(--ui-glow-info), transparent), transparent);
   background-attachment: fixed;
 }
 
@@ -156,3 +152,5 @@ samp {
   font-family: var(--font-mono);
   font-size: var(--text-mono-size);
 }
+/* 亮色档：同一组光晕在近白底上要调弱，否则光带比 ref 明显更蓝（issue #89 D1 亮色回归项） */
+html[data-theme=light] body { --ui-glow-primary: 16%; --ui-glow-info: 14%; }
