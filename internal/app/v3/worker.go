@@ -59,3 +59,23 @@ func (s *WorkerService) Kinds(ctx context.Context, workerID string) ([]enum.Task
 	kinds, err := storev3.ListWorkerKinds(ctx, s.st.Read(), workerID)
 	return kinds, Translate(err)
 }
+
+// CurrentWorkItemID resolves a worker's held task row (workers.current_task_id,
+// a row id) to the task business id (`t_...`) that every public contract speaks.
+//
+// Idle workers return nil. So does a dangling pointer (task row deleted while
+// the worker still points at it): one bad row must not fail the whole registry
+// listing, and "no work item" is the honest reading of that state.
+func (s *WorkerService) CurrentWorkItemID(ctx context.Context, worker storev3.Worker) (*string, error) {
+	if worker.CurrentTaskID == nil {
+		return nil, nil
+	}
+	code, ok, err := storev3.TaskCodeByPK(ctx, s.st.Read(), *worker.CurrentTaskID)
+	if err != nil {
+		return nil, Translate(err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	return &code, nil
+}

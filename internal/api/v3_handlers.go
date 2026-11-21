@@ -117,12 +117,17 @@ type v3TaskListResponse struct {
 }
 
 type v3WorkerResponse struct {
-	WorkerID       string           `json:"worker_id"`
-	Kinds          []string         `json:"kinds"`
-	State          enum.WorkerState `json:"state"`
-	CurrentTaskID  *int64           `json:"current_task_id,omitempty"`
-	CurrentLeaseID *string          `json:"current_lease_id,omitempty"`
-	LastSeen       string           `json:"last_seen"`
+	WorkerID string           `json:"worker_id"`
+	Kinds    []string         `json:"kinds"`
+	State    enum.WorkerState `json:"state"`
+	// CurrentTaskID 是数据库自增行 id（历史字段，保留给潜在消费者）。
+	CurrentTaskID *int64 `json:"current_task_id,omitempty"`
+	// CurrentWorkItemID 是任务业务标识（`t_...`），与旧版 /v1/workers、
+	// 任务响应与 claim 信封同一口径；空闲节点为 null（不用 omitempty，
+	// 前端契约是 `string | null`，null 与缺省要分得开）。
+	CurrentWorkItemID *string `json:"current_work_item_id"`
+	CurrentLeaseID    *string `json:"current_lease_id,omitempty"`
+	LastSeen          string  `json:"last_seen"`
 }
 
 type v3WorkerListResponse struct {
@@ -744,10 +749,18 @@ func (h *v3Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
 		for _, kind := range kinds {
 			kindNames = append(kindNames, kind.String())
 		}
+		// 占用口径是行 id（workers.current_task_id），对外契约要业务标识 `t_...`：
+		// 不在这里做映射的话，真后端下前端「当前任务」永远拿不到值（issue #89 C1/E4）。
+		workItemID, err := h.workers.CurrentWorkItemID(r.Context(), worker)
+		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
 		items = append(items, v3WorkerResponse{
 			WorkerID: worker.WorkerID, Kinds: kindNames, State: worker.State,
-			CurrentTaskID: worker.CurrentTaskID, CurrentLeaseID: worker.CurrentLeaseID,
-			LastSeen: worker.LastSeen,
+			CurrentTaskID: worker.CurrentTaskID, CurrentWorkItemID: workItemID,
+			CurrentLeaseID: worker.CurrentLeaseID,
+			LastSeen:       worker.LastSeen,
 		})
 	}
 	writeJSON(w, http.StatusOK, v3WorkerListResponse{Items: items})

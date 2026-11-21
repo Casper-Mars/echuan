@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -467,5 +468,103 @@ func TestCreateMaterialAndReport(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("report = %d (%s)", resp.StatusCode, payload)
+	}
+}
+
+// TestWorkersExposeCurrentWorkItemID 锁住 /v1/workers 的当前任务口径（issue #89 C1/E4，返工）。
+//
+// 数据边界：workers.current_task_id 存的是 tasks 的自增行 id，而对外契约（旧版 /v1/workers、
+// 任务响应、claim 信封）一律是任务业务标识 `t_...`；两者混用会让前端把行 id 当字符串显示、
+// 或者干脆显示不出来。
+// 回归保护：上一版只改前端类型 → mock 通过、真后端下忙碌节点显示「—」。所以断言直接打
+// 真正挂载的 V3 路由（NewRouterV3），而不是 store 层或旧版 handler。
+func TestWorkersExposeCurrentWorkItemID(t *testing.T) {
+	a := newAPIServer(t)
+	a.seedProduct(t, "APP")
+	_, payload := a.do(t, http.MethodPost, "/v1/projects", map[string]any{"product_id": "APP", "name": "p"})
+	project := decodeBody[v3ProjectResponse](t, payload)
+
+	resp, payload := a.do(t, http.MethodPost, "/v1/tasks", map[string]any{
+		"project_id": project.ProjectID, "task_id": "t_cur_item", "kind": "dev", "title": "执行中",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create task = %d (%s)", resp.StatusCode, payload)
+	}
+	for _, workerID := range []string{"w_busy", "w_idle"} {
+		resp, payload = a.do(t, http.MethodPost, "/v1/workers/heartbeat", map[string]any{
+			"worker_id": workerID, "kinds": []string{"dev"},
+		})
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("heartbeat %s = %d (%s)", workerID, resp.StatusCode, payload)
+		}
+	}
+	resp, payload = a.do(t, http.MethodPost, "/v1/tasks/claim", map[string]any{
+		"worker_id": "w_busy", "kind": "dev",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("claim = %d (%s)", resp.StatusCode, payload)
+	}
+	if claimed := decodeBody[v3ClaimResponse](t, payload); claimed.Task.TaskID != "t_cur_item" {
+		t.Fatalf("claimed task = %q, want t_cur_item", claimed.Task.TaskID)
+	}
+
+	resp, payload = a.do(t, http.MethodGet, "/v1/workers", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list workers = %d (%s)", resp.StatusCode, payload)
+	}
+	list := decodeBody[v3WorkerListResponse](t, payload)
+	byID := make(map[string]v3WorkerResponse, len(list.Items))
+	for _, worker := range list.Items {
+		byID[worker.WorkerID] = worker
+	}
+
+	busy, ok := byID["w_busy"]
+	if !ok {
+		t.Fatalf("w_busy missing: %+v", list.Items)
+	}
+	if busy.CurrentWorkItemID == nil {
+		t.Fatalf("w_busy current_work_item_id = null, want t_cur_item（行 id 没映射成业务标识）")
+	}
+	if got := *busy.CurrentWorkItemID; got != "t_cur_item" || !strings.HasPrefix(got, "t_") {
+		t.Errorf("w_busy current_work_item_id = %q, want t_cur_item（t_ 前缀）", got)
+	}
+	// 旧字段保留：仍是行 id（潜在消费者依赖它），不能把业务标识塞进去。
+	if busy.CurrentTaskID == nil || *busy.CurrentTaskID <= 0 {
+		t.Errorf("w_busy current_task_id = %v, want 行 id 保留", busy.CurrentTaskID)
+	}
+
+	idle, ok := byID["w_idle"]
+	if !ok {
+		t.Fatalf("w_idle missing: %+v", list.Items)
+	}
+	if idle.CurrentWorkItemID != nil {
+		t.Errorf("w_idle current_work_item_id = %q, want null", *idle.CurrentWorkItemID)
+	}
+
+	// 线上 JSON 再确认一次：该键必须存在且空闲节点显式为 null（前端契约是 `string | null`，
+	// 缺省键与 null 在类型层不同，别让 omitempty 把契约改成可选）。
+	var raw struct {
+		Items []struct {
+			WorkerID          string          `json:"worker_id"`
+			CurrentWorkItemID json.RawMessage `json:"current_work_item_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatalf("decode raw workers: %v", err)
+	}
+	for _, item := range raw.Items {
+		if len(item.CurrentWorkItemID) == 0 {
+			t.Fatalf("%s: current_work_item_id 键缺失（契约要求显式 null / 字符串）", item.WorkerID)
+		}
+		switch item.WorkerID {
+		case "w_busy":
+			if got := string(item.CurrentWorkItemID); got != `"t_cur_item"` {
+				t.Errorf("w_busy raw current_work_item_id = %s, want \"t_cur_item\"", got)
+			}
+		case "w_idle":
+			if got := string(item.CurrentWorkItemID); got != "null" {
+				t.Errorf("w_idle raw current_work_item_id = %s, want null", got)
+			}
+		}
 	}
 }
