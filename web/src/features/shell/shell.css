@@ -72,6 +72,22 @@
   text-overflow: ellipsis;
 }
 
+/* 各段取舍：首段（产品）保持原宽（移动端还有 44px 触控下限），其余段可压缩。
+ * 省略号落在段内**文本**元素上 —— 父级是 inline-flex，光靠它的 text-overflow 只能硬裁
+ * （超长任务标识曾整段被切掉、没有省略号，issue #89 B2 / AC4）。
+ * 链接不参与这条规则：动它的 min-width 会把移动端 44×44 触控区压小。 */
+.fx-crumbs__item:first-child {
+  flex: 0 0 auto;
+}
+
+.fx-crumbs__label,
+.fx-crumbs__current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .fx-crumbs__link {
   color: var(--text-muted);
   text-decoration: none;

@@ -61,7 +61,8 @@
   padding: var(--space-5);
   border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--radius-12);
-  background-color: var(--surface-raised);
+  /* 表格行表面（issue #89 D2）：ref 表格区实测 #060b14 ≈ 画布色，不采用 --surface-raised。 */
+  background-color: var(--surface-canvas);
   box-shadow: var(--shadow-e1);
 }
 
