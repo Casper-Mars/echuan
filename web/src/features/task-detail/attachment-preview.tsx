@@ -14,6 +14,7 @@
 import { Component, useRef, type ErrorInfo, type ReactNode } from 'react'
 import type { AttachmentRef } from '../../api/types'
 import { Alert, AttachmentRow, Button, EmptyState, MarkdownViewer, SkeletonCard } from '../../ui'
+import { ErrorBar } from '../shell/ErrorBar'
 import { useAttachmentPreview, type PreviewState } from './use-attachment-preview'
 
 const ROLE_LABEL: Record<AttachmentRef['role'], string> = {
@@ -120,23 +121,22 @@ function PreviewBody({
     const retryable = failure?.kind === 'timeout' || failure?.kind === 'network'
     return (
       <div className="fx-preview__slot" data-ui="preview-error">
-        <Alert
-          tone="danger"
+        {/* 与看板 / 详情 / 收件箱 / 派单队列共用 shell/ErrorBar（issue #89 B1：单行横幅 + 动作右置） */}
+        <ErrorBar
           title={title}
-          actionLabel={retryable ? '重试' : '在新标签打开原文'}
-          onAction={retryable ? onRetry : openSource}
-        >
-          <span className="fx-preview__hint">
-            {retryable
+          message={
+            retryable
               ? '网络或服务端没有在 8 秒内给出响应，可以重试；也可以在新标签打开原文自行查看。'
-              : '应用内没法渲染这份正文，可以用兜底链接在新标签打开原文。'}
-          </span>
-          {retryable ? (
+              : '应用内没法渲染这份正文，可以用兜底链接在新标签打开原文。'
+          }
+          retryLabel="重试"
+          onRetry={retryable ? onRetry : undefined}
+          extraActions={
             <Button variant="default" size="sm" onClick={openSource}>
               在新标签打开原文
             </Button>
-          ) : null}
-        </Alert>
+          }
+        />
       </div>
     )
   }

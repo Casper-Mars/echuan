@@ -9,6 +9,8 @@
 //     （Tester 复核项 D2：旧实现把 dark 令牌的 --text-primary 叠在旧浅色页 + Mantine light 变体
 //      的浅色底上，实测 message 1.12:1 / detail 1.92:1 / title 2.78:1，均不可读。）
 //   * 动作成组：重试与额外动作同一行、同一对齐、间距走令牌（Tester 复核项 D7）。
+//   * 形态：单行横幅 + 动作右置（issue #89 B1）——标题 / 说明 / 技术细节在横幅内一行内联，
+//     动作组用 `margin-inline-start: auto` 贴右；窄屏文本换行、动作仍贴右。
 import type { ReactNode } from 'react'
 import { Alert, Button } from '../../ui'
 
@@ -48,9 +50,12 @@ export function ErrorBar({
       className={className ? `fx-error-bar-alert ${className}` : 'fx-error-bar-alert'}
     >
       <div className="fx-error-bar" data-ui="error-bar" data-surface="self">
-        <p className="fx-error-bar__title">{title}</p>
-        {message ? <p className="fx-error-bar__message">{message}</p> : null}
-        {detail ? <p className="fx-error-bar__detail">{detail}</p> : null}
+        {/* 单行横幅（issue #89 B1）：标题 / 说明 / 技术细节内联在同一行，动作组贴右 */}
+        <p className="fx-error-bar__text">
+          <span className="fx-error-bar__title">{title}</span>
+          {message ? <span className="fx-error-bar__message">{message}</span> : null}
+          {detail ? <span className="fx-error-bar__detail">{detail}</span> : null}
+        </p>
         {hasActions ? (
           <div className="fx-error-bar__actions" data-ui="error-bar-actions">
             {onRetry ? (

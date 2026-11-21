@@ -162,18 +162,47 @@
   background-color: var(--surface-raised);
   color: var(--text-primary);
   border: var(--border-width) solid color-mix(in srgb, var(--feedback-danger) 45%, var(--border-subtle));
+  /* 单行横幅的竖直内距收到 space-3（8px）：条高 50px，与 ref 的量级一致（改前 134px） */
+  padding-block: var(--space-3);
 }
 
 .fx-error-bar-alert .mantine-Alert-icon {
   color: var(--feedback-danger);
 }
 
+/* ui/Alert 的正文槽与 Mantine 的 body 都是 flex 项且没有 min-width: 0：单行不换行的错误文案
+ * 会把它们的 min-content 撑成整段文本，横幅内容因此溢出到容器外（抽屉里实测动作被推出可视区）。
+ * 这里只对本错误条生效，把整条链路压回可收缩宽度。 */
+.fx-error-bar-alert .mantine-Alert-body,
+.fx-error-bar-alert .ui-alert__body {
+  min-width: 0;
+}
+
+.fx-error-bar-alert .ui-alert__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+}
+
+/* 单行横幅（issue #89 B1）：文本一段、动作一段，动作贴右；文本内部同样单行，超长才省略。
+ * 旧实现是「三行文本 + 动作另起一行靠左」，与 ref（单行 + 重试右置）相反。 */
 .fx-error-bar {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-4);
   min-width: 0;
   color: var(--text-primary);
+}
+
+.fx-error-bar__text {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .fx-error-bar__title,
@@ -183,33 +212,62 @@
 }
 
 .fx-error-bar__title {
+  flex: 0 0 auto;
   color: var(--text-primary);
   font-weight: var(--text-body-strong-weight);
 }
 
 .fx-error-bar__message {
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-primary);
+  text-overflow: ellipsis;
 }
 
 .fx-error-bar__detail {
+  flex: 0 0 auto;
   color: var(--text-muted);
   font-size: var(--text-small-size);
   font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
 
-/* 动作成组（D7）：同一行、同一对齐（起点）、间距走令牌；窄屏才换行 */
+/* 动作成组（D7 → B1）：重试与额外动作同一行、同一右对齐；没有动作时整块不渲染（不留空占位） */
 .fx-error-bar__actions {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: flex-end;
   gap: var(--space-3);
-  margin-block-start: var(--space-2);
+  margin-inline-start: auto;
 }
 
 .fx-error-bar__actions > * {
   flex: 0 0 auto;
+}
+
+/* 窄屏：文案放不下就换行（不省略掉「下一步怎么做」），动作仍贴右 */
+@media (max-width: 47.99em) {
+  .fx-error-bar {
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .fx-error-bar__text {
+    flex-wrap: wrap;
+    overflow: visible;
+    white-space: normal;
+  }
+
+  .fx-error-bar__message {
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .fx-error-bar__detail {
+    flex: 1 1 100%;
+  }
 }
 
 .fx-page-error {
