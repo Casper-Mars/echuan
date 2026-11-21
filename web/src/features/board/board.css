@@ -262,8 +262,8 @@
 
 /* ===== 新建任务面板（features/board/CreateTaskSheet） =================== */
 /* 注意：这里**不覆盖** ErrorBar 的内部 flex（曾试过让说明不收缩，结果把非 409 分支与窄屏换行一起带崩）。
- * 说明沿用 shell 的既有取舍（宽屏按比例收缩、窄屏换行），409 文案靠字数装进 720 抽屉，
- * 见 CreateTaskSheet 的 CLOSED_MESSAGE 注释。 */
+ * 说明沿用 shell 的既有取舍（宽屏按比例收缩出省略号、窄屏换行）；409 说明在 720 抽屉里会被裁尾部，
+ * 属已登记的口径差（见 CreateTaskSheet 的 409 分支注释与 shell.css:226-243）。 */
 
 .bp-form {
   display: flex;
