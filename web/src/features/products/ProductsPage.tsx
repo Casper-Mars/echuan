@@ -6,12 +6,13 @@
 //                                「交互」行点击 → 只读详情抽屉（6 字段，0 请求，字段取当前行），行内「查看项目」只导航不开抽屉。
 //   design/components.md         §ui/DataTable（表体换骨架行 / 移动端 data-label / onRowClick）、§ui/EmptyState、
 //                                §ui/SkeletonCard、§ui/Alert（danger 可重试）、§ui/Button、§ui/SelectField、
-//                                §ui/DetailSheet（`readonly` 变体 + 字段键值网格）、§「屏内私有详情抽屉」（共用键值网格 = features/shell/DetailFields）。
+//                                §「屏内私有详情抽屉」（产品 6 字段在 features/products/ProductDetailSheet，
+//                                共用键值网格 = features/shell/DetailFields）。
 //   docs/tech/web-ui-redo-v0.1.md §7   数据源不新增接口：GET /v1/products（project_count）+ GET /v1/projects（按需）。
 //   docs/tech/web-ui-102-interaction-fix-v0.1.md §7.2（D1）/ §7.3（D2）/ §7.8（一次点击一个结果）。
 //
-// 分层：本文件只 import ui / api / hooks / lib 与 features/shell（壳层共用件），不直接 import Mantine 包
-// （分层红线，验收用 grep 查）。
+// 分层：本文件只 import ui / api / hooks / lib 与同层（features/products、features/shell）组件，
+// 不直接 import Mantine 包（分层红线，验收用 grep 查）。
 // 几何与配色全部由 products.css 消费 theme 令牌，文件里不出现 hex / px 字面量（验收 grep）。
 //
 // 不做（design/screens/products.md「不做」）：产品编辑、删除——后端无对应动作，页面上也不出现入口。
@@ -22,10 +23,9 @@ import { api } from '../../api/client'
 import type { Product, Project } from '../../api/types'
 import { useAutoRefresh } from '../../hooks/useAutoRefresh'
 import { REFRESH_INTERVALS } from '../../lib/refresh'
-import { Alert, Button, DataTable, DetailSheet, EmptyState, SelectField, SkeletonCard } from '../../ui'
+import { Alert, Button, DataTable, EmptyState, SelectField, SkeletonCard } from '../../ui'
 import type { DataTableColumn } from '../../ui'
-import { DetailFields } from '../shell/DetailFields'
-import type { DetailField } from '../shell/DetailFields'
+import { ProductDetailSheet } from './ProductDetailSheet'
 import './products.css'
 
 /** 稳定的空数组：避免每次渲染新建引用，也避免把「还没有数据」误判成 loading。 */
@@ -214,40 +214,15 @@ export function ProductsPage() {
         </div>
       )}
 
-      {/* 只读详情抽屉（design/screens/products.md「交互」）：复用 ui/DetailSheet 的 readonly 变体
-          （design/components.md §ui/DetailSheet「变体」），0 请求、字段取当前行。
-          抽屉内不放任何动作（footer 不传）——动作只留在列表行，避免同一动作两处可见（docs/tech §7.2）。 */}
-      <DetailSheet
-        variant="readonly"
-        opened={detailProduct !== undefined}
-        title={detailProduct?.name ?? ''}
+      {/* 只读详情抽屉：屏内私有组件 features/products/ProductDetailSheet（6 字段 + ui/DetailSheet 的
+          readonly 变体 + shell/DetailFields 键值网格）；页面只负责「哪一行」与关闭，抽屉内不放动作。 */}
+      <ProductDetailSheet
+        product={detailProduct}
+        projectCount={detailProduct ? countOf(detailProduct) : 0}
         onClose={() => setDetailId(null)}
-      >
-        {detailProduct ? <DetailFields fields={fieldsOfProduct(detailProduct, countOf(detailProduct))} /> : null}
-      </DetailSheet>
+      />
     </section>
   )
-}
-
-/**
- * 抽屉字段（design/screens/products.md「交互」6 项 + docs/tech §7.2 字段表）：
- * 产品编号 / 名称 / 仓库 / 描述 / 证书 / 项目数；空值文案按契约逐项给（—/未设置/未填写）。
- * 字段一律从传入行派生，不 copy 行对象、不发请求。
- */
-function fieldsOfProduct(product: Product, projectCount: number): DetailField[] {
-  return [
-    { label: '产品编号', value: product.product_id, mono: true },
-    { label: '名称', value: textOr(product.name, '—') },
-    { label: '仓库', value: textOr(product.git_url, '未设置'), mono: true },
-    { label: '描述', value: textOr(product.description, '未填写'), multiline: true },
-    { label: '证书', value: textOr(product.license, '未设置') },
-    { label: '项目数', value: String(projectCount) },
-  ]
-}
-
-/** 空值判据：undefined / null / 全空白都算「没有值」，由调用方给出本地化文案。 */
-function textOr(value: string | null | undefined, fallback: string): string {
-  return value !== null && value !== undefined && value.trim() !== '' ? value : fallback
 }
 
 /**
