@@ -57,11 +57,17 @@ export interface AttachmentRef {
   role: 'input' | 'output'
 }
 
+/**
+ * `GET /v1/workers` 的一行（字段见 `internal/api/workers.go` 的 workerResponse）。
+ *
+ * `current_work_item_id` 是**任务业务标识**（`t_...` 字符串），不是自增 id；
+ * 无当前任务时后端返回 null。此处曾按 v3 口径写成数字型任务 id 字段，
+ * 与实际响应不一致，导致忙碌节点的「当前任务」取不到值（issue #89 C1 / E4）。
+ */
 export interface Worker {
   worker_id: string
   state: 'idle' | 'busy'
-  current_task_id?: number | null
-  current_lease_id?: string | null
+  current_work_item_id: string | null
   last_seen: string
 }
 

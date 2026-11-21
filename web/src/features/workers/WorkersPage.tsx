@@ -6,7 +6,8 @@
 //                                stale 行 = 整行淡底（ui/DataTable 的 warn-row）+ 红色心跳徽标。
 //   design/components.md         §ui/DataTable（warn-row 变体）、§ui/StatusPill（圆点 + 文案）、§ui/EmptyState、
 //                                §ui/SkeletonCard、§ui/Alert、§ui/Button。
-//   docs/tech/web-ui-redo-v0.1.md §7   数据源：GET /v1/workers（worker_id / state / current_task_id / last_seen）。
+//   docs/tech/web-ui-redo-v0.1.md §7   数据源：GET /v1/workers（worker_id / state / current_work_item_id / last_seen）。
+//   字段口径以 internal/api/workers.go 的 workerResponse 为准：当前任务给的是 `t_...` 业务标识（string|null）。
 //
 // 分层：只 import ui / api / hooks / lib，不直接 import Mantine（分层红线）；样式见 workers.css（只消费令牌）。
 //
@@ -33,7 +34,7 @@ export const STALE_AFTER_MS = 90_000
 
 /**
  * 「查看任务」不可用的原因（按钮 disabled + 行内可见文案 + title 同一句）：
- * /v1/workers 只返回 current_task_id，没有 project_id，`#/projects/:projectId/tasks/:taskId` 拼不出来。
+ * /v1/workers 只返回 current_work_item_id，没有 project_id，`#/projects/:projectId/tasks/:taskId` 拼不出来。
  * 原设计稿的按钮是空实现（点击无反应），这里改成禁用 + 说明，避免「可点但没反应」。
  */
 const WORKER_TASK_DISABLED_REASON = '接口未提供项目上下文'
@@ -79,14 +80,16 @@ export function WorkersPage() {
         ),
     },
     {
-      key: 'current_task_id',
+      key: 'current_work_item_id',
       header: '当前任务',
-      render: (worker) =>
-        worker.current_task_id === undefined || worker.current_task_id === null ? (
-          <span className="wk-muted">—</span>
-        ) : (
-          <span className="wk-task">{String(worker.current_task_id)}</span>
-        ),
+      // 原样显示后端的任务业务标识（`t_...`）：不转数字、不做计数。空闲节点后端给 null → 占位「—」。
+      render: (worker) => {
+        const workItemId = worker.current_work_item_id
+        if (workItemId === undefined || workItemId === null || workItemId === '') {
+          return <span className="wk-muted">—</span>
+        }
+        return <span className="wk-task">{workItemId}</span>
+      },
     },
     {
       key: 'last_seen',
@@ -113,7 +116,7 @@ export function WorkersPage() {
       key: 'actions',
       header: '操作',
       // 不设 actions: true —— design/refs 移动端卡片里「操作」也带字段名（data-label）。
-      // 按钮**禁用**而不是「可点但无反应」：/v1/workers 只给 current_task_id、不给 project_id，
+      // 按钮**禁用**而不是「可点但无反应」：/v1/workers 只给 current_work_item_id、不给 project_id，
       // 构造不出 `#/projects/:projectId/tasks/:taskId` 的真实路由（不靠猜项目 id）。
       // 行内一行小字说明为什么点不了，title 保留同一句（hover / 读屏都能读到原因）。
       render: () => (
