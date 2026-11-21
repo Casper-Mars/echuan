@@ -132,7 +132,7 @@
 @media (max-width: 47.99em) {
   .wk-page {
     min-block-size: calc(
-      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - var(--ui-control-height-touch) -
+      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - calc(var(--space-8) + var(--space-5)) -
         var(--border-width)
     );
     gap: var(--space-4);
