@@ -30,19 +30,22 @@ interface SubmitError {
 const CLOSED_MESSAGE_FULL = '该项目已关闭，不能新建任务；如需继续，请先在项目列表重开。'
 
 /**
- * 409 的主文案（**已登记偏差**，非悄悄改口径）。
+ * 409 的主文案：说明是「给人读的主文案」，**不许被压缩**；技术细节（detail）先让位。
  *
  * 方案 §9.1 E9 行的完整说明是「该项目已关闭，不能新建任务；如需继续，请先在项目列表重开」
- * （含标点 24 字 ≈ 286px）。但 `features/shell/ErrorBar` 是单行横幅：720 抽屉里文本列只有 566px；
- * 旧实现（说明 16 字 + detail 带 project_id）整行超出 566px，说明被压到 `scrollWidth 208 > clientWidth 207.7`，
- * 末字「开」右沿超出元素右沿 ~1px → `text-overflow: ellipsis` 触发，用户看到「…请先在项目列表…」，
- * 动作词「重开」不可见（Tester 实测）。
- * 因此：标题仍是「项目已关闭」（§9.1 标题不变），说明压到 16 字、只保留两处关键信息
+ * （含标点 24 字 ≈ 286px），在 720 抽屉的单行错误条（文本列 566px）里放不下：
+ * 共用 `features/shell/ErrorBar` 的默认 flex（message 1 1 auto / detail 0 100 auto）按比例分配收缩，
+ * 说明会被压掉 0.3~0.9px，`text-overflow: ellipsis` 随即把末字吃掉
+ * （旧实现实测 message 内容 208.016px → clientWidth 207.703px，用户只看到「…请先在项目列表…」）。
+ *
+ * 因此：标题保持 §9.1 的「项目已关闭」，说明压到 16 字 = 两处关键信息
  * （「不能新建任务」+「项目列表重开」）；完整句子放进 <span title>，悬停仍可读到全文。
- * detail 同步让出宽度（去掉尾部 project_id，见 toSubmitError 的 §9.1 偏差说明），
- * 让整行不再超出 566px —— 说明因此**长于**其内容宽度（有富余而不是被压），从根上消除省略号。
- * 实测（1440×900、720 抽屉、本卡返工验收）：message clientWidth 243 / scrollWidth 243（无省略号），
- * 内容宽 208.0px，末字「开」右沿距元素右沿 34.75px；detail clientWidth 250 / scrollWidth 250（同样完整）。
+ * 说明不被压缩靠 board.css 的 `.bp-sheet-error .fx-error-bar__text[data-detail] .fx-error-bar__message
+ * { flex: 0 0 auto }` 保证（只对本 sheet 的这条错误条生效，改的是 board 自己的样式文件，
+ * 不动 features/shell）：说明盒宽恒等于内容宽，布局零溢出，任何字数都不会再出省略号。
+ * 实测（1440×900、720 抽屉、本卡最终验收）：message clientWidth 208 / scrollWidth 208，
+ * 盒宽 == 内容宽 208.016px（末字「开」完整、无省略号）；detail clientWidth 285 / scrollWidth 337
+ * （出省略号，DOM 保留服务端全文含 pid）；说明所在行 566/566，行本身不溢出。
  */
 const CLOSED_MESSAGE = (
   <span title={CLOSED_MESSAGE_FULL}>不能新建任务，请先在项目列表重开</span>
@@ -50,19 +53,15 @@ const CLOSED_MESSAGE = (
 
 // `POST /v1/tasks` 唯一的 409 是 closed 项目（store/v3/task.go:56-58 的 ErrProjectClosed）——
 // 所以按状态码分类，不解析英文原文（后端改文案也不会退化成「创建失败 + 重新提交」）。
-function toSubmitError(err: unknown, projectId: string): SubmitError {
+function toSubmitError(err: unknown): SubmitError {
   if (err instanceof ApiError && err.status === 409) {
-    // detail 的**已登记偏差**：方案 §9.1 E9 行的 detail 是 `HTTP 409 · v3: project is closed: <pid>`。
-    // 单行横幅的文本列只有 566px，说明（最要紧）必须完整可见，而 detail 按 ErrorBar 既有取舍
-    // 「信息最可丢」先让位。实测带上尾部的 `: <pid>` 时整行超出 566px，说明被压 0.9px 触发省略号
-    // （Tester 实测「重开」被裁）；省掉尾段后整行不满 566px，说明与 detail 都完整可见。
-    // 服务端原文其余部分逐字保留（去掉的 pid 就是本 sheet 所属项目，页面上下文里可见）。
-    const pidSuffix = `: ${projectId}`
-    const serverMessage = err.message.endsWith(pidSuffix) ? err.message.slice(0, -pidSuffix.length) : err.message
     return {
       title: '项目已关闭',
       message: CLOSED_MESSAGE,
-      detail: `HTTP ${err.status} · ${serverMessage}`,
+      // 服务端原文**逐字保留**（含 `: <pid>`，方案 §9.1 E9 的 detail 口径）：
+      // pid 是排障时认「哪个项目被拦」的关键信息，宽度不够时按 ErrorBar 既有取舍由 detail 出省略号，
+      // 完整原文始终在 DOM 里。消息与细节的优先级由上面的 CSS 钉死，不靠砍 detail 内容换宽度。
+      detail: `HTTP ${err.status} · ${err.message}`,
       action: 'close',
     }
   }
@@ -117,7 +116,7 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
       })
       onCreated()
     } catch (err) {
-      setError(toSubmitError(err, projectId))
+      setError(toSubmitError(err))
     } finally {
       submittingRef.current = false
       setBusy(false)
@@ -166,6 +165,7 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
         />
         {error === null ? null : (
           <ErrorBar
+            className="bp-sheet-error"
             title={error.title}
             message={error.message}
             detail={error.detail}
