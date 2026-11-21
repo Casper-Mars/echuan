@@ -106,6 +106,13 @@
   font-weight: var(--text-body-strong-weight);
 }
 
+/* 名字没取到、标签退回原始 ID（方案 §7.7 D6 / P4-3、P4-4）：mono 让「标识」和「名字」一眼可分，
+ * title 由 AppFrame 挂上原始 ID 作可读性兜底。名字齐全时这条类不出现。
+ * 只消费令牌：字体取 --font-mono，不写字面量。 */
+.fx-crumbs__id {
+  font-family: var(--font-mono);
+}
+
 .fx-topbar__actions {
   display: inline-flex;
   align-items: center;

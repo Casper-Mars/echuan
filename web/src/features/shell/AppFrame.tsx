@@ -17,6 +17,8 @@ import { ErrorBoundary } from './ErrorBoundary'
 import { RouteLoading } from './RouteLoading'
 import { SIDEBAR_NAV, TAB_NAV, MORE_NAV, RefreshIcon, activeKeyOf } from './nav'
 import { useShellLayout } from './use-layout'
+import { useCrumbNames } from './use-crumb-names'
+import type { CrumbNames } from './use-crumb-names'
 import { boardPath, rememberLastProject } from '../home/last-project'
 import './shell.css'
 
@@ -26,6 +28,8 @@ const BUILD_NOTE = 'v0.1 · 单二进制 · 内网'
 interface Crumb {
   label: string
   to?: string
+  /** 标签是「名字没取到时的原始 ID」→ 加 mono 字体并用 title 兜底可读性（D6 / P4-3、P4-4） */
+  fallbackId?: string
 }
 
 const SECTION_LABEL: Record<string, string> = {
@@ -37,10 +41,15 @@ const SECTION_LABEL: Record<string, string> = {
 
 /**
  * 顶栏面包屑（design/refs：桌面/平板/移动顶栏左侧都是「产品 / <产品> / <项目>」）。
- * 只从 URL 段推导，不额外请求接口：顶栏属于壳层，不能因为某个接口失败就塌掉。
- * 产品名 / 项目名由 T5+ 的页面在页面头里展示（board.md「页头」），壳层不重复取数。
+ *
+ * 两段信息源（方案 §7.7 D6）：
+ *   - 结构（有没有第四段 taskId、哪段可点）只从 URL 段推导，**不依赖请求**；
+ *   - 名字（产品名 / 项目名）与 product_id 由 useCrumbNames 反查，取不到就退回 ID：
+ *     项目失败 → `产品 / <project_id>`（与今天一致，中间段不出现）；
+ *     产品失败 → `产品 / <productId>`（该段仍链到项目列表）/ `<项目名>`。
+ * 渲染不因取数失败而变：壳层把它当「可选装饰」，失败时保持 ID 形态（B2 想要的稳态）。
  */
-function crumbsOf(pathname: string): Crumb[] {
+function crumbsOf(pathname: string, names: CrumbNames): Crumb[] {
   const parts = pathname.split('/').filter(Boolean)
   if (parts.length === 0) return [{ label: '产品' }]
 
@@ -51,9 +60,32 @@ function crumbsOf(pathname: string): Crumb[] {
   }
 
   if (parts[0] === 'projects') {
+    const projectId = parts[1]
     const crumbs: Crumb[] = [{ label: '产品', to: '/products' }]
-    if (parts[1]) crumbs.push({ label: parts[1] })
-    if (parts[2] === 'tasks' && parts[3]) crumbs.push({ label: parts[3] })
+    if (!projectId) return crumbs
+
+    const taskId = parts[2] === 'tasks' && parts[3] ? parts[3] : ''
+
+    if (names.productId === '') {
+      // 项目反查失败（或首帧未回）：今天的形态，中间没有「项目列表」段
+      crumbs.push({ label: projectId, fallbackId: projectId })
+    } else {
+      const listTo = `/products/${names.productId}/projects`
+      // 中间段 = 产品（可点回项目列表）；名字没取到就显示 productId，链接照旧可用（P4-4）
+      crumbs.push(
+        names.productName === ''
+          ? { label: names.productId, to: listTo, fallbackId: names.productId }
+          : { label: names.productName, to: listTo },
+      )
+      // 项目段：没有 taskId 时它是末段（文本、不可点）；带 taskId 时它变成链接（P4-2）
+      crumbs.push(
+        names.projectName === ''
+          ? { label: projectId, to: taskId ? listTo : undefined, fallbackId: projectId }
+          : { label: names.projectName, to: taskId ? listTo : undefined },
+      )
+    }
+
+    if (taskId) crumbs.push({ label: taskId })
     return crumbs
   }
 
@@ -78,9 +110,12 @@ export function AppFrame() {
     if (projectId) rememberLastProject(projectId)
   }, [projectId])
 
+  // 名字反查只在 `/projects/*` 启用；其它路由 projectId 为 null，hook 内直接返回空态、不发请求。
+  const crumbNames = useCrumbNames(projectId)
+
   const activeKey = activeKeyOf(pathname)
   const collapsed = layout === 'tablet'
-  const crumbs = crumbsOf(pathname)
+  const crumbs = crumbsOf(pathname, crumbNames)
 
   const go = (key: string) => {
     if (key === 'inbox') navigate('/inbox')
@@ -143,12 +178,24 @@ export function AppFrame() {
                     </span>
                   ) : null}
                   {crumb.to && !last ? (
-                    <Link className="fx-crumbs__link" to={crumb.to}>
+                    <Link
+                      className={crumb.fallbackId === undefined ? 'fx-crumbs__link' : 'fx-crumbs__link fx-crumbs__id'}
+                      title={crumb.fallbackId}
+                      to={crumb.to}
+                    >
                       {crumb.label}
                     </Link>
                   ) : (
-                    // 文本段：末段加粗、非末段用 _label —— 两者都自己承担省略号（窄屏超长标识单行省略）
-                    <span className={last ? 'fx-crumbs__current' : 'fx-crumbs__label'}>{crumb.label}</span>
+                    // 文本段：末段加粗、非末段用 _label —— 两者都自己承担省略号（窄屏超长标识单行省略）。
+                    // `--id` 只在「名字没取到、退回原始 ID」时加（mono + title），名字齐全时不加。
+                    <span
+                      className={`${last ? 'fx-crumbs__current' : 'fx-crumbs__label'}${
+                        crumb.fallbackId === undefined ? '' : ' fx-crumbs__id'
+                      }`}
+                      title={crumb.fallbackId}
+                    >
+                      {crumb.label}
+                    </span>
                   )}
                 </span>
               )
