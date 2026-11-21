@@ -678,8 +678,9 @@
   /* 移动主导航条总高 57（issue #89 A2）：单项 56 = space-8(40) + space-5(16)，
      加容器一条上边框 → 57，与 design/refs board__mobile__dark__default.png 一致（改前 45）。
      命中区随单项一起长（56 ≥ 触控下限 44），不用 --ui-control-height-touch 抬，避免连带改其它控件。
-     待办（不在 ui 层范围）：board / products / projects / inbox / queue / workers 六个页面 CSS 的
-     「100dvh − … − --ui-control-height-touch − 边框」仍是按改前的 44 + 1 预留，需同步成 56 + 1。 */
+     board / products / projects / inbox / queue / workers 六页的移动端底部预留已同步为
+     「calc(var(--space-8) + var(--space-5)) + 一条边框」= 57；将来新增移动页必须按同一算式预留，
+     否则会多出 12px 可竖向滚动。 */
   min-height: calc(var(--space-8) + var(--space-5));
   padding-block: var(--space-2);
   border: 0;
