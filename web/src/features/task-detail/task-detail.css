@@ -367,10 +367,13 @@
   font-size: var(--text-small-size);
 }
 
-/* loading 态骨架（issue #89 A6）：4 条独立骨架条，无卡片外壳、等距排列。
- * 取值依据 design/mock/styles.css 的 .sk + .sk-line（refs 由 design/mock 生成）：
+/* loading 态骨架（issue #89 A6）：无卡片外壳、等距排列的独立骨架条。
+ * 形态取值依据 design/mock/styles.css 的 .sk + .sk-line（refs 由 design/mock 生成）：
  * 条高 12 = space-4、圆角 8 = radius-8、条间距 12 = space-4、细描边 border-subtle + overlay 底。
- * 呼吸感用 opacity 动画（色调与 ui/SkeletonCard 一致）；时长仍从令牌推导（≈2.2s 一个来回，
+ * 条数不在这条规则里：由 attachment-preview.tsx 的 PREVIEW_SKELETON_LINES 决定
+ * —— 当前 4 条是任务卡 AC 的口径，设计源（design/mock/mock.js 的 length: 5、
+ * attachment-preview.md「正文 5 行 Skeleton」、ref PNG 的 5 段）为 5 条，冲突待裁决。
+ * 呼吸感用 opacity 动画（色调与 ui/SkeletonCard 一致）；时长从令牌推导（≈2.2s 一个来回，
  * 贴近 Mantine Skeleton 的呼吸节奏），prefers-reduced-motion 下不动画。 */
 .fx-preview__skeleton {
   --fx-skeleton-pulse: calc(var(--duration-slower) * 7);

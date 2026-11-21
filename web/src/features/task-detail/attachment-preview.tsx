@@ -31,10 +31,14 @@ function formatBytes(bytes: number): string {
 }
 
 /**
- * loading 态的骨架条数（issue #89 A6）：ref 是**4 条独立骨架条**等距排列，
- * 没有卡片外壳（旧实现是 1 张 `SkeletonCard lines={5}`，带边框 + 底色，与 ref 不符）。
- * 形态见 task-detail.css 的 `.fx-preview__skeleton` 段（12 高 / 圆角 8 / 间距 12，
- * 对齐 design/mock/styles.css 的 .sk + .sk-line）。
+ * loading 态的骨架条数（issue #89 A6）。
+ * 形态（12 高 / 圆角 8 / 间距 12 / 无卡片外壳，替换旧的 `SkeletonCard lines={5}` 卡片壳）
+ * 对齐 design/mock/styles.css 的 .sk + .sk-line，见 task-detail.css 的 `.fx-preview__skeleton` 段。
+ *
+ * ⚠️ 条数存在口径冲突（尚未裁决）：任务卡 AC 要求「恰好 4 条」，而 design/mock/mock.js 的
+ * loading 分支是 `length: 5`、design/screens/attachment-preview.md 写「正文 5 行 Skeleton」，
+ * ref PNG 像素扫描也是 5 段（间距 12）。当前按**任务卡 AC** 实现 4 条，设计源待同步/裁决；
+ * 改条数只动这个常量，形态不变。
  */
 const PREVIEW_SKELETON_LINES = 4
 
