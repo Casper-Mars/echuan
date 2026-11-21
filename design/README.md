@@ -25,7 +25,7 @@
 |---|---|
 | `tokens.json` | DTCG 唯一令牌源：primitive（slate/brand/jade/amber/red/sky）+ 17 个 semantic 角色 + 字阶/间距/圆角/阴影/断点 |
 | `components.md` | 组件规格 + **Mantine 8 映射** + 状态矩阵 + 可访问性 + 分层红线 |
-| `flows.md` | 4 条流程：推进看板 / 读附件 / 评审 / 移动端三条 |
+| `flows.md` | 5 条流程：推进看板 / 读附件 / 评审 / 移动端三条 / 关闭/重开项目 |
 | `screens/*.md` | 8 屏规格：结构、token、组件、状态矩阵、交互、数据来源、不做 |
 | `mock/` | 原型（`index.html?screen=&state=&theme=`），状态写入 `document.documentElement.dataset.state` |
 | `refs/` | 240 张截图（暗色 120 基准 + 亮色 120 对照）：8 屏 × 状态 × 三视口（desktop 1440×900 / tablet 1024×768 / mobile 390×844）× 双主题 |

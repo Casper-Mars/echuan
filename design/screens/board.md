@@ -12,7 +12,7 @@
 | 状态 | 内容 | 截图 |
 |---|---|---|
 | default | 7 列有内容；`in_review` 列品牌描边强调；`P60` 待审卡片高亮描边 | refs/board__{desktop,tablet,mobile}__dark__default.png |
-| empty | 项目无任务：整块空态（标题 + 为什么 + 「新建任务」），不显示 7 个空列 | refs/board__{desktop,tablet,mobile}__dark__empty.png |
+| empty | 项目无任务：整块空态（标题 + 为什么 + 「新建任务」；closed 项目下主按钮为「返回项目列表」，open 项目仍为「新建任务」），不显示 7 个空列 | refs/board__{desktop,tablet,mobile}__dark__empty.png |
 | loading | 每列 2 个 SkeletonCard，列头与筛选保持稳定 | refs/board__{desktop,tablet,mobile}__dark__loading.png |
 | error | 顶部错误条「保留上次数据」+ 重试；列内容仍在 | refs/board__{desktop,tablet,mobile}__dark__error.png |
 | collapsed | `done`/`cancelled` 折叠成 56px 竖条，计数仍可读 | refs/board__{desktop,tablet,mobile}__dark__collapsed.png |
