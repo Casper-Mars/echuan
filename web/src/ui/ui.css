@@ -254,6 +254,10 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
+  /* 列头带高 53（issue #89 A3；design/refs board__desktop__dark__default.png 上列顶描边到首卡之间
+     的视觉带）：space-9(48) + space-2(4) + 一条描边 = 53。内距仍由下面的 padding 提供，
+     min-height 只兜住「标题短 / 计数为 0」时列头不收窄，折叠按钮的命中区随列头一起长。 */
+  min-height: calc(var(--space-9) + var(--space-2) + var(--border-width));
   padding: var(--space-3);
   padding-block-start: calc(var(--space-3) + var(--border-width) * 2);
   background-color: inherit;
@@ -501,9 +505,14 @@
   line-height: var(--text-small-line-height);
 }
 
-/* ===== EmptyState ======================================================= */
+/* ===== EmptyState =======================================================
+ * 内距（issue #89 A4 / design/refs board__desktop__dark__empty.png，空态块高 255）：ref 的
+ * `.empty` 是 `padding: space-9 space-5` 且标题 <p> 自带上下 margin（18+18），视觉上标题上下各
+ * 让出约 66 / 26。这里不复制 <p> 的 UA margin（Mantine Text 会清掉），改为把内外距写进 padding
+ * 与 Stack gap：上下 space-10(64) ≈ 48+18，gap space-4(12) ≈ 8+4，块高与 ref 同档。
+ */
 .ui-empty-state.ui-empty-state {
-  padding: var(--space-9);
+  padding: var(--space-10) var(--space-5);
   border: var(--border-width) dashed var(--border-default);
   border-radius: var(--empty-state-radius);
   background-color: var(--surface-raised);
@@ -514,15 +523,19 @@
   border-color: color-mix(in srgb, var(--feedback-danger) 55%, var(--border-default));
 }
 
-.ui-empty-state__title {
+/* 字号必须用「.ui-x.ui-x」双类：Mantine Text 的哈希类与本规则同为 0,1,0，单类会被它的
+ * font-size/line-height 压掉（改前实测标题 15px 而非 h3 的 18px、说明 15px 而非 small 的 13px）。 */
+.ui-empty-state__title.ui-empty-state__title {
   color: var(--text-primary);
   font-size: var(--text-h3-size);
   font-weight: var(--text-h3-weight);
   line-height: var(--text-h3-line-height);
 }
 
-.ui-empty-state__description {
-  max-width: calc(var(--space-12) * 5);
+.ui-empty-state__description.ui-empty-state__description {
+  /* 42ch = ref `.empty-text` 的 max-width（board__desktop__dark__empty.png 上说明是两行块，约 308px）；
+     宽过这条线说明会塌成一行，空态块矮一截、与 ref 的层级节奏也不一致。 */
+  max-width: 42ch;
   color: var(--text-muted);
   font-size: var(--text-small-size);
   line-height: var(--text-small-line-height);
@@ -662,7 +675,12 @@
   gap: var(--space-1);
   align-items: center;
   justify-content: center;
-  min-height: var(--ui-control-height-touch);
+  /* 移动主导航条总高 57（issue #89 A2）：单项 56 = space-8(40) + space-5(16)，
+     加容器一条上边框 → 57，与 design/refs board__mobile__dark__default.png 一致（改前 45）。
+     命中区随单项一起长（56 ≥ 触控下限 44），不用 --ui-control-height-touch 抬，避免连带改其它控件。
+     待办（不在 ui 层范围）：board / products / projects / inbox / queue / workers 六个页面 CSS 的
+     「100dvh − … − --ui-control-height-touch − 边框」仍是按改前的 44 + 1 预留，需同步成 56 + 1。 */
+  min-height: calc(var(--space-8) + var(--space-5));
   padding-block: var(--space-2);
   border: 0;
   color: var(--text-muted);
