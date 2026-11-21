@@ -261,24 +261,9 @@
 }
 
 /* ===== 新建任务面板（features/board/CreateTaskSheet） =================== */
-
-/* 409 错误条（撞后端「项目已关闭」）的文本优先级：说明绝不许被压缩，溢出全部由技术细节吸收。
- * 为什么需要这一条：共用 ErrorBar 的默认 flex（message: 1 1 auto / detail: 0 100 auto）按比例分摊收缩，
- * 说明会承担 0.3~0.9px 的亚像素收缩，`text-overflow: ellipsis` 随即把末字吃掉
- * （旧实现实测：说明内容 208.016px → clientWidth 207.703px，用户看到「…请先在项目列表…」，
- * 动作词「重开」不可见；Tester 在 DPR2 下量到末字右沿越界 1px）。
- * 这里只钉死说明（不收缩），让整行的溢出由 detail 出省略号——与 ErrorBar 自身
- * 「技术细节信息最可丢」的既有取舍一致；detail 的完整原文（含 project_id）仍在 DOM 里。
- * 实测（1440×900、720 抽屉、本卡最终验收）：
- *   说明 clientWidth 208 / scrollWidth 208，盒宽 == 内容宽 208.016px（布局零溢出 → 不可能出省略号）；
- *   说明所在行 clientWidth 566 / scrollWidth 566（行本身不溢出，容器不变式①仍成立）；
- *   detail clientWidth 285 / scrollWidth 337（出省略号，DOM 保留服务端全文含 project_id）。
- * 作用面仅限本 sheet（className 由 CreateTaskSheet 传入），不改 features/shell/** 的共用样式。
- * 选择器带 `.fx-error-bar__text[data-detail]`，是为了压过 shell.css 里
- * `.fx-error-bar__text[data-detail='on'] .fx-error-bar__message { flex: 1 1 auto }`（特异性 0,3,0）。 */
-.bp-sheet-error .fx-error-bar__text[data-detail] .fx-error-bar__message {
-  flex: 0 0 auto;
-}
+/* 注意：这里**不覆盖** ErrorBar 的内部 flex（曾试过让说明不收缩，结果把非 409 分支与窄屏换行一起带崩）。
+ * 说明沿用 shell 的既有取舍（宽屏按比例收缩、窄屏换行），409 文案靠字数装进 720 抽屉，
+ * 见 CreateTaskSheet 的 CLOSED_MESSAGE 注释。 */
 
 .bp-form {
   display: flex;

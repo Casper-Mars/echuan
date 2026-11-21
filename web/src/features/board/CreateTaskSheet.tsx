@@ -30,25 +30,22 @@ interface SubmitError {
 const CLOSED_MESSAGE_FULL = '该项目已关闭，不能新建任务；如需继续，请先在项目列表重开。'
 
 /**
- * 409 的主文案：说明是「给人读的主文案」，**不许被压缩**；技术细节（detail）先让位。
+ * 409 的主文案：只靠**字数**装进 720 抽屉的单行错误条，不对共用 ErrorBar 做任何样式覆盖。
  *
- * 方案 §9.1 E9 行的完整说明是「该项目已关闭，不能新建任务；如需继续，请先在项目列表重开」
- * （含标点 24 字 ≈ 286px），在 720 抽屉的单行错误条（文本列 566px）里放不下：
- * 共用 `features/shell/ErrorBar` 的默认 flex（message 1 1 auto / detail 0 100 auto）按比例分配收缩，
- * 说明会被压掉 0.3~0.9px，`text-overflow: ellipsis` 随即把末字吃掉
- * （旧实现实测 message 内容 208.016px → clientWidth 207.703px，用户只看到「…请先在项目列表…」）。
- *
- * 因此：标题保持 §9.1 的「项目已关闭」，说明压到 16 字 = 两处关键信息
- * （「不能新建任务」+「项目列表重开」）；完整句子放进 <span title>，悬停仍可读到全文。
- * 说明不被压缩靠 board.css 的 `.bp-sheet-error .fx-error-bar__text[data-detail] .fx-error-bar__message
- * { flex: 0 0 auto }` 保证（只对本 sheet 的这条错误条生效，改的是 board 自己的样式文件，
- * 不动 features/shell）：说明盒宽恒等于内容宽，布局零溢出，任何字数都不会再出省略号。
- * 实测（1440×900、720 抽屉、本卡最终验收）：message clientWidth 208 / scrollWidth 208，
- * 盒宽 == 内容宽 208.016px（末字「开」完整、无省略号）；detail clientWidth 285 / scrollWidth 337
- * （出省略号，DOM 保留服务端全文含 pid）；说明所在行 566/566，行本身不溢出。
+ * 宽度账（1440×900、720 抽屉，实测 pid=t5prod-15 的 detail 原文「HTTP 409 · v3: project is closed: t5prod-15」）：
+ *   文本列 566 − 标题「项目已关闭」65.016 − detail 原文 336.547 − 两个 gap 8 ≈ **156.4px 留给说明**。
+ * 共用 ErrorBar（`shell.css:226-243`）已把「容器绝不溢出 → 说明可能被压掉 1px 出省略号」写成设计取舍，
+ * 说明按比例承担的收缩是亚像素级的，但 `text-overflow: ellipsis` 照样会把末字吃掉：
+ *   16 字「不能新建任务，请先在项目列表重开」= 208.016px → 盒宽 207.703（差 0.31px，末字「开」被裁）
+ *   13 字「不能新建任务，项目列表重开」     = 169.016px → 盒宽 168.953（差 0.06px，仍出省略号）
+ *   12 字「不能新建任务项目列表重开」       = 156.016px → 盒宽 156.672（**余量 +0.66px，无省略号**）
+ * 所以取 12 字：两处关键信息（「不能新建任务」「项目列表重开」）直接相邻，不再额外加标点
+ * （任何 13 字写法都会多占 13px、必然差 0.06px 以上）；完整句子放进 <span title>，悬停可读 §9.1 全文。
+ * detail 保持服务端原文（含 pid）不动；不引入任何跨层样式覆盖（曾试过让说明不收缩，
+ * 结果连带把非 409 分支与 390 窄屏换行一起带崩，已撤）。
  */
 const CLOSED_MESSAGE = (
-  <span title={CLOSED_MESSAGE_FULL}>不能新建任务，请先在项目列表重开</span>
+  <span title={CLOSED_MESSAGE_FULL}>不能新建任务项目列表重开</span>
 )
 
 // `POST /v1/tasks` 唯一的 409 是 closed 项目（store/v3/task.go:56-58 的 ErrProjectClosed）——
@@ -165,7 +162,6 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
         />
         {error === null ? null : (
           <ErrorBar
-            className="bp-sheet-error"
             title={error.title}
             message={error.message}
             detail={error.detail}
