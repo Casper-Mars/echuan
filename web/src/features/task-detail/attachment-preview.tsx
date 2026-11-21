@@ -7,13 +7,14 @@
 //   design/flows.md F2 第 3 步七条分支（404 / 413 / 超时 / 超大 / 空正文 / 渲染异常 → `<pre>` 原文 /
 //     内嵌图片 → 显式占位）、第 4 步（返回详情保留滚动，二级层不动详情状态）；
 //   design/components.md §ui/Alert（错误条 + 明确动作）、§ui/EmptyState（虚线容器 + 主操作）、
-//     §ui/SkeletonCard（loading 用骨架，不用转圈白屏）、§ui/MarkdownViewer（内嵌图片必显示占位）。
+//     骨架（loading 用 4 条独立骨架条，不用转圈白屏，见 PREVIEW_SKELETON_LINES）、
+//     §ui/MarkdownViewer（内嵌图片必显示占位）。
 //
 // 分层：只用 ui/ 组件；不 import Mantine（design/components.md 红线）。
 // 取数（超时 / 并发去重 / 超大判定）全在 use-attachment-preview，本文件只按状态渲染。
 import { Component, useRef, type ErrorInfo, type ReactNode } from 'react'
 import type { AttachmentRef } from '../../api/types'
-import { Alert, AttachmentRow, Button, EmptyState, MarkdownViewer, SkeletonCard } from '../../ui'
+import { Alert, AttachmentRow, Button, EmptyState, MarkdownViewer } from '../../ui'
 import { ErrorBar } from '../shell/ErrorBar'
 import { useAttachmentPreview, type PreviewState } from './use-attachment-preview'
 
@@ -28,6 +29,18 @@ function formatBytes(bytes: number): string {
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
   return `${bytes} B`
 }
+
+/**
+ * loading 态的骨架条数（issue #89 A6）。
+ * 形态（12 高 / 圆角 8 / 间距 12 / 无卡片外壳，替换旧的 `SkeletonCard lines={5}` 卡片壳）
+ * 对齐 design/mock/styles.css 的 .sk + .sk-line，见 task-detail.css 的 `.fx-preview__skeleton` 段。
+ *
+ * ⚠️ 条数存在口径冲突（尚未裁决）：任务卡 AC 要求「恰好 4 条」，而 design/mock/mock.js 的
+ * loading 分支是 `length: 5`、design/screens/attachment-preview.md 写「正文 5 行 Skeleton」，
+ * ref PNG 像素扫描也是 5 段（间距 12）。当前按**任务卡 AC** 实现 4 条，设计源待同步/裁决；
+ * 改条数只动这个常量，形态不变。
+ */
+const PREVIEW_SKELETON_LINES = 4
 
 /**
  * 渲染异常兜底（flows F2 第 3 步「渲染异常 → 降级 `<pre>` 原文」）：
@@ -97,9 +110,13 @@ function PreviewBody({
   }
 
   if (state === 'loading') {
+    // 4 条独立骨架条（issue #89 A6）：无卡片外壳、等距排列，对齐 design/refs 的 loading 态。
+    // aria-busy 留在容器上，占位条自身 aria-hidden（读屏不朗读占位内容）。
     return (
-      <div className="fx-preview__skeleton" aria-busy="true">
-        <SkeletonCard lines={5} />
+      <div className="fx-preview__skeleton" data-ui="preview-loading" aria-busy="true">
+        {Array.from({ length: PREVIEW_SKELETON_LINES }, (_, index) => (
+          <span key={index} className="fx-preview__skeleton-line" aria-hidden="true" />
+        ))}
       </div>
     )
   }
