@@ -104,11 +104,27 @@ func ListWorkerKinds(ctx context.Context, q storedb.Querier, workerID string) ([
 	return out, nil
 }
 
+// workerColumnsAliased is workerColumns qualified with the `w` alias, for the
+// queries that JOIN other tables (bare names would be ambiguous with tasks).
+const workerColumnsAliased = `w.id, w.worker_id, w.metadata_json, w.state, w.current_task_id,
+	w.current_lease_id, w.first_seen, w.last_seen, w.create_time, w.update_time`
+
 // ListWorkers lists workers ordered by last_seen descending.
+//
+// The held task's business id (`t_...`) is resolved by the same statement
+// (LEFT JOIN tasks → Worker.CurrentTaskCode), so one listing costs one query no
+// matter how many workers it returns — resolving it per worker was an N+1
+// (issue #89 C1/E4 review). A dangling pointer (task row gone) yields NULL,
+// i.e. the same "no work item" the per-worker lookup used to return, and never
+// fails the whole listing.
 func ListWorkers(ctx context.Context, q storedb.Querier, limit int) ([]Worker, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	return storedb.All[Worker](ctx, q,
-		`SELECT `+workerColumns+` FROM workers ORDER BY last_seen DESC, id ASC LIMIT ?`, limit)
+	return storedb.All[Worker](ctx, q, `
+		SELECT `+workerColumnsAliased+`, t.task_id AS current_task_code
+		  FROM workers w
+		  LEFT JOIN tasks t ON t.id = w.current_task_id
+		 ORDER BY w.last_seen DESC, w.id ASC
+		 LIMIT ?`, limit)
 }

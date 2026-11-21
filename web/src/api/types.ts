@@ -57,11 +57,19 @@ export interface AttachmentRef {
   role: 'input' | 'output'
 }
 
+/**
+ * `GET /v1/workers` 的一行（字段见 `internal/api/v3_handlers.go` 的 `v3WorkerResponse`；
+ * 真正挂载的是 V3 路由，见 `cmd/echuan/main.go` 的 `NewRouterV3`）。
+ *
+ * `current_work_item_id` 是**任务业务标识**（`t_...` 字符串），不是自增 id；
+ * 无当前任务时后端返回显式 null。此处曾按 V3 行 id 口径写成数字型任务 id 字段，
+ * 与实际响应不一致，导致忙碌节点的「当前任务」取不到值（issue #89 C1 / E4）。
+ * V3 响应里的自增行 id 字段（旧字段）仍保留给潜在消费者，前端不使用。
+ */
 export interface Worker {
   worker_id: string
   state: 'idle' | 'busy'
-  current_task_id?: number | null
-  current_lease_id?: string | null
+  current_work_item_id: string | null
   last_seen: string
 }
 
