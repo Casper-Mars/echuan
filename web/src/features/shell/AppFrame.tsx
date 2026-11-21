@@ -30,6 +30,10 @@ interface Crumb {
   to?: string
   /** 标签是「名字没取到时的原始 ID」→ 加 mono 字体并用 title 兜底可读性（D6 / P4-3、P4-4） */
   fallbackId?: string
+  /** 标识段（任务 id）：窄屏压缩时优先保它，名字段先让位（见 shell.css 的 --token） */
+  token?: boolean
+  /** 短名字段：窄屏压缩时不让位，把宽度让给同行的长名字（见 shell.css 的 --keep） */
+  keep?: boolean
 }
 
 const SECTION_LABEL: Record<string, string> = {
@@ -38,6 +42,17 @@ const SECTION_LABEL: Record<string, string> = {
   workers: '执行节点',
   products: '产品',
 }
+
+/**
+ * 短名字阈值（字符数）：不超过它、且同行有长名字时标 `keep`（不压缩），
+ * 让长名字承担全部溢出。中文项目名通常 4–8 字（「订单服务」「供应链协同管理平台」9 字），
+ * 12 字以内基本能在一行里读全；更长的名字必然压缩，由它自己出省略号。
+ * 放在这里而不是 CSS 里：CSS 无法按内容长度分档，硬编码在样式里看不出意图。
+ */
+const SHORT_LABEL_MAX = 12
+
+/** 名字段是否「短」（短名字优先完整显示，见 shell.css 的 --keep） */
+const isShortLabel = (label: string) => label.length <= SHORT_LABEL_MAX
 
 /**
  * 顶栏面包屑（design/refs：桌面/平板/移动顶栏左侧都是「产品 / <产品> / <项目>」）。
@@ -78,14 +93,26 @@ function crumbsOf(pathname: string, names: CrumbNames): Crumb[] {
           : { label: names.productName, to: listTo },
       )
       // 项目段：没有 taskId 时它是末段（文本、不可点）；带 taskId 时它变成链接（P4-2）
-      crumbs.push(
-        names.projectName === ''
-          ? { label: projectId, to: taskId ? listTo : undefined, fallbackId: projectId }
-          : { label: names.projectName, to: taskId ? listTo : undefined },
-      )
+      const projectLabel = names.projectName === '' ? projectId : names.projectName
+      crumbs.push({
+        label: projectLabel,
+        to: taskId ? listTo : undefined,
+        fallbackId: names.projectName === '' ? projectId : undefined,
+      })
     }
 
-    if (taskId) crumbs.push({ label: taskId })
+    // 任务段是**标识**不是名字：窄屏优先保它（shrink 0.05），名字段先让位；
+    // 它自己也有 min-width: 0 + 省略号，极端情况下不会被父级硬切。
+    if (taskId) crumbs.push({ label: taskId, token: true })
+
+    // 只有「同行确实存在长名字」时才让短名字拒绝压缩：此时长名字能吸收全部溢出，
+    // 短名字（「订单服务」）保持完整，不会出现「订单…」这种半个词。
+    // 全是短名字时（如两段各 12 字）一律等比压缩 —— 否则没有可让位的段，会撑出父级硬切。
+    const nameCrumbs = crumbs.filter((crumb) => crumb !== crumbs[0] && !crumb.token)
+    if (nameCrumbs.some((crumb) => crumb.label.length > SHORT_LABEL_MAX)) {
+      for (const crumb of nameCrumbs) if (isShortLabel(crumb.label)) crumb.keep = true
+    }
+
     return crumbs
   }
 
@@ -171,7 +198,12 @@ export function AppFrame() {
             {crumbs.map((crumb, index) => {
               const last = index === crumbs.length - 1
               return (
-                <span className="fx-crumbs__item" key={`${crumb.label}-${index}`}>
+                <span
+                  className={`fx-crumbs__item${crumb.token ? ' fx-crumbs__item--token' : ''}${
+                    crumb.keep ? ' fx-crumbs__item--keep' : ''
+                  }`}
+                  key={`${crumb.label}-${index}`}
+                >
                   {index > 0 ? (
                     <span className="fx-crumbs__sep" aria-hidden="true">
                       /
@@ -183,7 +215,9 @@ export function AppFrame() {
                       title={crumb.fallbackId}
                       to={crumb.to}
                     >
-                      {crumb.label}
+                      {/* 链接段自带文本盒：面包屑现在装的是**名字**，窄屏压缩时省略号必须落在
+                          段内文本上（链接是 inline-flex，裸文本会成匿名 flex 子项、吃不到 text-overflow）。 */}
+                      <span className="fx-crumbs__label">{crumb.label}</span>
                     </Link>
                   ) : (
                     // 文本段：末段加粗、非末段用 _label —— 两者都自己承担省略号（窄屏超长标识单行省略）。
