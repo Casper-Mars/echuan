@@ -74,6 +74,20 @@
   color: transparent;
 }
 
+/* 标题行：项目名 + 已关闭标识（design/screens/board.md「结构」第二段）。
+ * 标识与标题同排垂直居中；窄屏自动折到标题下一行，不挤压项目名。 */
+.bp-head__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-inline-size: 0;
+}
+
+.bp-head__closed {
+  flex: 0 0 auto;
+}
+
 .bp-head__meta {
   display: flex;
   flex-wrap: wrap;
@@ -247,6 +261,10 @@
 }
 
 /* ===== 新建任务面板（features/board/CreateTaskSheet） =================== */
+/* 注意：这里**不覆盖** ErrorBar 的内部 flex（曾试过让说明不收缩，结果把非 409 分支与窄屏换行一起带崩）。
+ * 说明沿用 shell 的既有取舍（宽屏按比例收缩出省略号、窄屏换行）；409 说明在 720 抽屉里会被裁尾部，
+ * 属已登记的口径差（见 CreateTaskSheet 的 409 分支注释与 shell.css:226-243）。 */
+
 .bp-form {
   display: flex;
   flex-direction: column;
