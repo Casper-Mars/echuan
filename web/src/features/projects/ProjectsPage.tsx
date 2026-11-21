@@ -3,10 +3,14 @@
 // 规格对照：
 //   design/screens/projects.md   页头（产品名 + 项目数 + 新建项目）→ 表格（序号 · 项目 · 状态 · 更新时间 · 操作）；
 //                                四态 default / empty / loading / error；<768 卡片式行（data-label 字段名）；
-//                                closed 项目操作保留（只读可看）。
+//                                closed 项目操作保留（只读可看）；「交互」行点击 → 只读详情抽屉
+//                                （9 字段、0 请求、字段取当前行），行内「打开看板」只导航不开抽屉。
 //   design/components.md         §ui/DataTable、§ui/StatusPill（圆点 + 文案，不只靠颜色）、§ui/EmptyState、
 //                                §ui/SkeletonCard、§ui/Alert、§ui/Button。
 //   docs/tech/web-ui-redo-v0.1.md §7   数据源：GET /v1/projects（按需带 product_id / status），产品名走 GET /v1/products?id=。
+//   docs/tech/web-ui-102-interaction-fix-v0.1.md §7.2（D1 字段口径）/ §7.3（D2）/ §7.8（一次点击一个结果）；
+//                                design/components.md §「屏内私有详情抽屉」——项目抽屉落在
+//                                features/projects/ProjectDetailSheet，键值网格复用 features/shell/DetailFields。
 //
 // 分层：只 import ui / api / hooks / lib，不直接 import Mantine（分层红线）；样式见 projects.css（只消费令牌）。
 //
@@ -20,6 +24,7 @@ import { useAutoRefresh } from '../../hooks/useAutoRefresh'
 import { REFRESH_INTERVALS } from '../../lib/refresh'
 import { Alert, Button, DataTable, EmptyState, SkeletonCard, StatusPill } from '../../ui'
 import type { DataTableColumn } from '../../ui'
+import { ProjectDetailSheet, formatProjectTime } from './ProjectDetailSheet'
 import './projects.css'
 
 /** 稳定的空数组：避免每渲染新建引用，也避免把空态误判成 loading。 */
@@ -27,9 +32,6 @@ const EMPTY_PROJECTS: Project[] = []
 
 /** 骨架卡片数：design/screens/projects.md loading 态「3 个 SkeletonCard」 */
 const SKELETON_CARDS = 3
-
-/** 更新时间列：design/refs 是「月-日 时:分」（MM-DD HH:mm），不显示年份与秒。 */
-const pad = (value: number) => String(value).padStart(2, '0')
 
 /**
  * 「新建项目」入口按 design/refs 展示，但本卡数据源只有三个 GET、不做写操作，
@@ -70,6 +72,12 @@ export function ProjectsPage() {
   const loading = data === undefined && error === ''
   const owner = productName === '' ? productId : productName
 
+  // 详情抽屉的打开状态只存 id（不复制行对象）：每次渲染按 id 从**当前** items 反查，
+  // 自动刷新 / 数据变化后抽屉内容跟着当前行走，不会停在打开那一刻的快照上；
+  // 行不存在（被关闭后被筛掉 / 刷新掉）→ 反查为 undefined → 抽屉自动关闭，不显示幽灵数据。
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const detailProject = detailId === null ? undefined : items.find((project) => project.project_id === detailId)
+
   const columns: Array<DataTableColumn<Project>> = [
     {
       key: 'seq_no',
@@ -101,14 +109,23 @@ export function ProjectsPage() {
     {
       key: 'update_time',
       header: '更新时间',
-      render: (project) => <span className="pj-time">{formatUpdated(project.update_time)}</span>,
+      render: (project) => <span className="pj-time">{formatProjectTime(project.update_time)}</span>,
     },
     {
       key: 'actions',
       header: '操作',
       // 不设 actions: true —— design/refs 移动端卡片里「操作」也带字段名（data-label）
       render: (project) => (
-        <Button variant="default" size="sm" onClick={() => navigate(`/projects/${project.project_id}/tasks`)}>
+        // 「一次点击一个结果」（docs/tech §7.8-1）：行内按钮必须阻断冒泡，否则 tr 的 onRowClick
+        // 会同时把抽屉打开——点「打开看板」只导航、不开抽屉。
+        <Button
+          variant="default"
+          size="sm"
+          onClick={(event) => {
+            event.stopPropagation()
+            navigate(`/projects/${project.project_id}/tasks`)
+          }}
+        >
           打开看板
         </Button>
       ),
@@ -154,9 +171,13 @@ export function ProjectsPage() {
             columns={columns}
             rows={items}
             getRowKey={(project) => project.project_id}
+            onRowClick={(project) => setDetailId(project.project_id)}
           />
         </div>
       )}
+
+      {/* 只读详情抽屉：内容按 id 从当前 items 派生（0 请求），列表刷新后仍在的行走新数据 */}
+      <ProjectDetailSheet project={detailProject} onClose={() => setDetailId(null)} />
     </section>
   )
 }
@@ -167,11 +188,4 @@ function subtitleOf(loading: boolean, failed: boolean, owner: string, count: num
   if (failed) return owner
   if (count === 0) return owner
   return `${owner} · ${count} 个项目`
-}
-
-/** ISO 时间 → 「MM-DD HH:mm」；脏值原样返回，不让页头/表格因一条坏数据崩掉。 */
-function formatUpdated(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
