@@ -1,4 +1,5 @@
-// ui/TabBar —— 移动端一级导航（看板 / 收件箱 / 产品 / 更多），design/components.md §ui/TabBar（移动专属）
+// ui/TabBar —— 移动端一级导航（3 项：收件箱 / 产品 / 更多；「更多」二级层放执行节点），
+// design/components.md §ui/TabBar（移动专属，不含「看板」）
 //
 // 结构：图标 + 文字（必须都有文字，不允许只给图标）；当前项品牌色 + 加粗 + aria-current="page"。
 // 状态：rest / active / focus-visible；hover 不适用（触屏），disabled / loading 不适用。
