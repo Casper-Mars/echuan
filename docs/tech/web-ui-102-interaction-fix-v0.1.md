@@ -392,7 +392,7 @@
 1. **一次点击一个结果**：行内所有可点元素（按钮、链接）必须 `event.stopPropagation()`，否则 `tr` 的 `onClick` 与按钮动作同时触发（抽屉 + 导航）。V2 用 `isInteractiveTarget`（`archive/v1-main-20261104` 的 `lib/interaction.ts`）解决同一问题，本方案用显式 `stopPropagation`（更局部）。
 2. **同一屏主操作只出现一次**（AC5）：产品页页头「新建产品」= 唯一 primary；项目页页头「新建项目」= 唯一 primary，行内「打开看板」default、「关闭/重开」ghost；看板页头「新建任务」primary（closed → disabled）。
 3. **触控 ≥44×44**：移动端由 `ui/ui.css:977-985` 对 `ui/Button` 的 `md`/`sm` 统一兜 `min-height`，本方案**不新增**触控 CSS；只要求行内动作组在 390 宽下不换行溢出（可用 `flex-wrap` 兜）。
-4. **不新增 UI 组件、不新增依赖、不改路由表**（`App.tsx` 零改动）。
+4. **不新增 `ui/` 组件、不新增依赖、不改路由表**（`App.tsx` 零改动）；页面私有组件按 D2 落在 `features/**`。
 5. **颜色/间距只用令牌**：新 CSS 不出现 hex / px 字面量（`design/README.md` 验收第 2 条）；不新增 `@media` 断点值（只用既有 `47.99em` / `63.99em` 两档，`web/scripts/style-debt.mjs` ⑤ 会判）。
 
 ### 7.9 design 基线同步（必答项）
@@ -404,7 +404,7 @@
 | 文件 | 改什么 | 依据 |
 |---|---|---|
 | `design/screens/products.md` | 「组件」补 `ui/DetailSheet`；「交互」写明「行点击 → 只读详情抽屉（6 字段），行内『查看项目』→ `#/products/:productId/projects`（点按钮不开抽屉）」；「结构」操作列保持 1 枚按钮；「不做」补「产品编辑/删除（不变）」 | D1/D2 |
-| `design/screens/projects.md` | 「交互」改：行点击 → 只读详情抽屉（9 字段）；操作列 = 打开看板（default）+ 关闭/重开（ghost）；「数据来源」补 `POST /v1/projects/close|reopen` 与 409 二次确认；删除末行「不做：关闭/重开项目」 | D1/D3/D4 |
+| `design/screens/projects.md` | 「交互」改：行点击 → 只读详情抽屉（9 字段）；操作列 = 打开看板（default）+ 关闭/重开（ghost）；「数据来源」补 `POST /v1/projects/close` / `POST /v1/projects/reopen` 与 409 二次确认；删除末行「不做：关闭/重开项目」 | D1/D3/D4 |
 | `design/screens/board.md` | 「结构」页头补「已关闭标识（closed 项目）」；「交互」补「closed 项目上『新建任务』disabled，空态动作为『返回项目列表』」；「不做」不变 | D3 |
 | `design/flows.md` | F1 第 1 步补「一级导航不含看板；`#/` 仍直达上次项目看板；看板入口 = 产品 → 项目列表 → 打开看板」；新增 **F5 关闭/重开项目**（含 409 → force 二次确认、reopen 不复活任务）；F1 分支补「面包屑按名显示，取不到时退回 ID」 | D5/D6 |
 | `design/components.md` | §ui/DetailSheet「用途」扩为「任务详情 / 附件预览 / 产品与项目只读详情」；§ui/DataTable 补「行点击开只读抽屉（`onRowClick`），行内动作需阻断冒泡」；§ui/SidebarNav 与 §ui/TabBar 的项清单改为 3 项（去掉「看板」）；总览表**不改**（仍 21 个组件）；新增一节「屏内私有详情抽屉」说明 `features/shell/DetailFields` 不属于 ui 导出面 | D2/D5 |
