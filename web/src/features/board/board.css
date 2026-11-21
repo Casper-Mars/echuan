@@ -29,12 +29,13 @@
   --bp-column-w: calc(var(--space-10) * 4 + var(--space-6));
 }
 
-/* 移动端：让出底部 TabBar（触控高度 + 一条上边框）；左右内边距收窄到 12（space-4），
+/* 移动端：让出底部 TabBar（单项 space-8+space-5 = 56 + 一条上边框 = 57，口径同 ui.css
+ * `.ui-tab-bar__tab` 的 min-height）；左右内边距收窄到 12（space-4），
  * 列间距同步收窄到 8（space-3）——两者都是 design/refs 移动端的像素实测值（列 1 左边 12、列间距 8）。 */
 @media (max-width: 47.99em) {
   .bp {
     block-size: calc(
-      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - var(--ui-control-height-touch) -
+      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - calc(var(--space-8) + var(--space-5)) -
         var(--border-width)
     );
     /* 负 margin 必须抵满 shell 的 24，否则收窄内边距只会把整块往里缩；左右内边距再单独收窄到 16 */
@@ -71,6 +72,20 @@
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+/* 标题行：项目名 + 已关闭标识（design/screens/board.md「结构」第二段）。
+ * 标识与标题同排垂直居中；窄屏自动折到标题下一行，不挤压项目名。 */
+.bp-head__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-inline-size: 0;
+}
+
+.bp-head__closed {
+  flex: 0 0 auto;
 }
 
 .bp-head__meta {
@@ -246,6 +261,10 @@
 }
 
 /* ===== 新建任务面板（features/board/CreateTaskSheet） =================== */
+/* 注意：这里**不覆盖** ErrorBar 的内部 flex（曾试过让说明不收缩，结果把非 409 分支与窄屏换行一起带崩）。
+ * 说明沿用 shell 的既有取舍（宽屏按比例收缩出省略号、窄屏换行）；409 说明在 720 抽屉里会被裁尾部，
+ * 属已登记的口径差（见 CreateTaskSheet 的 409 分支注释与 shell.css:226-243）。 */
+
 .bp-form {
   display: flex;
   flex-direction: column;

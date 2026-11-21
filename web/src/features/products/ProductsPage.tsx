@@ -2,12 +2,17 @@
 //
 // 规格对照：
 //   design/screens/products.md   页头（产品数 + 项目总数 + 筛选 + 新建产品）→ 表格（产品 · 仓库 · 项目数 · 操作）；
-//                                四态 default / empty / loading / error；<768 卡片式行（字段名走 ui/DataTable 的 data-label）。
-//   design/components.md         §ui/DataTable（表体换骨架行 / 移动端 data-label）、§ui/EmptyState、§ui/SkeletonCard、
-//                                §ui/Alert（danger 可重试）、§ui/Button、§ui/SelectField。
+//                                四态 default / empty / loading / error；<768 卡片式行（字段名走 ui/DataTable 的 data-label）；
+//                                「交互」行点击 → 只读详情抽屉（6 字段，0 请求，字段取当前行），行内「查看项目」只导航不开抽屉。
+//   design/components.md         §ui/DataTable（表体换骨架行 / 移动端 data-label / onRowClick）、§ui/EmptyState、
+//                                §ui/SkeletonCard、§ui/Alert（danger 可重试）、§ui/Button、§ui/SelectField、
+//                                §「屏内私有详情抽屉」（产品 6 字段在 features/products/ProductDetailSheet，
+//                                共用键值网格 = features/shell/DetailFields）。
 //   docs/tech/web-ui-redo-v0.1.md §7   数据源不新增接口：GET /v1/products（project_count）+ GET /v1/projects（按需）。
+//   docs/tech/web-ui-102-interaction-fix-v0.1.md §7.2（D1）/ §7.3（D2）/ §7.8（一次点击一个结果）。
 //
-// 分层：本文件只 import ui / api / hooks / lib，不直接 import Mantine 包（分层红线，验收用 grep 查）。
+// 分层：本文件只 import ui / api / hooks / lib 与同层（features/products、features/shell）组件，
+// 不直接 import Mantine 包（分层红线，验收用 grep 查）。
 // 几何与配色全部由 products.css 消费 theme 令牌，文件里不出现 hex / px 字面量（验收 grep）。
 //
 // 不做（design/screens/products.md「不做」）：产品编辑、删除——后端无对应动作，页面上也不出现入口。
@@ -20,6 +25,7 @@ import { useAutoRefresh } from '../../hooks/useAutoRefresh'
 import { REFRESH_INTERVALS } from '../../lib/refresh'
 import { Alert, Button, DataTable, EmptyState, SelectField, SkeletonCard } from '../../ui'
 import type { DataTableColumn } from '../../ui'
+import { ProductDetailSheet } from './ProductDetailSheet'
 import './products.css'
 
 /** 稳定的空数组：避免每次渲染新建引用，也避免把「还没有数据」误判成 loading。 */
@@ -74,6 +80,11 @@ export function ProductsPage() {
   const items = data?.items ?? EMPTY_PRODUCTS
   const loading = data === undefined && error === ''
 
+  // 详情抽屉的打开状态只存 id（不复制行对象）：每次渲染按 id 从**当前** items 反查，
+  // 自动刷新 / 筛掉行 / 字段被改后，抽屉内容跟着当前行走，不会停在打开那一刻的快照上。
+  // 行被删除或刷新后不存在 → 反查为 undefined → 抽屉自动关闭（不会显示幽灵数据）。
+  const [detailId, setDetailId] = useState<string | null>(null)
+
   // 每个产品的项目数：有 projects 明细就用明细，否则回退接口给的 project_count（列表响应可能缺省）。
   const projectCounts = useMemo(() => {
     const map = new Map<string, number>()
@@ -96,6 +107,9 @@ export function ProductsPage() {
     return items.filter((product) => matched.has(product.product_id))
     // countOf 只依赖 projects，projects 变化时 rows 必须跟着重算
   }, [items, projects, status])
+
+  // 抽屉对应的当前行：从 items（不是 rows）反查，筛选变化不会把已打开的抽屉变成空壳。
+  const detailProduct = detailId === null ? undefined : items.find((product) => product.product_id === detailId)
 
   const columns: Array<DataTableColumn<Product>> = [
     {
@@ -129,7 +143,16 @@ export function ProductsPage() {
       // 不设 actions: true —— design/refs 的移动端卡片里「操作」也带字段名（data-label），
       // 设了 actions 会被 ui/DataTable 去掉标签。
       render: (product) => (
-        <Button variant="default" size="sm" onClick={() => navigate(`/products/${product.product_id}/projects`)}>
+        // 「一次点击一个结果」（docs/tech §7.8-1）：行内按钮必须阻断冒泡，否则 tr 的 onRowClick
+        // 会同时把抽屉打开——点「查看项目」只导航、不开抽屉。
+        <Button
+          variant="default"
+          size="sm"
+          onClick={(event) => {
+            event.stopPropagation()
+            navigate(`/products/${product.product_id}/projects`)
+          }}
+        >
           查看项目
         </Button>
       ),
@@ -182,11 +205,22 @@ export function ProductsPage() {
             columns={columns}
             rows={rows}
             getRowKey={(product) => product.product_id}
+            // 行点击 → 只读详情抽屉（ui/DataTable 已内置 tabIndex + Enter/Space，键盘同样可达）。
+            // 只记 id：抽屉内容每次渲染按 id 从当前 items 派生（刷新后跟随当前行）。
+            onRowClick={(product) => setDetailId(product.product_id)}
             // 筛掉全部行 ≠ 没有产品：空态只在真的没有产品时出现，筛空由表内提示兜住
             empty="没有符合筛选条件的产品（按项目状态）"
           />
         </div>
       )}
+
+      {/* 只读详情抽屉：屏内私有组件 features/products/ProductDetailSheet（6 字段 + ui/DetailSheet 的
+          readonly 变体 + shell/DetailFields 键值网格）；页面只负责「哪一行」与关闭，抽屉内不放动作。 */}
+      <ProductDetailSheet
+        product={detailProduct}
+        projectCount={detailProduct ? countOf(detailProduct) : 0}
+        onClose={() => setDetailId(null)}
+      />
     </section>
   )
 }

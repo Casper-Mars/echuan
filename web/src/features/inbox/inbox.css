@@ -25,12 +25,12 @@
 }
 
 /* 移动端：内边距收窄到 12（space-4，design/refs 移动端卡片左边距实测），
- * 并让出底部 TabBar（触控高度 + 一条上边框）。 */
+ * 并让出底部 TabBar（单项 space-8+space-5 = 56 + 一条上边框 = 57，口径同 ui.css `.ui-tab-bar__tab`）。 */
 @media (max-width: 47.99em) {
   .ix {
     padding-inline: var(--space-4);
     min-block-size: calc(
-      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - var(--ui-control-height-touch) -
+      100dvh - var(--space-9) - var(--space-4) - var(--border-width) - calc(var(--space-8) + var(--space-5)) -
         var(--border-width)
     );
   }

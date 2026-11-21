@@ -139,6 +139,11 @@ type Worker struct {
 	LastSeen       string           `db:"last_seen"`
 	CreateTime     string           `db:"create_time"`
 	UpdateTime     string           `db:"update_time"`
+
+	// CurrentTaskCode is the business id (`t_...`) of CurrentTaskID. Only
+	// ListWorkers fills it (LEFT JOIN tasks); GetWorker's single-table query
+	// leaves it nil. A dangling pointer (task row gone) stays nil.
+	CurrentTaskCode *string `db:"current_task_code"`
 }
 
 // CreateProjectInput is the write model for CreateProject.

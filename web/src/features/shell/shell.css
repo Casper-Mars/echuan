@@ -72,7 +72,48 @@
   text-overflow: ellipsis;
 }
 
+/* 各段取舍（issue #102-4 收口）：面包屑现在装的是**名字**，窄屏必然出现超长段，
+ * 压缩必须由段内文本自己出省略号，不许交给父级 `.fx-crumbs__item { overflow: hidden }` 硬切
+ * （硬裁没有省略号，等于回到 issue #89 B2 / AC4 那个「超长标识整段被切掉」的旧账）。
+ *   - 首段（产品）：不压缩，保持原宽（移动端还有 44px 触控下限）；
+ *   - 短名字段（≤12 字符，且同行有长名字时标 --keep）：不压缩，让长名字承担全部溢出；
+ *   - 长名字段：按内容宽度等比压缩，自己出省略号；
+ *   - 标识段（任务 id，标 --token）：0.05，优先保标识，但保留可压缩性。
+ * 为什么不让中间段固定先让位、末段固定不让位：390 + 两个超长名字时宽度是硬约束，
+ * 中间段压到 44px 只剩「…」、末段照样要裁；分档后短名字（「订单服务」）完整、
+ * 长名字留可读前缀 + 省略号，且任何一段都不会被父级硬切。
+ * 省略号选择器覆盖 .fx-crumbs__label / __current：链接段与文本段共用同一套文本盒。 */
+.fx-crumbs__item:first-child {
+  flex: 0 0 auto;
+}
+
+/* 短名字段（≤12 字符、且同行有长名字时才标）：不参与压缩，让长名字承担全部压缩，
+ * 「订单服务」这类常见项目名在 390 上保持完整。不会撑出父级：标 keep 的前提是同行有长名字，
+ * 长名字的 min-width 为 0（桌面）/ 44px（移动触控下限），足以吸收剩余溢出。 */
+.fx-crumbs__item--keep {
+  flex-shrink: 0;
+}
+
+/* 标识段（任务 id）：压缩权重 0.05，名字段先让位；仍可压缩到 0 并自己出省略号，
+ * 所以「极窄 + 超长 task id」也不会变成父级硬切。 */
+.fx-crumbs__item--token {
+  flex-shrink: 0.05;
+}
+
+.fx-crumbs__label,
+.fx-crumbs__current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 链接段也走同一套：min-width: 0 让它能参与压缩，文本盒（.fx-crumbs__label）负责出省略号。
+ * 移动端 44×44 触控下限仍由下面媒体查询里的 min-width: --ui-control-height-touch 兜住。 */
 .fx-crumbs__link {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
   color: var(--text-muted);
   text-decoration: none;
 }
@@ -82,12 +123,20 @@
 }
 
 .fx-crumbs__sep {
+  flex: 0 0 auto;
   color: var(--text-muted);
 }
 
 .fx-crumbs__current {
   color: var(--text-primary);
   font-weight: var(--text-body-strong-weight);
+}
+
+/* 名字没取到、标签退回原始 ID（方案 §7.7 D6 / P4-3、P4-4）：mono 让「标识」和「名字」一眼可分，
+ * title 由 AppFrame 挂上原始 ID 作可读性兜底。名字齐全时这条类不出现。
+ * 只消费令牌：字体取 --font-mono，不写字面量。 */
+.fx-crumbs__id {
+  font-family: var(--font-mono);
 }
 
 .fx-topbar__actions {
@@ -162,24 +211,83 @@
   background-color: var(--surface-raised);
   color: var(--text-primary);
   border: var(--border-width) solid color-mix(in srgb, var(--feedback-danger) 45%, var(--border-subtle));
+  /* 单行横幅的竖直内距收到 space-3（8px）：条高 50px，与 ref 的量级一致（改前 134px） */
+  padding-block: var(--space-3);
 }
 
 .fx-error-bar-alert .mantine-Alert-icon {
   color: var(--feedback-danger);
 }
 
+/* ui/Alert 的正文槽与 Mantine 的 body 都是 flex 项且没有 min-width: 0：单行不换行的错误文案
+ * 会把它们的 min-content 撑成整段文本，横幅内容因此溢出到容器外（抽屉里实测动作被推出可视区）。
+ * 这里只对本错误条生效，把整条链路压回可收缩宽度。 */
+.fx-error-bar-alert .mantine-Alert-body,
+.fx-error-bar-alert .ui-alert__body {
+  min-width: 0;
+}
+
+.fx-error-bar-alert .ui-alert__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+}
+
+/* 单行横幅（issue #89 B1）：文本一段、动作一段，动作贴右；文本内部同样单行，超长才省略。
+ * 旧实现是「三行文本 + 动作另起一行靠左」，与 ref（单行 + 重试右置）相反。 */
 .fx-error-bar {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-4);
   min-width: 0;
   color: var(--text-primary);
 }
 
+.fx-error-bar__text {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ===== 错误条文本优先级（issue #89 B1，review 第 3 轮）=========================
+ * 不变式（验收口径）：
+ *   ① `.fx-error-bar__text` 永不溢出：任何宿主、任何 message / detail 长度下
+ *      `scrollWidth <= clientWidth`；
+ *   ② 被压缩的段一律「自己」出省略号（`overflow: hidden` + `text-overflow: ellipsis`），
+ *      不许出现父级硬切；
+ *   ③ 优先级按「这段丢了损失多大」排，见下面两条分支。
+ *
+ * 各分支的取舍（括号内为实测值）：
+ *   * 有技术细节（任务详情 / 看板 / 收件箱 / 派单队列）：标题是固定短标签
+ *     （「评审没有提交成功」7 字 ≈104），**不收缩**，只封顶在
+ *     「容器 − 细节下限 − 两条 gap」，保证结构上不会溢出；技术细节（HTTP 状态 + 端点 +
+ *     附加说明，信息最可丢）先让位并保留 40 的下限（至少露出「HTTP 500 · …」）；
+ *     说明（服务端原话，最要紧）拿剩下的全部宽度，只有「标题 + 细节下限」之外还不够时才自己省略。
+ *     抽屉 540 文本列 + 74 字符 message（lease lost 原文，475）的实测：
+ *     标题 104/104 完整、说明 388/475 省略号、细节 40/534 省略号、容器 540/540 不溢出。
+ *     代价：说明与技术细节同时收缩时按比例分摊，普通文案可能被压掉 1px 而出现末尾省略号
+ *     （实测「服务端错误（取证伪造）」142/143）——这是「容器绝不溢出」的必然代价，
+ *     比硬切掉半句服务端原话损失更小。
+ *   * 没有技术细节（附件预览）：溢出只能由标题与说明消化。标题保底 80
+ *     （至少露出错误种类，`（HTTP 413/500）` 有机会保留在头部），说明吃剩下的宽度，
+ *     两者都参与收缩、都出省略号，任何一段都不会被压成 0 宽。
+ *     156 文本列（双动作）实测：标题 80/143、说明 72/494、容器 156/156；
+ *     216 文本列（HTTP 500，单动作）实测：标题 80/161、说明 132/364、容器 216/216。
+ *     桌面窄栏保不住标题尾部的 HTTP 码（216 栏放不下 17 字标题 + 26 字说明，单行 50 高是硬约束），
+ *     移动 390 换行后完整可见——这是刻意的取舍：桌面形态优先。
+ */
 .fx-error-bar__title,
 .fx-error-bar__message,
 .fx-error-bar__detail {
   margin: 0;
+  /* 不变式②：谁被压窄，谁自己出省略号（父级 overflow: hidden 只当最后一道保险） */
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fx-error-bar__title {
@@ -198,18 +306,88 @@
   overflow-wrap: anywhere;
 }
 
-/* 动作成组（D7）：同一行、同一对齐（起点）、间距走令牌；窄屏才换行 */
+/* 有技术细节：标题不收缩（但封顶在「容器 − 细节下限 − 两条 gap」，保证结构上不溢出），
+   细节先让位、保底 40，说明吃剩下的宽度。 */
+.fx-error-bar__text[data-detail='on'] .fx-error-bar__title {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: calc(100% - var(--space-8) - var(--space-2) * 2);
+}
+
+.fx-error-bar__text[data-detail='on'] .fx-error-bar__message {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.fx-error-bar__text[data-detail='on'] .fx-error-bar__detail {
+  flex: 0 100 auto;
+  min-width: var(--space-8);
+}
+
+/* 没有技术细节：标题保底 80（至少露出错误种类，含 HTTP 码的机会最大），说明吃掉剩下的宽度；
+   两者都等权参与收缩、都出省略号，任何一段都不会被压成 0 宽。 */
+.fx-error-bar__text[data-detail='off'] .fx-error-bar__title {
+  flex: 0 1 auto;
+  min-width: var(--space-11);
+}
+
+.fx-error-bar__text[data-detail='off'] .fx-error-bar__message {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 动作成组（D7 → B1）：重试与额外动作同一行、同一右对齐；没有动作时整块不渲染（不留空占位） */
 .fx-error-bar__actions {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: flex-end;
   gap: var(--space-3);
-  margin-block-start: var(--space-2);
+  margin-inline-start: auto;
 }
 
 .fx-error-bar__actions > * {
   flex: 0 0 auto;
+}
+
+/* 窄屏：文案放不下就换行（不省略掉「下一步怎么做」），动作仍贴右 */
+@media (max-width: 47.99em) {
+  .fx-error-bar {
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .fx-error-bar__text {
+    flex-wrap: wrap;
+    overflow: visible;
+    white-space: normal;
+  }
+
+  /* review B1-2：窄屏标题必须留在文本列内换行（原来 flex: 0 0 auto 会按固有宽度溢出，
+     越过列边界压到右侧「重试 / 在新标签打开原文」上）。这里放开收缩下限，交给换行解决。
+     选择器带 [data-detail] 是为了与上面的优先级规则同权重（0,3,0），靠源码顺序在窄屏生效。 */
+  .fx-error-bar__text[data-detail] .fx-error-bar__title {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+
+  .fx-error-bar__text[data-detail] .fx-error-bar__message {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+
+  .fx-error-bar__text[data-detail] .fx-error-bar__detail {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
 }
 
 .fx-page-error {
@@ -249,3 +427,63 @@
     min-height: var(--ui-control-height-touch);
   }
 }
+
+/* ===== 只读详情抽屉的键值网格（features/shell/DetailFields） ============
+ * 规格：design/components.md §「屏内私有详情抽屉」——产品（6 字段）与项目（9 字段）共用同一套排版，
+ * 落在壳层、不属于 ui/ 导出面（`ui-imports-check` 仍是 21 个组件）。
+ * 只做排版、只消费令牌：颜色取 text 角色，几何取 --space-*（字段名列宽 = space-11 = 80）。
+ * 正文区的内边距与滚动由 ui/DetailSheet 的 .ui-detail-sheet__body 提供（space-5 + overflow:auto），
+ * 这里不再叠加 padding，避免两层内边距。
+ */
+.fx-detail-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+}
+
+/* 逐行两列：字段名定宽、值吃剩余宽度（minmax(0,1fr) 让长仓库地址换行而不是撑破抽屉） */
+.fx-detail-fields__row {
+  display: grid;
+  grid-template-columns: var(--space-11) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-5);
+}
+
+.fx-detail-fields__label {
+  color: var(--text-muted);
+  font-size: var(--text-small-size);
+  line-height: var(--text-small-line-height);
+}
+
+.fx-detail-fields__value {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line-height);
+  /* 长 ID / 长仓库地址按字符断行，不产生横向滚动 */
+  overflow-wrap: anywhere;
+}
+
+/* 等宽：编号、仓库地址这类需要逐字符比对的字段 */
+.fx-detail-fields__value[data-mono='on'] {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-size);
+  line-height: var(--text-mono-line-height);
+}
+
+/* 多行正文（描述 / 上下文）：保留原始换行 */
+.fx-detail-fields__value[data-multiline='on'] {
+  white-space: pre-wrap;
+}
+
+/* 单行省略（仓库地址、长编号）：design/components.md §「屏内私有详情抽屉」与
+ * docs/tech §7.2 字段口径「单行省略 + title」——一行显示、末尾省略号，原文进 title（DetailFields 负责）。
+ * 溢出被 hidden 消化，抽屉不会出现横向滚动；这条与 data-multiline 互斥（DetailFields 保证只命中一个）。 */
+.fx-detail-fields__value[data-truncate='on'] {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+

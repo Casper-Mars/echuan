@@ -1,13 +1,24 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="驿传（echuan）— 需求到交付的一站式协作平台" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>驿传 echuan</title>
-    <script type="module" crossorigin src="/assets/index-DHXWtDhd.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CDRRTrQ8.css">
+    <script>
+      // 首屏主题：默认暗色（静态写在 <html data-theme="dark">，避免首屏闪白）。
+      // 这里只读 localStorage 的显式偏好切亮色，不做任何写入；切换入口在 src/theme/color-scheme.ts。
+      try {
+        if (window.localStorage.getItem('echuan-theme') === 'light') {
+          document.documentElement.dataset.theme = 'light'
+        }
+      } catch (error) {
+        // 隐私模式禁用 localStorage：保持默认暗色即可
+      }
+    </script>
+    <script type="module" crossorigin src="/assets/index-BJpntbbs.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CnjsYYgk.css">
   </head>
   <body>
     <div id="root"></div>

@@ -99,6 +99,12 @@ export function DataTable<Row>({
                   onKeyDown={
                     onRowClick
                       ? (event) => {
+                          // 只在事件源是「行本身」（tr 拿到焦点）时响应 Enter/Space。
+                          // 行内控件（行操作按钮 / 链接）把焦点接走时，按键属于它们自己的语义：
+                          // 这里若继续 preventDefault，按钮的默认点击会被吃掉 → 键盘路径上行内主操作
+                          // 变成开抽屉（鼠标路径因 stopPropagation 正常），行为与鼠标不一致。
+                          // 所以事件来自行内控件时直接放行，不拦截、不开抽屉。
+                          if (event.target !== event.currentTarget) return
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault()
                             onRowClick(row)

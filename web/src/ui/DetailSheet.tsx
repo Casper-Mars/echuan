@@ -1,5 +1,6 @@
-// ui/DetailSheet —— 任务详情与附件预览容器，design/components.md §ui/DetailSheet
+// ui/DetailSheet —— 详情/预览容器，design/components.md §ui/DetailSheet
 //
+// 用途：任务详情（detail）/ 附件预览（preview）/ 产品与项目只读详情（readonly：字段键值网格 + 0 请求）。
 // 底层 Drawer：桌面右侧（720，由令牌推导）；移动全屏（见 ui.css 媒体块）。
 // 结构：头部（标题 + 关闭）→ 可滚动正文 → 底部固定操作条（移动端必固定）。
 // 状态：rest / hover（关闭键淡底）/ focus-visible / loading（正文区 Skeleton，头部与底部操作条保持稳定）。
@@ -14,8 +15,13 @@ export interface DetailSheetProps {
   opened: boolean
   title: ReactNode
   onClose: () => void
-  /** detail = 单栏；preview = 附件列表 + 正文两栏（移动折叠为上下） */
-  variant?: 'detail' | 'preview'
+  /**
+   * detail = 单栏；preview = 附件列表 + 正文两栏（移动折叠为上下）；
+   * readonly = 只读详情（产品、项目的字段键值网格 + 0 请求、字段取当前行、无写动作）。
+   * 三个变体共用同一容器几何（桌面右侧 720 / 移动全屏），变体只表达正文形态，
+   * 见 design/components.md §ui/DetailSheet「变体」。
+   */
+  variant?: 'detail' | 'preview' | 'readonly'
   /** 正文加载中：正文区 Skeleton，头部与底部操作条保持稳定 */
   loading?: boolean
   /** 底部固定操作条（移动端必固定） */
@@ -49,7 +55,9 @@ export function DetailSheet({
       styles={{
         content: cssProps({
           '--drawer-size': cssVar('ui-layout-sheet'),
-          backgroundColor: cssVar('surface-canvas'),
+          // 详情面板底色（issue #89 D3）：抽屉是 overlay 表面 → --surface-overlay（ref #0f141e）；
+          // 原先取 --surface-canvas(#070b14)，比 ref 深一档。颜色仍只来自令牌，不写死色值。
+          backgroundColor: cssVar('surface-overlay'),
           boxShadow: cssVar('shadow-e3'),
           borderLeft: `${cssVar('border-width')} solid ${cssVar('border-subtle')}`,
           // T6 修复（D5 同源几何）：Mantine 的 Drawer content 是 block 容器，

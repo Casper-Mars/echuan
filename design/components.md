@@ -146,6 +146,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 - 用途：产品/项目/执行节点的列表。
 - 结构：thead（全大写小字号）→ 行（首列标题 + 副标题 mono）→ 行内操作。
+- 行交互：行可点击时用 `onRowClick`（打开只读详情抽屉 `ui/DetailSheet`，不发请求、字段取当前行）；行内动作（「查看项目」「打开看板」「关闭/重开」）**必须 `stopPropagation` 阻断冒泡**，保证「一次点击一个结果」——点按钮只执行按钮动作、不开抽屉；无 `onRowClick` 的行（如执行节点）保持不可点。
 - 使用 token：`border.subtle` `border.default` `text.muted` `space.3` `caption`
 - 变体：`default` / `warn-row`（心跳过期行整行淡底）。
 - 状态矩阵：
@@ -253,11 +254,11 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 ## ui/DetailSheet
 
-- 用途：任务详情与附件预览的容器。
+- 用途：任务详情 / 附件预览 / 产品与项目只读详情（后三者共用同一容器，变体见下）。
 - 底层：`Drawer`（桌面右侧 720px；移动全屏）。
 - 结构：头部（标题 + 关闭）→ 可滚动正文 → 底部固定操作条（移动端必固定）。
 - 使用 token：`surface.canvas` `border.subtle` `shadow.e3` `z.dialog` `space.5`
-- 变体：`detail`（单栏）/ `preview`（附件列表 + 正文两栏，移动折叠为上下）。
+- 变体：`detail`（单栏）/ `preview`（附件列表 + 正文两栏，移动折叠为上下）/ `readonly`（产品、项目只读详情：字段键值网格 + 0 请求，字段取自当前行数据）。
 - 状态矩阵：
 
 | 状态 | 表现 | 使用 token |
@@ -275,7 +276,8 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 ## ui/TabBar（移动专属）
 
-- 用途：移动端一级导航（看板 / 收件箱 / 产品 / 更多）。
+- 用途：移动端一级导航（3 项）。
+- 项清单（3 项，**不含「看板」**）：收件箱 / 产品 / 更多（「更多」二级层放执行节点）。看板不是一级入口，入口路径 = 产品 → 项目列表 → 打开看板；`#/` 仍直达上次项目看板。
 - 使用 token：`surface.raised` `border.subtle` `action.primary-text` `text.muted` `z.sticky`
 - 状态矩阵：
 
@@ -295,6 +297,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 ## ui/SidebarNav（桌面/平板）
 
 - 用途：桌面 240px 有文字标签；≤1024 收 64px 图标栏，**文字进 Tooltip**。
+- 项清单（3 项，**不含「看板」**）：收件箱 / 产品 / 执行节点；与移动 `ui/TabBar` 同源同序，`/projects/*` 下钻时高亮父域「产品」。
 - 底层：`AppShell.Navbar` + `NavLink`。
 - 使用 token：`surface.raised` `surface.overlay` `action.primary` `text.primary` `space.3`
 - 状态矩阵：
@@ -379,6 +382,18 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 - 状态矩阵：仅 `rest`；若可点击则继承 `focus-visible` 焦点环。
 - 可访问性：`task_id` 用等宽字体，方便肉眼比对。
 - 反例：把 40 字符 id 折行成 3 行（应省略中间/尾部并给 title）。
+
+---
+
+## 屏内私有详情抽屉（不属于 `ui/` 导出面）
+
+产品与项目的**只读详情抽屉**复用 `ui/DetailSheet`（`readonly` 变体），不新增 `ui/` 组件：`ui/` 导出面仍是 21 个组件（`web/scripts/ui-imports-check.mjs` 断言导出集合，本契约不扩）。
+
+- 页面私有部分落在 feature 层：`features/products/ProductDetailSheet.tsx`（6 字段：产品编号 / 名称 / 仓库 / 描述 / 证书 / 项目数）、`features/projects/ProjectDetailSheet.tsx`（9 字段：项目编号 / 产品编号 / 序号 / 名称 / 上下文 / 状态 / 创建时间 / 更新时间 / 关闭时间）。
+- 两个抽屉共用的**键值网格**收敛在壳层 `features/shell/DetailFields.tsx`（与 `ErrorBar` 同层；`features/*` 允许 import `features/shell`）。它**不是** `ui/` 组件、不从 `web/src/ui/index.ts` 导出，因此不进总览表、不计入 21 个组件。
+- 字段全部取自当前列表行，抽屉打开**不发请求**（0 请求）；因此没有 loading/error 态，只有 `rest`。
+- 升级条件：若同构只读抽屉出现第三处（如执行节点详情），再按 D2 升级为 `ui/` 组件，并同步 `ui/index.ts`、`ui-imports-check.mjs` 的 `EXPECTED`、本文件总览表与 `web/README.md` 的「21 个组件」表述。
+- 反例：为抽屉新增 `ui/ProductDetailSheet` / `ui/ProjectDetailSheet`（会把 `Product`/`Project` 的字段形状塞进 `ui/` 层，导出面 21→23，四处同步成本高）。
 
 ---
 
