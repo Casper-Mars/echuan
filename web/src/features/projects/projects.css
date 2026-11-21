@@ -104,6 +104,27 @@
   white-space: nowrap;
 }
 
+/* 行操作列（design/screens/projects.md「交互」+ docs/tech §7.4 D3）：
+ * 「打开看板」（default）与「关闭 / 重开」（ghost）同排；ghost 不抢主操作权重。
+ * 390 宽下动作组不换行溢出 → 用 flex-wrap 兜住（方案 §7.8-3），不新增断点。 */
+.pj-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* 409 第二态的技术细节行（方案 §9.1「detail」口径）：服务端英文原文只落在这一行，
+ * 弱化 + 等宽；长 message 允许任意处折行，不撑破弹窗。 */
+.pj-confirm__detail {
+  margin: var(--space-3) 0 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line-height);
+  overflow-wrap: anywhere;
+}
+
 /* ===== 移动端（<768）：表格转卡片行 =====================================
  * 卡片行本体由 ui/DataTable 的媒体块负责（每格 data-label 字段名）；这里只补外层卡片让位与行底色。
  */
