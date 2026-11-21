@@ -216,7 +216,9 @@
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  background-color: var(--surface-raised);
+  /* 列表面（issue #89 D2）：ref 列内实测 #060b14 ≈ 画布色，比 --surface-raised(#0b1322) 暗；
+     卡片才是 raised 表面，列不当卡片用。 */
+  background-color: var(--surface-canvas);
   border: var(--border-width) solid var(--border-subtle);
 }
 
