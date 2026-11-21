@@ -88,26 +88,34 @@ describe('技能元信息', () => {
   })
 })
 
-describe('正文六条规则逐条可检索', () => {
-  it('① 任务来自 Worker 派单：派单直接开工，不反问', () => {
-    expect(content).toContain('派单')
-    expect(content).toContain('直接开工')
+describe('正文协议事实可检索', () => {
+  it('① 工作项来源与 kind 交付物形态', () => {
+    expect(content).toContain('工作项')
     expect(content).toContain('echuan_task_claim')
+    expect(content).toContain('kind')
+    for (const kind of ['requirement', 'design', 'breakdown', 'dev']) {
+      expect(content).toContain(kind)
+    }
   })
 
-  it('② 先读上下文：echuan_project_get 看方案，echuan_material_get 取全文', () => {
-    expect(content).toContain('echuan_project_get')
-    expect(content).toContain('echuan_material_get')
-    expect(content).toContain('不要凭任务标题猜需求')
+  it('② 字段与状态：状态只由平台产生，agent 不改', () => {
+    expect(content).toContain('in_progress')
+    expect(content).toContain('in_review')
+    expect(content).toContain('rework')
+    expect(content).toContain('reason')
+    expect(content).toContain('不改状态')
   })
 
-  it('③ 干完必须汇报：echuan_task_report + 四段式（改了什么/怎么自检/git 交付/遗留风险）', () => {
+  it('③ 租约归属：心跳托管不续租，手动领卡自己续', () => {
+    expect(content).toContain('lease_id')
+    expect(content).toContain('echuan_task_renew')
+    expect(content).toContain('lease_lost')
+    expect(content).toContain('心跳托管')
+  })
+
+  it('④ 报告契约：echuan_task_report + 四段式，顺序可读', () => {
     expect(content).toContain('echuan_task_report')
-    expect(content).toContain('改了什么')
-    expect(content).toContain('怎么自检')
-    expect(content).toContain('git 交付')
-    expect(content).toContain('遗留风险')
-    // 四段式必须能按顺序读出：①②③④ 依次出现。
+    expect(content).toContain('summary_md')
     const a = content.indexOf('改了什么')
     const b = content.indexOf('怎么自检')
     const c = content.indexOf('**git 交付**')
@@ -118,236 +126,44 @@ describe('正文六条规则逐条可检索', () => {
     expect(d).toBeGreaterThan(c)
   })
 
-  it('④ 做不下去也要汇报：写清卡在哪、缺什么、需要谁决策', () => {
+  it('⑤ 卡住也要报告：卡在哪 / 缺什么 / 需要谁决策', () => {
     expect(content).toContain('卡在哪')
     expect(content).toContain('缺什么')
     expect(content).toContain('需要谁决策')
     expect(content).toContain('禁止静默失败')
   })
 
-  it('⑤ 手动模式才需续租：echuan_task_renew，Worker 派发的卡不续租', () => {
-    expect(content).toContain('echuan_task_renew')
-    expect(content).toContain('手动模式')
-    // Worker 派发模式下不得调用续租工具（会与心跳抢租约语义）。
-    const heartbeatSection = content.slice(content.indexOf('Worker 派发模式'))
-    expect(heartbeatSection).toContain('不要')
-    expect(heartbeatSection).toContain('续租')
-  })
-
-  it('⑥ 不碰门禁：不验收、不返工、不取消、不改状态', () => {
+  it('⑥ 门禁红线：不验收、不返工、不取消、不改状态', () => {
     expect(content).toContain('不验收')
-    expect(content).toContain('不返工')
+    expect(content).toContain('不返工判定')
     expect(content).toContain('不取消')
     expect(content).toContain('不改任务状态')
   })
 
-  it('补充：无活不是错误，不重试风暴', () => {
+  it('⑦ 空结果与错误：204 正常、400/409 按 details 修正', () => {
     expect(content).toContain('当前无活')
-    expect(content).toContain('重试风暴')
+    expect(content).toContain('204')
+    expect(content).toContain('409')
   })
 })
 
-describe('git 交付协议', () => {
-  it('开工前必须同步远程，任务分支从 origin/feature/<project_id> 起而非本地 main', () => {
-    expect(content).toContain('git fetch --prune origin')
-    expect(content).toContain('git symbolic-ref refs/remotes/origin/HEAD --short')
-    expect(content).toContain('origin/')
-    expect(content).toContain('不得用本地 `main`')
-    expect(content).toContain('禁止跳过')
+describe('只讲协议，不掺角色与领域工作流', () => {
+  it('不含「谁来执行 / 怎么开工」类角色指令', () => {
+    for (const banned of ['直接开工', 'Leader', 'Developer', 'Tester', 'dev-leader']) {
+      expect(content).not.toContain(banned)
+    }
   })
 
-  it('从项目分支 feature/<project_id> 的最新远程提交建独立 worktree 与 task/<task_id> 分支', () => {
-    expect(content).toContain('WORK=feature/<project_id>')
-    expect(content).toContain('BASE=$(git symbolic-ref refs/remotes/origin/HEAD --short 2>/dev/null | sed')
-    expect(content).toContain('git worktree add ../wt-<task_id> -b task/<task_id> "origin/$WORK"')
-    expect(content).toContain('task/')
-    expect(content).toContain('不复用上一张卡的')
-    expect(content).toContain('git worktree remove')
-  })
-
-  it('新分支上游先随 base、push -u 后改为 origin/task/<id>（属正常，不重推/不 force）', () => {
-    expect(content).toContain('上游暂时设为 base')
-    expect(content).toContain('不要因此重推或 force')
-  })
-
-  it('交付必须 push 并校验远程 commit 与本地 HEAD 一致', () => {
-    expect(content).toContain('git push -u origin task/<task_id>')
-    expect(content).toContain('git ls-remote --heads origin task/<task_id>')
-    expect(content).toContain('git rev-parse HEAD')
-    expect(content).toContain('没 push 成功就等于没交付')
-  })
-
-  it('报告必须带分支 / commit / 远程分支校验 / PR 或 compare 链接', () => {
+  it('不含 git 分支 / worktree / PR 命令（这些属于领域规范）', () => {
+    for (const banned of ['git worktree add', 'gh pr create', 'git push -u origin', 'feature/<project_id>']) {
+      expect(content).not.toContain(banned)
+    }
+    // 「git 交付」只作为报告字段出现，不承载实现方式。
     expect(content).toContain('**git 交付**')
-    expect(content).toContain('commit 短 hash')
-    expect(content).toContain('origin/task/<task_id>')
-    expect(content).toContain('compare 链接')
-  })
-})
-
-describe('分支模型正/反向断言', () => {
-  /** 分支归属判定小节（2.1），用于锚定四步表，避免全篇命中的假阳性。 */
-  const ownershipSection = content.slice(
-    content.indexOf('### 2.1 分支归属判定'),
-    content.indexOf('### 2.2 原仓库路径'),
-  )
-
-  it('工作分支名固定为 feature/<project_id>，任务分支为 task/<task_id>', () => {
-    expect(content).toContain('feature/<project_id>')
-    expect(content).toContain('task/<task_id>')
-    expect(ownershipSection).toContain('分支名固定')
+    expect(content).toContain('由领域规范定义')
   })
 
-  it('幂等建项目分支：ls-remote --heads + grep -q . + refs/heads/$WORK，原仓库与 fork 起点各至少一处', () => {
-    expect(content).toContain('git ls-remote --heads')
-    expect(content).toContain('grep -q .')
-    expect(content).toContain('refs/heads/$WORK')
-
-    // 两条 refspec 不仅要存在，还必须落在各自小节的命令里（防止张冠李戴或整段搬错位置）。
-    const sectionStart22 = content.indexOf('### 2.2')
-    const sectionStart23 = content.indexOf('### 2.3')
-    const sectionStart24 = content.indexOf('### 2.4')
-    expect(sectionStart22).toBeGreaterThan(-1)
-    expect(sectionStart23).toBeGreaterThan(sectionStart22)
-    expect(sectionStart24).toBeGreaterThan(sectionStart23)
-    const originalRepoSection = content.slice(sectionStart22, sectionStart23)
-    const forkSection = content.slice(sectionStart23, sectionStart24)
-
-    // 原仓库路径以 origin/$BASE 为起点，fork 路径以 upstream/$BASE 为起点。
-    expect(originalRepoSection).toContain('"origin/$BASE:refs/heads/$WORK"')
-    expect(originalRepoSection).not.toContain('"upstream/$BASE:refs/heads/$WORK"')
-    expect(forkSection).toContain('"upstream/$BASE:refs/heads/$WORK"')
-    expect(forkSection).not.toContain('"origin/$BASE:refs/heads/$WORK"')
-  })
-
-  it('任务 PR 必须显式 --base "feature/<project_id>"，且正文写明不得省略', () => {
-    expect(content).toContain('--base "feature/<project_id>"')
-    expect(content).toContain('不得省略')
-    // 「不得省略」必须与省略后的后果成对出现，避免变成孤立口号。
-    expect(content).toContain('省略会落回仓库默认分支')
-  })
-
-  it('fork 路径任务 PR 用 --repo "$FORK"，收尾 PR 用 --head "$LOGIN:feature/<project_id>"', () => {
-    expect(content).toContain('--repo "$FORK"')
-    expect(content).toContain('--head "$LOGIN:feature/<project_id>"')
-  })
-
-  it('四步分支归属判定表覆盖四种情形（原仓库已有 / fork 已有 / 有权限 / 无权限）', () => {
-    expect(ownershipSection).toContain('原仓库已有')
-    expect(ownershipSection).toContain('fork 已有')
-    expect(ownershipSection).toContain('permissions.push')
-    expect(ownershipSection).toContain('无推送权限')
-    expect(content).toContain('有推送权限')
-    // 四步表的顺序编号必须齐全。
-    for (const step of ['| 1 |', '| 2 |', '| 3 |', '| 4 |']) {
-      expect(ownershipSection).toContain(step)
-    }
-  })
-
-  it('不含「base 取远程默认分支」类旧口径', () => {
-    for (const legacy of ['base = 远程默认分支', 'base 取 origin/HEAD', 'base 用远程默认分支']) {
-      expect(content).not.toContain(legacy)
-    }
-    // 正文合法的 refs/remotes/origin/HEAD 用于推导 BASE，不得被误伤。
-    expect(content).toContain('refs/remotes/origin/HEAD')
-  })
-
-  it('不含向 upstream 直推的命令写法', () => {
-    for (const banned of ['git push upstream', 'git push -u upstream', 'git push origin upstream']) {
-      expect(content).not.toContain(banned)
-    }
-    // 合法片段：refspec 里的 upstream/$BASE，以及「禁止向 upstream push」的纪律说明。
-    expect(content).toContain('git push "$PUSH_REMOTE" "upstream/$BASE:refs/heads/$WORK"')
-    expect(content).toContain('禁止向 upstream push')
-  })
-
-  it('每一处 gh pr create 都带 --base，且任务 PR 的 --base 取值必须是 feature/<project_id>', () => {
-    const lines = content.split('\n')
-    // 已知边界（不在本用例覆盖）：
-    //   P2-1 正文若出现 `git push -f upstream` 之类绕过写法，本用例不校验；
-    //   P2-3 命令拼接仅处理反斜杠续行，不解析 shell 变量展开。
-    const taskPrCommands: string[] = []
-    const mergePrCommands: string[] = []
-
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i]
-      if (line === undefined || !line.includes('gh pr create')) continue
-
-      // 拼接反斜杠续行，得到一条完整命令。
-      let command = line
-      let cursor = i
-      while (command.trimEnd().endsWith('\\') && cursor + 1 < lines.length) {
-        cursor += 1
-        const next = lines[cursor]
-        if (next === undefined) break
-        command += ` ${next}`
-      }
-
-      // 按 --head 分类：任务 PR 与收尾合并 PR 的 base 约束不同。
-      if (command.includes('--head "task/<task_id>"')) {
-        taskPrCommands.push(command)
-      } else if (
-        command.includes('--head "feature/<project_id>"')
-        || command.includes('--head "$LOGIN:feature/<project_id>"')
-      ) {
-        mergePrCommands.push(command)
-      } else {
-        throw new Error(`第 ${i + 1} 行 gh pr create 无法按 --head 归类：${command}`)
-      }
-    }
-
-    // 任务 PR：--base 必须显式且取值为项目分支（防止取值被改成 main 仍绿）。
-    for (const command of taskPrCommands) {
-      expect(command, `任务 PR 缺少取值级 --base：${command}`).toContain('--base "feature/<project_id>"')
-    }
-    // 收尾合并 PR：--base 必须存在，允许 $BASE 变量。
-    for (const command of mergePrCommands) {
-      expect(command, `合并 PR 缺少 --base：${command}`).toContain('--base')
-    }
-
-    // 防止条件失效导致空跑：正文至少有两处任务 PR + 两处合并 PR。
-    expect(taskPrCommands.length, '任务 PR 命令数不足 2').toBeGreaterThanOrEqual(2)
-    expect(mergePrCommands.length, '合并 PR 命令数不足 2').toBeGreaterThanOrEqual(2)
-  })
-})
-
-describe('报告口径与正文一致（四段 + material_id）', () => {
-  it('正文四段齐全，且报告以 summary_md 交付', () => {
-    expect(content).toContain('四段')
-    expect(content).toContain('改了什么')
-    expect(content).toContain('怎么自检')
-    expect(content).toContain('git 交付')
-    expect(content).toContain('遗留风险')
-    expect(content).toContain('summary_md')
-    expect(content).toContain('echuan_task_report')
-  })
-
-  it('技能 description / whenToUse 与正文同为四段口径，不含旧口径表述', () => {
-    // 旧口径词拼接构造：避免本文件自身被旧口径检索命中。
-    const legacy = '三' + '段'
-    expect(ECHUAN_SKILL_DESCRIPTION).toContain('四段式')
-    expect(ECHUAN_SKILL_WHEN_TO_USE).toContain('四段式')
-    expect(ECHUAN_SKILL_DESCRIPTION).not.toContain(legacy)
-    expect(ECHUAN_SKILL_WHEN_TO_USE).not.toContain(legacy)
-  })
-
-  it('push --force 只以禁止形式出现，且禁止直接推 main', () => {
-    const idx = content.indexOf('push --force')
-    expect(idx).toBeGreaterThan(-1)
-    expect(content.slice(Math.max(0, idx - 6), idx)).toContain('禁止')
-    expect(content).toContain('禁止直接推 `main`/`master`')
-  })
-})
-
-describe('正文禁用话术与工具名约束', () => {
-  it('不含反问「是否开始 / 等确认」类话术', () => {
-    for (const banned of ['要不要开始', '等待确认', '请用户确认', '等确认', '是否要开始']) {
-      expect(content).not.toContain(banned)
-    }
-  })
-
-  it('含 echuan_task_renew，且不含旧续租工具名', () => {
-    expect(content).toContain('echuan_task_renew')
+  it('不含旧续租工具名（echuan_task_heartbeat）', () => {
     expect(content).not.toContain(['echuan', 'task', 'heartbeat'].join('_'))
   })
 })

@@ -13,6 +13,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
 import type { ResolvedConfig } from './config.js'
 import type { V3Task, V3TaskKind } from './v3-types.js'
+import { renderDispatchFacts } from './dispatch-format.js'
 
 const TAG = '[dsh-echuan]'
 const WORKER_PLUGIN_SOURCE_KIND = 'plugin:echuan'
@@ -89,54 +90,36 @@ function defaultDeliver(agent: Agent, text: string): void {
 
 export function renderPullDispatch(envelope: PullClaimEnvelope): string {
   const { task, project, product } = envelope
-  const lines = [
-    '【驿传派单】',
-    '',
-    `任务编号：${task.task_id}`,
-    `类型：${task.kind}`,
-    `标题：${task.title}`,
-    `项目：${project.project_id}（${project.name}）`,
-    `产品：${product.name}（${product.product_id}）`,
-    `仓库：${product.git_url}`,
-    `状态：${task.status}，尝试 ${task.attempt}/${task.max_attempts}`,
-    `租约：lease_id=${task.lease_id ?? ''}，到期 ${task.lease_until ?? ''}`,
-    ...(task.reason ? ['', `【返工原因】${task.reason}`] : []),
-    '',
-    '项目背景：',
-    project.context_md.trim() === '' ? '- 无' : project.context_md,
-    '',
-    '任务描述：',
-    task.description_md.trim() === '' ? '- 无' : task.description_md,
-    '',
-    '任务上下文：',
-    task.context_md.trim() === '' ? '- 无' : task.context_md,
-  ]
-
-  lines.push('', '上游产出：')
-  if (envelope.upstream.length === 0) lines.push('- 无')
-  else {
-    for (const item of envelope.upstream) {
-      lines.push(`- task_id=${item.task_id} material_id=${item.material_id ?? '（无）'}${item.title ? ` title=${item.title}` : ''}`)
-    }
-  }
-
-  lines.push('', '输入附件：')
-  if (envelope.inputs.length === 0) lines.push('- 无')
-  else {
-    for (const input of envelope.inputs) {
-      lines.push(`- material_id=${input.material_id} kind=${input.kind} role=${input.role} title=${input.title}`)
-    }
-  }
-
-  lines.push(
-    '',
-    '交付：用 echuan_task_report(task_id, lease_id, summary_md=...) 交报告；',
-    `本任务 lease_id=${task.lease_id ?? ''}。`,
-    envelope.has_downstream_dev
-      ? '本任务之后还有 dev 任务：只建任务 PR，不要开项目收尾 PR。'
-      : '本任务是该项目最后一条 dev：交付时建 feature→默认分支的收尾 PR，交人工合并。',
-  )
-  return lines.join('\n')
+  return renderDispatchFacts({
+    workId: task.task_id,
+    kind: task.kind,
+    title: task.title,
+    projectId: project.project_id,
+    projectName: project.name,
+    productId: product.product_id,
+    productName: product.name,
+    gitUrl: product.git_url,
+    status: task.status,
+    attempt: task.attempt,
+    maxAttempts: task.max_attempts,
+    priority: task.priority,
+    leaseId: task.lease_id,
+    leaseUntil: task.lease_until,
+    reason: task.reason,
+    descriptionMd: task.description_md,
+    contextMd: task.context_md,
+    upstream: envelope.upstream.map(item => ({
+      taskId: item.task_id,
+      materialId: item.material_id,
+      title: item.title,
+    })),
+    inputs: envelope.inputs.map(input => ({
+      materialId: input.material_id,
+      kind: input.kind,
+      role: input.role,
+      title: input.title,
+    })),
+  })
 }
 
 export function createPullWorkerLoop(options: PullWorkerOptions): PullWorkerLoop {

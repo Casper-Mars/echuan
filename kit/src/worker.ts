@@ -44,6 +44,7 @@ import type {
   WorkerCommand as ClientWorkerCommand,
   WorkerHeartbeatPayload,
 } from './client.js'
+import { renderDispatchFacts } from './dispatch-format.js'
 import type { ResolvedConfig } from './config.js'
 import { WORKER_METADATA_MAX_BYTES, metadataByteLength } from './config.js'
 import { EchuanApiError, EchuanClientError } from './errors.js'
@@ -683,64 +684,38 @@ export function createWorkerLoop(options: WorkerLoopOptions): WorkerLoop {
   }
 }
 
-/** kind 的中文名（只用于派单消息，不参与任何判断）。 */
-const KIND_LABELS: Record<string, string> = {
-  requirement: '需求',
-  design: '方案',
-  breakdown: '拆解',
-  dev: '开发',
-}
-
 /**
- * 渲染派单消息（v2 dispatch 协议）。
+ * 渲染派单消息（v2 心跳派单）。
  *
- * 只放事实：工作项编号、类别、标题、项目、产品、仓库、租约、输入物料、正文。
- * 不放操作指示——「怎么开工、怎么汇报」由 `echuan-task-execution` 技能负责。
- *
- * 唯一的结构性例外是返工块：平台把「这是驳回后重派的」与驳回原因作为字段
- * 下发（`rework` / `reason`），这里原样前置渲染。否则 agent 只能看到
- * 「尝试次数：2」这种数字，既不知道是被驳回，也不知道要改什么。
+ * 与 v3 领卡派单共用 `renderDispatchFacts`：只放平台事实，不放操作指示。
+ * 本路径当前未在运行期启用（`index.ts` 只启动 pull-worker），保留它是为了
+ * 兼容旧的 v2 平台回包；措辞与 v3 共用同一份实现，避免两套模板漂移。
  */
 export function renderDispatchMessage(dispatch: Dispatch): string {
   const { work_item: item, lease, context } = dispatch
-  const kindLabel = KIND_LABELS[dispatch.kind] ?? dispatch.kind
-  const lines: string[] = [
-    '【驿传派单】',
-    '',
-    `工作项编号：${dispatch.work_id}`,
-    `类别：${dispatch.kind}（${kindLabel}）`,
-    `标题：${item.title}`,
-    `项目：${item.project_id}`,
-    `产品：${context.product.name}（${context.product.id}）`,
-    `仓库：${context.product.git_url}`,
-    ...(typeof context.dev_branch === 'string' && context.dev_branch.trim() !== ''
-      ? [`开发分支：${context.dev_branch.trim()}`]
-      : []),
-    `租约到期：${lease.until}（TTL ${lease.ttl_seconds}s，lease_id=${lease.lease_id}）`,
-    `尝试次数：${item.attempt}${item.max_attempts === undefined ? '' : `/${item.max_attempts}`}，优先级：${item.priority}`,
-  ]
-
-  const reason = typeof item.reason === 'string' ? item.reason.trim() : ''
-  if (item.rework === true || reason !== '') {
-    lines.push(
-      '',
-      '【返工】本卡是上一版结果被驳回后重新派单的，不是首次执行。',
-      `驳回原因：${reason === '' ? '（平台未给出原因，按项目最近一次评审意见判断）' : reason}`,
-      '按上面的原因修改，不要从头重做；报告里写明针对该原因改了什么。',
-    )
-  }
-
-  lines.push('', '输入物料：')
-  if (dispatch.inputs.length === 0) {
-    lines.push('- 无')
-  } else {
-    for (const input of dispatch.inputs) {
-      lines.push(`- material_id=${input.material_id}，kind=${input.kind}，版本 v${input.version}`)
-    }
-  }
-
-  lines.push('', '工作项正文：', item.body_md)
-  return lines.join('\n')
+  return renderDispatchFacts({
+    workId: dispatch.work_id,
+    kind: dispatch.kind,
+    title: item.title,
+    projectId: item.project_id,
+    productId: context.product.id,
+    productName: context.product.name,
+    gitUrl: context.product.git_url,
+    devBranch: context.dev_branch,
+    attempt: item.attempt,
+    maxAttempts: item.max_attempts,
+    priority: item.priority,
+    leaseId: lease.lease_id,
+    leaseUntil: lease.until,
+    leaseTtlSeconds: lease.ttl_seconds,
+    rework: item.rework,
+    reason: item.reason,
+    descriptionMd: item.body_md,
+    inputs: dispatch.inputs.map(input => ({
+      materialId: input.material_id,
+      kind: String(input.kind),
+    })),
+  })
 }
 
 /** 默认投递：插件来源的用户消息，走 `agent.followup` 入队。 */

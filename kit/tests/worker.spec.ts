@@ -379,7 +379,7 @@ describe('dispatch 投递', () => {
     expect(text).toContain(`工作项编号：${WORK_ID}`)
     expect(text).toContain('类别：dev（开发）')
     expect(text).toContain('标题：实现登录接口')
-    expect(text).toContain(`租约到期：${LEASE_UNTIL}`)
+    expect(text).toContain(`到期 ${LEASE_UNTIL}`)
     expect(text).toContain('material_id=M_spec_1')
     expect(text).toContain('请实现登录接口。')
     expect(text).not.toContain('工作目录')
@@ -588,7 +588,7 @@ describe('dispatch 投递', () => {
     } as never)
     expect(text).toContain('【返工】')
     expect(text).toContain('驳回原因：接口缺少幂等键')
-    expect(text).toContain('尝试次数：2/3')
+    expect(text).toContain('尝试 2/3')
   })
 
   it('renderDispatchMessage 首次派单：没有返工块', () => {
@@ -597,7 +597,7 @@ describe('dispatch 投递', () => {
       work_item: { ...DISPATCH.work_item, max_attempts: 3, reason: null, rework: false },
     } as never)
     expect(text).not.toContain('【返工】')
-    expect(text).toContain('尝试次数：1/3')
+    expect(text).toContain('尝试 1/3')
   })
 
   it('无可用 agent：warn 一条、本轮跳过、无 inflight；下一轮有 agent 就投', async () => {

@@ -38,15 +38,25 @@ function config() {
 }
 
 describe('renderPullDispatch', () => {
-  it('包含任务、项目、产品、租约、上游与输入', () => {
+  it('只渲染平台事实：工作项、项目、产品、租约、上游与输入', () => {
     const text = renderPullDispatch(envelope)
-    expect(text).toContain('任务编号：t_1')
+    expect(text.split('\n')[0]).toBe('【驿传派单】')
+    expect(text).toContain('工作项编号：t_1')
+    expect(text).toContain('类别：dev（开发）')
     expect(text).toContain('项目：APP-1（登录改造）')
     expect(text).toContain('仓库：git@example.com:app.git')
     expect(text).toContain('lease_id=l_1')
-    expect(text).toContain('issue #12')
     expect(text).toContain('material_id=m_req')
-    expect(text).toContain('最后一条 dev')
+  })
+
+  it('不渲染项目背景，也不带任何操作指示', () => {
+    const text = renderPullDispatch(envelope)
+    // project.context_md 仍是平台字段，但派单消息不再渲染它。
+    expect(text).not.toContain('issue #12')
+    expect(text).not.toContain('项目背景')
+    expect(text).not.toContain('交付：')
+    expect(text).not.toContain('收尾 PR')
+    expect(text).not.toContain('直接开工')
   })
 })
 
@@ -80,7 +90,7 @@ describe('createPullWorkerLoop', () => {
     )
     expect(claimV3Task).toHaveBeenCalledWith({ worker_id: loop.workerId, kind: 'dev' })
     expect(ensureSession).toHaveBeenCalledWith('APP-1', 'dev-leader')
-    expect(deliver).toHaveBeenCalledWith(agent, expect.stringContaining('任务编号：t_1'))
+    expect(deliver).toHaveBeenCalledWith(agent, expect.stringContaining('工作项编号：t_1'))
     expect(loop.inflight).toHaveLength(1)
 
     // Busy: no second claim while inflight.
