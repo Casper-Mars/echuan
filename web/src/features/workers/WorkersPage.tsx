@@ -14,7 +14,7 @@
 // 分层：只 import ui / api / hooks / lib，不直接 import Mantine（分层红线）；样式见 workers.css（只消费令牌）。
 //
 // 不做（design/screens/workers.md「不做」）：远程终止 worker、改 lease——属后端能力，页面不出现入口。
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ApiError, api } from '../../api/client'
 import type { Worker } from '../../api/types'
@@ -79,6 +79,24 @@ export function WorkersPage() {
   // 「查看任务」的反查状态：只跟当前这一行（同一时刻只允许一个在飞，点别的行会顶掉上一个）。
   const [lookup, setLookup] = useState<{ workerId: string; state: TaskLookup } | null>(null)
 
+  /**
+   * 反查的「换代」计数器（与 features/task-detail/use-task-detail 的 genRef、hooks/useAutoRefresh
+   * 的 gen 同一套语义）：每次点击 +1，组件卸载时也 +1。响应回来时若代号已变，整笔丢弃——
+   * 既不 setState（已卸载组件不再更新），也不 navigate。
+   *
+   * 一个计数器同时覆盖两件事：
+   *   * 卸载：cleanup 里 +1 → 在飞响应不再是「最新」的（用户切到「产品」等页面不会被迟到跳转拽回来）；
+   *   * 被新点击顶掉：新一次点击 +1 → 上一次仍在飞的响应作废，不会用旧行的 project_id 抢先跳转。
+   */
+  const lookupGenRef = useRef(0)
+
+  useEffect(() => {
+    return () => {
+      // 卸载：让所有在飞反查失效（迟到响应不许 navigate / setState）
+      lookupGenRef.current += 1
+    }
+  }, [])
+
   const items = data?.items ?? EMPTY_WORKERS
   const loading = data === undefined && error === ''
 
@@ -95,13 +113,17 @@ export function WorkersPage() {
    *
    * 一次点击只发一次反查（loading 期间按钮不可点）；拿到 project_id 才导航，
    * 缺 project_id 或反查失败都落到「禁用 + 行内原因」，不猜 id、不跳空白页。
+   * 响应回来时先比代号：已卸载或已被新点击顶掉 → 整笔丢弃（不 setState、不 navigate）。
    */
   const openWorkerTask = async (worker: Worker) => {
     const workItemId = worker.current_work_item_id
     if (workItemId === undefined || workItemId === null || workItemId === '') return
+    lookupGenRef.current += 1
+    const gen = lookupGenRef.current
     setLookup({ workerId: worker.worker_id, state: { kind: 'loading' } })
     try {
       const task = await api.getTask(workItemId)
+      if (gen !== lookupGenRef.current) return // 期间已卸载 / 已换行：迟到响应作废
       if (typeof task.project_id !== 'string' || task.project_id === '') {
         setLookup({
           workerId: worker.worker_id,
@@ -112,6 +134,7 @@ export function WorkersPage() {
       setLookup(null)
       navigate(`/projects/${task.project_id}/tasks/${task.task_id}`)
     } catch (err) {
+      if (gen !== lookupGenRef.current) return // 同上：迟到失败也不许改已离开页面的状态
       setLookup({ workerId: worker.worker_id, state: { kind: 'failed', reason: lookupFailureReason(err) } })
     }
   }
