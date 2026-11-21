@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { apply, inject, metadataByteLength, name } from '../src/index.js'
 import { TOOL_NAMES } from '../src/tool-names.js'
-import { FIRST_HEARTBEAT_DELAY_MS } from '../src/worker.js'
+import { FIRST_HEARTBEAT_DELAY_MS } from '../src/worker-shared.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const kitRoot = path.resolve(here, '..')

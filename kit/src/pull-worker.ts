@@ -14,11 +14,13 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm/message'
 import type { ResolvedConfig } from './config.js'
 import type { V3Task, V3TaskKind } from './v3-types.js'
 import { renderDispatchFacts } from './dispatch-format.js'
+import {
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  FIRST_HEARTBEAT_DELAY_MS,
+  WORKER_PLUGIN_SOURCE_KIND,
+} from './worker-shared.js'
 
 const TAG = '[dsh-echuan]'
-const WORKER_PLUGIN_SOURCE_KIND = 'plugin:echuan'
-const FIRST_DELAY_MS = 5_000
-const DEFAULT_INTERVAL_MS = 15_000
 
 export interface PullWorkerLogger {
   info(message: string): void
@@ -125,7 +127,7 @@ export function renderPullDispatch(envelope: PullClaimEnvelope): string {
 export function createPullWorkerLoop(options: PullWorkerOptions): PullWorkerLoop {
   const { config, client, logger } = options
   const deliver = options.deliver ?? defaultDeliver
-  const interval = options.intervalMs ?? DEFAULT_INTERVAL_MS
+  const interval = options.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
   const schedule = options.schedule ?? ((fn, ms) => setTimeout(fn, ms))
   const cancel = options.cancel ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>))
 
@@ -229,7 +231,7 @@ export function createPullWorkerLoop(options: PullWorkerOptions): PullWorkerLoop
     start() {
       if (started || disposed) return
       started = true
-      arm(FIRST_DELAY_MS)
+      arm(FIRST_HEARTBEAT_DELAY_MS)
     },
     dispose(reason?: string) {
       if (disposed) return

@@ -26,7 +26,7 @@
  * 加载策略：入口模块只静态引入 `./config.js`（schemastery，Schema 必须同步可见）、
  * `./runtime.js`（零依赖的日志/定时器类型）与 `./tool-names.js`（纯常量 + 校验，
  * 不依赖 dsh-tools）。`exclude` 在 `apply` 早期**同步**校验：工具名拼错时插件激活
- * 直接失败，而不是等到惰性 import 后只打一条 warning。`./client.js`、`./worker.js`
+ * 直接失败，而不是等到惰性 import 后只打一条 warning。`./client.js`、`./pull-worker.js`
  * （后者带 `@deepseek-ai/dsh-llm`）与 `./tools/index.js`（带 `@deepseek-ai/dsh-tools`）
  * 都在 `apply` 内**惰性 import**，避免拖慢 `--help` 这类快速退出场景下的插件激活。
  */
@@ -44,7 +44,6 @@ import type { Logger } from './runtime.js'
 import { TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from './tool-names.js'
 import { ECHUAN_SKILL_NAME, registerEchuanSkill } from './skill.js'
 import type { WorkerInfoDeps } from './tools/worker-info.js'
-import type { WorkerLoop } from './worker.js'
 
 export {
   Config,
@@ -62,7 +61,6 @@ export { DEFAULT_POLL_INTERVAL_MS, createEchuanRuntime } from './runtime.js'
 export type { EchuanRuntime, EchuanRuntimeOptions, Logger, TimerApi } from './runtime.js'
 export { DEFAULT_PRESET_BY_KIND } from './config.js'
 export type { PresetByKind } from './config.js'
-export type { WorkerLoop, WorkerLoopOptions } from './worker.js'
 export {
   ECHUAN_SKILL_DESCRIPTION,
   ECHUAN_SKILL_NAME,

@@ -16,8 +16,8 @@
  * 输出与只读工具一致：`textBlock` + `TextValue`（规范值就是模型要读的那段文本）。
  */
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
-import type { Inflight } from '../worker.js'
-import { maskWorkerId } from '../worker.js'
+import type { Inflight } from '../worker-shared.js'
+import { maskWorkerId } from '../worker-shared.js'
 import { renderTextValue as renderText } from './render.js'
 import type { EchuanToolOptions } from './write.js'
 
