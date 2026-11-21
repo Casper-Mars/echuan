@@ -49,10 +49,21 @@ const NO_TASK_NOTE = '当前没有任务'
 /** 反查在飞时的行内提示（同时按钮进入 loading，避免重复点击叠加请求）。 */
 const LOOKUP_LOADING_NOTE = '正在定位任务…'
 
-/** 一次「查看任务」反查的状态；只记当前这一行，失败原因随行内说明一起展示。 */
+/** 一次「查看任务」反查的状态；只记当前这一次点击，失败原因随行内说明一起展示。 */
 type TaskLookup =
   | { kind: 'loading' }
   | { kind: 'failed'; reason: string }
+
+/**
+ * 反查结果归属的行标识 =（`worker_id`，`current_work_item_id`），不是只按 `worker_id`（PR #100 review）。
+ * 理由：/v1/workers 会随自动刷新变化，同一节点可能从任务 A 换到任务 B（或置空）。若只按节点关联，
+ * A 的 `failed` 会被 B 继承 → 「查看任务」永久禁用，刷新也回不来。
+ */
+interface LookupEntry {
+  workerId: string
+  workItemId: string
+  state: TaskLookup
+}
 
 /** 反查失败 → 行内可见原因（说清为什么点不动，而不是只说「失败」）。 */
 function lookupFailureReason(err: unknown): string {
@@ -76,8 +87,9 @@ export function WorkersPage() {
     load: () => api.listWorkers(),
   })
 
-  // 「查看任务」的反查状态：只跟当前这一行（同一时刻只允许一个在飞，点别的行会顶掉上一个）。
-  const [lookup, setLookup] = useState<{ workerId: string; state: TaskLookup } | null>(null)
+  // 「查看任务」的反查状态：只跟「这一行 + 这一行的当前任务」绑定（同一时刻只允许一个在飞，
+  // 点别的行会顶掉上一个）；当前任务一变即作废，见下面的清理 effect。
+  const [lookup, setLookup] = useState<LookupEntry | null>(null)
 
   /**
    * 反查的「换代」计数器（与 features/task-detail/use-task-detail 的 genRef、hooks/useAutoRefresh
@@ -100,6 +112,25 @@ export function WorkersPage() {
   const items = data?.items ?? EMPTY_WORKERS
   const loading = data === undefined && error === ''
 
+  /**
+   * 当前任务变了 → 旧反查整笔作废（PR #100 review 的修复点之一）。
+   *
+   * 反查结果只对 `(worker_id, current_work_item_id)` 这一对成立。自动刷新（15s）/ 手动刷新会把
+   * 同一节点的当前任务从 A 换成 B，或置空；A 的 `failed` 若继续挂着，B 会继承失败态 →
+   * 「查看任务」永久禁用，刷新列表也回不来。这里在数据变化时比对一次：
+   *   * 对得上 → 保留（同一任务重试失败，原因仍然成立）；
+   *   * 对不上（换了任务 / 置空 / 节点消失）→ 清空状态，并把换代号 +1 让仍在飞的反查也一并失效，
+   *     避免迟到的 A 响应把 B 行带进跳转。
+   */
+  useEffect(() => {
+    if (lookup === null) return
+    const row = items.find((worker) => worker.worker_id === lookup.workerId)
+    const currentWorkItemId = row?.current_work_item_id ?? null
+    if (currentWorkItemId === lookup.workItemId) return
+    lookupGenRef.current += 1
+    setLookup(null)
+  }, [items, lookup])
+
   // 相对时间的基准：每次渲染取一次，自动刷新（15s）会带着它一起推进，不引入第二条计时器。
   const now = Date.now()
   const beats = items.map((worker) => heartbeatOf(worker.last_seen, now))
@@ -113,20 +144,21 @@ export function WorkersPage() {
    *
    * 一次点击只发一次反查（loading 期间按钮不可点）；拿到 project_id 才导航，
    * 缺 project_id 或反查失败都落到「禁用 + 行内原因」，不猜 id、不跳空白页。
-   * 响应回来时先比代号：已卸载或已被新点击顶掉 → 整笔丢弃（不 setState、不 navigate）。
+   * 响应回来时先比代号：已卸载、已被新点击顶掉、或该节点的当前任务已变 → 整笔丢弃（不 setState、不 navigate）。
    */
   const openWorkerTask = async (worker: Worker) => {
     const workItemId = worker.current_work_item_id
     if (workItemId === undefined || workItemId === null || workItemId === '') return
     lookupGenRef.current += 1
     const gen = lookupGenRef.current
-    setLookup({ workerId: worker.worker_id, state: { kind: 'loading' } })
+    setLookup({ workerId: worker.worker_id, workItemId, state: { kind: 'loading' } })
     try {
       const task = await api.getTask(workItemId)
-      if (gen !== lookupGenRef.current) return // 期间已卸载 / 已换行：迟到响应作废
+      if (gen !== lookupGenRef.current) return // 期间已卸载 / 已换行 / 已换任务：迟到响应作废
       if (typeof task.project_id !== 'string' || task.project_id === '') {
         setLookup({
           workerId: worker.worker_id,
+          workItemId,
           state: { kind: 'failed', reason: '反查任务失败：结果里没有项目上下文（project_id 缺失）' },
         })
         return
@@ -135,7 +167,7 @@ export function WorkersPage() {
       navigate(`/projects/${task.project_id}/tasks/${task.task_id}`)
     } catch (err) {
       if (gen !== lookupGenRef.current) return // 同上：迟到失败也不许改已离开页面的状态
-      setLookup({ workerId: worker.worker_id, state: { kind: 'failed', reason: lookupFailureReason(err) } })
+      setLookup({ workerId: worker.worker_id, workItemId, state: { kind: 'failed', reason: lookupFailureReason(err) } })
     }
   }
 
@@ -196,10 +228,15 @@ export function WorkersPage() {
       // 按钮语义（issue #89 C2）：有当前任务 → 可点，点一次反查 `GET /v1/tasks?id=<tid>` 拿
       // project_id 后跳详情；反查在飞 → loading 且不可重复点；反查失败 / 无当前任务 → 禁用 +
       // 行内可见原因（title 同一句，hover 与读屏都能读到），页面不跳走。
+      // 反查状态按 (worker_id, current_work_item_id) 匹配（PR #100 review）：任务换了就取不到旧状态，
+      // 旧任务的失败不会粘到新任务上。
       render: (worker) => {
         const workItemId = worker.current_work_item_id
         const hasTask = typeof workItemId === 'string' && workItemId !== ''
-        const current = lookup !== null && lookup.workerId === worker.worker_id ? lookup.state : null
+        const current =
+          lookup !== null && lookup.workerId === worker.worker_id && lookup.workItemId === workItemId
+            ? lookup.state
+            : null
         const busy = current?.kind === 'loading'
         const disabled = !hasTask || busy || current?.kind === 'failed'
         const note = !hasTask

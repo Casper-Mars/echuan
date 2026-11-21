@@ -989,10 +989,9 @@
     min-height: var(--ui-control-height-touch);
   }
 
-  /* ui/BoardColumn 列头折叠按钮 */
-  .ui-board-column__head.ui-board-column__head {
-    min-height: var(--ui-control-height-touch);
-  }
+  /* ui/BoardColumn 列头**故意不在**本兜底内（PR #100 review）：桌面侧的 min-height 算式
+     （space-9 + space-2 + 一条描边 = 53）在窄屏同样成立，53 ≥ 44 已满足触控口径；
+     这里再写一条同名 min-height 会把短标题列头压回 44，破坏 design/screens/board.md 的 53 口径。 */
 
   /* ui/Segmented 选项：真实命中区是 label，control 一起抬起免得上下列高不一致 */
   .ui-segmented .mantine-SegmentedControl-control,
