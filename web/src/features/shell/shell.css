@@ -445,3 +445,12 @@
   white-space: pre-wrap;
 }
 
+/* 单行省略（仓库地址、长编号）：design/components.md §「屏内私有详情抽屉」与
+ * docs/tech §7.2 字段口径「单行省略 + title」——一行显示、末尾省略号，原文进 title（DetailFields 负责）。
+ * 溢出被 hidden 消化，抽屉不会出现横向滚动；这条与 data-multiline 互斥（DetailFields 保证只命中一个）。 */
+.fx-detail-fields__value[data-truncate='on'] {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
