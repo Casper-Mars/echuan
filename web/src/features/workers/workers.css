@@ -110,8 +110,10 @@
   text-transform: none;
 }
 
-/* 「查看任务」是禁用态（接口没有 project_id，拼不出详情路由）：
- * 按钮 + 一行可见原因，配 .wk-actions-note，避免「可点但没反应」。 */
+/* 行内动作区：按钮 + 一行可见原因（配 .wk-actions-note）。
+ * 「查看任务」在该 worker 持有当前任务时可点——一次反查 `GET /v1/tasks?id=` 取 project_id 后跳详情
+ * （见 WorkersPage.tsx 的 openWorkerTask）；反查失败或本来没有当前任务时按钮禁用，
+ * 行内说明给出具体原因，避免「可点但没反应」。 */
 .wk-actions-cell {
   display: inline-flex;
   flex-direction: column;
