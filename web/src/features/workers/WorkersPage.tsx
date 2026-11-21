@@ -7,12 +7,16 @@
 //   design/components.md         §ui/DataTable（warn-row 变体）、§ui/StatusPill（圆点 + 文案）、§ui/EmptyState、
 //                                §ui/SkeletonCard、§ui/Alert、§ui/Button。
 //   docs/tech/web-ui-redo-v0.1.md §7   数据源：GET /v1/workers（worker_id / state / current_work_item_id / last_seen）。
-//   字段口径以 internal/api/workers.go 的 workerResponse 为准：当前任务给的是 `t_...` 业务标识（string|null）。
+//   字段口径以 internal/api/v3_handlers.go 的 v3WorkerResponse 为准（真正挂载的是 V3 路由）：
+//   当前任务给的是 `t_...` 业务标识（string|null）。详情路由要 project_id，而 worker 行没有，
+//   所以「查看任务」点一次先反查 GET /v1/tasks?id=<tid>，见 openWorkerTask。
 //
 // 分层：只 import ui / api / hooks / lib，不直接 import Mantine（分层红线）；样式见 workers.css（只消费令牌）。
 //
 // 不做（design/screens/workers.md「不做」）：远程终止 worker、改 lease——属后端能力，页面不出现入口。
-import { api } from '../../api/client'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { ApiError, api } from '../../api/client'
 import type { Worker } from '../../api/types'
 import { useAutoRefresh } from '../../hooks/useAutoRefresh'
 import { REFRESH_INTERVALS } from '../../lib/refresh'
@@ -33,11 +37,31 @@ const SKELETON_CARDS = 3
 export const STALE_AFTER_MS = 90_000
 
 /**
- * 「查看任务」不可用的原因（按钮 disabled + 行内可见文案 + title 同一句）：
- * /v1/workers 只返回 current_work_item_id，没有 project_id，`#/projects/:projectId/tasks/:taskId` 拼不出来。
- * 原设计稿的按钮是空实现（点击无反应），这里改成禁用 + 说明，避免「可点但没反应」。
+ * 「查看任务」的定位方式（issue #89 C2）：/v1/workers 只给 `current_work_item_id`（`t_...`），
+ * 没有 project_id，`#/projects/:projectId/tasks/:taskId` 拼不出来。所以点一次先反查
+ * `GET /v1/tasks?id=<tid>` 拿 project_id，再跳详情——一次点击恰好一次反查，后端契约不动。
+ *
+ * 反查失败（404 / 缺 project_id / 网络异常）或节点本来就没有当前任务时，按钮回到禁用 +
+ * 行内可见原因，页面不跳走：宁可点不动，也不出现「点了没反应」或猜一个假 project_id。
  */
-const WORKER_TASK_DISABLED_REASON = '接口未提供项目上下文'
+const NO_TASK_NOTE = '当前没有任务'
+
+/** 反查在飞时的行内提示（同时按钮进入 loading，避免重复点击叠加请求）。 */
+const LOOKUP_LOADING_NOTE = '正在定位任务…'
+
+/** 一次「查看任务」反查的状态；只记当前这一行，失败原因随行内说明一起展示。 */
+type TaskLookup =
+  | { kind: 'loading' }
+  | { kind: 'failed'; reason: string }
+
+/** 反查失败 → 行内可见原因（说清为什么点不动，而不是只说「失败」）。 */
+function lookupFailureReason(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 404) return '反查任务失败：任务不存在或已删除（HTTP 404）'
+    return `反查任务失败（HTTP ${err.status}）`
+  }
+  return '反查任务失败：网络异常，请稍后重试'
+}
 
 /**
  * 「查看部署说明」入口按 design/refs 展示，但仓库里没有部署页路由（不在本卡范围），
@@ -46,10 +70,32 @@ const WORKER_TASK_DISABLED_REASON = '接口未提供项目上下文'
 const DEPLOY_DOC_PLACEHOLDER = () => {}
 
 export function WorkersPage() {
+  const navigate = useNavigate()
   const { data, error, refresh } = useAutoRefresh({
     intervalMs: REFRESH_INTERVALS.workers,
     load: () => api.listWorkers(),
   })
+
+  // 「查看任务」的反查状态：只跟当前这一行（同一时刻只允许一个在飞，点别的行会顶掉上一个）。
+  const [lookup, setLookup] = useState<{ workerId: string; state: TaskLookup } | null>(null)
+
+  /**
+   * 反查的「换代」计数器（与 features/task-detail/use-task-detail 的 genRef、hooks/useAutoRefresh
+   * 的 gen 同一套语义）：每次点击 +1，组件卸载时也 +1。响应回来时若代号已变，整笔丢弃——
+   * 既不 setState（已卸载组件不再更新），也不 navigate。
+   *
+   * 一个计数器同时覆盖两件事：
+   *   * 卸载：cleanup 里 +1 → 在飞响应不再是「最新」的（用户切到「产品」等页面不会被迟到跳转拽回来）；
+   *   * 被新点击顶掉：新一次点击 +1 → 上一次仍在飞的响应作废，不会用旧行的 project_id 抢先跳转。
+   */
+  const lookupGenRef = useRef(0)
+
+  useEffect(() => {
+    return () => {
+      // 卸载：让所有在飞反查失效（迟到响应不许 navigate / setState）
+      lookupGenRef.current += 1
+    }
+  }, [])
 
   const items = data?.items ?? EMPTY_WORKERS
   const loading = data === undefined && error === ''
@@ -61,6 +107,37 @@ export function WorkersPage() {
   // 忙碌计数不含过期节点：过期节点在页头单独计数，否则「忙碌 + 空闲 + 过期」会大于表格行数。
   const busyCount = items.filter((worker, index) => worker.state === 'busy' && !beats[index].stale).length
   const idleCount = items.filter((worker, index) => worker.state !== 'busy' && !beats[index].stale).length
+
+  /**
+   * 点「查看任务」：反查一次任务拿 project_id，然后跳详情抽屉。
+   *
+   * 一次点击只发一次反查（loading 期间按钮不可点）；拿到 project_id 才导航，
+   * 缺 project_id 或反查失败都落到「禁用 + 行内原因」，不猜 id、不跳空白页。
+   * 响应回来时先比代号：已卸载或已被新点击顶掉 → 整笔丢弃（不 setState、不 navigate）。
+   */
+  const openWorkerTask = async (worker: Worker) => {
+    const workItemId = worker.current_work_item_id
+    if (workItemId === undefined || workItemId === null || workItemId === '') return
+    lookupGenRef.current += 1
+    const gen = lookupGenRef.current
+    setLookup({ workerId: worker.worker_id, state: { kind: 'loading' } })
+    try {
+      const task = await api.getTask(workItemId)
+      if (gen !== lookupGenRef.current) return // 期间已卸载 / 已换行：迟到响应作废
+      if (typeof task.project_id !== 'string' || task.project_id === '') {
+        setLookup({
+          workerId: worker.worker_id,
+          state: { kind: 'failed', reason: '反查任务失败：结果里没有项目上下文（project_id 缺失）' },
+        })
+        return
+      }
+      setLookup(null)
+      navigate(`/projects/${task.project_id}/tasks/${task.task_id}`)
+    } catch (err) {
+      if (gen !== lookupGenRef.current) return // 同上：迟到失败也不许改已离开页面的状态
+      setLookup({ workerId: worker.worker_id, state: { kind: 'failed', reason: lookupFailureReason(err) } })
+    }
+  }
 
   const columns: Array<DataTableColumn<Worker>> = [
     {
@@ -116,17 +193,38 @@ export function WorkersPage() {
       key: 'actions',
       header: '操作',
       // 不设 actions: true —— design/refs 移动端卡片里「操作」也带字段名（data-label）。
-      // 按钮**禁用**而不是「可点但无反应」：/v1/workers 只给 current_work_item_id、不给 project_id，
-      // 构造不出 `#/projects/:projectId/tasks/:taskId` 的真实路由（不靠猜项目 id）。
-      // 行内一行小字说明为什么点不了，title 保留同一句（hover / 读屏都能读到原因）。
-      render: () => (
-        <span className="wk-actions-cell">
-          <Button variant="default" size="sm" disabled title={WORKER_TASK_DISABLED_REASON}>
-            查看任务
-          </Button>
-          <span className="wk-actions-note">{WORKER_TASK_DISABLED_REASON}</span>
-        </span>
-      ),
+      // 按钮语义（issue #89 C2）：有当前任务 → 可点，点一次反查 `GET /v1/tasks?id=<tid>` 拿
+      // project_id 后跳详情；反查在飞 → loading 且不可重复点；反查失败 / 无当前任务 → 禁用 +
+      // 行内可见原因（title 同一句，hover 与读屏都能读到），页面不跳走。
+      render: (worker) => {
+        const workItemId = worker.current_work_item_id
+        const hasTask = typeof workItemId === 'string' && workItemId !== ''
+        const current = lookup !== null && lookup.workerId === worker.worker_id ? lookup.state : null
+        const busy = current?.kind === 'loading'
+        const disabled = !hasTask || busy || current?.kind === 'failed'
+        const note = !hasTask
+          ? NO_TASK_NOTE
+          : current?.kind === 'failed'
+            ? current.reason
+            : busy
+              ? LOOKUP_LOADING_NOTE
+              : ''
+        return (
+          <span className="wk-actions-cell">
+            <Button
+              variant="default"
+              size="sm"
+              disabled={disabled}
+              loading={busy}
+              title={note === '' ? undefined : note}
+              onClick={() => void openWorkerTask(worker)}
+            >
+              查看任务
+            </Button>
+            {note === '' ? null : <span className="wk-actions-note">{note}</span>}
+          </span>
+        )
+      },
     },
   ]
 
