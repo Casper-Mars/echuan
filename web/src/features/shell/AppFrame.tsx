@@ -5,7 +5,7 @@
 //     <768 移动（无侧栏，底部 TabBar）——本文件用 data-layout 表达，几何在 shell.css。
 //   design/components.md §ui/SidebarNav（桌面 240 / ≤1024 收 64 + 文字进 Tooltip）、
 //     §ui/TabBar（移动：图标 + 文字必须都有、safe-area、aria-current）。
-//   design/flows.md F1：`#/` → 上次项目看板；移动底部 Tab「看板」直达。
+//   design/flows.md F1：`#/` → 上次项目看板；一级导航不含看板（入口 = 产品 → 项目列表 → 打开看板）。
 //
 // 分层：本文件只 import ui / theme / react-router-dom / react（分层红线：壳层不得直接 import Mantine 包）。
 // ui/SidebarNav 内部是 AppShell.Navbar，需要 Mantine 的 AppShell 安全上下文——那一层接线在
@@ -72,7 +72,7 @@ export function AppFrame() {
   const { pathname, key: locationKey, search } = useLocation()
   const [moreOpen, setMoreOpen] = useState(false)
 
-  // flows F1 第 1 步：进入某个项目看板就记住它，`#/` 与移动 Tab「看板」下次直达。
+  // flows F1 第 1 步：进入某个项目看板就记住它，`#/` 下次直达（看板不是一级入口，见 nav.tsx 头注释）。
   const projectId = projectIdOf(pathname)
   useEffect(() => {
     if (projectId) rememberLastProject(projectId)
@@ -83,8 +83,7 @@ export function AppFrame() {
   const crumbs = crumbsOf(pathname)
 
   const go = (key: string) => {
-    if (key === 'board') navigate(boardPath(projectId))
-    else if (key === 'inbox') navigate('/inbox')
+    if (key === 'inbox') navigate('/inbox')
     else if (key === 'products') navigate('/products')
     else if (key === 'workers') navigate('/workers')
     else if (key === 'queue') navigate('/queue')

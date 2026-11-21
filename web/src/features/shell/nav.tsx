@@ -1,9 +1,13 @@
-// features/shell/nav —— 一级导航定义（侧栏 4 项 + 移动 TabBar 4 项）与当前项判定
+// features/shell/nav —— 一级导航定义（侧栏 3 项 + 移动 TabBar 3 项）与当前项判定
 //
-// 结构来源：design/refs/board__{desktop,tablet,mobile}__dark__default.png
-//   侧栏（桌面/平板）：看板 / 收件箱 / 产品 / 执行节点 —— 底部一行版本备注。
-//   移动 TabBar：看板 / 收件箱 / 产品 / 更多（「更多」把侧栏放不下的入口收进二级层，
+// 结构来源：design/components.md §ui/SidebarNav / §ui/TabBar（均为 3 项、不含「看板」）
+//   侧栏（桌面/平板）：收件箱 / 产品 / 执行节点 —— 底部一行版本备注。
+//   移动 TabBar：收件箱 / 产品 / 更多（「更多」把侧栏放不下的入口收进二级层，
 //   见 design/components.md §ui/TabBar「图标 + 文字（必须都有文字）」）。
+//
+// 看板不是一级入口（issue #102 §7.6 D5）：入口 = 产品 → 项目列表 → 打开看板；
+// `#/` 仍直达上次项目看板（见 features/home/last-project.ts 的 boardPath），
+// `#/projects/*` 下钻时高亮父域「产品」。
 //
 // 图标为什么写在这里：ui/index.ts 只导出 21 个组件（scripts/ui-imports-check.mjs 会断言导出集合），
 // 内联图标（ui/icons.tsx）不在导出面内，壳层不能从 ui 内部文件 import。故壳层自带同一套描边字形，
@@ -29,15 +33,6 @@ const Glyph = ({ size = 18, children }: GlyphProps & { children: ReactNode }) =>
   >
     {children}
   </svg>
-)
-
-/** 看板：三列纵条，对应 7 状态列的信息架构 */
-export const BoardIcon = (props: GlyphProps) => (
-  <Glyph {...props}>
-    <rect x="3" y="4" width="5" height="16" rx="1.5" />
-    <rect x="10" y="4" width="5" height="11" rx="1.5" />
-    <rect x="17" y="4" width="4" height="16" rx="1.5" />
-  </Glyph>
 )
 
 /** 收件箱：托盘轮廓，对应「需要我处理的事」 */
@@ -66,7 +61,7 @@ export const WorkersIcon = (props: GlyphProps) => (
   </Glyph>
 )
 
-/** 更多：三点省略（移动 TabBar 第 4 项） */
+/** 更多：三点省略（移动 TabBar 第 3 项） */
 export const MoreIcon = (props: GlyphProps) => (
   <Glyph {...props}>
     <circle cx="5" cy="12" r="1.4" />
@@ -83,7 +78,7 @@ export const RefreshIcon = (props: GlyphProps) => (
   </Glyph>
 )
 
-export type NavKey = 'board' | 'inbox' | 'products' | 'workers' | 'more'
+export type NavKey = 'inbox' | 'products' | 'workers' | 'more'
 
 export interface NavDescriptor {
   key: NavKey
@@ -91,17 +86,15 @@ export interface NavDescriptor {
   icon: ReactNode
 }
 
-/** 侧栏（桌面 / 平板）四项，顺序与 design/refs 一致 */
+/** 侧栏（桌面 / 平板）三项，顺序与 design/components.md §ui/SidebarNav 一致 */
 export const SIDEBAR_NAV: NavDescriptor[] = [
-  { key: 'board', label: '看板', icon: <BoardIcon /> },
   { key: 'inbox', label: '收件箱', icon: <InboxIcon /> },
   { key: 'products', label: '产品', icon: <ProductsIcon /> },
   { key: 'workers', label: '执行节点', icon: <WorkersIcon /> },
 ]
 
-/** 移动 TabBar 四项：第 4 项是「更多」（design/components.md §ui/TabBar） */
+/** 移动 TabBar 三项：末项是「更多」（design/components.md §ui/TabBar） */
 export const TAB_NAV: NavDescriptor[] = [
-  { key: 'board', label: '看板', icon: <BoardIcon /> },
   { key: 'inbox', label: '收件箱', icon: <InboxIcon /> },
   { key: 'products', label: '产品', icon: <ProductsIcon /> },
   { key: 'more', label: '更多', icon: <MoreIcon /> },
@@ -112,11 +105,12 @@ export const MORE_NAV: NavDescriptor[] = [
   { key: 'workers', label: '执行节点', icon: <WorkersIcon /> },
 ]
 
-/** 路径 → 高亮项。前缀匹配与旧侧栏一致；`/queue` 保留给旧书签，不在新导航里高亮。 */
+/** 路径 → 高亮项。前缀匹配与旧侧栏一致；`/projects/*` 下钻高亮父域「产品」；
+ *  `/queue` 保留给旧书签，不在新导航里高亮。 */
 export function activeKeyOf(pathname: string): NavKey | '' {
   if (pathname === '/inbox' || pathname.startsWith('/inbox/')) return 'inbox'
   if (pathname === '/products' || pathname.startsWith('/products/')) return 'products'
   if (pathname === '/workers' || pathname.startsWith('/workers/')) return 'workers'
-  if (pathname === '/projects' || pathname.startsWith('/projects/')) return 'board'
+  if (pathname === '/projects' || pathname.startsWith('/projects/')) return 'products'
   return ''
 }
