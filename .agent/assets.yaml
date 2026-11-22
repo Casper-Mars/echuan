@@ -1,3 +1,4 @@
-library: "0.1.1"
+library: "0.1.2"
 runners:
-  web-ui: "0.1.1"
+  web-ui: "0.1.2"
+  web-preview: "0.1.2"
