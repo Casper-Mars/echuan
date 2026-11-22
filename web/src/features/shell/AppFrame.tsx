@@ -243,7 +243,7 @@ export function AppFrame() {
           </div>
         </header>
 
-        <main className="fx-main" id="main">
+        <main className="fx-main" id="main" data-testid="app-main">
           {/* resetKey 用 location.key：任何一次导航（含导航到当前路径）都会换 key，
               错误态随之重置，用户不会被一条错误条锁死在页面上（D1） */}
           <ErrorBoundary
