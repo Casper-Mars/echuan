@@ -44,12 +44,23 @@ export function ProductDetailSheet({ product, projectCount, onClose }: ProductDe
  * 抽屉字段（design/screens/products.md「交互」6 项 + docs/tech §7.2 字段表）：
  * 产品编号 / 名称 / 仓库 / 描述 / 证书 / 项目数；空值文案按契约逐项给（—/未设置/未填写）。
  * 仓库按方案口径「mono，单行省略 + title」（truncate: true）；描述保持多行换行（multiline: true）。
+ *
+ * 仓库字段另带 `link: product.git_url`（issue #117 §5 D3 方案 C）：本文件**只声明意图**，
+ * 合法 http(s) 的判定与 `<a>` 渲染收口都在 `features/shell/DetailFields.tsx` 一处，
+ * 页面不复制第二套判定（方案 §5 D4）；登记值非法 / 为空时 `DetailFields` 回落纯文本，
+ * `value` 与空值文案（`未设置`）保持原样。
  */
 function fieldsOfProduct(product: Product, projectCount: number): DetailField[] {
   return [
     { label: '产品编号', value: product.product_id, mono: true },
     { label: '名称', value: textOr(product.name, '—') },
-    { label: '仓库', value: textOr(product.git_url, '未设置'), mono: true, truncate: true },
+    {
+      label: '仓库',
+      value: textOr(product.git_url, '未设置'),
+      mono: true,
+      truncate: true,
+      link: product.git_url,
+    },
     { label: '描述', value: textOr(product.description, '未填写'), multiline: true },
     { label: '证书', value: textOr(product.license, '未设置') },
     { label: '项目数', value: String(projectCount) },
