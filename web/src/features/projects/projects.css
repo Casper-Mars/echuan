@@ -54,6 +54,24 @@
   flex-wrap: wrap;
 }
 
+/* 资产库 pin（只读徽标）：沿用 badge 口径（design/components.md §ui/KindBadge 的描边 + caption 字号，
+ * 形状取 pill），只消费令牌，不新增设计 token。nowrap + 自带高度 → 三视口都不换行、不被裁切；
+ * 放在 .pj-head__main 内，与「新建项目」的显隐条件解耦（empty 态页头也在）。 */
+.pj-asset-pin {
+  display: inline-flex;
+  align-items: center;
+  margin-block-start: var(--space-3);
+  block-size: var(--ui-pill-height);
+  padding-inline: var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background-color: var(--surface-overlay);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line-height);
+  white-space: nowrap;
+}
+
 /* ===== 表格卡片 ========================================================= */
 .pj-card {
   flex: 0 0 auto;
