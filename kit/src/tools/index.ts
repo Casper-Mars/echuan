@@ -9,7 +9,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-import { validateExclude } from '../tool-names.js'
+import { TOOL_NAMES, validateExclude } from '../tool-names.js'
 import { createV3ReadTools, createV3WriteTools } from './v3.js'
 import type { EchuanToolOptions } from './write.js'
 
@@ -41,7 +41,15 @@ export function createAllEchuanTools(options: EchuanToolOptions): ToolDefinition
 
 /** 在上下文中注册过滤后的工具，返回注销器（按注册逆序注销）。 */
 export function registerEchuanTools(ctx: Context, options: EchuanToolOptions): () => void {
-  const disposers = createAllEchuanTools(options).map(tool => ctx.tools.register(tool))
+  return registerEchuanToolNames(ctx, options, TOOL_NAMES)
+}
+
+/** 按白名单注册工具；preset 子路径用这个入口。 */
+export function registerEchuanToolNames(ctx: Context, options: EchuanToolOptions, names: readonly string[]): () => void {
+  const wanted = new Set(names)
+  const disposers = createAllEchuanTools(options)
+    .filter(tool => wanted.has(tool.name))
+    .map(tool => ctx.tools.register(tool))
   return () => {
     for (let index = disposers.length - 1; index >= 0; index -= 1) disposers[index]?.()
   }

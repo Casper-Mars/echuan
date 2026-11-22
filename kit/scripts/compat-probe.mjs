@@ -74,10 +74,16 @@ async function main() {
   // 启动器要求「带 value 的 env 视图」，直接传 process.env 会在 http-proxy 处崩。
   const environment = new Map(Object.entries(process.env).map(([key, value]) => [key, { value }]))
 
+  const extraPatch = process.env.PROBE_PATCH
   let ctx
   let shutdown
   try {
-    ;({ ctx, shutdown } = await runProfile({ environment, profile, patchFiles: [], args: [] }))
+    ;({ ctx, shutdown } = await runProfile({
+      environment,
+      profile,
+      patchFiles: extraPatch ? [extraPatch] : [],
+      args: [],
+    }))
   } catch (error) {
     clearTimeout(timer)
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)

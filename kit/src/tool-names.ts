@@ -35,6 +35,18 @@ export const READ_TOOL_NAMES = [
   'echuan_worker_info',
 ] as const
 
+export const REQUESTER_WRITE_TOOL_NAMES = [
+  'echuan_project_create',
+  'echuan_project_close',
+  'echuan_project_reopen',
+  'echuan_task_create',
+  'echuan_task_update',
+  'echuan_task_report',
+  'echuan_task_attach',
+] as const
+
+export const REQUESTER_TOOL_NAMES = [...READ_TOOL_NAMES, ...REQUESTER_WRITE_TOOL_NAMES] as const
+
 export const TOOL_NAMES = [...WRITE_TOOL_NAMES, ...READ_TOOL_NAMES] as const
 
 const TOOL_NAME_SET: ReadonlySet<string> = new Set(TOOL_NAMES)

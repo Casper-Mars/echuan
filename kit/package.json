@@ -1,6 +1,6 @@
 {
   "name": "dsh-echuan",
-  "version": "0.5.9",
+  "version": "0.6.0",
   "description": "驿传（echuan）平台接入工具包：把平台 HTTP 契约接入 dsh（Cordis 4）Agent",
   "type": "module",
   "packageManager": "pnpm@11.7.0",
@@ -17,7 +17,19 @@
       "default": "./lib/index.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./tools/leader": {
+      "types": "./lib/types/tools/leader.d.ts",
+      "default": "./lib/tools/leader.js"
+    },
+    "./tools/requester": {
+      "types": "./lib/types/tools/requester.d.ts",
+      "default": "./lib/tools/requester.js"
+    },
+    "./tools/readonly": {
+      "types": "./lib/types/tools/readonly.d.ts",
+      "default": "./lib/tools/readonly.js"
+    }
   },
   "files": [
     "lib/**/*.js",

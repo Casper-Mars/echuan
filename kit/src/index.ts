@@ -4,11 +4,10 @@
  * 职责边界（技术方案 v0.6 §1）：
  * - 声明插件标识 `name` 与依赖服务 `inject`；
  * - 在 `apply(ctx, config)` 里解析配置（baseUrl / actor / 超时 / exclude / worker）、落加载日志；
- * - 注册最多 25 个工具（`exclude` 可裁剪，默认全量）：17 个写（项目创建 / 需求写入 / 提交评审 / 方案创建 /
- *   方案修订 / 批量建卡 / 领卡 / 续租 / 交报告 / 单卡增改删 / 项目改标题 /
- *   建产品 / 改产品 / 删产品 / 资料包下载）+ 8 个只读
- *   （待办 / 产品 / 项目 / 工作项列表 / 项目全景 / 工作项详情 / 资料 / worker 诊断），
- *   只调平台契约、不提供审批/驳回/取消动作；
+ * - host **不注册工具**，只提供 `echuan` 服务；工具由 preset 子路径
+ *   `tools/leader`（18 个：10 写 + 8 读）、`tools/requester`（15 个）与
+ *   `tools/readonly`（8 个只读）按名单注册，`exclude` 仍可裁剪；
+ *   工具只调平台契约、不提供审批/驳回/取消动作；
  * - 静态注册 1 个技能 `echuan-task-execution`（派单开工 / 读上下文 / 汇报 / 续租 / 门禁禁区），
  *   随插件 fiber 一并注销；
  * - `worker.poll.enable=false`（默认）时**零请求、零定时器**，心跳循环完全不创建；
@@ -41,7 +40,8 @@ import {
 } from './config.js'
 import type { PullWorkerLoop } from './pull-worker.js'
 import type { Logger } from './runtime.js'
-import { TOOL_NAMES, WRITE_TOOL_NAMES, validateExclude } from './tool-names.js'
+import { validateExclude } from './tool-names.js'
+import { ECHUAN_SERVICE, type EchuanService } from './service.js'
 import { ECHUAN_SKILL_NAME, registerEchuanSkill } from './skill.js'
 import type { WorkerInfoDeps } from './tools/worker-info.js'
 
@@ -80,9 +80,9 @@ export const name = 'echuan'
  * - `agents`：本进程的 agent 注册表。派单按 `project_id` ensureSession 后投给
  *   该会话的 agent；会话 id 为 `<project>:<preset>`，cwd 取会话数最多的 workspace。
  *
- * 三者由 `@deepseek-ai/dsh-base` 提供；缺任一则本插件保持未激活，而不是抛错。
+ * 两者由 `@deepseek-ai/dsh-base` 提供；缺任一则本插件保持未激活，而不是抛错。
  */
-export const inject: string[] = ['tools', 'skills', 'agents']
+export const inject: string[] = ['skills', 'agents']
 
 /** 加载日志前缀，验收要求。 */
 const TAG = '[dsh-echuan]'
@@ -100,19 +100,6 @@ export function apply(ctx: Context, config?: ConfigInput): void {
   // 失败（0 工具、0 心跳），而不是等惰性 import 后只 warn 一条、把「少注册了工具」
   // 藏到运行期。校验只依赖纯常量模块，不加载 dsh-tools。
   const exclude = validateExclude(resolved.exclude)
-  const excludedSet = new Set(exclude)
-  const registeredNames = TOOL_NAMES.filter(name => !excludedSet.has(name))
-  const writeCount = registeredNames
-    .filter(name => (WRITE_TOOL_NAMES as readonly string[]).includes(name)).length
-  const readCount = registeredNames.length - writeCount
-  // 日志三分支：无排除保持原文案逐字不变；有排除追加排除清单；全排除也能正常激活。
-  const registrationLog = registeredNames.length === 0
-    ? `${TAG} 已注册 0 个工具（已排除 ${exclude.length} 个：${exclude.join(', ')}）`
-    : `${TAG} 已注册 ${registeredNames.length} 个工具（${writeCount} 写 + ${readCount} 读`
-      + (exclude.length === 0
-        ? `）：${registeredNames.join(', ')}`
-        : `；已排除 ${exclude.length} 个：${exclude.join(', ')}）：${registeredNames.join(', ')}`)
-
   // 日志双写：`console.log` 保证在 `--help` 等日志服务尚未接管的场景也能被观测到，
   // `ctx.logger` 用于进入宿主日志管线（结构化、可落盘）。与 dsh-cron 的做法一致。
   const log = (message: string): void => {
@@ -188,22 +175,16 @@ export function apply(ctx: Context, config?: ConfigInput): void {
     },
   }
 
-  // 工具注册：与心跳开关无关（poll=false 也能手动领卡/续租/交报告）。
-  // 惰性 import 保证 `--help` 快路径不加载 `@deepseek-ai/dsh-tools`。
+  // host 只提供共享服务；工具由 preset 子路径（tools/leader|requester|readonly）注册。
   ctx.effect(() => {
     let disposed = false
-    let disposeTools: (() => void) | undefined
-
-    void (async () => {
-      try {
-        const [toolsModule, clientModule] = await Promise.all([
-          import('./tools/index.js'),
-          import('./client.js'),
-        ])
-        if (disposed) return
-
-        disposeTools = toolsModule.registerEchuanTools(ctx, {
-          client: clientModule.createClient(resolved),
+    let disposeService: (() => void) | undefined
+    void import('./client.js').then(clientModule => {
+      if (disposed) return
+      const client = clientModule.createClient(resolved)
+      const service: EchuanService = {
+        options: {
+          client,
           identity: {
             pollEnabled: resolved.worker.poll.enable,
             get workerId() {
@@ -215,20 +196,21 @@ export function apply(ctx: Context, config?: ConfigInput): void {
           },
           workerInfo,
           exclude,
-        })
-        log(registrationLog)
-      } catch (err) {
-        warn(`${TAG} 工具注册失败：${messageOf(err)}`)
+        },
+        log,
+        warn,
       }
-    })()
-
+      disposeService = (ctx as unknown as { provide: (name: string, value: unknown) => () => void })
+        .provide(ECHUAN_SERVICE, service)
+      log(`${TAG} host 服务就绪；工具由 preset 子路径注册`)
+    }).catch((err: unknown) => warn(`${TAG} host 服务启动失败：${messageOf(err)}`))
     return () => {
       disposed = true
-      const active = disposeTools
-      disposeTools = undefined
-      active?.()
+      const off = disposeService
+      disposeService = undefined
+      off?.()
     }
-  }, 'echuan.tools()')
+  }, 'echuan.service()')
 
   // 技能注册：正文是随构建产物发布的同步小文件（`lib/assets/*.md`），
   // 不需要惰性 import，也不会拖慢 `--help` 快路径。注册与注销都在同一个 effect 内，

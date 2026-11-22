@@ -98,14 +98,20 @@ check_one() {
     fi
     echo "[dsh-compat] PASS 插件安装准入（manifest 兼容）"
 
-    if ! "$dsh" --profile "$PROFILE" --dump-config > "$work/dump.yml" 2> "$work/dump.err"; then
+    cat > "$work/subpath.patch.yml" <<'YAML'
+- insert:
+    - id: echuan-tools-leader
+      name: dsh-echuan/tools/leader
+YAML
+
+    if ! "$dsh" --profile "$PROFILE" --patch "$work/subpath.patch.yml" --dump-config > "$work/dump.yml" 2> "$work/dump.err"; then
       err "profile 组合失败（dsh $resolved）"
       sed 's/^/    /' "$work/dump.err" >&2
       exit 1
     fi
 
     local missing=0
-    for needle in "id: echuan" "name: dsh-echuan"; do
+    for needle in "id: echuan" "name: dsh-echuan" "id: echuan-tools-leader" "name: dsh-echuan/tools/leader"; do
       if ! grep -qF "$needle" "$work/dump.yml"; then
         err "组合结果缺少「$needle」"
         missing=1
@@ -116,7 +122,7 @@ check_one() {
 
     # 3) 运行时：探针必须从 dsh 安装目录运行，裸导入 @deepseek-ai/dsh 才能解析
     cp "$ROOT/scripts/compat-probe.mjs" "$work/probe.mjs"
-    if ! PROBE_PROFILE="$PROFILE" PROBE_TIMEOUT_MS=90000 node "$work/probe.mjs" 2>&1 | sed 's/^/    /' | tee "$work/probe.log"; then
+    if ! PROBE_PROFILE="$PROFILE" PROBE_PATCH="$work/subpath.patch.yml" PROBE_TIMEOUT_MS=90000 node "$work/probe.mjs" 2>&1 | sed 's/^/    /' | tee "$work/probe.log"; then
       err "运行时探针失败（dsh $resolved）"
       exit 1
     fi
@@ -124,7 +130,7 @@ check_one() {
       err "运行时探针未通过（dsh $resolved）"
       exit 1
     fi
-    echo "[dsh-compat] PASS 运行时装配（25 工具 + 1 技能）"
+    echo "[dsh-compat] PASS 运行时装配（leader 18 工具 + 1 技能）"
   )
 
   local status=$?
