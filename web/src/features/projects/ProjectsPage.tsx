@@ -53,6 +53,13 @@ const EMPTY_PROJECTS: Project[] = []
 const SKELETON_CARDS = 3
 
 /**
+ * 资产库 pin（只读徽标）：本仓 `web/` 消费的共享库版本，来源是仓库根 `.agent/assets.yaml`
+ * 的 `library: "0.1.0"`。本卡只做「看得见版本」的只读落点——不发请求、不可点、不依赖 tooltip；
+ * 升级版本时同步改这一处（运行时读 YAML 需要构建期注入，超出本卡范围）。
+ */
+const ASSET_LIBRARY_PIN = '资产库 0.1.0'
+
+/**
  * 「新建项目」入口按 design/refs 展示，但本卡数据源只有三个 GET、不做写操作，
  * 所以按钮不带副作用（不发 POST、不弹表单）。创建流程不在本卡范围，见交付的「未覆盖项」。
  */
@@ -262,6 +269,9 @@ export function ProjectsPage() {
         <div className="pj-head__main">
           <h1 className="pj-title">项目</h1>
           <p className="pj-sub">{subtitleOf(loading, error !== '', owner, items.length)}</p>
+          {/* 资产库 pin：放在 __main 里而不是 __actions，所以 default / empty / loading / error 都在页头；
+              只读徽标不是控件（span，无 onClick、无 title、无 tabindex）。 */}
+          <span className="pj-asset-pin">{ASSET_LIBRARY_PIN}</span>
         </div>
         {/* 加载中 / 错误态页头不出现新建（design/refs 三种状态一致） */}
         {!loading && error === '' && items.length > 0 ? (
