@@ -31,6 +31,14 @@
   min-inline-size: 0;
 }
 
+/* 标题行：页标题 + 资产库 pin 徽标（同一行；徽标是静态标记，不参与页头 flex 的左右分布） */
+.pj-head__title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
 .pj-title {
   margin: 0;
   color: var(--text-primary);
@@ -38,6 +46,27 @@
   font-weight: var(--text-h1-weight);
   line-height: var(--text-h1-line-height);
   letter-spacing: var(--text-h1-letter-spacing);
+}
+
+/* 资产库 pin 徽标（只读，随页头四态常驻）：几何与 ui/StatusPill 同口径
+ * （--ui-pill-height 高度 + radius-pill + caption 字阶 + 弱化描边），不引 ui 组件、不新增设计令牌。
+ * white-space: nowrap 保证徽标文字三视口都不折行；不设 overflow/ellipsis——宁可整枚换行也不裁切。 */
+.pj-asset-pin {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  block-size: var(--ui-pill-height);
+  padding-inline: var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background-color: var(--surface-overlay);
+  color: var(--text-muted);
+  font-family: var(--text-caption-font-family);
+  font-size: var(--text-caption-size);
+  font-weight: var(--text-caption-weight);
+  line-height: var(--text-caption-line-height);
+  letter-spacing: var(--text-caption-letter-spacing);
+  white-space: nowrap;
 }
 
 .pj-sub {
