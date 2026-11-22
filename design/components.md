@@ -72,7 +72,16 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 - 用途：任务的唯一卡片形态，看板列/收件箱/队列复用。
 - 结构：标题（最多 3 行省略）→ 元信息行（kind 徽标 · 优先级 · 尝试次数 · 更新时间）→ `task_id`（mono，截断）。
-- 使用 token：`surface.canvas` `border.subtle` `shadow.e1` `space.3` `radius.8` `text.small`
+- 使用 token：`surface.canvas` `border.subtle` `shadow.e1` `space.3` `space.2` `radius.8` `text.small`
+- 几何（issue #122 补口径）：
+  - 内距 `space.3`，四边一致；子项间距 `space.2`。
+  - 左侧状态条宽 `border-width × 3`（3px），**落在内距之内**、不额外占用内距：文本起点 = `space.3`，状态条与文本之间的空隙 = `space.3 − 状态条宽`；状态条不得覆盖任何字形。
+  - 卡片不设最小宽度：看板列按列宽固定，收件箱 / 队列按栅格 `minmax(260px, 1fr)`，栅格子项 `min-inline-size: 0`。
+- 换行与省略（issue #122 补口径）：
+  - 标题：中文按字、西文按词换行；**不可断的长串（URL / token / 长标识）按字符断行**，不得横向溢出、不得只露出半个字；超过 3 行时第 3 行行尾省略。
+  - 元信息行：整项换行（`flex-wrap: wrap`），不缩字、不省略，每个徽标与数字项都不压缩。
+  - `task_id`：单行不换行，超出时行尾省略，且必须保留完整值的 `title` 提示。
+  - 溢出策略：卡片允许 `overflow: hidden` 裁装饰（圆角、状态条、玻璃层），**不得以裁切代替换行或省略**。
 - 变体：`default` / `focus`（当前打开的任务，1px 品牌描边）。
 - 状态矩阵：
 
@@ -88,6 +97,10 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 - 可访问性：整卡可聚焦（`UnstyledButton`），Enter/Space 打开详情；`aria-label` 用「标题 + 状态」。
 - 反例：卡片里塞入可点击的二级按钮（整卡可点 + 内嵌按钮 = 误触）。
+- 已知偏差（issue #122 登记，待 design 负责人决议；决议前视觉一律以 `refs/` 为准）：
+  - 字号：契约 `text.small`(13px) / `caption`(12px)，当前实现标题用 `text.body`(15px)、`task_id` 用 `text.mono`(13px)。两条都既未回收、也未被契约追认。
+  - 状态条竖直范围：mock 为上 / 下内缩的胶囊条，实现为通高；宽度与语义色一致。
+  - 以上两条不影响「内距 + 断行」修复，归入 `design/README.md` §契约同步记录 的既有 `refs` 偏差跟踪项。
 
 ## ui/StatusPill
 
