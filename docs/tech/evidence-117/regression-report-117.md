@@ -6,7 +6,7 @@
 | 任务分支 | `task/t_01M81EYMCWG2YPWWWGESN308DG`（沿用项目 worktree，未新建分支 / 未切换） |
 | 项目集成分支（PR base，未触碰） | `feature/echuan-5` |
 | 基线 commit | `abb5fd0` = `abb5fd01caeb2acb31662fd634819d82db578724`（= 核销时的 `origin/feature/echuan-5`） |
-| 本卡提交 | 单 commit，diff 范围 `abb5fd0..<commit>`；`<commit>` 由交付回报给出（本文件在被提交的内容里，无法自引用自身 hash，复核用 `git log --oneline -1` / `git rev-parse HEAD`） |
+| 本卡提交 | **`3cfe2ff`**（`3cfe2ffaedcf669af49591d41e9735a1f3271f9f`）= 产物重生成 + 本报告初版，diff 范围 `abb5fd0..3cfe2ff`；本行补记于其后一个 doc-only commit（仅更新本行，产物与其它章节未改），仓库内自证：`git show 3cfe2ff --stat` |
 | 报告路径 | `docs/tech/evidence-117/regression-report-117.md`（本文件） |
 | 方案依据 | `docs/tech/product-repo-link-117-v0.1.md` §2.2（P1–P4）/ §8 / §9–§10 / §11.2 / §12.2 |
 | 本卡范围 | **不做新功能**：只重生成 `internal/web/dist`（一次提交）+ 本报告与截图 |
