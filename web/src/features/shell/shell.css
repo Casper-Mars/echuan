@@ -426,6 +426,19 @@
     min-width: var(--ui-control-height-touch);
     min-height: var(--ui-control-height-touch);
   }
+
+  /* 详情抽屉里的外链（issue #117 方案 §7.2）：<768 命中区高 ≥44。
+   * 这里的写法与面包屑链接**故意不同**：不能用 `inline-flex` / `inline-block`——那是原子行内盒，
+   * 会让 dd 的 `text-overflow: ellipsis` 省略号消失（长仓库地址在 <768 变成硬裁切，与
+   * 「单行省略 + title」的契约冲突）。所以链接保持 inline（文本仍参与 dd 的行内排版、仍出省略号）：
+   *   ① 行内链接的 line-height = 44：撑起行盒 → 仓库这一行 20 → 44，文本靠 half-leading 上下居中；
+   *      行高挂在 <a> 上而不是 dd 上，是为了压过 dd 的等宽行高（`--text-mono-line-height`）。
+   *   ② 行内链接的上下 padding 补到 44：行内元素的命中区 = 内容区 + padding（垂直 padding 不进行盒）。
+   * 命中区宽度仍等于可见文本宽（被 dd 的 overflow 裁掉的部分不可点，省略号之外不会撑成可点区）。 */
+  .fx-detail-fields__value[data-link='on'] a {
+    line-height: var(--ui-control-height-touch);
+    padding-block: calc((var(--ui-control-height-touch) - var(--text-mono-size)) / 2);
+  }
 }
 
 /* ===== 只读详情抽屉的键值网格（features/shell/DetailFields） ============
