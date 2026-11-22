@@ -1,0 +1,9 @@
+{
+  "base_url": "http://127.0.0.1:8090",
+  "viewport": { "width": 1440, "height": 900 },
+  "assertions": [
+    { "type": "exists", "selector": "body" },
+    { "type": "url", "contains": "/" }
+  ],
+  "screenshot": { "path": "shots/sample.png", "full_page": false }
+}
