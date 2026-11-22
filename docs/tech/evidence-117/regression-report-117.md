@@ -188,5 +188,5 @@ $ diff status-run1.txt status-run2.txt   （两次 git status --short 排序后�
 | R1 | 产物 hash 文件名跨机器可能不同 | 本机两次构建 hash 名一致（幂等已验证）；换 vite/依赖小版本或不同机器可能产生新 hash，属正常构建差异，不是源码漂移（lockfile 未改） |
 | R2 | `spaced` 样本在生产库里可能不存在 | 后端 `TrimSpace` 后入库（方案 §3.3），「前后空格」是前端口径兜底（防御性），不是真实脏数据形态 |
 | R3 | 23 条样本由 stub 提供，非真实库数据 | 只证明渲染层对各类登记值的表现；后端把非法值写库的现状（方案 U-02）未变、仍是纯文本兜底 |
-| R4 | 报告无法自引用自身 commit hash | 单 commit 约束下 hash 在提交后才确定；`<commit>` 见交付回报，`git log --oneline -1` 可复核 |
+| R4 | 报告内记录的交付 commit 只能指向**产物提交**（`3cfe2ff`），本行补记在 doc-only commit 里 | 单 commit 无法含自身 hash；已在元数据表写明产物提交 hash 与 doc-only 补记关系，`git show 3cfe2ff --stat` 可反查 |
 | R5 | 截图 12 张共约 800 KB 入库 | 仅 4 状态 × 3 视口，未额外留原始全量截图（原始在仓库外 `/workspace/.verify/117/shots/`） |
