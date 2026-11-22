@@ -392,6 +392,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 - 页面私有部分落在 feature 层：`features/products/ProductDetailSheet.tsx`（6 字段：产品编号 / 名称 / 仓库 / 描述 / 证书 / 项目数）、`features/projects/ProjectDetailSheet.tsx`（9 字段：项目编号 / 产品编号 / 序号 / 名称 / 上下文 / 状态 / 创建时间 / 更新时间 / 关闭时间）。
 - 两个抽屉共用的**键值网格**收敛在壳层 `features/shell/DetailFields.tsx`（与 `ErrorBar` 同层；`features/*` 允许 import `features/shell`）。它**不是** `ui/` 组件、不从 `web/src/ui/index.ts` 导出，因此不进总览表、不计入 21 个组件。
 - 字段全部取自当前列表行，抽屉打开**不发请求**（0 请求）；因此没有 loading/error 态，只有 `rest`。
+- 字段可声明外链意图 `DetailField.link?`（键值网格内部调 `web/src/lib/url.ts#repoHref` 判定，调用方只声明、不自行判定）：命中合法 http(s) 时值渲染为 `<a target="_blank" rel="noopener noreferrer" title=…>`（全局锚点色 + 下划线，`<768` 命中区高 ≥44），未命中（非 http(s) / 裸域名 / SSH 形式 / 含内部空白的多链接串 / 空值）回落纯文本原值，不出现「看着像链接点不动」的中间态；`projects` 抽屉不声明 `link`，行为不变。
 - 升级条件：若同构只读抽屉出现第三处（如执行节点详情），再按 D2 升级为 `ui/` 组件，并同步 `ui/index.ts`、`ui-imports-check.mjs` 的 `EXPECTED`、本文件总览表与 `web/README.md` 的「21 个组件」表述。
 - 反例：为抽屉新增 `ui/ProductDetailSheet` / `ui/ProjectDetailSheet`（会把 `Product`/`Project` 的字段形状塞进 `ui/` 层，导出面 21→23，四处同步成本高）。
 
