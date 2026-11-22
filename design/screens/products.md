@@ -16,6 +16,6 @@
 | loading | 4 行 Skeleton | refs/products__{desktop,tablet,mobile}__dark__loading.png |
 | error | 错误条（`GET /v1/products`）+ 重试 | refs/products__{desktop,tablet,mobile}__dark__error.png |
 
-- 交互：行点击 → 只读详情抽屉（6 字段：产品编号 / 名称 / 仓库 / 描述 / 证书 / 项目数；容器 `ui/DetailSheet`，抽屉不发请求，字段取当前行）；行内「查看项目」→ `#/products/:productId/projects`，点按钮只做导航、不开关抽屉（行内动作必须 `stopPropagation`，阻断行点击冒泡）；抽屉内**仓库**字段在登记值为合法 http(s) 地址时渲染为新 tab 外链（`target="_blank"` + `rel="noopener noreferrer"`，锚点文本与 `href` 均为原值，判定口径见 `web/src/lib/url.ts#repoHref`），其余情况（非 http(s) / 裸域名 / SSH 形式 / 含内部空白的多链接串 / 空值 `未设置`）保持纯文本、不可点、不拆分也不补全协议。
+- 交互：行点击 → 只读详情抽屉（6 字段：产品编号 / 名称 / 仓库 / 描述 / 证书 / 项目数；容器 `ui/DetailSheet`，抽屉不发请求，字段取当前行）；行内「查看项目」→ `#/products/:productId/projects`，点按钮只做导航、不开关抽屉（行内动作必须 `stopPropagation`，阻断行点击冒泡）；抽屉内**仓库**字段在登记值为合法 http(s) 地址时渲染为新 tab 外链（`target="_blank"` + `rel="noopener noreferrer"`，锚点文本为原值、`href` 为原值（前后空白按 `web/src/lib/url.ts#repoHref` trim 后写入，判定口径同源）），其余情况（非 http(s) / 裸域名 / SSH 形式 / 含内部空白的多链接串 / 空值 `未设置`）保持纯文本、不可点、不拆分也不补全协议。
 - 数据来源：`GET /v1/products`（`product_id` / `name` / `git_url` / `description` / `license` / `project_count`）。
 - 不做：产品编辑、删除（不变，后端无对应动作）；抽屉内不做编辑与保存。
