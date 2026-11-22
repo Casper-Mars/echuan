@@ -164,18 +164,25 @@
   box-shadow: var(--shadow-e2);
 }
 
-.ui-task-card__hit {
+/* 双类名（特异性 0,2,0）不是冗余：命中区是 Mantine `UnstyledButton`，其根类 `.m_87cf2631{padding:0}`
+   同为 0,1,0 且打包后源序更靠后，单类名写法会被它压掉、内距实际为 0（issue #122 根因 A）。
+   仓内既有同类约定见 `.ui-chip.ui-chip` / `.ui-skeleton-card.ui-skeleton-card`。改回单类名前先看这条注释。 */
+.ui-task-card__hit.ui-task-card__hit {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   width: 100%;
+  /* 契约（design/components.md §ui/TaskCard「几何」）：内距 space.3 四边一致；
+     3px 状态条落在内距之内，文本起点 = space.3，不再额外加状态条宽度。 */
   padding: var(--space-3);
-  padding-inline-start: calc(var(--space-3) + var(--ui-status-bar));
   color: var(--text-primary);
 }
 
-/* 焦点环包裹整卡（向内收，避免被 overflow 裁掉） */
-.ui-task-card__hit:focus-visible {
+/* 焦点环包裹整卡（向内收，避免被 overflow 裁掉）。
+   同样必须双类名：Mantine 的 `.mantine-focus-auto:focus-visible`（0,2,0）源序更靠后，
+   单类名写法下它带着 `outline-offset: 正向` 胜出，焦点环被卡片 `overflow: hidden` 整个裁掉、
+   键盘用户看不到焦点（issue #122 AC6 实测：Tab 后该区域像素 0 变化）。 */
+.ui-task-card__hit.ui-task-card__hit:focus-visible {
   outline: var(--ui-focus-outline-width) solid var(--focus-ring);
   outline-offset: calc(var(--ui-focus-outline-offset) * -1);
 }
@@ -185,6 +192,9 @@
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  /* 不可断的长串（URL / token / 长标识）按字符断行：否则 `overflow: hidden` 会静默把横向溢出裁掉，
+     表现为「字缺了一些」（issue #122 根因 B）。中文按字、西文按词换行不受影响。 */
+  overflow-wrap: anywhere;
   font-size: var(--text-body-size);
   font-weight: var(--text-body-strong-weight);
   line-height: var(--text-body-line-height);
@@ -197,6 +207,12 @@
   gap: var(--space-2);
   color: var(--text-muted);
   font-size: var(--text-caption-size);
+}
+
+/* 元信息整项换行、单项不压缩：Mantine Badge 默认 `flex-shrink: 1`，窄列下会被压到省略
+   （同类前车：issue #89 A1 的 mono 文本被压没）。 */
+.ui-task-card__meta > * {
+  flex: 0 0 auto;
 }
 
 .ui-task-card__num,
