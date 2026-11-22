@@ -74,6 +74,20 @@ design_ref 指 `design/` 物料入库的仓库 commit：`design/screens/*.md`、
 - 补的时点：issue #102 四条合并进 `main` 之后、下一轮全量视觉回归之前；与上面「42 张 refs 偏差」挂在**同一条跟踪项**上一起补。
 - 在重算之前，MANIFEST 的值与当前 `design/` 内容不一致属已知状态，物料完整性以 git 版本（`design_ref` 及其后的 commit）为准。
 
+## 契约同步记录
+
+按时间追加，不覆盖历史条目。
+
+### issue #122 任务卡片排版与文字裁切（2026-11-22）
+
+- 契约增量 commit：`e8d5f349b6b2e3ff4f1b8ba095d23e5f7599f41b`（`docs(design-122/design): 补 TaskCard 内距与状态条合成口径、换行与省略规则`）；源头方案 `docs/tech/task-card-typography-122-v0.1.md`。
+- 范围：只改 `components.md` §ui/TaskCard —— 补「几何（内距与状态条合成口径）」「换行与省略」「已知偏差登记」三块文字。`tokens.json`、`mock/**`、`refs/**`、`screens/**`、`flows.md` 零变动。
+- 为什么不动数值、不重出截图：内距契约值一直是 `space.3`，`mock/styles.css`（`.task-card { padding: var(--space-3) }`）与 240 张 refs 都按它出图；#122 是实现侧没让这条内距生效（同特异性的 Mantine 规则更靠后，把 `padding` 覆盖成 0）。契约侧缺的只是「内距与 3px 状态条怎么合成」「不可断长串怎么断行」这两句口径，补完不产生新的像素目标。
+- refs：不重出（数量口径仍 240 张）；上一节既有的「42 张 refs 偏差」挂账继续挂。
+- `MANIFEST.sha256`：沿用「保留旧值，不重算」（见上一节），本次未重算。
+- `design_ref` 仍为 `032c2ca…`（物料入库 commit：240 张 refs 与四份契约文档在该 commit 下可逐字节检出）。本次改动属「`design_ref` 及其后的契约增量」——dev 卡**取图按 `design_ref`，取口径按本条记录的 commit**。
+- 随本次一并登记、但**不修**的两条偏差（认账：设计侧；回收时点待 design 负责人决议）：卡片字号（契约 `text.small`/`caption` vs 实现 `text.body`/`text.mono`）、状态条竖直范围（mock 内缩胶囊条 vs 实现通高）。
+
 ## 视觉方向（已定：B 暗色仪表盘）
 
 默认主题 = **暗色**（决策人 2026-11-19 选定「B 好看点」）。亮色同套保留为对照，切换成本一行 `data-theme`。
