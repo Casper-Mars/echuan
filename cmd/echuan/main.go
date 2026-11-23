@@ -82,14 +82,11 @@ func run() error {
 	}
 	materialService := app.NewMaterialService(st, materialWriter)
 
-	// V3 services. The task service needs a reader for the breakdown plan, so
-	// the plan artifact can be materialised in the approval transaction, and
-	// the configured max_attempts: every created task (explicit, flow-derived
-	// or breakdown child) is stamped with it at insert time.
+	// V3 services. The task service is built by newTaskService so the
+	// config → service wiring stays a single testable seam (see
+	// cmd/echuan/maxattempts_test.go).
 	projectService := appv3.NewProjectService(st)
-	taskService := appv3.New(st).
-		WithMaxAttempts(cfg.MaxAttempts).
-		WithMaterialReader(planReader{st: st, dataDir: cfg.DataDir})
+	taskService := newTaskService(st, cfg)
 	workerService := appv3.NewWorkerService(st)
 
 	// Feishu bot: optional. The poller turns in_review tasks into cards and
@@ -195,6 +192,22 @@ func run() error {
 
 	banner.Info("shutdown complete")
 	return nil
+}
+
+// newTaskService builds the V3 task service the HTTP layer uses. It is the one
+// seam where platform.Config meets the task service: the configured
+// max_attempts is passed explicitly so every task created at runtime (explicit,
+// flow-derived or breakdown child) is stamped with it at insert time. The
+// breakdown flow needs the plan reader as well, so the artifact can be
+// materialised inside the approval transaction.
+//
+// The wiring is load-bearing: dropping WithMaxAttempts makes the service fall
+// back to the built-in default of 3 and silently ignores the configuration,
+// which is exactly what TestConfigMaxAttemptsReachesCreatedTask fails on.
+func newTaskService(st *store.Store, cfg platform.Config) *appv3.Service {
+	return appv3.New(st).
+		WithMaxAttempts(cfg.MaxAttempts).
+		WithMaterialReader(planReader{st: st, dataDir: cfg.DataDir})
 }
 
 // reclaimLoop returns expired leases to the pool on a fixed interval.

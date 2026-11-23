@@ -89,8 +89,13 @@ type CreateTaskRequest struct {
 	DescriptionMD string
 	ContextMD     string
 	Priority      int
-	MaxAttempts   int
-	DependsOn     []string
+	// MaxAttempts is optional. A value <= 0 means "not provided" and resolves
+	// to the configured limit (platform.Config.MaxAttempts, wired through
+	// Service.WithMaxAttempts); it is deliberately not a validation error, so
+	// an omitted JSON field and an explicit 0 behave the same. Only a positive
+	// value overrides the configuration.
+	MaxAttempts int
+	DependsOn   []string
 }
 
 // CreateTask validates and inserts one task.
