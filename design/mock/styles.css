@@ -840,36 +840,6 @@ h3 {
   background: var(--color-surface-raised);
 }
 
-.segmented {
-  display: inline-flex;
-  padding: 2px;
-  border-radius: var(--radius-8);
-  background: var(--color-surface-overlay);
-  border: 1px solid var(--color-border-subtle);
-}
-
-.segmented button {
-  min-height: 32px;
-  padding: 0 var(--space-4);
-  border: 0;
-  border-radius: var(--radius-4);
-  background: transparent;
-  font: inherit;
-  font-size: var(--text-small-size);
-  color: var(--color-text-muted);
-  cursor: pointer;
-}
-
-.segmented button.is-on {
-  background: var(--color-surface-raised);
-  color: var(--color-text-primary);
-  box-shadow: var(--shadow-e1);
-}
-
-.segmented button.is-danger.is-on {
-  color: var(--color-feedback-danger);
-}
-
 /* markdown */
 
 .markdown {
@@ -1376,18 +1346,6 @@ body::after {
     color-mix(in srgb, var(--color-action-primary) 10%, transparent),
     transparent
   );
-}
-
-/* 分段控件选中态：渐变底 */
-.segmented button.is-on {
-  background: linear-gradient(135deg, var(--color-action-primary), color-mix(in srgb, var(--color-action-primary) 70%, var(--color-feedback-info)));
-  color: var(--color-text-on-action);
-  box-shadow: 0 8px 18px -12px var(--color-action-primary);
-}
-
-.segmented button.is-danger.is-on {
-  background: linear-gradient(135deg, var(--color-feedback-danger), color-mix(in srgb, var(--color-feedback-danger) 70%, var(--color-feedback-warning)));
-  color: var(--color-text-on-action);
 }
 
 /* 移动端底栏玻璃 */

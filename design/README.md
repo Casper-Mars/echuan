@@ -122,6 +122,16 @@ design_ref 指 `design/` 物料入库的仓库 commit：`design/screens/*.md`、
 - `design_ref`：既有 `032c2ca…` 仍是**物料入库 commit**（未变形状态的对照基线）；本卡是 refs 的生产方，**实现卡（T2）的 `design_ref` 取本条记录的契约增量 commit `7f2e9b9…`**——取图按该 commit、取口径按该 commit 的契约文本。
 - 随本次登记的已知状态：`design/mock/`（根目录交互入口 `?screen=`）未同步本形态，仍画旧的侧边抽屉——本卡范围只含 `mock/shots/attachment-preview/`，36 张 refs 的产出不受影响；需要根入口同构时单开一张物料卡。
 
+### issue #148 资料只留当前版本 + 评审区简化（2026-11-23）
+
+- 契约增量 commit：本卡 commit，subject `docs(design-148/design): 资料只留当前版本与评审区简化契约，重出 task-detail 12 张 refs`（分支 `design/echuan-14-current-version-148` 的 tip）。git 无法让 commit 内嵌自身 sha，故本条按「分支 tip + subject」定位；完整 sha 由设计卡报告给出，`git log -1 --format=%H origin/design/echuan-14-current-version-148` 可复核。上游方案 `docs/tech/current-version-only-148-v0.2.md`（v0.2，§4.2 D1–D6，由开发卡随 PR 入库），issue #148。
+- 范围：`screens/task-detail.md`（结构行、组件表删 `ui/Segmented` / `ui/SelectField`、default 态、评审区口径、附件段口径、交互行）、`screens/projects.md`（资料区补版本口径 / 简报跟随 / 计数口径三条，折叠阈值改「作用于可见行」）、`flows.md`（F3 第 2 步）、`components.md`（总览表 `ui/Segmented` 用途改「暂保留（当前无使用方）」、§ui/Segmented 用途句与反例句改写；**导出面仍 22 个组件**）、`mock/**`（评审区删「通过/驳回」开关与附件下拉，label 改「驳回原因（驳回必填）」）。`tokens.json` 零变动；`MANIFEST.sha256` **沿用「保留旧值，不重算」**。
+- mock 副本：`mock.js` 与 `styles.css` 各 8 份同源（根目录 + `shots/{board,inbox,products,projects,queue,task-detail,workers}`），改一份后复制，`md5sum` 全等（`mock.js` = `c24f65360a51168b8122af99027573cf`，`styles.css` = `b7fa6a721f8cb10fe42a9609db1c1551`）；`shots/attachment-preview/{mock.js,styles.css}` 是独立变体（整页居中浮层），同样删掉评审区两控件与 `.segmented` 样式，与其它副本保持「无 `class="segmented"`」一致。`.segmented` 的 6 条样式在改后已无任何 mock 段落引用，按「不留死代码」删除。
+- refs 口径：总量仍是 8 屏 × 状态 × 三视口 × 双主题 = **240 张**；本次**只重出 `task-detail` 的 12 张**（`{desktop,tablet,mobile}` × `{dark,light}` × `{default,rejected}`），其余 228 张未动。这 12 张里评审区只有「评审」标题 + 驳回原因框，**没有**结论开关、没有附件选择控件；底部仍是「取消 / 驳回 / 通过并关闭」；附件区行数 = 计数文案（3 个）。
+- 截图可复现：完整命令见上文「重出某屏 refs 的完整命令」，本次 `--states default,rejected`，dark / light 各一遍（每次 6 张、退出码 0）；同一命令重跑字节一致（md5 全等）。
+- `design_ref`：既有 `032c2ca…` 仍是**物料入库 commit**（未变形状态的对照基线）；issue #148 的 dev 卡**取图按本条 commit 的 `task-detail` 12 张、取口径按本条的契约文本**。
+- 随本次登记的已知状态与偏差：①`ui/Segmented` 从此没有使用方，登记为待决债务（导出面 22 个不变，删要同步 `ui/index.ts` / `ui-imports-check.mjs` / `components.md` / `web/README.md` 四处）；②`design/mock/` 根目录交互入口与 `mock/shots/*` 共用同一份 `mock.js`，本次已同步（8 份 md5 全等）；③按方案 §4.2 D6 只重出 `default`/`rejected`，其余四态 task-detail refs 未动——`loading`（骨架屏提前返回）与 `failed`（该态不渲染评审区）画面里没有评审区，与本次契约无冲突；**`error` 与 `leased` 的旧图（3 视口 × 2 主题 × 2 态 = 12 张）里仍画着「通过/驳回」开关与「被评审附件」下拉，与现 mock 及本条契约不一致**，属已知偏差，按方案 §11 R6 走变更（补出这 12 张，或随实现卡一起重出），本卡不擅自扩范围。
+
 ## 视觉方向（已定：B 暗色仪表盘）
 
 默认主题 = **暗色**（决策人 2026-11-19 选定「B 好看点」）。亮色同套保留为对照，切换成本一行 `data-theme`。

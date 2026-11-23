@@ -29,7 +29,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | `ui/SidebarNav` | `AppShell.Navbar` + `NavLink` | 桌面/平板 |
 | `ui/MarkdownViewer` | 无（marked + DOMPurify）+ `TypographyStylesProvider` | 详情、附件预览 |
 | `ui/AttachmentRow` | `UnstyledButton` | 详情、附件预览 |
-| `ui/Segmented` | `SegmentedControl` | 详情评审 |
+| `ui/Segmented` | `SegmentedControl` | 暂保留（当前无使用方） |
 | `ui/Chip` | `Pill` 或 `Badge` | 详情依赖、租约 |
 
 ## ui/Button
@@ -396,7 +396,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 ## ui/Segmented
 
-- 用途：评审「通过 / 驳回」二选一。
+- 用途：**评审不再使用本组件**——评审结论由底部两个命令按钮（「驳回」/「通过并关闭」）承载，不再用开关表达；本组件**暂保留**在导出面（22 个组件不变，见总览表），当前无使用方，登记为待决债务（删除要同步 4 处：`ui/index.ts`、`ui-imports-check.mjs` 的 `EXPECTED`、本文件、`web/README.md`，另开卡）。
 - 底层：`SegmentedControl`。
 - 使用 token：`surface.overlay` `surface.raised` `feedback.danger` `shadow.e1`
 - 状态矩阵：
@@ -412,7 +412,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | invalid | 驳回但意见为空 → 意见框标红 | `feedback.danger` |
 
 - 可访问性：`radiogroup` 语义，左右键切换。
-- 反例：把「通过/驳回」做成两个并列按钮（无法表达互斥状态）。
+- 反例：把两个**互斥状态**做成两个按钮（无法表达状态互斥，读屏与键盘也丢了 `radiogroup` 语义）。注意区分：本组件反的是「状态开关」；评审区的两个结论按钮是两个**命令**（各自带确认与请求），不属于本条反例。
 
 ## ui/Chip
 
