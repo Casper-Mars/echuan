@@ -262,26 +262,39 @@
   }
 }
 
-/* ===== 附件预览二级面板（T7，design/screens/attachment-preview.md） ==========
+/* ===== 附件预览面板（T7 / issue #128，design/screens/attachment-preview.md） ====
  *
- * 几何口径：
+ * 几何口径（容器无关，方案 §4.1 M6）：
  *   左列表 = calc(--space-10 * 4 + --space-6) = 64×4 + 24 = 280（design「左 280」）；
- *   面板吃满抽屉正文槽：正文槽自带 --space-5 内边距，这里用等量负外边距抵平，
- *     再由列表 / 正文各自给内边距（不改 ui/ui.css 的槽几何，避免影响 T6 的详情页）。
+ *   面板吃满**容器正文槽**的剩余高度：≥1024 的容器是 ui/ContentModal 的内容盒
+ *     （正文槽 padding 0），面板直接 100% 铺满；<1024 的容器是详情抽屉正文槽
+ *     （正文槽自带 --space-5 内边距，用等量负外边距抵平）。
+ *   后者留在 `@media (max-width: 63.99em)` 块里——断点只允许 47.99em / 63.99em（style-debt ⑤）。
  * 断点：≥768 两栏（列表 + 正文）；<768 上下堆叠，列表 ≤32vh、正文吃剩余高度（design「断点」）。
  */
 .fx-preview {
   display: grid;
+  flex: 1 1 auto;
   grid-template-columns: calc(var(--space-10) * 4 + var(--space-6)) minmax(0, 1fr);
-  height: calc(100% + var(--space-5) * 2);
-  margin: calc(-1 * var(--space-5));
+  height: 100%;
   min-height: 0;
   background-color: var(--surface-canvas);
 }
 
-/* 预览态：详情正文整块撤下（组件状态保留，滚动位置由页面的 layout effect 写回） */
-.fx-detail__body[data-preview='open'] {
-  display: none;
+/* <1024：面板铺在详情抽屉正文槽里（抽屉口径的负外边距几何），同时把详情正文整块撤下
+ * （组件状态保留，滚动位置由页面的 layout effect 写回）。
+ * ≥1024 不加这条：那时抽屉整棵由 concealed 隐去（visibility: hidden），
+ * 详情正文仍留在布局里，正是「关闭浮层后 scrollTop 差 0」的前提。 */
+@media (max-width: 63.99em) {
+  .fx-preview {
+    height: calc(100% + var(--space-5) * 2);
+    margin: calc(-1 * var(--space-5));
+  }
+
+  .fx-detail__body[data-preview='open'],
+  .fx-preview-host[data-preview='open'] {
+    display: none;
+  }
 }
 
 .fx-preview__list {

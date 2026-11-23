@@ -6,7 +6,7 @@
 
 - `src/api` — 同源请求层（X-Actor / If-Match / 统一错误体）与契约类型。
 - `src/hooks` — 5s 轮询封装 `usePolling`（写操作后立即补拉）、产品名称。
-- `src/ui` — 21 个自有组件（唯一允许 import `@mantine/core` 的层）；`src/theme` — 令牌层 + 元素级底座。
+- `src/ui` — 22 个自有组件（唯一允许 import `@mantine/core` 的层）；`src/theme` — 令牌层 + 元素级底座。
 - `src/features/*` — 8 屏（board / task-detail / attachment-preview / inbox / queue / products / projects / workers）+ shell。
 - `src/components` — 上一代页面组件（已无引用，但不在 T11 的删除白名单里，留给后续卡）；旧 `src/pages/*` 已于 T11 删除。
 
@@ -79,11 +79,17 @@ Mantine 要求必须在 `<AppShell>` 里），三形态与几何仍全部由 `sr
 - **分层**：三张页面只 import `src/ui`、`src/api`、`src/hooks`、`src/lib`；样式在各自的 `*.css` 里只消费令牌，
   没有 hex / px 字面量（`grep -rnE '#[0-9a-fA-F]{3,8}\b|[0-9]+px\b' web/src/features/{products,projects,workers}` 为空）。
 
-## 附件预览（`src/features/task-detail`，T7）
+## 附件预览（`src/features/task-detail`，T7 / issue #128）
 
-详情「附件」区点任一附件 → **应用内**开二级预览面板（不新开标签、不跳路由）：
-桌面/平板是详情抽屉内的两栏（左列表 280 + 右正文），移动上下堆叠（列表 ≤32vh、正文吃剩余）。
-头部换成「角色徽标 + 附件标题」，头部关闭键 = 返回详情（二级层退出，详情滚动位置原值写回）。
+详情「附件」区点任一附件 → **应用内**开预览（不新开标签、不跳路由），两处入口（任务详情的附件区、
+项目详情的资料区）共用同一个 surface：
+
+- **≥1024**：整页居中的 80vw×80vh 浮层（`ui/ContentModal`，底图是看板 / 项目列表整页）。预览期间
+  详情抽屉整棵隐去（`ui/DetailSheet` 的 `concealed` + `visibility: hidden`）——画面里没有右侧 720 抽屉；
+  左列表 280 独立滚动 + 右正文吃满剩余宽度（1440×900 下正文 ≥800）。
+- **<1024**：仍是抽屉形态（768–1023 抽屉 720 内两栏；<768 全屏上下堆叠，列表 ≤32vh、正文吃剩余）。
+- **头部**：角色徽标 + 附件标题 + 关闭键（`aria-label="关闭附件预览"`）；Esc / 关闭键只退浮层，
+  回到详情并保留详情滚动位置，焦点回触发的附件行。点浮层外遮罩**不**关闭。
 
 - **数据源**：`GET /v1/materials?id=`（`text/markdown`，浏览器 HTTP 缓存 immutable + ETag 直接复用）；
   前端**只做同 `material_id` 的并发去重**（在飞请求共用一条 Promise），不自建缓存。
@@ -144,7 +150,7 @@ gzip 口径为 Node zlib level 9，与 vite build 打印的 gzip 数值一致。
 ```bash
 node scripts/gen-tokens.mjs            # design/tokens.json → src/theme/tokens.css + src/theme/tokens.ts
 node scripts/gen-tokens.mjs --check    # 只校验产物是否与令牌源一致（漂移即退出码 1）
-node scripts/ui-imports-check.mjs      # 真实打包 src/ui/index.ts，断言 21 个组件全部可 import
+node scripts/ui-imports-check.mjs      # 真实打包 src/ui/index.ts，断言 22 个组件全部可 import
 ```
 
 - `src/theme/tokens.css`：生成物。暗色即默认（令牌层只有一个根块 = 暗色解析），亮色由
@@ -152,7 +158,7 @@ node scripts/ui-imports-check.mjs      # 真实打包 src/ui/index.ts，断言 2
 - `src/theme/base.css`：元素级底座 + Mantine 变量桥接 + 由令牌推导的度量（`--ui-*`）。
 - `src/theme/mantine-theme.ts`：令牌 → Mantine theme（字体/字号/间距/圆角/阴影/断点/色阶/变体解析）。
 - `src/theme/color-scheme.ts`：`setThemeMode('light'|'dark')`，落 localStorage 并通知订阅者。
-- `src/ui/**`：21 个封装组件（与 `design/components.md` 总览表一一对应），只从 `src/ui/index.ts` 导出；
+- `src/ui/**`：22 个封装组件（与 `design/components.md` 总览表一一对应），只从 `src/ui/index.ts` 导出；
   页面层禁止直接 `import '@mantine/core'`。
 
 令牌产物漂移检测（CI/本地均可）：

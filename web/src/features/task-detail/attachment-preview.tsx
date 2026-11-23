@@ -1,20 +1,29 @@
-// features/task-detail/attachment-preview —— 附件 markdown 应用内预览的二级面板
+// features/task-detail/attachment-preview —— 附件 markdown 应用内预览的 surface / 面板 / 正文
 //
 // 规格对照：
-//   design/screens/attachment-preview.md —— 断点（≥768 两栏：左列表 280 + 右正文；<768 上下堆叠，
-//     列表 ≤32vh、正文吃剩余）、结构（头部角色徽标 + 标题 + 关闭 → 左列表（当前项高亮）→ 右侧正文/状态）、
-//     状态矩阵六态（default / empty / loading / error / oversized / image-placeholder）与各自文案；
+//   design/screens/attachment-preview.md —— 断点（≥1024 整页居中浮层 80vw×80vh，底图是看板 / 项目列表整页，
+//     预览期间画面里**没有**侧边抽屉；768–1023 详情内两栏面板（抽屉 720）；<768 上下堆叠，
+//     列表 ≤32vh、正文吃剩余）、结构（头部角色徽标 + 标题 + 关闭 `aria-label="关闭附件预览"` →
+//     左列表（当前项高亮）→ 右侧正文/状态）、状态矩阵六态与各自文案；
+//   design/components.md §ui/ContentModal（几何 / 结构 / 可访问性）、§ui/DetailSheet（closeLabel / concealed）；
 //   design/flows.md F2 第 3 步七条分支（404 / 413 / 超时 / 超大 / 空正文 / 渲染异常 → `<pre>` 原文 /
-//     内嵌图片 → 显式占位）、第 4 步（返回详情保留滚动，二级层不动详情状态）；
-//   design/components.md §ui/Alert（错误条 + 明确动作）、§ui/EmptyState（虚线容器 + 主操作）、
-//     骨架（loading 用 4 条独立骨架条，不用转圈白屏，见 PREVIEW_SKELETON_LINES）、
-//     §ui/MarkdownViewer（内嵌图片必显示占位）。
+//     内嵌图片 → 显式占位）、第 4 步（Esc / 关闭只退浮层，回详情保留滚动，焦点回触发的附件行）；
+//   docs/tech/attachment-preview-overlay-128-v0.2.md §5（组件关系 / 容器选择与断点）。
 //
 // 分层：只用 ui/ 组件；不 import Mantine（design/components.md 红线）。
 // 取数（超时 / 并发去重 / 超大判定）全在 use-attachment-preview，本文件只按状态渲染。
-import { Component, useRef, type ErrorInfo, type ReactNode } from 'react'
+//
+// 结构（issue #128 拆分）：
+//   useWidePreview   —— 容器判定（breakpoint.md 读令牌，不写字面量 1024）
+//   usePreviewSheet  —— 两个入口共用：抽屉头部 title / concealed / closeLabel，避免两处各写一遍后漂移
+//   AttachmentPreviewSurface —— 选容器 + 持有取数 hook（切容器不重新取数）
+//   PreviewPane      —— 两栏网格（容器无关：浮层正文槽与抽屉正文槽都能铺）
+//   PreviewBody      —— 六态正文（逻辑零改动）
+//   previewSheetTitle —— 徽标 + 标题节点（浮层头部与 <1024 抽屉头部共用）
+import { Component, useCallback, useRef, useSyncExternalStore, type ErrorInfo, type ReactNode } from 'react'
 import type { AttachmentRef } from '../../api/types'
-import { Alert, AttachmentRow, Button, EmptyState, MarkdownViewer } from '../../ui'
+import { Alert, AttachmentRow, Button, ContentModal, EmptyState, MarkdownViewer } from '../../ui'
+import { breakpoint } from '../../theme/tokens'
 import { ErrorBar } from '../shell/ErrorBar'
 import { useAttachmentPreview, type PreviewState } from './use-attachment-preview'
 // 面板样式随组件走（项目详情的资料区也复用它；CSS 只挂在路由上会让复用方无样式）
@@ -30,6 +39,30 @@ function formatBytes(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
   return `${bytes} B`
+}
+
+/** 容器判定查询串：值取 theme/tokens.ts 的 breakpoint.md（= design/tokens.json），不写字面量 */
+const WIDE_QUERY = `(min-width: ${breakpoint.md}px)`
+
+/** ssr / 无 matchMedia 环境（jsdom 默认没有）按窄形态处理，保证首帧不出错 */
+function wideMatches(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  return window.matchMedia(WIDE_QUERY).matches
+}
+
+function subscribeWide(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const mql = window.matchMedia(WIDE_QUERY)
+  mql.addEventListener('change', onChange)
+  return () => mql.removeEventListener('change', onChange)
+}
+
+/**
+ * 是否用「整页居中浮层」容器（≥1024）。与 features/shell/use-layout 同写法（matchMedia + useSyncExternalStore），
+ * 窗口跨断点时由 change 事件驱动重渲染，不轮询、不写 resize 监听。
+ */
+export function useWidePreview(): boolean {
+  return useSyncExternalStore(subscribeWide, wideMatches, wideMatches)
 }
 
 /**
@@ -81,7 +114,7 @@ export interface AttachmentPreviewProps {
   current: AttachmentRef
   /** 切换附件（同一面板内换正文，不关面板） */
   onSelect: (ref: AttachmentRef) => void
-  /** 返回详情（二级层退出，详情滚动位置由外层恢复） */
+  /** 返回详情（浮层 / 面板退出，详情滚动位置由调用方的记账恢复） */
   onBack: () => void
 }
 
@@ -204,13 +237,22 @@ function PreviewBody({
 }
 
 /**
- * 二级预览面板：左列表（280，≥768）+ 右正文。
- * 面板挂在详情抽屉的正文槽里（`features/task-detail/TaskDetailRoute` 负责层级与返回恢复滚动），
- * 头部（角色徽标 + 标题 + 关闭）由抽屉头部承接，见 `previewSheetTitle`。
+ * 两栏网格（容器无关）：左列表 280（≥768）+ 右正文。
+ * 容器给谁：≥1024 铺在 `ui/ContentModal` 的正文槽里（`data-preview-surface="overlay"` 在浮层内容盒上）；
+ * <1024 铺在详情抽屉正文槽里（本节点自带 `data-preview-surface="sheet"`，验收据它区分两种容器）。
  */
-export function AttachmentPreview({ attachments, current, onSelect, onBack }: AttachmentPreviewProps) {
-  const preview = useAttachmentPreview(current.material_id)
-  // 焦点落点：从列表进入正文区时不要把焦点丢在列表行上（可访问性；Esc/关闭由抽屉头部承接）
+function PreviewPane({
+  attachments,
+  current,
+  preview,
+  wide,
+  onSelect,
+  onBack,
+}: AttachmentPreviewProps & {
+  preview: ReturnType<typeof useAttachmentPreview>
+  wide: boolean
+}) {
+  // 焦点落点：从列表进入正文区时不要把焦点丢在列表行上（可访问性；Esc/关闭由浮层或抽屉头部承接）
   const bodyRef = useRef<HTMLDivElement | null>(null)
 
   return (
@@ -218,6 +260,8 @@ export function AttachmentPreview({ attachments, current, onSelect, onBack }: At
       className="fx-preview"
       data-ui="attachment-preview"
       data-testid="attachment-preview"
+      // 同一时刻只有一个容器：浮层形态的锚点在 ui/ContentModal 的内容盒上，这里不重复挂
+      data-preview-surface={wide ? undefined : 'sheet'}
       data-state={preview.state}
       data-material-id={current.material_id}
     >
@@ -255,7 +299,74 @@ export function AttachmentPreview({ attachments, current, onSelect, onBack }: At
   )
 }
 
-/** 抽屉头部标题：角色徽标 + 附件标题（design/screens/attachment-preview.md「结构」） */
+/**
+ * 记录触发预览的那个附件行，退出时把焦点还给它（方案 §11 R3）。
+ *
+ * 为什么不能只靠 Mantine 的 useFocusReturn：抽屉在 \`concealed\` 复位时它的焦点陷阱重新 active，
+ * 会在 ~10ms 后 \`focusNode\` 头部关闭键，与 useFocusReturn 的 10ms 归还赛跑（实测被抽屉抢走）。
+ * 触发行的引用在**点击时**同步取（此时 activeElement 就是被点的行），关闭后 30ms 再显式归还一次，
+ * 晚于抽屉陷阱、早于验收断言的 50ms。
+ */
+export function usePreviewTrigger(): { capture: () => void; restore: () => void } {
+  const triggerRef = useRef<HTMLElement | null>(null)
+  const capture = useCallback(() => {
+    triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  }, [])
+  const restore = useCallback(() => {
+    const trigger = triggerRef.current
+    if (trigger === null || !trigger.isConnected) return
+    window.setTimeout(() => trigger.focus({ preventScroll: true }), 30)
+  }, [])
+  return { capture, restore }
+}
+
+/**
+ * 预览 surface：**选容器 + 持有取数 hook**（方案 §5.3）。
+ * 取数 hook 挂在 surface 上而不是各自的内容壳上，跨断点只换壳、不重新取数、不出现骨架。
+ *   ≥1024 → `ui/ContentModal`（整页居中浮层，portal 到 body；抽屉此时由 concealed 隐去）
+ *   <1024  → `PreviewPane`（铺在详情抽屉正文槽里）
+ */
+export function AttachmentPreviewSurface({ attachments, current, onSelect, onBack }: AttachmentPreviewProps) {
+  const wide = useWidePreview()
+  const preview = useAttachmentPreview(current.material_id)
+  const pane = (
+    <PreviewPane
+      attachments={attachments}
+      current={current}
+      preview={preview}
+      wide={wide}
+      onSelect={onSelect}
+      onBack={onBack}
+    />
+  )
+
+  if (!wide) return pane
+
+  return (
+    <ContentModal opened title={previewSheetTitle(current)} onClose={onBack} closeLabel="关闭附件预览">
+      {pane}
+    </ContentModal>
+  )
+}
+
+/**
+ * 两个入口共用：抽屉头部的 title / concealed / closeLabel（方案 §5.2）。
+ * `preview === null` 时是普通详情；预览态把头部换成附件标题，并（≥1024）把抽屉整棵让位给浮层。
+ */
+export function usePreviewSheet(
+  preview: AttachmentRef | null,
+  detailTitle: ReactNode,
+): { title: ReactNode; concealed: boolean; closeLabel: string } {
+  const wide = useWidePreview()
+  return {
+    title: preview === null ? detailTitle : previewSheetTitle(preview),
+    concealed: wide && preview !== null,
+    // 同一容器、不同出口：读屏不该把「关预览」听成「关详情」（design/components.md §ui/DetailSheet）
+    closeLabel: preview === null ? '关闭详情' : '关闭附件预览',
+  }
+}
+
+/** 头部标题：角色徽标 + 附件标题（浮层头部与 <1024 抽屉头部共用） */
 export function previewSheetTitle(ref: AttachmentRef): ReactNode {
   return (
     <span className="fx-preview__head" data-ui="preview-head">

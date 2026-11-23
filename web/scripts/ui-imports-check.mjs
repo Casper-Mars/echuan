@@ -2,7 +2,7 @@
 //
 // 做什么：用仓库已有的 esbuild（vite 的传递依赖，不写进 package.json）真实打包
 //   web/src/ui/index.ts
-// 并对产物元数据断言：导出的组件名集合 == design/components.md 总览表里的 21 个组件。
+// 并对产物元数据断言：导出的组件名集合 == design/components.md 总览表里的 22 个组件。
 // 缺一个、多个、或某个组件文件解析失败（import 不到 Mantine / React）都会非 0 退出。
 //
 // 为什么用 --bundle + external：
@@ -11,10 +11,10 @@
 //     不把 UI 库源码打进来（这里不是产物体积门禁，体积门禁在 scripts/check-size.mjs）。
 //
 // 用法：
-//   node web/scripts/ui-imports-check.mjs     # 退出码 0 = 21 个组件全部可 import
+//   node web/scripts/ui-imports-check.mjs     # 退出码 0 = 22 个组件全部可 import
 //
 // 退出码：
-//   0 通过（导出名集合与 21 个组件完全一致）
+//   0 通过（导出名集合与 22 个组件完全一致）
 //   1 导出不匹配（缺 / 多）
 //   2 环境或打包失败（esbuild 不可用 / 打包报错）
 
@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url'
 const WEB_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
 const ENTRY = join(WEB_DIR, 'src', 'ui', 'index.ts')
 
-// design/components.md「总览」表的 21 个自有组件（顺序与该表一致）
+// design/components.md「总览」表的 22 个自有组件（顺序与该表一致）
 const EXPECTED = [
   'Button',
   'IconButton',
@@ -42,6 +42,7 @@ const EXPECTED = [
   'EmptyState',
   'SkeletonCard',
   'ConfirmModal',
+  'ContentModal',
   'DetailSheet',
   'TabBar',
   'SidebarNav',

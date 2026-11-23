@@ -20,7 +20,7 @@ import type { Project, ProjectMaterial } from '../../api/types'
 import { DetailSheet, MarkdownViewer, StatusPill } from '../../ui'
 import { DetailFields } from '../shell/DetailFields'
 import type { DetailField } from '../shell/DetailFields'
-import { AttachmentPreview, previewSheetTitle } from '../task-detail/attachment-preview'
+import { AttachmentPreviewSurface, usePreviewSheet, usePreviewTrigger } from '../task-detail/attachment-preview'
 import { MaterialsSection } from './MaterialsSection'
 import { useProjectMaterials } from './use-project-materials'
 
@@ -42,30 +42,56 @@ export function ProjectDetailSheet({ project, onClose }: ProjectDetailSheetProps
 
   // opened 由 project 派生而不是另立 prop：两者同时存在会出现「opened=true 但没有行」的中间态，
   // 那时抽屉只能显示上一个项目的残留内容——只读抽屉不允许出现这种幽灵数据。
-  const title = preview === null ? (project?.name ?? '') : previewSheetTitle(preview)
+  // 预览态：头部换成「角色徽标 + 资料标题」，且（≥1024）抽屉整棵让位给整页居中浮层。
+  const previewSheet = usePreviewSheet(preview, project?.name ?? '')
+  const trigger = usePreviewTrigger()
+  const openPreview = (material: ProjectMaterial) => {
+    trigger.capture()
+    setPreview(material)
+  }
+  const closePreview = () => {
+    trigger.restore()
+    setPreview(null)
+  }
 
   return (
-    <DetailSheet variant="readonly" opened={project !== undefined} title={title} onClose={onClose}>
-      {project === undefined ? null : preview === null ? (
-        <>
-          <DetailFields fields={fieldsOfProject(project)} />
-          <MaterialsSection
-            materials={materials.materials}
-            loading={materials.loading}
-            error={materials.error}
-            onRetry={materials.reload}
-            onOpen={setPreview}
-          />
-        </>
-      ) : (
-        <AttachmentPreview
-          attachments={materials.materials}
-          current={preview}
-          onSelect={setPreview}
-          onBack={() => setPreview(null)}
-        />
-      )}
-    </DetailSheet>
+    // data-preview 是第二处入口的可断言钩子（与任务详情同口径：open / closed）
+    <div data-preview={preview === null ? 'closed' : 'open'}>
+      <DetailSheet
+        variant="readonly"
+        opened={project !== undefined}
+        title={previewSheet.title}
+        onClose={preview === null ? onClose : closePreview}
+        closeLabel={previewSheet.closeLabel}
+        concealed={previewSheet.concealed}
+      >
+        {project === undefined ? null : (
+          <>
+            {/* <1024 的预览态由 task-detail.css 的同断点规则把这一块撤下（与任务详情同构） */}
+            <div className="fx-preview-host" data-preview={preview === null ? 'closed' : 'open'}>
+              <DetailFields fields={fieldsOfProject(project)} />
+              <MaterialsSection
+                materials={materials.materials}
+                loading={materials.loading}
+                error={materials.error}
+                onRetry={materials.reload}
+                onOpen={openPreview}
+              />
+            </div>
+            {/* 预览 surface：≥1024 渲染整页居中浮层（portal 到 body，抽屉此时已让位）；
+                <1024 直接把面板铺在本槽里（详情字段与资料区由 task-detail.css 的同断点规则撤下） */}
+            {preview === null ? null : (
+              <AttachmentPreviewSurface
+                attachments={materials.materials}
+                current={preview}
+                onSelect={setPreview}
+                onBack={closePreview}
+              />
+            )}
+          </>
+        )}
+      </DetailSheet>
+    </div>
   )
 }
 
