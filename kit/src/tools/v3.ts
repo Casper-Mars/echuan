@@ -478,15 +478,17 @@ export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] 
     ),
     readTool(
       'echuan_project_list',
-      '项目列表（GET /v1/projects），可按 open/closed 过滤。',
+      '项目列表（GET /v1/projects）：按新建倒序（最新在前）返回；after_id 传上一页 next_after_id 可取更早一页；可按 product_id / status 过滤。',
       {
+        product_id: { type: 'string', description: '产品业务编号；省略即不按产品过滤' },
         status: { type: 'string' },
-        after_id: { type: 'integer' },
+        after_id: { type: 'integer', description: '上一页返回的 next_after_id，用于取更早一页' },
         limit: { type: 'integer' },
       },
       async args => {
         const status = args.status === 'open' || args.status === 'closed' ? args.status : undefined
         const result = await client.listV3Projects({
+          ...(typeof args.product_id === 'string' ? { product_id: args.product_id } : {}),
           status,
           after_id: typeof args.after_id === 'number' ? args.after_id : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,

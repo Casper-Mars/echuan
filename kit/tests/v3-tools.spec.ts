@@ -303,6 +303,32 @@ describe('V3 读工具：成功即非空中文文本', () => {
     expect(emptyText).toContain('当前没有项目')
   })
 
+  it('project_list schema 暴露 product_id，描述写明倒序与「更早一页」语义', () => {
+    const { byName } = buildOptions({})
+    const tool = byName.get('echuan_project_list')!
+
+    const parameters = tool.parameters as { properties?: Record<string, { type?: string }> }
+    expect(Object.keys(parameters.properties ?? {})).toEqual(
+      expect.arrayContaining(['product_id', 'status', 'after_id', 'limit']),
+    )
+    expect(parameters.properties?.product_id?.type).toBe('string')
+
+    expect(tool.description).toContain('倒序')
+    expect(tool.description).toContain('更早一页')
+    expect(tool.description).toContain('product_id')
+  })
+
+  it('project_list 把 product_id 透传给 listV3Projects（不传时不带该参数）', async () => {
+    const listV3Projects = vi.fn().mockResolvedValue(ok({ items: [project] }))
+    const { byName } = buildOptions({ listV3Projects })
+
+    await runAndRender(byName, 'echuan_project_list', { product_id: 'echuan' })
+    expect(listV3Projects.mock.calls[0]![0]).toMatchObject({ product_id: 'echuan' })
+
+    await runAndRender(byName, 'echuan_project_list')
+    expect(listV3Projects.mock.calls[1]![0]).not.toHaveProperty('product_id')
+  })
+
   it('task_list 渲染任务编号 / 状态，空集有提示', async () => {
     const listV3Tasks = vi
       .fn()

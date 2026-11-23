@@ -141,7 +141,12 @@ export interface V3Client {
   closeV3Project(input: { id: string; force?: boolean }): Promise<ApiResult<unknown>>
   reopenV3Project(input: { id: string }): Promise<ApiResult<unknown>>
   getV3Project(input: { id: string }): Promise<ApiResult<V3Project>>
-  listV3Projects(query?: { status?: 'open' | 'closed'; after_id?: number; limit?: number }): Promise<ApiResult<V3List<V3Project>>>
+  listV3Projects(query?: {
+    product_id?: string
+    status?: 'open' | 'closed'
+    after_id?: number
+    limit?: number
+  }): Promise<ApiResult<V3List<V3Project>>>
   createV3Task(input: V3TaskCreateInput): Promise<ApiResult<V3Task>>
   updateV3Task(input: { id: string; body: V3TaskUpdateInput }): Promise<ApiResult<V3Task>>
   getV3Task(input: { id: string }): Promise<ApiResult<V3Task>>

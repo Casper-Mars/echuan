@@ -1335,6 +1335,7 @@ export function createClient(
 
     async listV3Projects(query) {
       const q: Record<string, string | number> = {}
+      if (query?.product_id !== undefined) q.product_id = query.product_id
       if (query?.status !== undefined) q.status = query.status
       if (query?.after_id !== undefined) q.after_id = query.after_id
       if (query?.limit !== undefined) q.limit = query.limit
