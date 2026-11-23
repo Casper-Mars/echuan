@@ -488,6 +488,33 @@ describe('URL 与请求头', () => {
   })
 })
 
+describe('项目列表：product_id 写进请求 query（issue #133）', () => {
+  it('listV3Projects 带 product_id / status / after_id / limit 时逐个落到 query', async () => {
+    const { calls, fetchImpl } = createFetch(() => jsonResponse({ items: [] }))
+    const client = createClient(config, { fetchImpl })
+
+    await client.listV3Projects({ product_id: 'echuan', status: 'open', after_id: 42, limit: 5 })
+
+    expect(calls).toHaveLength(1)
+    const url = new URL(calls[0]!.url)
+    expect(url.pathname).toBe('/v1/projects')
+    expect(url.searchParams.get('product_id')).toBe('echuan')
+    expect(url.searchParams.get('status')).toBe('open')
+    expect(url.searchParams.get('after_id')).toBe('42')
+    expect(url.searchParams.get('limit')).toBe('5')
+  })
+
+  it('listV3Projects 不带参数时 query 为空，不伪造 product_id', async () => {
+    const { calls, fetchImpl } = createFetch(() => jsonResponse({ items: [] }))
+    const client = createClient(config, { fetchImpl })
+
+    await client.listV3Projects()
+
+    expect(calls).toHaveLength(1)
+    expect(new URL(calls[0]!.url).search).toBe('')
+  })
+})
+
 describe('建项：requirement_md 必填且正文原样发送', () => {
   type CreateArgs = Parameters<ReturnType<typeof createClient>['createProject']>[0]
 
