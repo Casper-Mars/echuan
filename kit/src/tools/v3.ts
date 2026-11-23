@@ -196,7 +196,7 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
     writeTool(
       'echuan_task_report',
       '交付任务（POST /v1/tasks/report）：写 output 附件并把任务转为 in_review。'
-        + 'brief_md 可选：一页决策简报，作为项目级 context 输入附件随交付一起提交。',
+        + 'brief_md 可选：一页决策简报，作为任务的第二个产物（kind=context）随交付一起提交。',
       {
         task_id: { type: 'string', required: true },
         lease_id: { type: 'string', required: true },
@@ -205,7 +205,7 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
         material_title: { type: 'string' },
         brief_md: {
           type: 'string',
-          description: '可选：一页决策简报（人类层，≤600 字）。作为项目级 context 输入附件提交，不替代交付正文',
+          description: '可选：一页决策简报（人类层，≤600 字）。作为任务的 context 附件提交，不替代交付正文',
         },
         brief_title: { type: 'string', description: '可选：简报标题；缺省为「<任务标题> · 决策简报」' },
       },
@@ -265,9 +265,9 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
               throw new EchuanValidationError('平台对建简报资料返回 204', 'unexpected_empty', 'brief_md')
             }
             await client.attachV3({
-              project_id: task.project_id,
+              task_id: taskID,
               material_id: createdBrief.data.material_id,
-              role: 'input',
+              role: 'output',
             })
             briefMaterialID = createdBrief.data.material_id
           } catch (error) {

@@ -128,9 +128,9 @@ describe('V3 写工具', () => {
       body_md: '## 结论\n做。',
     })
     expect(attachV3).toHaveBeenCalledWith({
-      project_id: 'APP-1',
+      task_id: 't_1',
       material_id: 'm_brief',
-      role: 'input',
+      role: 'output',
     })
     expect(result).toMatchObject({ kind: 'reported', brief_material_id: 'm_brief' })
     expect(String((result as any).text)).toContain('m_brief')
