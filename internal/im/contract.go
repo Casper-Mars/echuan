@@ -56,6 +56,12 @@ type DocProvider interface {
 	Ensure(ctx context.Context, materialID, title string) (string, error)
 }
 
+// TaskMaterialSource resolves the artifact a task's acceptance card links to:
+// the latest output material of that task.
+type TaskMaterialSource interface {
+	LatestOutputMaterialID(ctx context.Context, taskID string) (string, error)
+}
+
 // Messenger is the outbound card channel.
 type Messenger interface {
 	SendCard(ctx context.Context, chatID, cardJSON string) (string, error)

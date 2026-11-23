@@ -61,7 +61,8 @@ type WorkItem struct {
 
 // Options are the per-render knobs resolved from configuration.
 type Options struct {
-	// DocURL is the imported Feishu document. Empty means "not ready yet".
+	// DocURL is the imported Feishu document. Empty means "no document": the
+	// card renders without the "看全文" button rather than with a placeholder.
 	DocURL string
 	// StaleHours is only used to explain the wait in the subtitle.
 	StaleHours int
@@ -104,9 +105,10 @@ func Render(s Subject, p *Project, w *WorkItem, opts Options) ([]byte, error) {
 			Text:      plainText("看全文"),
 			Behaviors: []behaviorElement{{Type: "open_url", DefaultURL: opts.DocURL}},
 		})
-	} else {
-		elements = append(elements, markdownElement{Tag: "markdown", Content: "_文档生成中…_"})
 	}
+	// No document yet (import pending, failed, or switched off): the card keeps
+	// its summary and the gate form and simply carries no button. A placeholder
+	// here was misleading — nothing was ever going to fill it in.
 
 	template := "blue"
 	if s.Stale {

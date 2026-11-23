@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest'
 import {
   composeSessionId,
   ensureSession,
+  SESSION_ID_SEPARATOR,
   type EnsureAgent,
   type EnsureAgentHandle,
   type EnsureAgentOptions,
@@ -699,18 +700,18 @@ describe('ensureSession：修复回归', () => {
 
 
 // ---------------------------------------------------------------------------
-// V3：按角色拆会话（项目号:preset）
+// V3：按角色拆会话（项目号--preset）
 // ---------------------------------------------------------------------------
 
 describe('按角色拆会话（V3）', () => {
-  it('带 preset → 会话键为 项目:preset，meta 与 mount 都用它', async () => {
+  it('带 preset → 会话键为 项目--preset，meta 与 mount 都用它', async () => {
     const h = createHarness()
     const result = await ensureSession(PROJECT, h.deps, 'pm')
 
     expect(result?.outcome).toBe('created')
-    expect(h.calls.get).toEqual([`${PROJECT}:pm`])
-    expect(h.calls.stat).toEqual([`${PROJECT}:pm`])
-    expect(h.calls.create[0]?.sessionId).toBe(`${PROJECT}:pm`)
+    expect(h.calls.get).toEqual([`${PROJECT}${SESSION_ID_SEPARATOR}pm`])
+    expect(h.calls.stat).toEqual([`${PROJECT}${SESSION_ID_SEPARATOR}pm`])
+    expect(h.calls.create[0]?.sessionId).toBe(`${PROJECT}${SESSION_ID_SEPARATOR}pm`)
     expect(h.calls.create[0]?.meta).toMatchObject({ agentPreset: 'pm' })
     await h.calls.create[0]?.setup?.({})
     expect(h.calls.mount.map((item) => item.id)).toEqual(['pm'])
@@ -734,9 +735,16 @@ describe('按角色拆会话（V3）', () => {
 
     expect(pm?.outcome).toBe('created')
     expect(cto?.outcome).toBe('created')
-    expect(h.calls.get).toEqual([`${PROJECT}:pm`, `${PROJECT}:cto`])
-    expect(h.calls.create.map((item) => item.sessionId)).toEqual([`${PROJECT}:pm`, `${PROJECT}:cto`])
-    live.set(`${PROJECT}:pm`, { id: `${PROJECT}:pm`, session: { id: `${PROJECT}:pm` } })
+    expect(h.calls.get).toEqual([
+      `${PROJECT}${SESSION_ID_SEPARATOR}pm`,
+      `${PROJECT}${SESSION_ID_SEPARATOR}cto`,
+    ])
+    expect(h.calls.create.map((item) => item.sessionId)).toEqual([
+      `${PROJECT}${SESSION_ID_SEPARATOR}pm`,
+      `${PROJECT}${SESSION_ID_SEPARATOR}cto`,
+    ])
+    const pmId = `${PROJECT}${SESSION_ID_SEPARATOR}pm`
+    live.set(pmId, { id: pmId, session: { id: pmId } })
     const again = await ensureSession(PROJECT, h.deps, 'pm')
     expect(again?.outcome).toBe('reuse')
   })
@@ -748,7 +756,7 @@ describe('按角色拆会话（V3）', () => {
     const result = await ensureSession(PROJECT, h.deps, 'cto')
 
     expect(result?.outcome).toBe('resumed')
-    expect(h.calls.resume[0]?.resumeSessionId).toBe(`${PROJECT}:cto`)
+    expect(h.calls.resume[0]?.resumeSessionId).toBe(`${PROJECT}${SESSION_ID_SEPARATOR}cto`)
     expect(h.calls.resolve).toContain('cto')
     await h.calls.resume[0]?.setup?.({})
     expect(h.calls.mount.map((item) => item.id)).toEqual(['cto'])
@@ -756,9 +764,33 @@ describe('按角色拆会话（V3）', () => {
 })
 
 describe('V3 会话键：项目 + 角色', () => {
-  it('composeSessionId 拼成 <project>:<preset>，trim 两侧空白', () => {
-    expect(composeSessionId('APP-1', 'pm')).toBe('APP-1:pm')
-    expect(composeSessionId(' APP-1 ', ' cto ')).toBe('APP-1:cto')
+  it('composeSessionId 拼成 <project>--<preset>，trim 两侧空白', () => {
+    expect(SESSION_ID_SEPARATOR).toBe('--')
+    expect(composeSessionId('APP-1', 'pm')).toBe('APP-1--pm')
+    expect(composeSessionId(' APP-1 ', ' cto ')).toBe('APP-1--cto')
+  })
+
+  it('会话键字符集安全：无冒号且匹配 per-record 键正则 ^[a-zA-Z0-9_-]+$', () => {
+    // issue #135 第 3 条：宿主 `session_projcache` 是 per-record 布局，
+    // 会话 id 直接当文件名，`:` 会被判 "per-record key ... is not path-safe"。
+    const safeKey = /^[a-zA-Z0-9_-]+$/
+    const projectIds = [
+      composeSessionId('echuan-11', 'dev-leader'),
+      composeSessionId('APP-1', 'pm'),
+      composeSessionId('APP-1', 'cto'),
+    ]
+    for (const id of projectIds) {
+      expect(id).not.toContain(':')
+      expect(id).toMatch(safeKey)
+    }
+    expect(projectIds[0]).toBe('echuan-11--dev-leader')
+
+    // 子 agent 层：index.ts 的 project-preset 分支会在项目会话键上再拼一次 preset，
+    // 两层都必须落在安全字符集里。
+    const subAgentId = composeSessionId(projectIds[0]!, 'dev-leader')
+    expect(subAgentId).toBe('echuan-11--dev-leader--dev-leader')
+    expect(subAgentId).not.toContain(':')
+    expect(subAgentId).toMatch(safeKey)
   })
 
   it('同一项目不同角色得到不同会话键', () => {

@@ -103,8 +103,15 @@ func run() error {
 	notifier := im.New(imCfg, logger)
 	if notifier != nil {
 		imStore := im.NewV3Store(st)
-		notifier.SetPoller(im.NewV3Poller(imCfg,
-			im.NewV3TaskSource(taskService, projectService), imStore, notifier.Client(), logger, nil))
+		poller := im.NewV3Poller(imCfg,
+			im.NewV3TaskSource(taskService, projectService), imStore, notifier.Client(), logger, nil)
+		// The acceptance card links to the task's latest output material, so the
+		// poller needs the same resolver the decision path uses.
+		poller.SetMaterials(taskService)
+		notifier.SetPoller(poller)
+		// An empty folder token switches document import off: cards then carry no
+		// "看全文" button instead of a placeholder.
+		notifier.SetDocs(im.NewDocService(imCfg, imStore, docMaterialReader{st: st, dataDir: cfg.DataDir}, logger))
 		notifier.SetActionHandler(im.NewActionHandler(imCfg, imStore, im.NewV3Decider(taskService), logger, nil))
 		if err := notifier.Start(context.Background()); err != nil {
 			logger.Warn("im runtime failed to start, continuing without it", "error", err)
@@ -219,6 +226,25 @@ func (p planReader) Read(ctx context.Context, materialID string) ([]byte, error)
 		return nil, err
 	}
 	return os.ReadFile(filepath.Join(p.dataDir, filepath.FromSlash(m.Path)))
+}
+
+// docMaterialReader reads a material body from data_dir for the doc importer,
+// which needs the stored title as the document name.
+type docMaterialReader struct {
+	st      *store.Store
+	dataDir string
+}
+
+func (r docMaterialReader) MaterialMarkdown(ctx context.Context, materialID string) (string, []byte, error) {
+	m, err := storev3.GetMaterial(ctx, r.st.Read(), materialID)
+	if err != nil {
+		return "", nil, err
+	}
+	content, err := os.ReadFile(filepath.Join(r.dataDir, filepath.FromSlash(m.Path)))
+	if err != nil {
+		return "", nil, err
+	}
+	return m.Title, content, nil
 }
 
 // openStore opens the SQLite file, applies pending migrations and starts the

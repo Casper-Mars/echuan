@@ -10,7 +10,8 @@
  *   `agents.roots()`）；
  * - **服务缺失只降级**：`agents` 缺失只标注「无法判定」，不抛错。
  *
- * 派单按项目会话投递（sessionId = `<project>:<preset>`）；这里展示当前 root agents，便于诊断。
+ * 派单按项目会话投递（sessionId = `<project>--<preset>`，分隔符见 `session.ts`
+ * 的 `SESSION_ID_SEPARATOR`）；这里展示当前 root agents，便于诊断。
  * 与心跳循环的投递目标完全一致。
  *
  * 输出与只读工具一致：`textBlock` + `TextValue`（规范值就是模型要读的那段文本）。
