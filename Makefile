@@ -67,6 +67,7 @@ clean:
 
 ## docker-build: 构建镜像；收尾自动清理 build cache 与本项目悬空镜像
 docker-build:
+	git pull
 	ECHUAN_VERSION=$(VERSION) ECHUAN_COMMIT=$(COMMIT) docker compose build
 	@sleep 1  # 等 BuildKit 写完缓存记录再清理，确保 build cache 归零
 	@docker builder prune -f >/dev/null
