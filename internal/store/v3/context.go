@@ -59,8 +59,11 @@ func ListProjectInputs(ctx context.Context, q storedb.Querier, projectPK int64) 
 	return refs, nil
 }
 
-// ListUpstreamOutputs lists the dependencies of one task and the latest output
-// attachment of each, so the worker can hand the agent its input artifacts.
+// ListUpstreamOutputs lists the dependencies of one task and the latest artifact
+// output of each, so the worker can hand the agent its input artifacts. Only
+// requirement/design/plan/report materials count as artifacts: context/other
+// attachments (e.g. a decision brief) are skipped, matching the gate contract
+// in LatestOutput.
 func ListUpstreamOutputs(ctx context.Context, q storedb.Querier, taskPK int64) ([]UpstreamRef, error) {
 	rows, err := storedb.All[struct {
 		TaskID     string         `db:"task_id"`
@@ -71,11 +74,13 @@ func ListUpstreamOutputs(ctx context.Context, q storedb.Querier, taskPK int64) (
 		       (SELECT m.material_id FROM attachments a
 		  JOIN materials m ON m.id = a.material_id
 		  LEFT JOIN materials src ON src.id = m.source_material_id
-		         WHERE a.task_id = u.id AND a.role = ? ORDER BY a.id DESC LIMIT 1) AS material_id,
+		         WHERE a.task_id = u.id AND a.role = ? AND m.kind IN (1, 2, 3, 4)
+		         ORDER BY a.id DESC LIMIT 1) AS material_id,
 		       (SELECT m.title FROM attachments a
 		  JOIN materials m ON m.id = a.material_id
 		  LEFT JOIN materials src ON src.id = m.source_material_id
-		         WHERE a.task_id = u.id AND a.role = ? ORDER BY a.id DESC LIMIT 1) AS title
+		         WHERE a.task_id = u.id AND a.role = ? AND m.kind IN (1, 2, 3, 4)
+		         ORDER BY a.id DESC LIMIT 1) AS title
 		  FROM task_deps d JOIN tasks u ON u.id = d.depends_on_task_id
 		 WHERE d.task_id = ?
 		 ORDER BY u.id ASC`, enum.Output, enum.Output, taskPK)
