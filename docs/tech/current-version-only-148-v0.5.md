@@ -444,7 +444,7 @@ make contract                                   # openapi 与 routeSpecs 双向�
 **二、怎么自检**
 
 - 仓库同步：`git fetch --prune origin` → `origin/main` = `8c525f62c8328809bb9a73d1fee7b9945c57542f`（= `388f4a1` + PR #149 合并）；主工作区 `git status --porcelain | wc -l` = 23（他人已暂存改动，未触碰）；代码引用按 `git show 388f4a1:<path>`、`design/` 契约按 `git show 8c525f6:<path>` 读取。
-- 驳回意见核对：`design/screens/task-detail.md:7,9,14,21` 确认开关与「自动带入 output 附件」写进屏规格；`design/components.md:32,397-415` 确认 `ui/Segmented` 用途是「详情评审」且 `:415` 反例正是本需求的做法；`design/mock/shots/task-detail/mock.js:260-269` 确认 mock 画了 segmented + select；`ls design/refs | grep -c task-detail` = 36（6 态 × 3 视口 × 2 主题）；mock 的 `review = !failed` + `loading` 提前 return ⇒ default/rejected/error/leased 四态含评审区 ⇒ 需重出 24 张（4×3×2），v0.3 已纠正原先只写 12 张的错。
+- 驳回意见核对：主干上 `design/screens/task-detail.md` 已无「通过/驳回开关」与「被评审附件」（`grep` 0 命中）、`design/flows.md` F3 已改、「`components.md` 组件仍 22 个」——即上一版方案里那张设计交付表已经不需要了；本版据此删表。
 - 线上只读核对（2026-11-23，`curl http://echuan:8720`）：`GET /v1/projects/materials?id=echuan-1` → 16 条（1 plan + 15 report）；`echuan-10` → 12 条（2 条 report 来自不同 dev 卡）；`echuan-13` → 16 条；`GET /v1/tasks/attachments?task_id=t_01M83XY4XGEYT1G8F8NMN5GG9N` → 4 条且带 `source_material_id`，`t_01M83YT9HS7FR9Y239P68DET9Q` → 2 条。
 - 代码事实核对：`internal/store/v3/context.go:132`、`internal/store/v3/attachment.go:161,171-186`、`internal/store/query.go:110-116`（列映射跳过匿名字段 ⇒ 必须扁平结构）、`internal/api/v3_handlers.go:884-937`、`internal/app/v3/service.go:219-230`、`web/src/features/task-detail/use-task-detail.ts:180-194,219`、`ReviewPanel.tsx:45-81`、`projects/MaterialsSection.tsx:100`。
 - 门禁基线实测：`node web/scripts/style-debt.mjs` → 6/6 达标（未引用类名 1/263 = 0.4%，断点 2 个取值）；`internal/web/dist/assets/*.js` 逐个 `gzip -9` 求和 = 184,107 B（阈值 344,056 B，占 53.5%）。
