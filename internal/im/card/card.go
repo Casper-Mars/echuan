@@ -29,13 +29,19 @@ const (
 )
 
 // Subject is the inbox row a card projects.
+//
+// The three "what is this" fields are deliberately separate: the task title is
+// the header, the project name is the subtitle prefix, and the raw business id
+// (t_… / r_…) is only ever printed on the auxiliary footer line. A header must
+// never show the id — that was the rejection this layout answers.
 type Subject struct {
-	Kind  string
-	ID    string
-	State string
-	Title string
-	Age   time.Duration
-	Stale bool
+	Kind        string
+	ID          string
+	State       string
+	Title       string
+	ProjectName string
+	Age         time.Duration
+	Stale       bool
 	// Reason carries the last rejection comment, when the row has one.
 	Reason string
 }
@@ -59,11 +65,22 @@ type WorkItem struct {
 	ReportID    string
 }
 
+// Link is one attachment row of the acceptance card.
+type Link struct {
+	// MaterialID is only used for logging and de-duplication, never rendered.
+	MaterialID string
+	// Title is the unescaped display name (title, or the material id when the
+	// title is empty).
+	Title string
+	// URL is the imported document. Empty degrades this one row to plain text
+	// (import still running / failed / switched off).
+	URL string
+}
+
 // Options are the per-render knobs resolved from configuration.
 type Options struct {
-	// DocURL is the imported Feishu document. Empty means "no document": the
-	// card renders without the "看全文" button rather than with a placeholder.
-	DocURL string
+	// Links is the current-version attachment set, in Web attachment order.
+	Links []Link
 	// StaleHours is only used to explain the wait in the subtitle.
 	StaleHours int
 }
@@ -75,46 +92,39 @@ func Render(s Subject, p *Project, w *WorkItem, opts Options) ([]byte, error) {
 		return nil, err
 	}
 
-	elements := []any{
-		markdownElement{Tag: "markdown", Content: gate.body},
-		formElement{
-			Tag:  "form",
-			Name: "gate_form",
-			Elements: []any{
-				inputElement{
-					Tag:         "input",
-					Name:        "reason",
-					Required:    gate.reasonRequired,
-					Placeholder: plainText("驳回理由（通过可留空）"),
-				},
-				columnSetElement{
-					Tag:     "column_set",
-					Columns: gate.buttonColumns(),
-				},
-			},
+	if s.Kind == KindProject {
+		return renderProjectGate(s, gate)
+	}
+
+	body := gate.body
+	if links := renderLinks(opts.Links); links != "" {
+		body += "\n" + links
+	}
+
+	return marshal(card{
+		Schema: "2.0",
+		Config: cardConfig{UpdateMulti: true},
+		Header: cardHeader{
+			Title:    plainText(headerTitle(s, gate)),
+			Subtitle: subtitle(s, gate),
+			Template: templateOf(s),
 		},
-	}
+		Body: cardBody{Elements: []any{
+			markdownElement{Tag: "markdown", Content: body},
+			gate.form(),
+			auxiliaryElement(s, w),
+		}},
+	})
+}
 
-	if opts.DocURL != "" {
-		// Card JSON 2.0 dropped the "action" container: buttons are top-level
-		// elements now. Feishu rejects the whole card with 200861 otherwise.
-		elements = append(elements, buttonElement{
-			Tag:       "button",
-			Name:      "open_doc",
-			Type:      "default",
-			Text:      plainText("看全文"),
-			Behaviors: []behaviorElement{{Type: "open_url", DefaultURL: opts.DocURL}},
-		})
-	}
-	// No document yet (import pending, failed, or switched off): the card keeps
-	// its summary and the gate form and simply carries no button. A placeholder
-	// here was misleading — nothing was ever going to fill it in.
-
+// renderProjectGate keeps the review-gate cards as they were: they run no
+// material import path and are not part of the acceptance-card rework, so only
+// their document button went away with Options.DocURL.
+func renderProjectGate(s Subject, gate gateLayout) ([]byte, error) {
 	template := "blue"
 	if s.Stale {
 		template = "red"
 	}
-
 	return marshal(card{
 		Schema: "2.0",
 		Config: cardConfig{UpdateMulti: true},
@@ -122,34 +132,90 @@ func Render(s Subject, p *Project, w *WorkItem, opts Options) ([]byte, error) {
 			Title:    plainText(fmt.Sprintf("%s · %s · 已等 %s", s.ID, gate.label, humanAge(s.Age))),
 			Template: template,
 		},
-		Body: cardBody{Elements: elements},
+		Body: cardBody{Elements: []any{
+			markdownElement{Tag: "markdown", Content: gate.body},
+			gate.form(),
+		}},
 	})
 }
 
 // RenderClosed rebuilds a card after the gate is gone: the form is dropped and
-// only the outcome remains.
-func RenderClosed(s Subject, statusLabel string, opts Options) ([]byte, error) {
+// the current-version links plus the outcome remain.
+func RenderClosed(s Subject, w *WorkItem, statusLabel string, opts Options) ([]byte, error) {
 	gate, err := resolveGate(s, nil, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	content := fmt.Sprintf("**%s**\n%s · 处理结果：%s", s.Title, gate.label, statusLabel)
-	if opts.DocURL != "" {
-		content += fmt.Sprintf("\n[看全文](%s)", opts.DocURL)
+	body := "处理结果：" + statusLabel
+	if links := renderLinks(opts.Links); links != "" {
+		body += "\n" + links
 	}
 
 	return marshal(card{
 		Schema: "2.0",
 		Config: cardConfig{UpdateMulti: true},
 		Header: cardHeader{
-			Title:    plainText(fmt.Sprintf("%s · %s", s.ID, gate.label)),
+			Title:    plainText(headerTitle(s, gate)),
+			Subtitle: subtitle(s, gate),
 			Template: "grey",
 		},
 		Body: cardBody{Elements: []any{
-			markdownElement{Tag: "markdown", Content: content},
+			markdownElement{Tag: "markdown", Content: body},
+			auxiliaryElement(s, w),
 		}},
 	})
+}
+
+// headerTitle is the "what is this task" line: the task title verbatim, then
+// the project name, then the card type. It never falls back to Subject.ID — a
+// header showing t_… is exactly what the rework removed.
+func headerTitle(s Subject, gate gateLayout) string {
+	if s.Title != "" {
+		return s.Title
+	}
+	if s.ProjectName != "" {
+		return s.ProjectName
+	}
+	return gate.label
+}
+
+// subtitle is "<project> · <card type>", or just the card type when the project
+// name is unknown.
+func subtitle(s Subject, gate gateLayout) *text {
+	content := gate.label
+	if s.ProjectName != "" {
+		content = s.ProjectName + " · " + gate.label
+	}
+	sub := plainText(content)
+	return &sub
+}
+
+// templateOf picks the semantic header colour: blue for "needs a human", orange
+// for the failure verdict, grey for a closed card. The Stale → red branch is
+// kept as-is (V3 never sets Stale).
+func templateOf(s Subject) string {
+	if s.Stale {
+		return "red"
+	}
+	if s.State == StateFailed {
+		return "orange"
+	}
+	return "blue"
+}
+
+// auxiliaryElement is the footer: the raw ids stay available for the operator,
+// but at notation size (12px, grey) so they do not compete with the task title.
+func auxiliaryElement(s Subject, w *WorkItem) markdownElement {
+	content := "任务 " + s.ID
+	if w != nil && w.ReportID != "" {
+		content += " · 报告 " + w.ReportID
+	}
+	return markdownElement{
+		Tag:      "markdown",
+		Content:  "<font color='grey'>" + content + "</font>",
+		TextSize: "notation",
+	}
 }
 
 // gateLayout is the per-state copy. All differences between cards live here so
@@ -163,6 +229,26 @@ type gateLayout struct {
 	// the card does not offer a button that can only fail.
 	rejectOnly bool
 	body       string
+}
+
+// form renders the approval form of the gate.
+func (g gateLayout) form() formElement {
+	return formElement{
+		Tag:  "form",
+		Name: "gate_form",
+		Elements: []any{
+			inputElement{
+				Tag:         "input",
+				Name:        "reason",
+				Required:    g.reasonRequired,
+				Placeholder: plainText("打回理由（通过可留空）"),
+			},
+			columnSetElement{
+				Tag:     "column_set",
+				Columns: g.buttonColumns(),
+			},
+		},
+	}
 }
 
 // buttonColumns renders the submit buttons for the gate.
@@ -219,7 +305,7 @@ func resolveGate(s Subject, p *Project, w *WorkItem) (gateLayout, error) {
 	case KindWorkItem:
 		switch s.State {
 		case StateSubmitted:
-			body := fmt.Sprintf("**%s**\n%s", s.Title, workItemLine(w))
+			body := statusLine(s.Age, w, "提交")
 			if s.Reason != "" {
 				body += fmt.Sprintf("\n上次打回：%s", truncate(s.Reason, 80))
 			}
@@ -232,7 +318,7 @@ func resolveGate(s Subject, p *Project, w *WorkItem) (gateLayout, error) {
 		case StateFailed:
 			// Only reject is valid on a failed item: approve requires the
 			// item to be submitted, so a second button would always 409.
-			body := fmt.Sprintf("**%s**\n%s", s.Title, workItemLine(w))
+			body := statusLine(s.Age, w, "失败")
 			if s.Reason != "" {
 				body += fmt.Sprintf("\n失败原因：%s", truncate(s.Reason, 80))
 			}
@@ -251,25 +337,34 @@ func resolveGate(s Subject, p *Project, w *WorkItem) (gateLayout, error) {
 	}
 }
 
+// statusLine is the body's first line: how long the item has been waiting and
+// who submitted which attempt. No raw ids here — those live in the footer.
+func statusLine(age time.Duration, w *WorkItem, verb string) string {
+	parts := []string{"已等待 " + humanAge(age)}
+	if w == nil {
+		return strings.Join(parts, " · ")
+	}
+	switch {
+	case w.Worker != "":
+		parts = append(parts, w.Worker+" "+attemptPhrase(w, verb))
+	case w.MaxAttempts > 0:
+		parts = append(parts, attemptPhrase(w, verb))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func attemptPhrase(w *WorkItem, verb string) string {
+	if w.MaxAttempts > 0 {
+		return fmt.Sprintf("第 %d/%d 次%s", w.Attempt, w.MaxAttempts, verb)
+	}
+	return verb
+}
+
 func materialLine(p *Project, kind string) string {
 	if p == nil || p.MaterialID == "" {
 		return "材料：尚未提交"
 	}
 	return fmt.Sprintf("材料 %s v%d · 项目 v%d", shortID(p.MaterialID), p.MaterialVersion, p.Version)
-}
-
-func workItemLine(w *WorkItem) string {
-	if w == nil {
-		return "任务详情不可用"
-	}
-	parts := []string{fmt.Sprintf("worker：%s", defaultString(w.Worker, "未知"))}
-	if w.MaxAttempts > 0 {
-		parts = append(parts, fmt.Sprintf("尝试 %d/%d", w.Attempt, w.MaxAttempts))
-	}
-	if w.ReportID != "" {
-		parts = append(parts, fmt.Sprintf("报告 %s", shortID(w.ReportID)))
-	}
-	return strings.Join(parts, " · ")
 }
 
 // humanAge renders the wait in the coarsest unit that still reads naturally.
@@ -299,13 +394,6 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(r[:max]) + "…"
-}
-
-func defaultString(s, fallback string) string {
-	if strings.TrimSpace(s) == "" {
-		return fallback
-	}
-	return s
 }
 
 // marshal encodes the card and runs the structural self-check. Every card is
