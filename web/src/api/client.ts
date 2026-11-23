@@ -54,11 +54,17 @@ export const api = {
     request<Product>('/v1/products', { method: 'POST', body: JSON.stringify(body) }),
 
   listAllProjects: (status?: 'open' | 'closed') => request<ListResponse<Project>>(`/v1/projects${q({ status })}`),
-  listProjects: (productId: string, status?: 'open' | 'closed') =>
-    request<ListResponse<Project>>(`/v1/projects${q({ status })}`).then(result => ({
-      ...result,
-      items: result.items.filter(project => project.product_id === productId),
-    })),
+  // 顺序与筛选只有一个真相：服务端（`id DESC` + 可选 `product_id`/`status`，ADR-0002 §2）。
+  // 前端不排序、不按状态过滤，只把两个参数原样传下去（空串由 `q` 视同不传，与后端 `TrimSpace` 口径一致）。
+  listProjects: (query: { productId: string; status?: 'open' | 'closed' }) =>
+    request<ListResponse<Project>>(`/v1/projects${q({ product_id: query.productId, status: query.status })}`).then(
+      result => ({
+        ...result,
+        // ADR-0002 §4 C3（方案 §8.2「旧后端窗口」）：1 行防御性再过滤，兜住「新前端 + 未升级后端」——
+        // 旧后端忽略 `product_id` 会返回他产品的项目，不兜就会串产品显示。这是部署防线，不是筛选机制。
+        items: result.items.filter(project => project.product_id === query.productId),
+      }),
+    ),
   getProject: (id: string) => request<Project>(`/v1/projects${q({ id })}`),
   getProjectMaterials: (id: string) => request<ListResponse<ProjectMaterial>>(`/v1/projects/materials${q({ id })}`),
   createProject: (body: { product_id: string; name: string; context_md?: string }) =>
