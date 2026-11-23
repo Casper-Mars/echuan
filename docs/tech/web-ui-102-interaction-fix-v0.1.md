@@ -184,7 +184,7 @@
 |---|---|---|---|
 | `GET /v1/products` | 产品列表 | `productsHandler.listProducts`；`project_count` 可能缺省 | 无 |
 | `GET /v1/products?id=` | 壳层面包屑取产品名（抽屉不取数） | `products.go:104-129`；不存在 → 404 `not_found` | 新消费（面包屑） |
-| `GET /v1/projects` | 项目列表 | 支持 `status`/`after_id`/`limit`；**不支持 `product_id` 过滤**，前端本地过滤（`api/client.ts:56-60`） | 无 |
+| `GET /v1/projects` | 项目列表 | 支持 `status`/`after_id`/`limit`；**issue #133 起服务端支持 `product_id` 过滤**（业务 id，空串视同未传），顺序 `id DESC`（新建在前），`after_id` 取更早一页（`docs/tech/projects-sort-filter-133-v0.2.md`、ADR-0002）；前端改为传参，本地只保留 1 行防御性 `product_id` 再过滤（ADR-0002 §4 C3） | 无（本期）；上述 `product_id`/顺序/游标语义为后续变更 |
 | `GET /v1/projects?id=` | 壳层面包屑取项目（含 `product_id`；抽屉不取数） | `v3_handlers.go:223-233`；不存在 → 404 `not_found` | 新消费（面包屑） |
 | `POST /v1/projects/close?id=&force=1` | 关闭项目 | `v3_handlers.go:291-304`；成功 **204 无 body** | 新消费 |
 | `POST /v1/projects/reopen?id=` | 重开项目 | `v3_handlers.go:306-317`；成功 **204** | 新消费 |

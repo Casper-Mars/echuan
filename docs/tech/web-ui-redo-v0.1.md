@@ -96,7 +96,7 @@ features/*  ──只用──▶  ui/*  ──调用──▶  @mantine/core
 
 | 端点 | 用途 | 本期变化 |
 |---|---|---|
-| `GET /v1/products`、`GET /v1/projects` | 产品/项目列表 | 无 |
+| `GET /v1/products`、`GET /v1/projects` | 产品/项目列表 | 无（本期）；`GET /v1/projects` 已被 issue #133 变更（后于本期）：服务端支持 `product_id` 过滤（业务 id，空串视同未传）、顺序 `id DESC`（新建在前）、`after_id` 取更早一页 —— 见 `docs/decisions/ADR-0002-projects-list-order-filter-api.md`、`docs/tech/projects-sort-filter-133-v0.2.md` |
 | `GET /v1/tasks?project_id=&kind=&status=&limit=` | 看板数据源 | 无 |
 | `GET /v1/tasks?id=` | 详情 | 无 |
 | `GET /v1/tasks/dependencies?task_id=`、`GET /v1/tasks/attachments?task_id=` | 详情分区 | 无 |
