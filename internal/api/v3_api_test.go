@@ -135,7 +135,7 @@ func TestRoutesV3Contract(t *testing.T) {
 		"DELETE /v1/products", "DELETE /v1/tasks",
 		"GET /healthz", "GET /readyz", "GET /version",
 		"GET /v1/decisions", "GET /v1/inbox", "GET /v1/materials",
-		"GET /v1/products", "GET /v1/projects", "GET /v1/tasks",
+		"GET /v1/products", "GET /v1/projects", "GET /v1/projects/attachments", "GET /v1/tasks",
 		"GET /v1/tasks/events", "GET /v1/tasks/dependencies", "GET /v1/tasks/attachments", "GET /v1/workers",
 		"PATCH /v1/products", "PATCH /v1/projects", "PATCH /v1/tasks",
 		"POST /v1/products", "POST /v1/projects", "POST /v1/projects/close",
@@ -799,5 +799,54 @@ func TestWorkersCurrentWorkItemIDDanglingTask(t *testing.T) {
 		if got := string(item.CurrentWorkItemID); got != "null" {
 			t.Errorf("w_dangling raw current_work_item_id = %s, want null", got)
 		}
+	}
+}
+
+// TestProjectAttachmentsList pins the project-level attachment list: a context
+// material attached to a project must come back through the project endpoint,
+// not only through the task endpoint.
+func TestProjectAttachmentsList(t *testing.T) {
+	a := newAPIServer(t)
+	a.seedProduct(t, "APP")
+
+	_, payload := a.do(t, http.MethodPost, "/v1/projects", map[string]any{
+		"product_id": "APP", "name": "p",
+	})
+	project := decodeBody[v3ProjectResponse](t, payload)
+	if project.ProjectID == "" {
+		t.Fatalf("create project payload = %s", payload)
+	}
+
+	_, payload = a.do(t, http.MethodPost, "/v1/materials", map[string]any{
+		"kind": "context", "title": "p 决策简报", "body_md": "## 结论\n做。",
+	})
+	material := decodeBody[v3MaterialResponse](t, payload)
+
+	resp, payload := a.do(t, http.MethodPost, "/v1/tasks/attach", map[string]any{
+		"project_id": project.ProjectID, "material_id": material.MaterialID, "role": "input",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("attach = %d (%s)", resp.StatusCode, payload)
+	}
+
+	resp, payload = a.do(t, http.MethodGet, "/v1/projects/attachments?id="+project.ProjectID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list project attachments = %d (%s)", resp.StatusCode, payload)
+	}
+	list := decodeBody[v3AttachmentList](t, payload)
+	if len(list.Items) != 1 {
+		t.Fatalf("items = %+v, want 1", list.Items)
+	}
+	item := list.Items[0]
+	if item.MaterialID != material.MaterialID || item.Kind != "context" || item.Role != "input" {
+		t.Errorf("item = %+v, want material %s context/input", item, material.MaterialID)
+	}
+
+	resp, payload = a.do(t, http.MethodGet, "/v1/projects/attachments?id="+project.ProjectID+"&role=output", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list by role = %d (%s)", resp.StatusCode, payload)
+	}
+	if got := decodeBody[v3AttachmentList](t, payload); len(got.Items) != 0 {
+		t.Errorf("role=output items = %+v, want none", got.Items)
 	}
 }

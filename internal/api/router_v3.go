@@ -33,6 +33,7 @@ var routeSpecsV3 = []routeSpec{
 
 	{http.MethodPost, "/v1/projects", "projects"},
 	{http.MethodGet, "/v1/projects", "projects"},
+	{http.MethodGet, "/v1/projects/attachments", "projects"},
 	{http.MethodPatch, "/v1/projects", "projects"},
 	{http.MethodPost, "/v1/projects/close", "projects"},
 	{http.MethodPost, "/v1/projects/reopen", "projects"},
@@ -107,6 +108,7 @@ func NewRouterV3(logger *slog.Logger, fallback http.Handler, checks []HealthChec
 		if services.Projects != nil {
 			handlers["POST /v1/projects"] = v3Handler.createProject
 			handlers["GET /v1/projects"] = v3Handler.listOrGetProject
+			handlers["GET /v1/projects/attachments"] = v3Handler.projectAttachments
 			handlers["PATCH /v1/projects"] = v3Handler.updateProject
 			handlers["POST /v1/projects/close"] = v3Handler.closeProject
 			handlers["POST /v1/projects/reopen"] = v3Handler.reopenProject

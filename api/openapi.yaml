@@ -92,6 +92,18 @@ paths:
         '200': { description: updated }
         '400': { description: invalid argument }
         '404': { description: not found }
+  /v1/projects/attachments:
+    get:
+      operationId: listProjectAttachments
+      summary: Attachments of one project (brief / context inputs)
+      tags: [projects]
+      parameters:
+        - { name: id, in: query, required: true, schema: { type: string } }
+        - { name: role, in: query, required: false, schema: { type: string, enum: [input, output] } }
+      responses:
+        '200': { description: attachments }
+        '400': { description: id is required / invalid role }
+        '404': { description: project not found }
   /v1/projects/close:
     post:
       operationId: closeProject

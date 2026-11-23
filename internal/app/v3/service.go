@@ -407,6 +407,29 @@ func (s *Service) Attachments(ctx context.Context, taskID string) ([]storev3.Mat
 	return refs, Translate(err)
 }
 
+// ProjectAttachments returns every project-level attachment, optionally by role.
+// A missing project is translated to a not-found error instead of an empty list.
+func (s *Service) ProjectAttachments(ctx context.Context, projectID string, role *enum.AttachmentRole) ([]storev3.MaterialRef, error) {
+	project, err := storev3.GetProject(ctx, s.st.Read(), projectID)
+	if err != nil {
+		return nil, Translate(err)
+	}
+	refs, err := storev3.ListProjectAttachmentRefs(ctx, s.st.Read(), project.ID)
+	if err != nil {
+		return nil, Translate(err)
+	}
+	if role == nil {
+		return refs, nil
+	}
+	filtered := make([]storev3.MaterialRef, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Role == *role {
+			filtered = append(filtered, ref)
+		}
+	}
+	return filtered, nil
+}
+
 // LatestOutputMaterialID returns the business id of the task's latest output
 // material. IM decisions need the business id, not the attachment's physical id.
 func (s *Service) LatestOutputMaterialID(ctx context.Context, taskID string) (string, error) {

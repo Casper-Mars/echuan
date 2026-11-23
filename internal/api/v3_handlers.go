@@ -884,11 +884,42 @@ func (h *v3Handler) attachments(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, v3AttachmentList{Items: attachmentItems(refs)})
+}
+
+// projectAttachments lists the project-level attachments (requirement, brief,
+// context). role is optional: input / output.
+func (h *v3Handler) projectAttachments(w http.ResponseWriter, r *http.Request) {
+	projectID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if projectID == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", "id is required",
+			[]ErrorDetail{{Field: "id", Reason: "is required"}})
+		return
+	}
+	var role *enum.AttachmentRole
+	if raw := strings.TrimSpace(r.URL.Query().Get("role")); raw != "" {
+		parsed, err := enum.ParseAttachmentRole(raw)
+		if err != nil {
+			invalidEnum(w, r, "role", raw)
+			return
+		}
+		role = &parsed
+	}
+	refs, err := h.tasks.ProjectAttachments(r.Context(), projectID, role)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v3AttachmentList{Items: attachmentItems(refs)})
+}
+
+// attachmentItems maps material refs onto the shared attachment DTO.
+func attachmentItems(refs []storev3.MaterialRef) []v3ClaimInput {
 	items := make([]v3ClaimInput, 0, len(refs))
 	for _, ref := range refs {
 		items = append(items, v3ClaimInput{
 			MaterialID: ref.MaterialID, Title: ref.Title, Kind: ref.Kind.String(), Role: ref.Role.String(),
 		})
 	}
-	writeJSON(w, http.StatusOK, v3AttachmentList{Items: items})
+	return items
 }
