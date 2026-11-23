@@ -181,7 +181,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 ## ui/TextField / ui/TextArea
 
-- 用途：新建任务、评审意见等输入。
+- 用途：新建任务、驳回原因（评审）等输入。
 - 结构：标签 → 控件 →（错误文案）。
 - 使用 token：`surface.raised` `border.default` `text.primary` `feedback.danger` `radius.8`
 - 状态矩阵：
@@ -194,7 +194,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | focus-visible | 焦点环 + 描边品牌色 | `focus.ring` |
 | disabled | 淡底不可编辑 | `surface.overlay` |
 | loading | 不适用 | — |
-| invalid | 描边转红 + 错误文案（如「驳回必须填意见」） | `feedback.danger` |
+| invalid | 描边转红 + 错误文案（驳回原因为空的文案见 `screens/task-detail.md`） | `feedback.danger` |
 
 - 可访问性：`<label for>` 绑定；错误文案 `aria-describedby`；移动端 `font-size ≥15` 防 iOS 缩放。
 - 反例：只有 placeholder 没有标签（填完就看不见字段含义）。
@@ -407,7 +407,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | hover | 选项淡底 | `surface.overlay` |
 | active | 选中项白底 + 轻阴影 | `surface.raised` |
 | focus-visible | 焦点环 | `focus.ring` |
-| disabled | 提交中禁用 | `text.muted` |
+| disabled | 由调用方置灰（当前无使用方） | — |
 | loading | 由调用方决定（当前无使用方） | — |
 | invalid | 由调用方决定（当前无使用方） | — |
 
