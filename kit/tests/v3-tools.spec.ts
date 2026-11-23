@@ -106,6 +106,56 @@ describe('V3 写工具', () => {
     expect(reportV3Task).toHaveBeenCalledWith({ task_id: 't_1', lease_id: 'l_1', material_id: 'm_new' })
   })
 
+  it('task_report 带 brief_md 时创建 context 资料并挂到项目', async () => {
+    const getV3Task = vi.fn().mockResolvedValue(ok(task))
+    const createV3Material = vi.fn()
+      .mockResolvedValueOnce(ok({ material_id: 'm_out', kind: 'report', version: 1, title: '实现接口' }))
+      .mockResolvedValueOnce(ok({ material_id: 'm_brief', kind: 'context', version: 1, title: '实现接口 · 决策简报' }))
+    const reportV3Task = vi.fn().mockResolvedValue(ok({ ...task, status: 'in_review' }))
+    const attachV3 = vi.fn().mockResolvedValue(
+      ok({ id: 1, material_id: 2, role: 'input', sort_no: 0, create_time: 't' }),
+    )
+    const { byName } = buildOptions({ getV3Task, createV3Material, reportV3Task, attachV3 })
+
+    const result = await byName.get('echuan_task_report')!.execute(
+      { task_id: 't_1', lease_id: 'l_1', summary_md: '# 交付', brief_md: '## 结论\n做。' } as any,
+      {} as any,
+    )
+
+    expect(createV3Material).toHaveBeenNthCalledWith(2, {
+      kind: 'context',
+      title: '实现接口 · 决策简报',
+      body_md: '## 结论\n做。',
+    })
+    expect(attachV3).toHaveBeenCalledWith({
+      project_id: 'APP-1',
+      material_id: 'm_brief',
+      role: 'input',
+    })
+    expect(result).toMatchObject({ kind: 'reported', brief_material_id: 'm_brief' })
+    expect(String((result as any).text)).toContain('m_brief')
+  })
+
+  it('简报提交失败不回滚交付，只在回显里报错', async () => {
+    const getV3Task = vi.fn().mockResolvedValue(ok(task))
+    const createV3Material = vi.fn()
+      .mockResolvedValueOnce(ok({ material_id: 'm_out', kind: 'report', version: 1, title: '实现接口' }))
+      .mockRejectedValueOnce(new Error('registry down'))
+    const reportV3Task = vi.fn().mockResolvedValue(ok({ ...task, status: 'in_review' }))
+    const attachV3 = vi.fn()
+    const { byName } = buildOptions({ getV3Task, createV3Material, reportV3Task, attachV3 })
+
+    const result = await byName.get('echuan_task_report')!.execute(
+      { task_id: 't_1', lease_id: 'l_1', summary_md: '# 交付', brief_md: '## 结论\n做。' } as any,
+      {} as any,
+    )
+
+    expect(reportV3Task).toHaveBeenCalled()
+    expect(attachV3).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ kind: 'reported', brief_error: 'registry down' })
+    expect(String((result as any).text)).toContain('registry down')
+  })
+
   it('task_attach 校验 role 并调用 attach', async () => {
     const attachV3 = vi.fn().mockResolvedValue(
       ok({ id: 1, material_id: 2, role: 'output', sort_no: 0, create_time: 't' }),

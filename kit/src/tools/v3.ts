@@ -195,33 +195,47 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
     ),
     writeTool(
       'echuan_task_report',
-      '交付任务（POST /v1/tasks/report）：写 output 附件并把任务转为 in_review。',
+      '交付任务（POST /v1/tasks/report）：写 output 附件并把任务转为 in_review。'
+        + 'brief_md 可选：一页决策简报，作为项目级 context 输入附件随交付一起提交。',
       {
         task_id: { type: 'string', required: true },
         lease_id: { type: 'string', required: true },
         material_id: { type: 'string', description: '已上传的交付物编号；与 summary_md 二选一' },
         summary_md: { type: 'string', description: '交付正文；缺 material_id 时由工具创建 material' },
         material_title: { type: 'string' },
+        brief_md: {
+          type: 'string',
+          description: '可选：一页决策简报（人类层，≤600 字）。作为项目级 context 输入附件提交，不替代交付正文',
+        },
+        brief_title: { type: 'string', description: '可选：简报标题；缺省为「<任务标题> · 决策简报」' },
       },
       async args => {
         const taskID = requireText(args.task_id, 'task_id')
         const leaseID = requireText(args.lease_id, 'lease_id')
-        let materialID = typeof args.material_id === 'string' && args.material_id.trim() !== '' ? args.material_id.trim() : ''
-        if (materialID === '') {
-          const summary = requireText(args.summary_md, 'summary_md')
-          const taskResult = await client.getV3Task({ id: taskID })
+        const briefMD = typeof args.brief_md === 'string' ? args.brief_md.trim() : ''
+        let task: V3Task | undefined
+        let taskResult: Awaited<ReturnType<typeof client.getV3Task>> | undefined
+        // 只在需要推断资料类型或需要 project_id（提交简报）时才查任务。
+        if ((typeof args.material_id !== 'string' || args.material_id.trim() === '') || briefMD !== '') {
+          taskResult = await client.getV3Task({ id: taskID })
           if (taskResult.kind === 'empty') {
             throw new EchuanValidationError('任务不存在，无法推断资料类型', 'not_found', 'task_id')
           }
-          const materialKind = taskResult.data.kind === 'requirement' ? 'requirement'
-            : taskResult.data.kind === 'design' ? 'design'
-              : taskResult.data.kind === 'breakdown' ? 'plan'
+          task = taskResult.data
+        }
+        let materialID = typeof args.material_id === 'string' && args.material_id.trim() !== '' ? args.material_id.trim() : ''
+        if (materialID === '') {
+          const summary = requireText(args.summary_md, 'summary_md')
+          const taskKind = task?.kind
+          const materialKind = taskKind === 'requirement' ? 'requirement'
+            : taskKind === 'design' ? 'design'
+              : taskKind === 'breakdown' ? 'plan'
                 : 'report'
           const created = await client.createV3Material({
             kind: materialKind,
             title: typeof args.material_title === 'string' && args.material_title.trim() !== ''
               ? args.material_title
-              : taskResult.data.title,
+              : (task?.title ?? taskID),
             body_md: summary,
           })
           if (created.kind === 'empty') {
@@ -233,10 +247,46 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
         if (result.kind === 'empty') {
           throw new EchuanValidationError('平台对交报告返回 204，没有回包可核对', 'unexpected_empty', 'material_id')
         }
+
+        // 简报是第二个产物：交付已经被平台接收，简报失败不回滚交付，只回显错误。
+        let briefMaterialID: string | undefined
+        let briefError: string | undefined
+        if (briefMD !== '') {
+          try {
+            if (task === undefined) throw new EchuanValidationError('缺少任务上下文，无法定位项目', 'not_found', 'task_id')
+            const createdBrief = await client.createV3Material({
+              kind: 'context',
+              title: typeof args.brief_title === 'string' && args.brief_title.trim() !== ''
+                ? args.brief_title
+                : `${task.title} · 决策简报`,
+              body_md: briefMD,
+            })
+            if (createdBrief.kind === 'empty') {
+              throw new EchuanValidationError('平台对建简报资料返回 204', 'unexpected_empty', 'brief_md')
+            }
+            await client.attachV3({
+              project_id: task.project_id,
+              material_id: createdBrief.data.material_id,
+              role: 'input',
+            })
+            briefMaterialID = createdBrief.data.material_id
+          } catch (error) {
+            briefError = error instanceof Error ? error.message : String(error)
+          }
+        }
+
+        const lines = [formatV3Reported({ task_id: taskID, material_id: materialID, status: result.data.status })]
+        if (briefMaterialID !== undefined) {
+          lines.push(`- 决策简报：${briefMaterialID}（项目输入附件，kind=context）`)
+        } else if (briefError !== undefined) {
+          lines.push(`- ⚠️ 决策简报未提交：${briefError}`)
+        }
         return {
           kind: 'reported',
           task: result.data,
-          text: formatV3Reported({ task_id: taskID, material_id: materialID, status: result.data.status }),
+          brief_material_id: briefMaterialID,
+          brief_error: briefError,
+          text: lines.join('\n'),
         }
       },
     ),
