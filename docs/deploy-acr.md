@@ -5,12 +5,18 @@
 ## 1. 在 ACR 控制台准备
 
 1. 地域：选离服务器最近的一个（如 `cn-hangzhou` / `cn-shanghai` / `cn-shenzhen`）。
-   个人版公网地址形如 `registry.cn-hangzhou.aliyuncs.com`。
+   **域名格式随实例新旧不同，不要凭记忆填**：
+   - 2024-09-09 及之后新建的实例：`crpi-xxxxxxxx.cn-<地域>.personal.cr.aliyuncs.com`
+   - 更早的旧实例：`registry.cn-<地域>.aliyuncs.com`
+
+   最稳的做法：控制台「个人版实例 → 仓库管理 → 访问凭证」，页面直接给出
+   `docker login --username=<登录名> <域名>`，把域名原样抄进 `ACR_REGISTRY`。
 2. 命名空间：个人版账号下建一个命名空间（如 `<aliyun账号昵称>`）。
-3. 仓库：在命名空间下建仓库 `echuan`，**访问级别设为「私有」**。
+3. 仓库：在命名空间下建仓库 `echuan`，访问级别先选「私有」。
+   之后可在仓库详情 →「基本信息」→ 修改里随时切换私有/公开，镜像与 tag 不受影响。
 4. 固定密码：个人版 →「访问凭证」→ 设置 **Registry 登录密码**。
-   - 用户名 = 阿里云账号全名（或子账号名）
-   - 密码 = 上一步设置的固定密码（不是账号登录密码）
+   - 用户名 = 阿里云账号全名（RAM 用户则是去掉 `@xxx.onaliyun.com` 后的前缀）
+   - 密码 = 上一步设置的固定密码（不是账号登录密码，也不是 AccessKey）
    - K8s/服务器上拉私有镜像也用这组凭证。
 
 ## 2. 在 GitHub 仓库配置
@@ -21,7 +27,7 @@ Settings → Secrets and variables → Actions
 
 | 名称 | 示例 |
 | --- | --- |
-| `ACR_REGISTRY` | `registry.cn-hangzhou.aliyuncs.com` |
+| `ACR_REGISTRY` | `crpi-xxxxxxxx.cn-hangzhou.personal.cr.aliyuncs.com`（旧实例为 `registry.cn-hangzhou.aliyuncs.com`） |
 | `ACR_NAMESPACE` | `mynamespace` |
 | `ACR_REPO` | `echuan`（可留空，默认 echuan） |
 
@@ -35,7 +41,7 @@ Settings → Secrets and variables → Actions
 命令行等价设置：
 
 ```bash
-gh variable set ACR_REGISTRY  --repo Casper-Mars/echuan --body registry.cn-hangzhou.aliyuncs.com
+gh variable set ACR_REGISTRY  --repo Casper-Mars/echuan --body crpi-xxxxxxxx.cn-hangzhou.personal.cr.aliyuncs.com
 gh variable set ACR_NAMESPACE --repo Casper-Mars/echuan --body mynamespace
 gh variable set ACR_REPO      --repo Casper-Mars/echuan --body echuan
 gh secret   set ACR_USERNAME  --repo Casper-Mars/echuan   # 交互输入
@@ -56,8 +62,8 @@ gh secret   set ACR_PASSWORD  --repo Casper-Mars/echuan
 ## 4. 部署侧拉取
 
 ```bash
-docker login registry.cn-hangzhou.aliyuncs.com -u <用户名>
-docker pull registry.cn-hangzhou.aliyuncs.com/<namespace>/echuan:latest
+docker login <ACR_REGISTRY> -u <用户名>
+docker pull <ACR_REGISTRY>/<namespace>/echuan:latest
 ```
 
 私有仓库需要在目标机器上 `docker login` 一次（或配置 K8s imagePullSecret）。
@@ -75,5 +81,6 @@ Actions → `docker publish (ACR)` → Run workflow，可指定目标架构：
 ## 已知坑
 
 - 个人版 ACR 仓库必须先手动创建，或开启「自动创建仓库」，否则 push 报 `denied`。
-- 密码用「固定密码」；用账号登录密码会 401。
+- 密码用「固定密码」；用账号登录密码或 AccessKey 会 401。
+- 域名有两种形态（`crpi-*.personal.cr.aliyuncs.com` 与 `registry.cn-*.aliyuncs.com`），一律以「访问凭证」页给出的登录命令为准。
 - 首次 push 前跑一次 `Run workflow` 验证凭证，避免合并后才发现配置缺失。
