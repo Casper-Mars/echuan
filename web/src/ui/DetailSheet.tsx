@@ -5,6 +5,8 @@
 // 结构：头部（标题 + 关闭）→ 可滚动正文 → 底部固定操作条（移动端必固定）。
 // 状态：rest / hover（关闭键淡底）/ focus-visible / loading（正文区 Skeleton，头部与底部操作条保持稳定）。
 // 可访问性：role="dialog"、Esc 关闭、初始焦点落在头部（Mantine Drawer 提供）；关闭键有 aria-label。
+// 让位：`concealed` 时根节点 data-concealed + 关掉 Esc / 焦点陷阱 / 滚动锁，由 ui.css 置 visibility:hidden
+// （≥1024 的附件预览交给 ui/ContentModal：画面里不留侧边抽屉，但布局盒与 scrollTop 保留）。
 import type { ReactNode } from 'react'
 import { Drawer } from '@mantine/core'
 import { cssVar } from '../theme/tokens'
@@ -22,6 +24,14 @@ export interface DetailSheetProps {
    * 见 design/components.md §ui/DetailSheet「变体」。
    */
   variant?: 'detail' | 'preview' | 'readonly'
+  /** 关闭键 aria-label，默认「关闭详情」；<1024 的附件预览态传「关闭附件预览」（同一容器、不同出口） */
+  closeLabel?: string
+  /**
+   * 让位：true → 根节点带 `data-concealed`，且 `closeOnEscape` / `trapFocus` / `lockScroll` 全关，
+   * 由 ui.css 把整棵抽屉置为 `visibility: hidden`。用于 ≥1024 附件预览由 `ui/ContentModal`
+   * 接管时——Esc 与焦点只归浮层，画面里没有右侧 720 抽屉（design/components.md §ui/DetailSheet）。
+   */
+  concealed?: boolean
   /** 正文加载中：正文区 Skeleton，头部与底部操作条保持稳定 */
   loading?: boolean
   /** 底部固定操作条（移动端必固定） */
@@ -35,6 +45,8 @@ export function DetailSheet({
   title,
   onClose,
   variant = 'detail',
+  closeLabel = '关闭详情',
+  concealed = false,
   loading = false,
   footer,
   className,
@@ -47,11 +59,17 @@ export function DetailSheet({
       onClose={onClose}
       position="right"
       title={title}
+      // 让位时抽屉不能吃 Esc / 焦点 / 滚动锁：Mantine 每个 Modal/Drawer 实例各自在 window 上
+      // 注册 keydown 与焦点陷阱，两层同时 active 会互抢（方案 §8.3）；滚动锁同开会掐掉浮层内滚轮。
+      data-concealed={concealed || undefined}
+      closeOnEscape={!concealed}
+      trapFocus={!concealed}
+      lockScroll={!concealed}
       // 遮罩口径（T6 验收返工）：桌面 720 抽屉要**保留看板上下文**（design/screens/task-detail.md「断点」），
       // 原来的 0.6 + blur 2 把背后看板压成不可读的一片，与 ref（背后列与卡片清晰可辨）相抵。
       // 改成轻暗化：0.35 无模糊——抽屉层次靠 surface.canvas 底色 + shadow.e3 + 左侧描边维持。
       overlayProps={{ backgroundOpacity: 0.35, blur: 0 }}
-      closeButtonProps={{ 'aria-label': '关闭详情' }}
+      closeButtonProps={{ 'aria-label': closeLabel }}
       styles={{
         content: cssProps({
           '--drawer-size': cssVar('ui-layout-sheet'),

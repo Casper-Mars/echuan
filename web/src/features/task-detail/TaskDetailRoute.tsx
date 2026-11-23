@@ -29,7 +29,7 @@ import {
   SkeletonBody,
 } from './sections'
 import { isRejected, useTaskDetail } from './use-task-detail'
-import { AttachmentPreview, previewSheetTitle } from './attachment-preview'
+import { AttachmentPreviewSurface, usePreviewSheet, usePreviewTrigger } from './attachment-preview'
 import type { ReviewDecision } from './use-task-detail'
 import './task-detail.css'
 
@@ -48,11 +48,15 @@ export default function TaskDetailRoute() {
   const close = () => navigate(boardUrl)
 
   /**
-   * 附件预览二级层（T7）。
+   * 附件预览层（T7 / issue #128）。
    *
-   * 形态：预览**不是**第二个抽屉，而是详情抽屉里的二级面板——桌面两栏（左列表 280 + 右正文），
-   * 移动上下堆叠（design/screens/attachment-preview.md「断点」）。头部由抽屉头部承接（角色徽标 + 标题），
-   * 头部的关闭键在预览态即「返回详情」（二级层的退出，不是关掉详情）。
+   * 形态：预览**不是**第二个抽屉，也不是叠在抽屉上的浮层——
+   *   ≥1024：整页居中的 80vw×80vh 浮层（ui/ContentModal，底图是看板整页），
+   *          预览期间详情抽屉整棵隐去（ui/DetailSheet 的 concealed）→「整个页面 + 居中」；
+   *   <1024：仍是详情抽屉里的两栏面板（列表 280 + 正文，<768 上下堆叠）。
+   * 容器选择在 features/task-detail/attachment-preview 的 surface 里做，本组件只持有 preview 状态。
+   * 头部（角色徽标 + 标题 + 关闭）在浮层里由 ContentModal 承接、<1024 由抽屉头部承接，
+   * 关闭键在预览态即「返回详情」（预览层的退出，不是关掉详情）。
    */
   const [preview, setPreview] = useState<AttachmentRef | null>(null)
   // 详情正文槽的实体（在抽屉内部；滚动位置探测要它，见 scrollSlot）
@@ -74,8 +78,9 @@ export default function TaskDetailRoute() {
     return null
   }
 
-  // 预览打开时详情正文会撤下（display:none），滚动槽的 scrollTop 会被浏览器夹到 0，
-  // 所以位置在**进入**时记账、在**返回**后的第一帧写回——不依赖浏览器是否保留隐藏子树的滚动值。
+  // <1024 预览时详情正文会撤下（task-detail.css 的 max-width:63.99em 块里 display:none），
+  // 滚动槽的 scrollTop 会被浏览器夹到 0，所以位置在**进入**时记账、在**返回**后的第一帧写回。
+  // ≥1024 时抽屉只是 visibility:hidden（布局盒与滚动槽保留），这里写回的是同一个值，无副作用。
   useLayoutEffect(() => {
     if (preview !== null) return
     const slot = scrollSlot()
@@ -95,20 +100,28 @@ export default function TaskDetailRoute() {
     if (ok) close()
   }
 
+  // 触发行（附件行）的引用：关闭预览后焦点要还给它（方案 §11 R3）
+  const trigger = usePreviewTrigger()
+
   const openAttachment = (ref: AttachmentRef) => {
-    // 进入二级层：先记详情滚动位置，再开面板（同一 material_id 的并发请求由 use-attachment-preview 去重）
+    // 进入预览层：先记详情滚动位置与触发行，再开面板（同一 material_id 的并发请求由 use-attachment-preview 去重）
     scrollTopRef.current = scrollSlot()?.scrollTop ?? 0
+    trigger.capture()
     setPreview(ref)
   }
 
-  /** 返回详情：清掉预览层，滚动位置由上面的 layout effect 写回 */
-  const closePreview = () => setPreview(null)
+  /** 返回详情：清掉预览层（滚动位置由上面的 layout effect 写回），焦点还给触发行 */
+  const closePreview = () => {
+    trigger.restore()
+    setPreview(null)
+  }
 
   const showRejectBanner = task !== null && isRejected(task)
   const footer = buildFooter()
   const detailTitle = task?.title ?? (detail.state === 'loading' ? '加载任务…' : `任务 ${taskId}`)
-  // 预览态：头部换成「角色徽标 + 附件标题」；关闭键语义变成「返回详情」
-  const title = preview === null ? detailTitle : previewSheetTitle(preview)
+  // 预览态：头部换成「角色徽标 + 附件标题」；关闭键语义变成「返回详情」；
+  // ≥1024 时 concealed=true 让抽屉整棵让位给 ui/ContentModal（画面里没有侧边抽屉）
+  const previewSheet = usePreviewSheet(preview, detailTitle)
   const onSheetClose = preview === null ? close : closePreview
 
   /** 底部操作条：与滚动区分离（移动端由 ui.css 的媒体块固定），状态不同操作不同 */
@@ -197,8 +210,16 @@ export default function TaskDetailRoute() {
       data-task-id={taskId}
       data-project-id={projectId}
     >
-      <DetailSheet opened title={title} onClose={onSheetClose} footer={preview === null ? footer : undefined}>
-        {/* 预览态：详情正文整块撤下（保留组件状态，滚动位置由 layout effect 写回），二级面板顶上 */}
+      <DetailSheet
+        opened
+        title={previewSheet.title}
+        onClose={onSheetClose}
+        closeLabel={previewSheet.closeLabel}
+        concealed={previewSheet.concealed}
+        footer={preview === null ? footer : undefined}
+      >
+        {/* 详情正文：<1024 预览时由同断点 CSS 撤下（组件状态保留、滚动位置由 layout effect 写回）；
+            ≥1024 预览时抽屉整棵 visibility:hidden（布局盒保留），正文不动 */}
         <div
           className="fx-detail__body"
           data-preview={preview === null ? 'closed' : 'open'}
@@ -284,8 +305,9 @@ export default function TaskDetailRoute() {
           )}
         </div>
 
+        {/* 预览 surface：≥1024 渲染整页居中浮层（portal 到 body，抽屉此时已让位）；<1024 直接把面板铺在本槽里 */}
         {preview === null ? null : (
-          <AttachmentPreview
+          <AttachmentPreviewSurface
             attachments={detail.attachments}
             current={preview}
             onSelect={setPreview}
