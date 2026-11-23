@@ -16,12 +16,14 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | `ui/KindBadge` | `Badge`（subtle） | 看板、详情 |
 | `ui/BoardColumn` | `Paper` + `ScrollArea` | 看板 |
 | `ui/DataTable` | `Table` | 产品、项目、执行节点 |
-| `ui/TextField` / `ui/TextArea` | `TextInput` / `Textarea` | 详情评审、新建任务 |
+| `ui/TextField` | `TextInput` | 详情评审、新建任务 |
+| `ui/TextArea` | `Textarea` | 详情评审、新建任务 |
 | `ui/SelectField` | `Select` | 看板筛选、详情评审 |
 | `ui/Alert` | `Alert` | 全部（错误条/提示条） |
 | `ui/EmptyState` | `Stack` + `Text` + `Button` | 全部 |
 | `ui/SkeletonCard` | `Skeleton` | 全部加载态 |
 | `ui/ConfirmModal` | `Modal` | 删除/驳回二次确认 |
+| `ui/ContentModal` | `Modal` | 附件预览（≥1024 整页内容浮层） |
 | `ui/DetailSheet` | `Drawer` | 详情、附件预览 |
 | `ui/TabBar` | `AppShell.Footer` 或自建 `Tabs`（移动） | 移动端全部 |
 | `ui/SidebarNav` | `AppShell.Navbar` + `NavLink` | 桌面/平板 |
@@ -265,6 +267,28 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 - 可访问性：`role="dialog"` `aria-modal="true"`；Esc 关闭；焦点陷阱。
 - 反例：用 `window.confirm`。
 
+## ui/ContentModal
+
+- 用途：附件预览的**内容型整页浮层**（≥1024）。底图是看板 / 项目列表整页，浮层浮在整页之上；预览期间**整个详情抽屉隐去**，画面里没有侧边抽屉。
+- 底层：`Modal`（`@mantine/core` 的 `centered` 用法，类名走 `classNames` 挂 `.ui-content-modal*`，不依赖 `.mantine-*` 内部类名），不引 `@mantine/modals`。
+- 几何：宽 `80vw` × 高 `80vh`，水平与垂直都居中于视口（1440×900 → 1152×720，上下左右余量对称）；`max-width` / `max-height` 兜住更小视口；圆角 `radius.16`；层级 `z.dialog`（高于抽屉）。
+- 结构：头部（角色徽标 + 附件标题 + 关闭）→ 正文两栏（左 280 附件列表 + 右 markdown 正文或状态提示）；正文吃满浮层剩余高度，左列表独立滚动。
+- 使用 token：`surface.canvas` `border.default` `radius.16` `shadow.e3` `z.dialog` `space.4` `space.5`
+- 状态矩阵：
+
+| 状态 | 表现 | 使用 token |
+|---|---|---|
+| rest | 居中浮层 + 全屏遮罩（不透明度 0.35、无模糊）；底图整页可见但不可交互 | `shadow.e3`, `z.dialog` |
+| hover | 头部关闭键 hover 淡底 | `surface.overlay` |
+| active | — | — |
+| focus-visible | 打开时焦点落关闭键；焦点陷阱只在浮层内循环 | `focus.ring` |
+| disabled | 不适用 | — |
+| loading | 正文区 Skeleton，头部与左列表保持稳定（不闪、不塌） | `surface.overlay` |
+| invalid | 不适用（错误态由 `ui/Alert` 在正文区承载） | — |
+
+- 可访问性：`role="dialog"` `aria-modal="true"`；Esc 只关浮层；关闭键文案「关闭附件预览」；关闭后焦点回触发的附件行；点浮层外遮罩不关闭（避免读正文时误关）。
+- 反例：用浮层承载表单与确认（「读」与「写」分家：表单走 `ui/DetailSheet`、确认走 `ui/ConfirmModal`，浮层只承载读正文）。
+
 ## ui/DetailSheet
 
 - 用途：任务详情 / 附件预览 / 产品与项目只读详情（后三者共用同一容器，变体见下）。
@@ -272,6 +296,8 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 - 结构：头部（标题 + 关闭）→ 可滚动正文 → 底部固定操作条（移动端必固定）。
 - 使用 token：`surface.canvas` `border.subtle` `shadow.e3` `z.dialog` `space.5`
 - 变体：`detail`（单栏）/ `preview`（附件列表 + 正文两栏，移动折叠为上下）/ `readonly`（产品、项目只读详情：字段键值网格 + 0 请求，字段取自当前行数据）。
+- 关闭语义 `closeLabel`：关闭键 `aria-label`，默认「关闭详情」；`<1024` 的附件预览态传「关闭附件预览」（同一容器、不同出口，读屏才不会把「关面板」听成「关详情」）。
+- 让位 `concealed`：`≥1024` 附件预览由 `ui/ContentModal` 接管时，本抽屉整棵隐去（根节点 `data-concealed="true"` + `visibility: hidden`，同时 `closeOnEscape` / `trapFocus` / `lockScroll` 全关，Esc 与焦点只归浮层）。**预览态抽屉隐去、不参与构图**——画面里没有右侧 720 抽屉，底图直接是看板 / 项目列表整页。
 - 状态矩阵：
 
 | 状态 | 表现 | 使用 token |
@@ -400,14 +426,14 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 ## 屏内私有详情抽屉（不属于 `ui/` 导出面）
 
-产品与项目的**只读详情抽屉**复用 `ui/DetailSheet`（`readonly` 变体），不新增 `ui/` 组件：`ui/` 导出面仍是 21 个组件（`web/scripts/ui-imports-check.mjs` 断言导出集合，本契约不扩）。
+产品与项目的**只读详情抽屉**复用 `ui/DetailSheet`（`readonly` 变体），不新增 `ui/` 组件：`ui/` 导出面仍是 22 个组件（`web/scripts/ui-imports-check.mjs` 断言导出集合，本契约不扩）。
 
 - 页面私有部分落在 feature 层：`features/products/ProductDetailSheet.tsx`（6 字段：产品编号 / 名称 / 仓库 / 描述 / 证书 / 项目数）、`features/projects/ProjectDetailSheet.tsx`（9 字段：项目编号 / 产品编号 / 序号 / 名称 / 上下文 / 状态 / 创建时间 / 更新时间 / 关闭时间）。
-- 两个抽屉共用的**键值网格**收敛在壳层 `features/shell/DetailFields.tsx`（与 `ErrorBar` 同层；`features/*` 允许 import `features/shell`）。它**不是** `ui/` 组件、不从 `web/src/ui/index.ts` 导出，因此不进总览表、不计入 21 个组件。
+- 两个抽屉共用的**键值网格**收敛在壳层 `features/shell/DetailFields.tsx`（与 `ErrorBar` 同层；`features/*` 允许 import `features/shell`）。它**不是** `ui/` 组件、不从 `web/src/ui/index.ts` 导出，因此不进总览表、不计入 22 个组件。
 - 字段全部取自当前列表行，抽屉打开**不发请求**（0 请求）；因此没有 loading/error 态，只有 `rest`。
 - 字段可声明外链意图 `DetailField.link?`（键值网格内部调 `web/src/lib/url.ts#repoHref` 判定，调用方只声明、不自行判定）：命中合法 http(s) 时值渲染为 `<a target="_blank" rel="noopener noreferrer" title=…>`（全局锚点色 + 下划线，`<768` 命中区高 ≥44），未命中（非 http(s) / 裸域名 / SSH 形式 / 含内部空白的多链接串 / 空值）回落纯文本原值，不出现「看着像链接点不动」的中间态；`projects` 抽屉不声明 `link`，行为不变。
-- 升级条件：若同构只读抽屉出现第三处（如执行节点详情），再按 D2 升级为 `ui/` 组件，并同步 `ui/index.ts`、`ui-imports-check.mjs` 的 `EXPECTED`、本文件总览表与 `web/README.md` 的「21 个组件」表述。
-- 反例：为抽屉新增 `ui/ProductDetailSheet` / `ui/ProjectDetailSheet`（会把 `Product`/`Project` 的字段形状塞进 `ui/` 层，导出面 21→23，四处同步成本高）。
+- 升级条件：若同构只读抽屉出现第三处（如执行节点详情），再按 D2 升级为 `ui/` 组件，并同步 `ui/index.ts`、`ui-imports-check.mjs` 的 `EXPECTED`、本文件总览表与 `web/README.md` 的「22 个组件」表述。
+- 反例：为抽屉新增 `ui/ProductDetailSheet` / `ui/ProjectDetailSheet`（会把 `Product`/`Project` 的字段形状塞进 `ui/` 层，导出面 22→24，四处同步成本高）。
 
 ---
 
