@@ -13,9 +13,9 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: '目标架构（amd64 / arm64 / 两者用逗号分隔）'
+        description: '目标架构（amd64 / arm64 / 逗号分隔多架构）'
         required: false
-        default: 'linux/amd64'
+        default: 'linux/amd64,linux/arm64'
 
 permissions:
   contents: read
@@ -33,7 +33,7 @@ jobs:
   build:
     name: build & push
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -47,7 +47,7 @@ jobs:
           set -euo pipefail
           echo "version=$(git describe --tags --always 2>/dev/null || echo dev)" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "platform=${{ inputs.platform || 'linux/amd64' }}" >> "$GITHUB_OUTPUT"
+          echo "platform=${{ inputs.platform || 'linux/amd64,linux/arm64' }}" >> "$GITHUB_OUTPUT"
 
       - name: Guard registry config
         env:
@@ -101,6 +101,10 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ steps.vars.outputs.platform }}
           push: true
+          # ACR 控制台对 buildx 默认的 provenance/attestation 产物兼容性差
+          # （镜像大小显示为 0 或空），显式关掉，输出标准 manifest v2 schema2。
+          provenance: false
+          sbom: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |

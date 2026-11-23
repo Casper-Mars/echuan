@@ -23,7 +23,10 @@ ARG GO_IMAGE=golang:1.26-alpine
 ARG RUNTIME_IMAGE=alpine:3.20
 
 # ---- 阶段 1：构建前端 -------------------------------------------------------
-FROM ${IMAGE_MIRROR}${NODE_IMAGE} AS web
+# 前端产物与目标架构无关，固定跑在构建机架构上（$BUILDPLATFORM）：
+# 多架构构建时不把 pnpm 丢进 QEMU，否则慢 3~5 倍。
+# 只有 runtime 阶段跟随 $TARGETPLATFORM。
+FROM --platform=$BUILDPLATFORM ${IMAGE_MIRROR}${NODE_IMAGE} AS web
 
 # 国内访问 registry.npmjs.org 很慢；默认走 npmmirror。
 # 切回官方：--build-arg NPM_REGISTRY=https://registry.npmjs.org
@@ -49,8 +52,11 @@ COPY web ./web
 RUN pnpm --dir web build
 
 # ---- 阶段 2：编译 Go 单二进制 ----------------------------------------------
-FROM ${IMAGE_MIRROR}${GO_IMAGE} AS build
+FROM --platform=$BUILDPLATFORM ${IMAGE_MIRROR}${GO_IMAGE} AS build
 
+# Go 交叉编译：容器架构由 buildx 注入，产物跟随目标架构（CGO 关闭，纯 Go）。
+ARG TARGETOS=linux
+ARG TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=none
 # 国内网络访问 proxy.golang.org 很慢；goproxy.cn 作为首选镜像，
@@ -69,7 +75,7 @@ RUN rm -rf internal/web/dist
 COPY --from=web /src/web/dist internal/web/dist
 RUN --mount=type=cache,id=gomod,target=/go/pkg/mod \
     --mount=type=cache,id=gobuild,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
       -ldflags "-s -w \
         -X github.com/Casper-Mars/echuan/internal/platform.Version=${VERSION} \
         -X github.com/Casper-Mars/echuan/internal/platform.Commit=${COMMIT}" \

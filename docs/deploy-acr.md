@@ -50,11 +50,23 @@ gh secret   set ACR_PASSWORD  --repo Casper-Mars/echuan
 
 ## 3. 产出
 
-每次合并进 `main` 推三个 tag：
+每次合并进 `main` 推三个 tag，**每个 tag 都是 amd64 + arm64 双架构的 manifest list**：
 
 - `latest`
 - `main`
 - `sha-<short>`（如 `sha-94f89e8`）
+
+拉取方按自身 CPU 架构自动选对应镜像，无需手动指定 tag。
+
+多架构构建的提速设计：Dockerfile 里 web / build 两个阶段固定 `--platform=$BUILDPLATFORM`，
+前端 pnpm 与 Go 编译都跑在 runner 原生架构上，Go 用 `GOOS/GOARCH` 交叉编译；
+只有 runtime 阶段的 `apk add` 会在 QEMU 下跑 amd64。这样避免把整条前端构建丢进模拟器。
+
+验证已推上去的架构：
+
+```bash
+docker manifest inspect <ACR_REGISTRY>/sanding/echuan:latest | grep architecture
+```
 
 版本信息来自 `git describe --tags --always` 与 `git rev-parse --short HEAD`，
 写进二进制的 `platform.Version` / `platform.Commit`，`/readyz` 之外的版本接口可查。
@@ -74,13 +86,15 @@ docker pull <ACR_REGISTRY>/<namespace>/echuan:latest
 
 Actions → `docker publish (ACR)` → Run workflow，可指定目标架构：
 
-- `linux/amd64`（默认，服务器常用）
-- `linux/arm64`
-- `linux/amd64,linux/arm64`（多架构，QEMU 模拟，前端构建会慢 3~5 倍）
+- 默认 `linux/amd64,linux/arm64`（双架构单 tag）
+- 只出单架构时可填 `linux/amd64` 或 `linux/arm64`
 
 ## 已知坑
 
 - 个人版 ACR 仓库必须先手动创建，或开启「自动创建仓库」，否则 push 报 `denied`。
 - 密码用「固定密码」；用账号登录密码或 AccessKey 会 401。
 - 域名有两种形态（`crpi-*.personal.cr.aliyuncs.com` 与 `registry.cn-*.aliyuncs.com`），一律以「访问凭证」页给出的登录命令为准。
+- buildx 默认带 provenance attestation，ACR 控制台会把镜像大小显示为 0 或空。workflow 已关掉（`provenance: false`）。
+- 若 ACR 个人版对 manifest list 支持有差异（拉取时报 `no matching manifest`），退路是双 tag 分开推：
+  `--platform linux/amd64` → `:amd64`、`--platform linux/arm64` → `:arm64`，部署侧在 compose 里写 `platform:`。
 - 首次 push 前跑一次 `Run workflow` 验证凭证，避免合并后才发现配置缺失。
