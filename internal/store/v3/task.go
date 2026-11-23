@@ -34,6 +34,11 @@ func CreateTask(ctx context.Context, s *storedb.Store, in CreateTaskInput) (Task
 // CreateTaskTx is CreateTask inside a caller-owned transaction. The flow hook
 // uses it to create successors atomically with the approval that triggers them.
 func CreateTaskTx(ctx context.Context, tx *sql.Tx, in CreateTaskInput) (Task, error) {
+	// The attempt budget is resolved by the service layer
+	// (app/v3.Service.attemptLimit): the configured max_attempts for omitted or
+	// derived tasks, the explicit request value otherwise. Reaching this
+	// fallback means the wiring missed a call site, so keep the historical 3 —
+	// a task must never be stored without a bounded budget.
 	if in.MaxAttempts <= 0 {
 		in.MaxAttempts = 3
 	}
