@@ -401,3 +401,89 @@ func TestAttachments(t *testing.T) {
 		t.Fatalf("Attach with two owners = %v, want ErrInvalidAttachment", err)
 	}
 }
+
+// TestListUpstreamOutputsSkipsContext pins the dispatch contract of the upstream
+// line in a claim payload: a dependent task sees the upstream deliverable
+// (requirement/design/plan/report) and never a decision brief (kind=context)
+// attached afterwards as another output, and never kind=other — the same kind
+// filter the gate applies in LatestOutput.
+func TestListUpstreamOutputsSkipsContext(t *testing.T) {
+	cases := []struct {
+		name       string
+		extraID    string
+		extraKind  enum.MaterialKind
+		extraTitle string
+	}{
+		{name: "brief_after_artifact", extraID: "m_brief", extraKind: enum.MaterialContext, extraTitle: "决策简报"},
+		{name: "artifact_only"},
+		{name: "other_kind_is_not_artifact", extraID: "m_other", extraKind: enum.MaterialOther, extraTitle: "杂项"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := testStore(t)
+			ctx := context.Background()
+			seedProduct(t, st, "APP")
+			project, err := CreateProject(ctx, st, CreateProjectInput{ProductID: "APP", Name: "上游", Now: testNow})
+			if err != nil {
+				t.Fatalf("CreateProject: %v", err)
+			}
+			if _, err := CreateTask(ctx, st, CreateTaskInput{
+				ProjectID: project.ProjectID, TaskID: "t_up", Kind: enum.Requirement, Title: "上游", Now: testNow,
+			}); err != nil {
+				t.Fatalf("CreateTask up: %v", err)
+			}
+			down, err := CreateTask(ctx, st, CreateTaskInput{
+				ProjectID: project.ProjectID, TaskID: "t_down", Kind: enum.Design, Title: "下游",
+				DependsOn: []string{"t_up"}, Now: testNow,
+			})
+			if err != nil {
+				t.Fatalf("CreateTask down: %v", err)
+			}
+
+			attachOutput := func(materialID string, kind enum.MaterialKind, title string) {
+				t.Helper()
+				pk, err := CreateMaterialRecord(ctx, st, CreateMaterialInput{
+					MaterialID: materialID, Kind: kind, Version: 1, Title: title,
+					Sha256: "sha-" + materialID, Size: 1, Path: "/tmp/" + materialID,
+					UploadedBy: "pm", Now: testNow,
+				})
+				if err != nil {
+					t.Fatalf("CreateMaterialRecord %s: %v", materialID, err)
+				}
+				if _, err := Attach(ctx, st, AttachInput{
+					TaskID: "t_up", MaterialID: pk, Role: enum.Output, Now: testNow,
+				}); err != nil {
+					t.Fatalf("Attach %s: %v", materialID, err)
+				}
+			}
+			attachOutput("m_artifact", enum.MaterialRequirement, "需求 v1")
+			if tc.extraID != "" {
+				attachOutput(tc.extraID, tc.extraKind, tc.extraTitle)
+			}
+
+			got, err := ListUpstreamOutputs(ctx, st.Read(), down.ID)
+			if err != nil {
+				t.Fatalf("ListUpstreamOutputs: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("upstream = %+v, want exactly one dependency", got)
+			}
+			if got[0].TaskID != "t_up" {
+				t.Errorf("upstream task = %s, want t_up", got[0].TaskID)
+			}
+			var materialID, title string
+			if got[0].MaterialID != nil {
+				materialID = *got[0].MaterialID
+			}
+			if got[0].Title != nil {
+				title = *got[0].Title
+			}
+			if materialID != "m_artifact" {
+				t.Errorf("upstream material = %q, want %q", materialID, "m_artifact")
+			}
+			if title != "需求 v1" {
+				t.Errorf("upstream title = %q, want %q", title, "需求 v1")
+			}
+		})
+	}
+}
