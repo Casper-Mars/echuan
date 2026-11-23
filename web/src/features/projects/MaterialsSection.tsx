@@ -4,9 +4,13 @@
 //
 // 口径：
 //   * 资料按任务归属，本区块只是 `GET /v1/projects/materials` 的分组投影，不改数据；
+//   * 入参 `materials` 是**已收敛的可见集合**（调用方用 `lib/current-versions` 的
+//     `currentProjectMaterials` 投影过，每 (任务, kind) 只剩当前版本）：分组、计数、折叠
+//     都只认这一个数组，所以「计数取可见条数」是本文件不需要额外分支的自然结果；
 //   * 简报（kind=context 且有 source_material_id）不单独成组，缩进挂在其正文版本下；
-//   * 孤儿简报（source 不在本次列表）落到「其他」，不丢数据；
-//   * 组内按接口插入顺序倒序（最新在前）；报告组超过 5 条折叠。
+//     正文被版本收敛隐藏时简报一并消失（同隐在投影层完成，这里不会收到它的孤儿行）；
+//     真孤儿简报（source 从未出现在返回集合）落到「其他」，不丢数据；
+//   * 组内按接口插入顺序倒序（最新在前）；报告组超过 5 条折叠，阈值作用于可见行。
 import { useState } from 'react'
 import type { ProjectMaterial } from '../../api/types'
 import { Button, EmptyState } from '../../ui'
@@ -23,6 +27,7 @@ const GROUPS = [
 const REPORT_FOLD = 5
 
 export interface MaterialsSectionProps {
+  /** 已收敛的可见集合（每 (任务, kind) 只剩当前版本，简报跟随正文）：计数与分组都取它的长度 */
   materials: ProjectMaterial[]
   loading: boolean
   error: string | null
@@ -91,13 +96,15 @@ export function MaterialsSection({ materials, loading, error, onRetry, onOpen }:
       .map(material => [material.source_material_id as string, material]),
   )
   const groups = buildGroups(materials)
+  // 计数取可见条数（不是接口返回条数）：入参已是可见集合，长度即答案
+  const visibleCount = materials.length
 
   return (
     <section className="fx-materials" data-ui="project-materials" aria-busy={loading || undefined}>
       <div className="fx-materials__head">
         <h3 className="fx-materials__title-group">资料</h3>
         <span className="fx-materials__hint">
-          {loading ? '读取中' : `${materials.length} 项 · 来自任务`}
+          {loading ? '读取中' : `${visibleCount} 项 · 来自任务`}
         </span>
       </div>
 

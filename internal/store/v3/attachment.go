@@ -147,12 +147,25 @@ func ListProjectAttachments(ctx context.Context, q storedb.Querier, projectID st
 	return storedb.All[Attachment](ctx, q, base+` AND a.role = ? ORDER BY a.id ASC`, projectID, *role)
 }
 
+// ProjectMaterialRef is one project material together with the identity of the
+// task that produced it. It is flat on purpose: the store's column planner skips
+// anonymous fields (internal/store/query.go), so MaterialRef cannot be embedded.
+type ProjectMaterialRef struct {
+	TaskID           string              `db:"task_id"`
+	MaterialID       string              `db:"material_id"`
+	Title            string              `db:"title"`
+	Kind             enum.MaterialKind   `db:"kind"`
+	Role             enum.AttachmentRole `db:"role"`
+	SourceMaterialID *string             `db:"source_material_id"`
+}
+
 // ListProjectMaterialRefs lists the materials produced inside a project, derived
 // from the tasks that produced them (attachments belong to tasks; a project has
-// no attachments of its own). Version order follows attachment id.
-func ListProjectMaterialRefs(ctx context.Context, q storedb.Querier, projectPK int64) ([]MaterialRef, error) {
-	refs, err := storedb.All[MaterialRef](ctx, q, `
-		SELECT `+materialRefColumns+`
+// no attachments of its own). Version order follows attachment id; each row also
+// carries the task_id that produced it.
+func ListProjectMaterialRefs(ctx context.Context, q storedb.Querier, projectPK int64) ([]ProjectMaterialRef, error) {
+	refs, err := storedb.All[ProjectMaterialRef](ctx, q, `
+		SELECT t.task_id, `+materialRefColumns+`
 		  FROM attachments a
 		  JOIN materials m ON m.id = a.material_id
 		  LEFT JOIN materials src ON src.id = m.source_material_id

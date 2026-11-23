@@ -92,9 +92,10 @@
 
 ```http
 GET /v1/projects/materials?id=<project_id>
-→ 200 { items: [ { material_id, title, kind, role, source_material_id? } ] }
+→ 200 { items: [ { task_id, material_id, title, kind, role, source_material_id? } ] }
 ```
 
+- `task_id`：产出这条材料的任务业务号（`t_…`），必填；页面用它做 (task, kind) 分组。
 - `kind`：requirement / design / plan / report / context / other。
 - 已知限制：返回项不含时间与大小 → **首版不显示时间**；若后续要时间，给该接口加 `create_time` 即可，属接口小改（登记为 U-01）。
 
@@ -112,7 +113,7 @@ GET /v1/projects/materials?id=<project_id>
 ## 8 验收
 
 - AC1：打开任一项目，抽屉在 1 秒内显示「资料」区；接口失败时显示错误条与重试，抽屉不关。
-- AC2：`echuan-1` 这类项目显示 16 条，分组为 拆分 1 / 报告 15，与接口返回一致。
+- AC2：`echuan-1` 这类项目的接口仍返回 16 条，页面按当前版本口径显示 14 条，与接口返回一致。
 - AC3：构造一份「正文 v1 + 简报 v1 + 正文 v2 + 简报 v2」的项目，简报分别缩进挂在对应正文下，不单独成条。
 - AC4：孤儿简报（source 不存在）落在「其他」组，不丢失。
 - AC5：点击行打开附件预览面板（左列表 = 本项目资料），返回后回到列表；同一材料在面板内切换不发重复请求（并发去重）。

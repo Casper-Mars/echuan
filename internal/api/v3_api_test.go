@@ -834,7 +834,7 @@ func TestProjectMaterialsList(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list project materials = %d (%s)", resp.StatusCode, payload)
 	}
-	list := decodeBody[v3AttachmentList](t, payload)
+	list := decodeBody[v3ProjectMaterialList](t, payload)
 	if len(list.Items) != 1 {
 		t.Fatalf("items = %+v, want 1", list.Items)
 	}
@@ -842,12 +842,15 @@ func TestProjectMaterialsList(t *testing.T) {
 	if item.MaterialID != material.MaterialID || item.Kind != "requirement" || item.Role != "output" {
 		t.Errorf("item = %+v, want material %s requirement/output", item, material.MaterialID)
 	}
+	if item.TaskID != task.TaskID {
+		t.Errorf("item task_id = %q, want the producing task %q", item.TaskID, task.TaskID)
+	}
 
 	resp, payload = a.do(t, http.MethodGet, "/v1/projects/materials?id="+project.ProjectID+"&role=input", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list by role = %d (%s)", resp.StatusCode, payload)
 	}
-	if got := decodeBody[v3AttachmentList](t, payload); len(got.Items) != 0 {
+	if got := decodeBody[v3ProjectMaterialList](t, payload); len(got.Items) != 0 {
 		t.Errorf("role=input items = %+v, want none", got.Items)
 	}
 }
@@ -895,13 +898,16 @@ func TestProjectMaterialsPairBriefs(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list project materials = %d (%s)", resp.StatusCode, payload)
 	}
-	items := decodeBody[v3AttachmentList](t, payload).Items
+	items := decodeBody[v3ProjectMaterialList](t, payload).Items
 	if len(items) != 4 {
 		t.Fatalf("items = %d, want 4 (%+v)", len(items), items)
 	}
 
 	pairs := map[string]string{}
 	for _, item := range items {
+		if item.TaskID != task.TaskID {
+			t.Errorf("item %s task_id = %q, want the producing task %q", item.MaterialID, item.TaskID, task.TaskID)
+		}
 		if item.Kind == "context" {
 			if item.SourceMaterialID == nil {
 				t.Fatalf("brief %s has no source", item.MaterialID)
@@ -914,5 +920,69 @@ func TestProjectMaterialsPairBriefs(t *testing.T) {
 	}
 	if len(pairs) != 2 {
 		t.Errorf("distinct brief sources = %d, want 2", len(pairs))
+	}
+}
+
+// TestProjectMaterialsListTwoDevTasks pins the grouping precondition of the
+// project view: two dev cards of the same project each carry their own report,
+// so both rows come back and each one points at its own task. An implementation
+// that deduplicates by task or drops the task_id would break that grouping.
+func TestProjectMaterialsListTwoDevTasks(t *testing.T) {
+	a := newAPIServer(t)
+	a.seedProduct(t, "APP")
+
+	_, payload := a.do(t, http.MethodPost, "/v1/projects", map[string]any{
+		"product_id": "APP", "name": "p",
+	})
+	project := decodeBody[v3ProjectResponse](t, payload)
+
+	createDevTask := func(title string) string {
+		t.Helper()
+		_, payload := a.do(t, http.MethodPost, "/v1/tasks", map[string]any{
+			"project_id": project.ProjectID, "kind": "dev", "title": title,
+		})
+		return decodeBody[v3TaskResponse](t, payload).TaskID
+	}
+	attachReport := func(taskID, title string) string {
+		t.Helper()
+		_, payload := a.do(t, http.MethodPost, "/v1/materials", map[string]any{
+			"kind": "report", "title": title, "body_md": "# " + title,
+		})
+		material := decodeBody[v3MaterialResponse](t, payload)
+		resp, payload := a.do(t, http.MethodPost, "/v1/tasks/attach", map[string]any{
+			"task_id": taskID, "material_id": material.MaterialID, "role": "output",
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("attach %s: %d (%s)", title, resp.StatusCode, payload)
+		}
+		return material.MaterialID
+	}
+
+	taskA := createDevTask("卡片 A")
+	reportA := attachReport(taskA, "A 报告")
+	taskB := createDevTask("卡片 B")
+	reportB := attachReport(taskB, "B 报告")
+
+	resp, payload := a.do(t, http.MethodGet, "/v1/projects/materials?id="+project.ProjectID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list project materials = %d (%s)", resp.StatusCode, payload)
+	}
+	items := decodeBody[v3ProjectMaterialList](t, payload).Items
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2 (%+v)", len(items), items)
+	}
+
+	byTask := map[string]string{}
+	for _, item := range items {
+		if item.TaskID == "" {
+			t.Fatalf("item %s has no task_id", item.MaterialID)
+		}
+		byTask[item.TaskID] = item.MaterialID
+	}
+	if len(byTask) != 2 {
+		t.Fatalf("distinct task_ids = %d, want 2 (%+v)", len(byTask), items)
+	}
+	if byTask[taskA] != reportA || byTask[taskB] != reportB {
+		t.Errorf("mapping = %+v, want %s->%s and %s->%s", byTask, taskA, reportA, taskB, reportB)
 	}
 }

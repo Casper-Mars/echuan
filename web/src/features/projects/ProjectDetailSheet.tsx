@@ -11,13 +11,17 @@
 //
 // 口径：
 //   * 字段只读、取当前行；资料是唯一按需拉取的部分，失败只影响「资料」区块；
+//   * 资料区的**可见集合只在这里算一次**（`lib/current-versions` 的 `currentProjectMaterials`）：
+//     分组 / 计数 / 折叠 / 预览左列表吃同一个数组，四处不可能各说一套（design/screens/projects.md
+//     「资料区」版本口径与计数口径）；
 //   * 打开材料复用任务详情的附件预览面板（`features/task-detail/attachment-preview`），
 //     不另写一套取数/超时/超大逻辑；
 //   * 不持有打开状态：`project` 由页面按 id 从**当前** items 反查后传入，行不存在 → 抽屉自然关闭；
 //   * 不写死颜色与间距：键值网格样式在 shell.css 的 .fx-detail-fields*，资料区在 projects.css 的 .fx-materials*。
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Project, ProjectMaterial } from '../../api/types'
 import { DetailSheet, MarkdownViewer, StatusPill } from '../../ui'
+import { currentProjectMaterials } from '../../lib/current-versions'
 import { DetailFields } from '../shell/DetailFields'
 import type { DetailField } from '../shell/DetailFields'
 import { AttachmentPreviewSurface, usePreviewSheet, usePreviewTrigger } from '../task-detail/attachment-preview'
@@ -32,6 +36,12 @@ export interface ProjectDetailSheetProps {
 
 export function ProjectDetailSheet({ project, onClose }: ProjectDetailSheetProps) {
   const materials = useProjectMaterials(project?.project_id)
+  // 版本收敛只发生在呈现层：接口照旧返回全量，这里投影成「每个 (任务, kind) 的当前版本」。
+  // 资料区、计数、预览左列表吃同一个数组，所以只在这里算一次（design/screens/projects.md「资料区」）。
+  const visibleMaterials = useMemo(
+    () => currentProjectMaterials(materials.materials),
+    [materials.materials],
+  )
   const [preview, setPreview] = useState<ProjectMaterial | null>(null)
 
   // 换项目或关抽屉：预览必须回到列表，否则会显示上一个项目的材料正文（幽灵数据）
@@ -71,7 +81,7 @@ export function ProjectDetailSheet({ project, onClose }: ProjectDetailSheetProps
             <div className="fx-preview-host" data-preview={preview === null ? 'closed' : 'open'}>
               <DetailFields fields={fieldsOfProject(project)} />
               <MaterialsSection
-                materials={materials.materials}
+                materials={visibleMaterials}
                 loading={materials.loading}
                 error={materials.error}
                 onRetry={materials.reload}
@@ -82,7 +92,7 @@ export function ProjectDetailSheet({ project, onClose }: ProjectDetailSheetProps
                 <1024 直接把面板铺在本槽里（详情字段与资料区由 task-detail.css 的同断点规则撤下） */}
             {preview === null ? null : (
               <AttachmentPreviewSurface
-                attachments={materials.materials}
+                attachments={visibleMaterials}
                 current={preview}
                 onSelect={setPreview}
                 onBack={closePreview}
