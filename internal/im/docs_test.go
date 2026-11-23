@@ -198,3 +198,71 @@ func TestNewDocServiceWithFolderToken(t *testing.T) {
 		t.Errorf("Cached = %q, want empty before any import", url)
 	}
 }
+
+// lateCacheStore simulates an import that finished between Ensure's first cache
+// lookup and its single-flight claim: the first lookup misses, every later one
+// hits the URL the other call just wrote.
+type lateCacheStore struct {
+	url     string
+	lookups int
+	writes  int
+	mu      sync.Mutex
+}
+
+func (f *lateCacheStore) CachedDoc(_ context.Context, materialID string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lookups++
+	if f.lookups == 1 {
+		return "", false, nil
+	}
+	if materialID != "m001" {
+		return "", false, nil
+	}
+	return f.url, true, nil
+}
+
+func (f *lateCacheStore) SaveDoc(context.Context, string, string, string, time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.writes++
+	return nil
+}
+
+func (f *lateCacheStore) writeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.writes
+}
+
+// TestEnsureReusesDocumentImportedWhileClaimingSlot pins the second cache lookup
+// after the single-flight claim: the material was imported by a concurrent call
+// in that window, so this call must reuse the URL instead of reading the
+// material and spending another import from the daily quota.
+func TestEnsureReusesDocumentImportedWhileClaimingSlot(t *testing.T) {
+	store := &lateCacheStore{url: "https://example.feishu.cn/docx/late"}
+	materials := &fakeMaterialReader{body: []byte("# hi")}
+	importer := &fakeImporter{}
+	buf, logger := logBuffer()
+	docs := newTestDocs(store, materials, importer, logger)
+
+	url, err := docs.Ensure(context.Background(), "m001", "需求")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if url != store.url {
+		t.Errorf("Ensure = %q, want the URL written while claiming the slot (%q)", url, store.url)
+	}
+	if materials.reads != 0 {
+		t.Errorf("material reads = %d, want 0 (cache hit before reading)", materials.reads)
+	}
+	if importer.importsCount() != 0 {
+		t.Errorf("imports = %d, want 0 (no second import)", importer.importsCount())
+	}
+	if store.writeCount() != 0 {
+		t.Errorf("cache writes = %d, want 0", store.writeCount())
+	}
+	if strings.Contains(buf.String(), "im doc imported") {
+		t.Errorf("a second import was logged:\n%s", buf.String())
+	}
+}

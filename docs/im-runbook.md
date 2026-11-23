@@ -103,9 +103,11 @@ curl -s -X POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/int
    两者都带 `task` / `material` / `material_title` / `attempt` / `error`。失败不写 `im_doc`，下一轮会重试。
 4. 同一材料在同一张卡上**最多尝试 2 次**；到上限后日志只出现 `im doc fill skipped reason=attempt_cap`，
    该行保持纯文件名，直到附件集合/状态/驳回原因变化（指纹变化会清零计数）。
-5. 导入成功 → `im doc import attempt result=ok`，随后一条 `im card rendered action=patch`
+5. 导入成功的瞬间版本被替换（补挂了新版本）→ 该 URL 留在 `im_doc` 供别的卡复用，但**不回这张卡**，
+   日志是 `im doc fill skipped reason=not_in_set`；下一轮按新集合重渲染，旧行消失。
+6. 导入成功 → `im doc import attempt result=ok`，随后一条 `im card rendered action=patch`
    （`links_total` 增加、`links_missing` 减少）；同一材料之后的轮询命中 `im_doc` 缓存，不再导入。
-6. 应用需要 `docs:document:import` + `drive:drive`。
+7. 应用需要 `docs:document:import` + `drive:drive`。
 
 > 一轮填充结束还是一条 `im doc fill finished`（`set_size` / `links_total` / `links_missing` / `attempts_used`）。
 > 自洽校验：`links_total + links_missing == set_size`。**卡片改版后不再有「看全文」按钮，也没有 `open_doc` 组件。**
@@ -114,6 +116,19 @@ curl -s -X POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/int
 
 关单时进程内缓存里没有该任务的标题，回查也失败了，日志是 `im card close meta missing`（带 `task` / `error`）。
 此时卡片头只有卡类型文字（**不会退回任务号**），需要在群里人工补一句任务名，并查该任务是否已被删除。
+
+### 卡片发不出：飞书返回 `230025`（卡片过大）
+
+**本期不做体积预检、不做截断**（需求方已作废方案 §8.4/D5）：链接行有多少就渲染多少，代价是卡片 JSON 触达飞书
+「卡片消息请求体最大 30 KB」上限时，`SendCard` 直接失败，日志 `im v3: send card` 带 `error`（错误码 `230025`；
+元素超限则是 `11310`）——此时**这张卡不会出现，审批也无法进行**。
+
+值班处置（按顺序，不做临时截断代码）：
+
+1. 先按本手册上方「卡片一直没出现」确认不是长连接/免打扰/白名单；
+2. 从该任务最近一条 `im card rendered` 取 `set_size` / `card_bytes`，确认是链接行过多导致（元素数恒为 3 个 body 元素，只有字节数会触顶）；
+3. **停手任何「临时截断链接」的改动**，按方案 §11 U4 升级回需求方重定上限（或改用「附件清单另发一条消息」的形态）；
+4. 期间该任务的验收请在 Web 任务详情完成，不要等卡片。
 
 ### 日志速查
 
@@ -124,7 +139,7 @@ curl -s -X POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/int
 | `im card close meta missing` | `task` `error` | 关单取不到标题，卡片头退回卡类型文字 |
 | `im doc import attempt` | `task` `material` `material_title` `attempt` `result` `duration_ms` `error` | 每份每次尝试一条 |
 | `im doc import failed` | `task` `material` `material_title` `attempt` `error` | 保留原名，runbook 按它排障 |
-| `im doc fill skipped` | `task` `material` `attempt` `reason`(attempt_cap / docs_disabled) | 解释「这一行为什么没链接」 |
+| `im doc fill skipped` | `task` `material` `attempt` `reason`(attempt_cap / docs_disabled / not_in_set)；docs_disabled 那条只有 `task` / `reason`，每张卡一条 | 解释「这一行为什么没链接」 |
 | `im doc fill finished` | `task` `set_size` `links_total` `links_missing` `attempts_used` | 一轮填充收尾 |
 | `im attachments resolve failed` | `task` `error` | 附件投影读不出来，本轮跳过该卡（旧卡保持），连续 3 轮查 DB 可读性 |
 | `im currentver suspect ref` | `task` `material` `role` `kind` | 附件缺字段（宁多不藏，仍会渲染该行） |
