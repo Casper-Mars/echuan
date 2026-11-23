@@ -13,7 +13,6 @@ import type {
   Project,
   WorkItemDetail,
 } from '../client.js'
-import type { ClaimValue, RenewedValue, ReportedValue } from './write.js'
 import type { V3Attachment, V3ClaimInput, V3Project, V3Task } from '../v3-types.js'
 
 /** render 返回的最小文本块形态（等价于 ContentBlock 的 `text` 分支）。 */
@@ -69,79 +68,6 @@ export const NO_WORK_TEXT =
   '当前无活：平台没有可领取的 work item（HTTP 204）。'
   + '下一步：稍后再领（不要把「无活」当错误重试）。'
 
-/** 渲染「当前无活」。 */
-export function renderNoWork(): TextContent[] {
-  return [textBlock(NO_WORK_TEXT)]
-}
-
-/** 渲染领到的卡：只陈述事实（编号 / kind / 标题 / 租约 / 产品 / 规格 / inputs / 正文）。 */
-export function renderClaimed(value: Extract<ClaimValue, { kind: 'claimed' }>): TextContent[] {
-  const lines = [
-    '已领到 work item：',
-    `- 工作项编号：${value.work_id}`,
-    `- 类别：${value.work_kind}（${workItemKindLabel(value.work_kind)}）`,
-    `- 标题：${value.title}`,
-    `- 租约到期：${value.lease_until}（TTL ${value.ttl_seconds}s，lease_id=${value.lease_id}）`,
-    `- 产品：${value.product_name}（${value.product_id}）`,
-    `- 规格：v${value.spec_version} ${value.spec_digest}`,
-    `- 尝试次数：${value.attempt}，优先级：${value.priority}`,
-  ]
-
-  lines.push('- 输入物料：')
-  if (value.inputs.length === 0) {
-    lines.push('  - 无')
-  } else {
-    for (const input of value.inputs) {
-      lines.push(`  - material_id=${input.material_id}，kind=${input.kind}，版本 v${input.version}`)
-    }
-  }
-
-  lines.push('', '工作项正文：', value.body_md)
-  return [textBlock(lines.join('\n'))]
-}
-
-/* ------------------------------------------------------------------ *
- * 续租
- * ------------------------------------------------------------------ */
-
-/** 渲染续租结果：新的 lease_id 与到期时间。 */
-export function renderRenewed(value: RenewedValue): TextContent[] {
-  return [
-    textBlock(
-      [
-        `✅ 续租成功：工作项 ${value.work_id}`,
-        `- 新 lease_id：${value.lease_id}`,
-        `- 到期时间：${value.lease_until}`,
-        `- TTL：${value.ttl_seconds}s`,
-      ].join('\n'),
-    ),
-  ]
-}
-
-/* ------------------------------------------------------------------ *
- * 交报告
- * ------------------------------------------------------------------ */
-
-/** 渲染报告已提交（平台已把工作项转入待验收）。 */
-export function renderReported(value: ReportedValue): TextContent[] {
-  const state = value.state === undefined ? '' : `（平台状态：${value.state}）`
-  return [
-    textBlock(
-      [
-        `✅ 工作项已提交待验收：工作项编号 ${value.work_id}${state}`,
-        '下一步：等待平台验收结论；不要再用旧 lease_id 重复提交同一张卡的结果。',
-      ].join('\n'),
-    ),
-  ]
-}
-
-/* ------------------------------------------------------------------ *
- * 只读工具：平台返回 → 模型可直读文本
- *
- * 下面这些 formatter 只做投影：把契约字段排成中文多行文本，不判断业务状态、
- * 不补业务默认值（缺字段就明说缺什么）。截断只发生在长度维度，并标注总字数，
- * 让模型知道「还有内容没看到、可以再用 echuan_material_get 取全文」。
- * ------------------------------------------------------------------ */
 
 /** 只读工具输出的规范值：渲染好的文本（只读工具没有别的消费方）。 */
 export interface TextValue {
