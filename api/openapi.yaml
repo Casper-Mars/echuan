@@ -129,7 +129,7 @@ paths:
   /v1/projects/materials:
     get:
       operationId: listProjectMaterials
-      summary: Materials produced inside a project (derived from tasks; source_material_id pairs a brief with its version)
+      summary: Materials produced inside a project (derived from tasks; source_material_id pairs a brief with its version; each item carries the task_id that produced it)
       tags: [projects]
       parameters:
         - { name: id, in: query, required: true, schema: { type: string } }

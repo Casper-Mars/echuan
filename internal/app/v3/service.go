@@ -409,8 +409,9 @@ func (s *Service) Attachments(ctx context.Context, taskID string) ([]storev3.Mat
 
 // ProjectMaterials returns every material produced inside a project, optionally
 // filtered by attachment role. It is derived from the tasks of the project: a
-// project owns no attachment of its own.
-func (s *Service) ProjectMaterials(ctx context.Context, projectID string, role *enum.AttachmentRole) ([]storev3.MaterialRef, error) {
+// project owns no attachment of its own. Each row carries the task_id that
+// produced it (the project view groups by task).
+func (s *Service) ProjectMaterials(ctx context.Context, projectID string, role *enum.AttachmentRole) ([]storev3.ProjectMaterialRef, error) {
 	project, err := storev3.GetProject(ctx, s.st.Read(), projectID)
 	if err != nil {
 		return nil, Translate(err)
@@ -422,7 +423,7 @@ func (s *Service) ProjectMaterials(ctx context.Context, projectID string, role *
 	if role == nil {
 		return refs, nil
 	}
-	filtered := make([]storev3.MaterialRef, 0, len(refs))
+	filtered := make([]storev3.ProjectMaterialRef, 0, len(refs))
 	for _, ref := range refs {
 		if ref.Role == *role {
 			filtered = append(filtered, ref)

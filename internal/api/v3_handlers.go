@@ -885,6 +885,23 @@ type v3AttachmentList struct {
 	Items []v3ClaimInput `json:"items"`
 }
 
+// v3ProjectMaterialItem is one row of the project material view. Unlike the
+// attachment DTO it carries task_id: the project view is derived from the
+// project's tasks, and the client groups by (task, kind).
+type v3ProjectMaterialItem struct {
+	TaskID     string `json:"task_id"`
+	MaterialID string `json:"material_id"`
+	Title      string `json:"title"`
+	Kind       string `json:"kind"`
+	Role       string `json:"role"`
+	// SourceMaterialID links a derived material to its source artifact version.
+	SourceMaterialID *string `json:"source_material_id,omitempty"`
+}
+
+type v3ProjectMaterialList struct {
+	Items []v3ProjectMaterialItem `json:"items"`
+}
+
 func (h *v3Handler) attachments(w http.ResponseWriter, r *http.Request) {
 	taskID := strings.TrimSpace(r.URL.Query().Get("task_id"))
 	if taskID == "" {
@@ -901,8 +918,8 @@ func (h *v3Handler) attachments(w http.ResponseWriter, r *http.Request) {
 }
 
 // projectMaterials lists the materials produced inside a project. It is derived
-// from the project's tasks (attachments belong to tasks). role is optional:
-// input / output.
+// from the project's tasks (attachments belong to tasks) and every item carries
+// the task_id that produced it. role is optional: input / output.
 func (h *v3Handler) projectMaterials(w http.ResponseWriter, r *http.Request) {
 	projectID := strings.TrimSpace(r.URL.Query().Get("id"))
 	if projectID == "" {
@@ -924,16 +941,31 @@ func (h *v3Handler) projectMaterials(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, v3AttachmentList{Items: attachmentItems(refs)})
+	writeJSON(w, http.StatusOK, v3ProjectMaterialList{Items: projectMaterialItems(refs)})
 }
 
-// attachmentItems maps material refs onto the shared attachment DTO.
+// attachmentItems maps material refs onto the shared attachment DTO. The task
+// attachment endpoint keeps this DTO: it has no task_id, the caller already
+// knows the task.
 func attachmentItems(refs []storev3.MaterialRef) []v3ClaimInput {
 	items := make([]v3ClaimInput, 0, len(refs))
 	for _, ref := range refs {
 		items = append(items, v3ClaimInput{
 			MaterialID: ref.MaterialID, Title: ref.Title, Kind: ref.Kind.String(), Role: ref.Role.String(),
 			SourceMaterialID: ref.SourceMaterialID,
+		})
+	}
+	return items
+}
+
+// projectMaterialItems maps project material refs onto the project view DTO,
+// which additionally carries the producing task_id.
+func projectMaterialItems(refs []storev3.ProjectMaterialRef) []v3ProjectMaterialItem {
+	items := make([]v3ProjectMaterialItem, 0, len(refs))
+	for _, ref := range refs {
+		items = append(items, v3ProjectMaterialItem{
+			TaskID: ref.TaskID, MaterialID: ref.MaterialID, Title: ref.Title,
+			Kind: ref.Kind.String(), Role: ref.Role.String(), SourceMaterialID: ref.SourceMaterialID,
 		})
 	}
 	return items
