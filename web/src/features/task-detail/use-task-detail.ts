@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../../api/client'
 import type { AttachmentRef, Task } from '../../api/types'
+import { publishListWrite } from '../../lib/refresh'
 import type { SelectOption } from '../../ui'
 
 /** 六态（design/screens/task-detail.md 状态矩阵） */
@@ -212,13 +213,18 @@ export function useTaskDetail(taskId: string): TaskDetailApi {
       setSubmitting(true)
       setSubmitError(null)
       try {
-        await api.decideTask({
+        const decided = await api.decideTask({
           task_id: task.task_id,
           decision: next,
           material_id: materialId ?? undefined,
           decided_by: ACTOR,
           reason: reason.trim() === '' ? undefined : reason.trim(),
         })
+        // issue #129：写成功后**立刻**广播写后信号（不等下面的详情重拉）——
+        // 看板与详情同在 App.tsx 的 BoardWithDetail 挂载点、看板常驻，收到即 refresh('write')，
+        // 抽屉关闭时卡片已在目标列，不必等 15s 轮询。
+        // 只在 2xx 后广播：非 2xx 走 catch，不发信号，语义与改前一致（错误条 + 立即重拉详情）。
+        publishListWrite(decided.project_id || task.project_id)
         await load()
         return true
       } catch (err) {

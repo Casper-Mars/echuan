@@ -15,7 +15,7 @@ import { api } from '../../api/client'
 import type { Project, Task, TaskStatus } from '../../api/types'
 import { useAutoRefresh } from '../../hooks/useAutoRefresh'
 import { KINDS, kindLabel } from '../../lib/labels'
-import { REFRESH_INTERVALS, isAutoRefreshEnabled, subscribeAutoRefresh } from '../../lib/refresh'
+import { REFRESH_INTERVALS, isAutoRefreshEnabled, subscribeAutoRefresh, subscribeListWrite } from '../../lib/refresh'
 import { Alert, BoardColumn, Button, EmptyState, SelectField, StatusPill, TaskCard } from '../../ui'
 import type { SelectOption } from '../../ui'
 import { ErrorBar } from '../shell/ErrorBar'
@@ -72,6 +72,11 @@ export function BoardPage() {
         limit: 300,
       }),
   })
+
+  // 写后补拉（issue #129）：详情抽屉里评审提交成功后，`lib/refresh` 的写后信号会广播本项目，
+  // 看板收到即 `refresh('write')` —— 在飞则排队、本轮收口补跑 1 次，因此不会与 15s 自动刷新叠发；
+  // 该触发不受顶栏「自动刷新」开关影响（开关只管 auto / visible）。没有写入就不会收到信号。
+  useEffect(() => subscribeListWrite(projectId, () => refresh('write')), [projectId, refresh])
 
   // 顶栏 / 页头要项目名，但它不是看板数据源：单独取，失败也不影响看板渲染（页头回退显示 project_id）。
   useEffect(() => {

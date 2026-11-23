@@ -102,3 +102,45 @@ export function subscribeAutoRefresh(fn: Listener): () => void {
     listeners.delete(fn)
   }
 }
+
+/**
+ * 写后补拉信号（issue #129）：写操作（目前是 `POST /v1/tasks/decide`）成功后 publish，
+ * 挂载中的列表页订阅后自行调 `refresh('write')` 补拉一次，不必等 15s 轮询。
+ *
+ * 与上面的开关单例同构：
+ * - 按 `project_id` 分桶，只通知同项目的订阅者，不跨项目误刷；
+ * - 没有订阅者时 publish 什么也不做（不报错、不排队、不补发）；
+ * - 订阅者卸载即退订，桶空了整条删除，避免长期驻留的 Map 泄漏；
+ * - 通知时先快照，订阅者在回调里增删订阅不影响本轮遍历。
+ *
+ * 本函数只发信号，不取数、不碰开关：`useAutoRefresh` 的 `'write'` 语义（在飞则排队、
+ * 本轮收口补跑 1 次）负责「不叠发」，全局开关关闭时 `'write'` 也照常放行。
+ */
+type WriteListener = () => void
+
+/** project_id → 订阅者集合 */
+const writeListeners = new Map<string, Set<WriteListener>>()
+
+/** 广播「该项目发生过写入」；无订阅者时静默返回。 */
+export function publishListWrite(projectId: string): void {
+  if (projectId === '') return
+  const bucket = writeListeners.get(projectId)
+  if (bucket === undefined) return
+  for (const listener of [...bucket]) listener()
+}
+
+/** 订阅某项目的写后信号；返回取消订阅函数。 */
+export function subscribeListWrite(projectId: string, fn: WriteListener): () => void {
+  let bucket = writeListeners.get(projectId)
+  if (bucket === undefined) {
+    bucket = new Set<WriteListener>()
+    writeListeners.set(projectId, bucket)
+  }
+  bucket.add(fn)
+  return () => {
+    const current = writeListeners.get(projectId)
+    if (current === undefined) return
+    current.delete(fn)
+    if (current.size === 0) writeListeners.delete(projectId)
+  }
+}
