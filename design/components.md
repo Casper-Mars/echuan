@@ -16,9 +16,9 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | `ui/KindBadge` | `Badge`（subtle） | 看板、详情 |
 | `ui/BoardColumn` | `Paper` + `ScrollArea` | 看板 |
 | `ui/DataTable` | `Table` | 产品、项目、执行节点 |
-| `ui/TextField` | `TextInput` | 详情评审、新建任务 |
+| `ui/TextField` | `TextInput` | 新建任务 |
 | `ui/TextArea` | `Textarea` | 详情评审、新建任务 |
-| `ui/SelectField` | `Select` | 看板筛选、详情评审 |
+| `ui/SelectField` | `Select` | 看板筛选 |
 | `ui/Alert` | `Alert` | 全部（错误条/提示条） |
 | `ui/EmptyState` | `Stack` + `Text` + `Button` | 全部 |
 | `ui/SkeletonCard` | `Skeleton` | 全部加载态 |
@@ -201,7 +201,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 ## ui/SelectField
 
-- 用途：看板筛选（kind/status）、评审时选被评审附件。
+- 用途：看板筛选（kind/status）。
 - 底层：`Select`。
 - 使用 token：`surface.raised` `border.default` `space.3` `radius.8`
 - 状态矩阵：与 `TextField` 相同（rest/hover/active/focus-visible/disabled/invalid）；额外支持 `loading`（选项加载中禁用）。
@@ -408,8 +408,8 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | active | 选中项白底 + 轻阴影 | `surface.raised` |
 | focus-visible | 焦点环 | `focus.ring` |
 | disabled | 提交中禁用 | `text.muted` |
-| loading | 提交中禁用 + 按钮 loading | — |
-| invalid | 驳回但意见为空 → 意见框标红 | `feedback.danger` |
+| loading | 由调用方决定（当前无使用方） | — |
+| invalid | 由调用方决定（当前无使用方） | — |
 
 - 可访问性：`radiogroup` 语义，左右键切换。
 - 反例：把两个**互斥状态**做成两个按钮（无法表达状态互斥，读屏与键盘也丢了 `radiogroup` 语义）。注意区分：本组件反的是「状态开关」；评审区的两个结论按钮是两个**命令**（各自带确认与请求），不属于本条反例。
