@@ -50,13 +50,10 @@ gh secret   set ACR_PASSWORD  --repo Casper-Mars/echuan
 
 ## 3. 产出
 
-每次合并进 `main` 推三个 tag，**每个 tag 都是 amd64 + arm64 双架构的 manifest list**：
+每次合并进 `main` 只推一个 tag：`latest`，**是 amd64 + arm64 双架构的 manifest list**。
+拉取方按自身 CPU 架构自动选对应镜像。
 
-- `latest`
-- `main`
-- `sha-<short>`（如 `sha-94f89e8`）
-
-拉取方按自身 CPU 架构自动选对应镜像，无需手动指定 tag。
+要追溯某个 `latest` 对应哪次提交，看 GitHub Actions 的 run（镜像 label 里带 `org.opencontainers.image.revision`）。
 
 多架构构建的提速设计：Dockerfile 里 web / build 两个阶段固定 `--platform=$BUILDPLATFORM`，
 前端 pnpm 与 Go 编译都跑在 runner 原生架构上，Go 用 `GOOS/GOARCH` 交叉编译；
