@@ -55,6 +55,11 @@ export interface AttachmentRef {
   title: string
   kind: string
   role: 'input' | 'output'
+  /**
+   * 简报指向它解释的那一版正文。接口本来就在返回（`v3ClaimInput`），这里补声明：
+   * `lib/current-versions` 的「简报跟随正文」（R-e）需要它。
+   */
+  source_material_id?: string
 }
 
 /**
