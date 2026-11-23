@@ -1,0 +1,103 @@
+{
+  "cases": [
+    {
+      "name": "R-a role=input 永不隐藏（同 kind 有更新版本时仍保留原位置）",
+      "refs": [
+        { "material_id": "m_req_in", "title": "需求正文（作为输入附件）", "kind": "requirement", "role": "input" },
+        { "material_id": "m_req_v1", "title": "需求 v1", "kind": "requirement", "role": "output" },
+        { "material_id": "m_req_v2", "title": "需求 v2", "kind": "requirement", "role": "output" }
+      ],
+      "want_material_ids": ["m_req_in", "m_req_v2"]
+    },
+    {
+      "name": "R-d 同 kind 两条 output 只留最后一条",
+      "refs": [
+        { "material_id": "m_plan_v1", "title": "实施方案 v1", "kind": "plan", "role": "output" },
+        { "material_id": "m_plan_v2", "title": "实施方案 v2", "kind": "plan", "role": "output" }
+      ],
+      "want_material_ids": ["m_plan_v2"]
+    },
+    {
+      "name": "R-e 简报跟随被丢弃的 source 一同隐藏",
+      "refs": [
+        { "material_id": "m_report_v1", "title": "交付报告 v1", "kind": "report", "role": "output" },
+        { "material_id": "m_report_v1_brief", "title": "简报 v1", "kind": "context", "role": "output", "source_material_id": "m_report_v1" },
+        { "material_id": "m_report_v2", "title": "交付报告 v2", "kind": "report", "role": "output" }
+      ],
+      "want_material_ids": ["m_report_v2"]
+    },
+    {
+      "name": "R-f 真孤儿简报（source 从未出现）保留",
+      "refs": [
+        { "material_id": "m_orphan_brief", "title": "孤儿简报", "kind": "context", "role": "output", "source_material_id": "m_never_seen" },
+        { "material_id": "m_design_v1", "title": "技术方案 v1", "kind": "design", "role": "output" }
+      ],
+      "want_material_ids": ["m_orphan_brief", "m_design_v1"]
+    },
+    {
+      "name": "R-f 无 source 的 context 保留",
+      "refs": [
+        { "material_id": "m_plan_v1", "title": "实施方案 v1", "kind": "plan", "role": "output" },
+        { "material_id": "m_plan_v2", "title": "实施方案 v2", "kind": "plan", "role": "output" },
+        { "material_id": "m_ctx_plain", "title": "无来源的上下文", "kind": "context", "role": "output" }
+      ],
+      "want_material_ids": ["m_plan_v2", "m_ctx_plain"]
+    },
+    {
+      "name": "多角色混排保序（只删减不重排）",
+      "refs": [
+        { "material_id": "m_in_req", "title": "任务上下文：需求", "kind": "requirement", "role": "input" },
+        { "material_id": "m_out_design_v1", "title": "技术方案 v1", "kind": "design", "role": "output" },
+        { "material_id": "m_in_plan", "title": "任务上下文：方案", "kind": "plan", "role": "input" },
+        { "material_id": "m_out_design_v2", "title": "技术方案 v2", "kind": "design", "role": "output" },
+        { "material_id": "m_out_report", "title": "交付报告", "kind": "report", "role": "output" },
+        { "material_id": "m_out_report_brief", "title": "交付报告简报", "kind": "context", "role": "output", "source_material_id": "m_out_report" }
+      ],
+      "want_material_ids": ["m_in_req", "m_in_plan", "m_out_design_v2", "m_out_report", "m_out_report_brief"]
+    },
+    {
+      "name": "空输入",
+      "refs": [],
+      "want_material_ids": []
+    },
+    {
+      "name": "同一 material_id 同时挂 input 与 output（两行都在）",
+      "refs": [
+        { "material_id": "m_shared", "title": "设计正文", "kind": "design", "role": "output" },
+        { "material_id": "m_shared", "title": "设计正文（补挂为输入附件）", "kind": "design", "role": "input" }
+      ],
+      "want_material_ids": ["m_shared", "m_shared"]
+    },
+    {
+      "name": "同一 material_id 的 output 被淘汰时，input 行不得同隐（按 id 记账会误删）",
+      "refs": [
+        { "material_id": "m_dup", "title": "设计正文（补挂为输入附件）", "kind": "design", "role": "input" },
+        { "material_id": "m_dup", "title": "设计正文 v1", "kind": "design", "role": "output" },
+        { "material_id": "m_dup_next", "title": "设计正文 v2", "kind": "design", "role": "output" }
+      ],
+      "want_material_ids": ["m_dup", "m_dup_next"]
+    },
+    {
+      "name": "R-e 简报链反序（source 又是简报）迭代到不动点",
+      "refs": [
+        { "material_id": "m_req_v1", "title": "需求 v1", "kind": "requirement", "role": "output" },
+        { "material_id": "m_req_v2", "title": "需求 v2", "kind": "requirement", "role": "output" },
+        { "material_id": "m_brief_outer", "title": "外层简报", "kind": "context", "role": "output", "source_material_id": "m_brief_inner" },
+        { "material_id": "m_brief_inner", "title": "内层简报", "kind": "context", "role": "output", "source_material_id": "m_req_v1" }
+      ],
+      "want_material_ids": ["m_req_v2"]
+    },
+    {
+      "name": "R-b context 与 other 按条显示，不参与去重",
+      "refs": [
+        { "material_id": "m_ctx_a", "title": "上下文 A", "kind": "context", "role": "output" },
+        { "material_id": "m_ctx_b", "title": "上下文 B", "kind": "context", "role": "output" },
+        { "material_id": "m_other_a", "title": "其它 A", "kind": "other", "role": "output" },
+        { "material_id": "m_other_b", "title": "其它 B", "kind": "other", "role": "output" },
+        { "material_id": "m_report_v1", "title": "交付报告 v1", "kind": "report", "role": "output" },
+        { "material_id": "m_report_v2", "title": "交付报告 v2", "kind": "report", "role": "output" }
+      ],
+      "want_material_ids": ["m_ctx_a", "m_ctx_b", "m_other_a", "m_other_b", "m_report_v2"]
+    }
+  ]
+}
