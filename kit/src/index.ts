@@ -78,7 +78,9 @@ export const name = 'echuan'
  *
  * - `tools` / `skills`：后续阶段注册工具与技能指南；
  * - `agents`：本进程的 agent 注册表。派单按 `project_id` ensureSession 后投给
- *   该会话的 agent；会话 id 为 `<project>:<preset>`，cwd 取会话数最多的 workspace。
+ *   该会话的 agent；会话 id 为 `<project>--<preset>`（分隔符是
+ *   `session.ts` 的 `SESSION_ID_SEPARATOR`——宿主 per-record 存储要求键无 `:`），
+ *   cwd 取会话数最多的 workspace。
  *
  * 两者由 `@deepseek-ai/dsh-base` 提供；缺任一则本插件保持未激活，而不是抛错。
  */
@@ -278,7 +280,9 @@ export function apply(ctx: Context, config?: ConfigInput): void {
           client,
           // 兼容回退：仅在 ensureSession 未提供时才使用。
           agents: { roots: () => ctx.agents.roots() },
-          // 项目级会话：sessionId = `<project>:<preset>`，cwd 取会话数最多的 workspace。
+          // 项目级会话：sessionId = `<project>--<preset>`（分隔符见 session.ts 的
+          // SESSION_ID_SEPARATOR；`:` 会被宿主 per-record 存储拒绝），
+          // cwd 取会话数最多的 workspace。
           // 服务每次调用时惰性读取，避免插件加载早期服务未就绪。
           ensureSession: async (projectId, presetId) => (await ensureProjectSession(
             resolved.worker.sessionKey === 'project'

@@ -32,15 +32,30 @@ const TAG = '[dsh-echuan/session]'
 export const DEFAULT_PERMISSION_PRESET = 'workspace-write'
 
 /**
+ * 会话 id 的两段分隔符。
+ *
+ * 宿主把会话 id 直接当 per-record 存储的**文件名**用（`session_projcache`
+ * 单元 `layout: per-record`，键必须匹配 `^[a-zA-Z0-9_-]+$`）。旧实现的 `:`
+ * 会被判 `per-record key '…' is not path-safe`，缓存写不进去、长期 stale
+ * （issue #135 第 3 条）；`--` 在两端都安全，且项目号 / preset 自身不含它。
+ *
+ * 代价：已在盘上的老会话 id（`<project>:<preset>`）不再被 resume 命中。
+ */
+export const SESSION_ID_SEPARATOR = '--'
+
+/**
  * V3 会话键 = 项目 + 角色。同一项目的 PM / CTO / Dev 必须是三个会话，
  * 否则第二个角色派单会 resume 到旧 preset 的会话。
+ *
+ * 结果字符集受 {@link SESSION_ID_SEPARATOR} 约束：项目号与 preset 只含
+ * `[a-zA-Z0-9_-]` 时，拼出来的 session id 才能落进 per-record 存储。
  */
 export function composeSessionId(projectId: string, presetId: string): string {
   const project = projectId.trim()
   const preset = presetId.trim()
   if (project === '') throw new TypeError('projectId 不能为空')
   if (preset === '') throw new TypeError('presetId 不能为空')
-  return `${project}:${preset}`
+  return `${project}${SESSION_ID_SEPARATOR}${preset}`
 }
 
 /** ensure 结局：live 复用 / resume 恢复 / create 新建。 */
@@ -204,10 +219,11 @@ export async function ensureSession(
     warn(`${TAG} 警告：projectId 为空，放弃本次 ensure`)
     return undefined
   }
-  // 会话键 = 项目号[:preset]。V3 起一个项目按角色拆会话，preset 由派单显式给出；
+  // 会话键 = 项目号[--preset]。V3 起一个项目按角色拆会话，preset 由派单显式给出；
   // 未给 preset 时退回「项目号即会话号」的旧行为（老拓扑 / 灰度期）。
+  // 分隔符必须走 SESSION_ID_SEPARATOR：宿主 per-record 存储拒绝 `:`（issue #135 第 3 条）。
   const requested = typeof presetId === 'string' && presetId.trim() !== '' ? presetId.trim() : undefined
-  const id = requested === undefined ? project : `${project}:${requested}`
+  const id = requested === undefined ? project : `${project}${SESSION_ID_SEPARATOR}${requested}`
 
   // 1) live 命中 → 直接复用（不调 stat / resume / create）。
   let live: EnsureAgent | undefined | null

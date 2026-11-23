@@ -7,7 +7,7 @@
 插件**只做三件事**：
 
 1. **定时心跳**：上报 `state`（`busy` = 手里有未交付的 work item，`idle` = 没有）、`kinds`（本 worker 能做的类别）与 metadata，并带上平台下发的 `worker_id`（仅存内存）。
-2. **投递派单**：心跳只做注册；任务用 `POST /v1/tasks/claim` 拉取。领到后按 `project_id` + `presetByKind` 找/建会话（sessionId = `<project>:<preset>`，cwd 取会话数最多的 workspace），再投给该会话的 agent。不做 kind → agent 的分流；需要角色 / 模型隔离就拆 worker。
+2. **投递派单**：心跳只做注册；任务用 `POST /v1/tasks/claim` 拉取。领到后按 `project_id` + `presetByKind` 找/建会话（sessionId = `<project>--<preset>`，分隔符见 `session.ts` 的 `SESSION_ID_SEPARATOR`——宿主 per-record 存储要求键无 `:`；cwd 取会话数最多的 workspace），再投给该会话的 agent。不做 kind → agent 的分流；需要角色 / 模型隔离就拆 worker。
 3. **提供 25 个工具**（默认全量；可用 `exclude` 按 agent 裁剪，见「配置」）：
    - 生命周期写：`echuan_project_create`（建项目，`requirement_md` 必填，建项即入需求评审）、`echuan_project_requirement_write`（改写需求正文）、`echuan_project_submit`（草稿提交评审，仅历史草稿项目 / 驳回返工需要）、`echuan_spec_create`（建方案）、`echuan_spec_revise`（修订方案）、`echuan_plan_submit`（批量建卡）
    - 工作项写：`echuan_task_claim`（领卡）、`echuan_task_renew`（续租）、`echuan_task_report`（交报告）
@@ -172,7 +172,8 @@ dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
 - `exclude` 默认 `[]`（不排除，全量 25 个）；工具名写错或含空白项时**插件激活直接失败**（`TypeError`，错误里列出未知项与合法名单），不会静默少注册。
 - **一个 worker 一个身份，一个项目按角色拆会话**：派单先按 `kind` 查本机
   `worker.presetByKind` 得到 preset，再按 `project_id` + preset ensureSession，
-  会话键 = `项目号:preset`（映射未命中时退回「项目号即会话号」的旧键），
+  会话键 = `项目号--preset`（分隔符见 `session.ts` 的 `SESSION_ID_SEPARATOR`，宿主
+  per-record 存储要求键无 `:`；映射未命中时退回「项目号即会话号」的旧键），
   cwd 取会话数最多的 workspace；拿到该会话的 agent 再投递。会话未就绪时只 warn 一条、
   本轮跳过、下一轮重试。**平台不认识 preset 名**：路由表完全属于 worker 侧配置。
 - **agentOptions 与 create/resume 同源**：provider/model 取 `agentDefaultModel`，否则恢复出的会话没有模型，首轮 turn 会在 `{{model}}` 插值处失败。
