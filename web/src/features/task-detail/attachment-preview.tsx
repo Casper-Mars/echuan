@@ -17,6 +17,8 @@ import type { AttachmentRef } from '../../api/types'
 import { Alert, AttachmentRow, Button, EmptyState, MarkdownViewer } from '../../ui'
 import { ErrorBar } from '../shell/ErrorBar'
 import { useAttachmentPreview, type PreviewState } from './use-attachment-preview'
+// 面板样式随组件走（项目详情的资料区也复用它；CSS 只挂在路由上会让复用方无样式）
+import './task-detail.css'
 
 const ROLE_LABEL: Record<AttachmentRef['role'], string> = {
   input: '输入',
