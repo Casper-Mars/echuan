@@ -86,8 +86,6 @@ jobs:
           images: ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/${{ env.ACR_REPO }}
           tags: |
             type=raw,value=latest
-            type=raw,value=main
-            type=sha,format=short
           labels: |
             org.opencontainers.image.title=echuan
             org.opencontainers.image.description=驿传单二进制服务（Docker 部署）
