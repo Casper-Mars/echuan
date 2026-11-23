@@ -152,8 +152,8 @@ func TestV3SchemaTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("user_version = %d, want 1", version)
+	if version != 2 {
+		t.Errorf("user_version = %d, want 2", version)
 	}
 }
 
@@ -388,8 +388,8 @@ func TestV3SchemaVersionGuard(t *testing.T) {
 	if !errors.As(err, &versionErr) {
 		t.Fatalf("Migrate error = %v, want *SchemaVersionError", err)
 	}
-	if versionErr.Database != 6 || versionErr.Binary != 1 {
-		t.Errorf("SchemaVersionError = %+v, want database 6 / binary 1", versionErr)
+	if versionErr.Database != 6 || versionErr.Binary != 2 {
+		t.Errorf("SchemaVersionError = %+v, want database 6 / binary 2", versionErr)
 	}
 }
 

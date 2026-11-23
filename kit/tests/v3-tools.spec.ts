@@ -126,6 +126,7 @@ describe('V3 写工具', () => {
       kind: 'context',
       title: '实现接口 · 决策简报',
       body_md: '## 结论\n做。',
+      source_material_id: 'm_out',
     })
     expect(attachV3).toHaveBeenCalledWith({
       task_id: 't_1',

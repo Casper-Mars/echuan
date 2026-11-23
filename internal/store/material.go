@@ -22,7 +22,7 @@ var ErrChainBroken = errors.New("store: material chain is broken")
 // head.
 const materialColumns = `m.id, m.material_id, m.kind, m.version, m.title,
 	m.sha256, m.size, m.path, m.uploaded_by, m.previous_material_id,
-	m.create_time, m.update_time`
+	m.source_material_id, m.create_time, m.update_time`
 
 // Material is the read model of one materials row.
 type Material struct {
@@ -36,6 +36,7 @@ type Material struct {
 	Path               string `db:"path"`
 	UploadedBy         string `db:"uploaded_by"`
 	PreviousMaterialID *int64 `db:"previous_material_id"`
+	SourceMaterialID   *int64 `db:"source_material_id"`
 	CreateTime         string `db:"create_time"`
 	UpdateTime         string `db:"update_time"`
 }
@@ -52,6 +53,7 @@ type NewMaterial struct {
 	Path               string
 	UploadedBy         string
 	PreviousMaterialID *int64
+	SourceMaterialID   *int64
 	CreateTime         string
 	UpdateTime         string
 }
@@ -60,10 +62,11 @@ type NewMaterial struct {
 func InsertMaterial(ctx context.Context, tx *sql.Tx, m NewMaterial) (int64, error) {
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO materials (material_id, kind, version, title, sha256, size, path,
-		                       uploaded_by, previous_material_id, create_time, update_time)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                       uploaded_by, previous_material_id, source_material_id,
+		                       create_time, update_time)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.MaterialID, m.Kind, m.Version, m.Title, m.SHA256, m.Size, m.Path,
-		m.UploadedBy, m.PreviousMaterialID, m.CreateTime, m.UpdateTime)
+		m.UploadedBy, m.PreviousMaterialID, m.SourceMaterialID, m.CreateTime, m.UpdateTime)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return 0, fmt.Errorf("%w: %v", ErrUniqueViolation, err)

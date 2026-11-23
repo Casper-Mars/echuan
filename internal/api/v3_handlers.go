@@ -514,6 +514,8 @@ type v3ClaimInput struct {
 	Title      string `json:"title"`
 	Kind       string `json:"kind"`
 	Role       string `json:"role"`
+	// SourceMaterialID links a derived material to its source artifact version.
+	SourceMaterialID *string `json:"source_material_id,omitempty"`
 }
 
 type v3ClaimUpstream struct {
@@ -552,6 +554,7 @@ func (h *v3Handler) claim(w http.ResponseWriter, r *http.Request) {
 	for _, input := range envelope.Inputs {
 		inputs = append(inputs, v3ClaimInput{
 			MaterialID: input.MaterialID, Title: input.Title, Kind: input.Kind.String(), Role: input.Role.String(),
+			SourceMaterialID: input.SourceMaterialID,
 		})
 	}
 	writeJSON(w, http.StatusOK, v3ClaimResponse{
@@ -788,6 +791,9 @@ type v3CreateMaterialRequest struct {
 	Kind   string `json:"kind"`
 	Title  string `json:"title"`
 	BodyMD string `json:"body_md"`
+	// SourceMaterialID links this material to the artifact it describes
+	// (a decision brief points at the requirement version it summarizes).
+	SourceMaterialID string `json:"source_material_id"`
 }
 
 type v3MaterialResponse struct {
@@ -821,7 +827,7 @@ func (h *v3Handler) createMaterial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := h.materials.CreateMaterial(r.Context(), int(kind), body.Title, []byte(body.BodyMD), ActorFromContext(r.Context()))
+	row, err := h.materials.CreateMaterial(r.Context(), int(kind), body.Title, []byte(body.BodyMD), ActorFromContext(r.Context()), body.SourceMaterialID)
 	if err != nil {
 		switch {
 		case errors.Is(err, material.ErrTooLarge):
@@ -920,6 +926,7 @@ func attachmentItems(refs []storev3.MaterialRef) []v3ClaimInput {
 	for _, ref := range refs {
 		items = append(items, v3ClaimInput{
 			MaterialID: ref.MaterialID, Title: ref.Title, Kind: ref.Kind.String(), Role: ref.Role.String(),
+			SourceMaterialID: ref.SourceMaterialID,
 		})
 	}
 	return items

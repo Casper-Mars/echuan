@@ -1416,15 +1416,13 @@ export function createClient(
     },
 
     async createV3Material(input) {
-      return requestJson<V3Material>(ctx, {
-        method: 'POST',
-        path: '/v1/materials',
-        body: {
-          kind: requireNonEmpty(input?.kind, 'kind'),
-          title: requireNonEmpty(input?.title, 'title'),
-          body_md: requireNonEmpty(input?.body_md, 'body_md'),
-        },
-      })
+      const body: Record<string, unknown> = {
+        kind: requireNonEmpty(input?.kind, 'kind'),
+        title: requireNonEmpty(input?.title, 'title'),
+        body_md: requireNonEmpty(input?.body_md, 'body_md'),
+      }
+      if (input.source_material_id !== undefined) body.source_material_id = input.source_material_id
+      return requestJson<V3Material>(ctx, { method: 'POST', path: '/v1/materials', body })
     },
 
     async attachV3(input) {

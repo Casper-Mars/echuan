@@ -101,6 +101,7 @@ type WriteInput struct {
 	Body               []byte
 	UploadedBy         string
 	PreviousMaterialID *int64
+	SourceMaterialID   *int64
 }
 
 // Stored is the result of Write. NewObject reports whether this write created
@@ -187,6 +188,7 @@ func (w *Writer) Write(ctx context.Context, tx *sql.Tx, in WriteInput) (Stored, 
 		Path:               relPath,
 		UploadedBy:         in.UploadedBy,
 		PreviousMaterialID: in.PreviousMaterialID,
+		SourceMaterialID:   in.SourceMaterialID,
 		CreateTime:         ts,
 		UpdateTime:         ts,
 	}

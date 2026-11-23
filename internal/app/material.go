@@ -32,15 +32,24 @@ func NewMaterialService(st *store.Store, materials *material.Writer) *MaterialSe
 // CreateMaterial stores one material version and returns its row. The object
 // bytes and the materials row are written in one transaction (file first, row
 // second); a failed transaction removes the freshly written object.
-func (s *MaterialService) CreateMaterial(ctx context.Context, kind int, title string, body []byte, uploadedBy string) (store.Material, error) {
+func (s *MaterialService) CreateMaterial(ctx context.Context, kind int, title string, body []byte, uploadedBy, sourceMaterialID string) (store.Material, error) {
 	var stored material.Stored
 	err := s.store.Tx(ctx, func(tx *sql.Tx) error {
+		var source *int64
+		if raw := strings.TrimSpace(sourceMaterialID); raw != "" {
+			row, err := store.GetMaterialByMaterialID(ctx, tx, raw)
+			if err != nil {
+				return err
+			}
+			source = &row.ID
+		}
 		var err error
 		stored, err = s.materials.Write(ctx, tx, material.WriteInput{
-			Kind:       kind,
-			Title:      title,
-			Body:       body,
-			UploadedBy: uploadedBy,
+			Kind:             kind,
+			Title:            title,
+			Body:             body,
+			UploadedBy:       uploadedBy,
+			SourceMaterialID: source,
 		})
 		return err
 	})

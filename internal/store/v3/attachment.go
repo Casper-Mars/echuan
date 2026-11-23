@@ -155,6 +155,7 @@ func ListProjectMaterialRefs(ctx context.Context, q storedb.Querier, projectPK i
 		SELECT `+materialRefColumns+`
 		  FROM attachments a
 		  JOIN materials m ON m.id = a.material_id
+		  LEFT JOIN materials src ON src.id = m.source_material_id
 		  JOIN tasks t ON t.id = a.task_id
 		 WHERE t.project_id = ?
 		 ORDER BY a.id ASC`, projectPK)

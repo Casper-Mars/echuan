@@ -851,3 +851,68 @@ func TestProjectMaterialsList(t *testing.T) {
 		t.Errorf("role=input items = %+v, want none", got.Items)
 	}
 }
+
+// TestProjectMaterialsPairBriefs pins the rework case: a rejected requirement
+// resubmitted as v2 must keep each brief attached to the version it explains,
+// so "the brief of the latest requirement" is unambiguous.
+func TestProjectMaterialsPairBriefs(t *testing.T) {
+	a := newAPIServer(t)
+	a.seedProduct(t, "APP")
+
+	_, payload := a.do(t, http.MethodPost, "/v1/projects", map[string]any{
+		"product_id": "APP", "name": "p",
+	})
+	project := decodeBody[v3ProjectResponse](t, payload)
+
+	_, payload = a.do(t, http.MethodPost, "/v1/tasks", map[string]any{
+		"project_id": project.ProjectID, "kind": "requirement", "title": "需求",
+	})
+	task := decodeBody[v3TaskResponse](t, payload)
+
+	createAndAttach := func(kind, title, body, source string) string {
+		t.Helper()
+		req := map[string]any{"kind": kind, "title": title, "body_md": body}
+		if source != "" {
+			req["source_material_id"] = source
+		}
+		_, payload := a.do(t, http.MethodPost, "/v1/materials", req)
+		material := decodeBody[v3MaterialResponse](t, payload)
+		resp, payload := a.do(t, http.MethodPost, "/v1/tasks/attach", map[string]any{
+			"task_id": task.TaskID, "material_id": material.MaterialID, "role": "output",
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("attach %s: %d (%s)", title, resp.StatusCode, payload)
+		}
+		return material.MaterialID
+	}
+
+	reqV1 := createAndAttach("requirement", "需求 v1", "# v1", "")
+	briefV1 := createAndAttach("context", "需求 v1 简报", "## 结论\nv1", reqV1)
+	reqV2 := createAndAttach("requirement", "需求 v2", "# v2", "")
+	briefV2 := createAndAttach("context", "需求 v2 简报", "## 结论\nv2", reqV2)
+
+	resp, payload := a.do(t, http.MethodGet, "/v1/projects/materials?id="+project.ProjectID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list project materials = %d (%s)", resp.StatusCode, payload)
+	}
+	items := decodeBody[v3AttachmentList](t, payload).Items
+	if len(items) != 4 {
+		t.Fatalf("items = %d, want 4 (%+v)", len(items), items)
+	}
+
+	pairs := map[string]string{}
+	for _, item := range items {
+		if item.Kind == "context" {
+			if item.SourceMaterialID == nil {
+				t.Fatalf("brief %s has no source", item.MaterialID)
+			}
+			pairs[*item.SourceMaterialID] = item.MaterialID
+		}
+	}
+	if pairs[reqV1] != briefV1 || pairs[reqV2] != briefV2 {
+		t.Errorf("pairs = %+v, want %s->%s and %s->%s", pairs, reqV1, briefV1, reqV2, briefV2)
+	}
+	if len(pairs) != 2 {
+		t.Errorf("distinct brief sources = %d, want 2", len(pairs))
+	}
+}

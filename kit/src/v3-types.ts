@@ -154,7 +154,7 @@ export interface V3Client {
   claimV3Task(input: { worker_id: string; kind: V3TaskKind }): Promise<ApiResult<V3Task>>
   renewV3Task(input: { task_id: string; lease_id: string }): Promise<ApiResult<{ task_id: string; lease_id: string; lease_until: string }>>
   reportV3Task(input: { task_id: string; lease_id: string; material_id: string }): Promise<ApiResult<V3Task>>
-  createV3Material(input: { kind: string; title: string; body_md: string }): Promise<ApiResult<V3Material>>
+  createV3Material(input: { kind: string; title: string; body_md: string; source_material_id?: string }): Promise<ApiResult<V3Material>>
   attachV3(input: {
     project_id?: string
     task_id?: string

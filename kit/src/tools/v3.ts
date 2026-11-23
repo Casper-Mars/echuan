@@ -260,6 +260,8 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
                 ? args.brief_title
                 : `${task.title} · 决策简报`,
               body_md: briefMD,
+              // 简报指向它解释的那一版交付物：重提版本时一一配对，不会查出两份。
+              source_material_id: materialID,
             })
             if (createdBrief.kind === 'empty') {
               throw new EchuanValidationError('平台对建简报资料返回 204', 'unexpected_empty', 'brief_md')
