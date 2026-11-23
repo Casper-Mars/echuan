@@ -49,6 +49,31 @@ node <kit>/design-kit/scripts/check.mjs design
 
 `mock/shots/<screen>/` 是逐屏截图入口（每屏一个目录，注入 `window.__SCREEN__`），`mock/` 根目录保留 `?screen=` 交互用法。
 
+### 重出某屏 refs 的完整命令（原样可复制）
+
+`<kit>` = design-kit 包路径（本环境 `/home/node/.dsh/profiles/web/node_modules/dsh-agent-cto/design-kit`）；
+CDP 指向环境自带的 browserless（本环境 `ws://browserless:3000?token=test-token`），`--browser-host` 填浏览器容器看到的 agent 容器名（本环境 `dsh-agent`）。
+
+`--theme` **没有循环**：一次只出一种主题，双主题 = 同一命令跑两遍。
+
+```bash
+# 18 张：desktop 1440×900 / tablet 1024×768 / mobile 390×844 × 6 态 × 暗色
+node <kit>/scripts/screenshot.mjs --mock design/mock/shots/attachment-preview \
+  --out design/refs --screen attachment-preview \
+  --viewports desktop,tablet,mobile \
+  --states default,empty,loading,error,oversized,image-placeholder \
+  --theme dark --url "ws://browserless:3000?token=test-token" --browser-host dsh-agent
+
+# 18 张：同上 × 亮色
+node <kit>/scripts/screenshot.mjs --mock design/mock/shots/attachment-preview \
+  --out design/refs --screen attachment-preview \
+  --viewports desktop,tablet,mobile \
+  --states default,empty,loading,error,oversized,image-placeholder \
+  --theme light --url "ws://browserless:3000?token=test-token" --browser-host dsh-agent
+```
+
+合计 36 张（`attachment-preview__<viewport>__<theme>__<state>.png`），命令退出码 0 且日志末尾打印「完成：18 张截图」各一次。
+
 ## 实现验收（给 dev 卡）
 
 1. 每屏结构、层级、间距、字号、颜色对照 `refs/<screen>__<viewport>__light__<state>.png`。
@@ -87,6 +112,15 @@ design_ref 指 `design/` 物料入库的仓库 commit：`design/screens/*.md`、
 - `MANIFEST.sha256`：沿用「保留旧值，不重算」（见上一节），本次未重算。
 - `design_ref` 仍为 `032c2ca…`（物料入库 commit：240 张 refs 与四份契约文档在该 commit 下可逐字节检出）。本次改动属「`design_ref` 及其后的契约增量」——dev 卡**取图按 `design_ref`，取口径按本条记录的 commit**。
 - 随本次一并登记、但**不修**的两条偏差（认账：设计侧；回收时点待 design 负责人决议）：卡片字号（契约 `text.small`/`caption` vs 实现 `text.body`/`text.mono`）、状态条竖直范围（mock 内缩胶囊条 vs 实现通高）。
+
+### issue #128 附件预览改整页居中浮层（2026-11-23）
+
+- 契约增量 commit：`7f2e9b955f3f1e29830f507afb6c418ce265ca5b`（`docs(t_01M83J5JS99H91MA4B6RS0CZS8): 附件预览改为整页居中 80% 浮层契约，重出 36 张 refs`）；本条记录与本文件「重出某屏 refs 的完整命令」在紧随其后的 commit 里，不改变上面那条 sha 的判定。上游方案 `docs/tech/attachment-preview-overlay-128-v0.2.md`（由实现卡入库），issue #128。
+- 范围：`components.md`（总览表新增 `ui/ContentModal`（底座 `Modal`）与「22 个组件」口径、新增 §ui/ContentModal、§ui/DetailSheet 补 `closeLabel` / `concealed`、「21 个组件」表述改 22）、`screens/attachment-preview.md`（断点与结构改成 ≥1024 整页居中浮层 + 浮层头部）、`flows.md` F2（第 2 / 4 步）、`mock/shots/attachment-preview/{mock.js,styles.css}`（看板整页底图 + 居中 80% 浮层 + `@media (max-width:63.99em)` 回落抽屉）。`tokens.json` 零变动，`MANIFEST.sha256` 未重算。
+- refs 口径：总量仍是 8 屏 × 状态 × 三视口 × 双主题 = 240 张；本次**只重出 `attachment-preview` 的 36 张**（6 态 × 3 视口 × 2 主题），其余 7 屏 204 张未动。桌面 1440×900 与平板 1024×768 帧里是**视口居中的 80vw×80vh 浮层，画面里没有右侧 720 抽屉**（底图是看板整页）；移动 390×844 仍是全屏 sheet + 头部（徽标 / 标题 / 关闭）。
+- 截图可复现：完整命令见上文「重出某屏 refs 的完整命令」（dark / light 各一遍，每次 18 张，退出码 0）。
+- `design_ref`：既有 `032c2ca…` 仍是**物料入库 commit**（未变形状态的对照基线）；本卡是 refs 的生产方，**实现卡（T2）的 `design_ref` 取本条记录的契约增量 commit `7f2e9b9…`**——取图按该 commit、取口径按该 commit 的契约文本。
+- 随本次登记的已知状态：`design/mock/`（根目录交互入口 `?screen=`）未同步本形态，仍画旧的侧边抽屉——本卡范围只含 `mock/shots/attachment-preview/`，36 张 refs 的产出不受影响；需要根入口同构时单开一张物料卡。
 
 ## 视觉方向（已定：B 暗色仪表盘）
 
