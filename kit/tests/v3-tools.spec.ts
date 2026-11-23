@@ -23,6 +23,15 @@ function ok<T>(data: T) {
   return { kind: 'ok' as const, status: 200, data }
 }
 
+/** 递归检查是否出现值为 `undefined` 的键（dsh 会把这种结果判成非无损 JSON）。 */
+function hasUndefinedKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasUndefinedKey)
+  if (value !== null && typeof value === 'object') {
+    return Object.entries(value).some(([, item]) => item === undefined || hasUndefinedKey(item))
+  }
+  return false
+}
+
 function buildOptions(client: Record<string, any>, identity: WorkerIdentity = { workerId: 'w_1' }) {
   const options = { client: client as any, identity } as EchuanToolOptions
   const tools = createAllEchuanTools(options)
@@ -84,6 +93,21 @@ describe('V3 写工具', () => {
     expect(createV3Material).not.toHaveBeenCalled()
     expect(reportV3Task).toHaveBeenCalledWith({ task_id: 't_1', lease_id: 'l_1', material_id: 'm_1' })
     expect(result).toMatchObject({ kind: 'reported' })
+  })
+
+  it('task_report 的返回值是无损 JSON：不含 undefined 键（dsh 会做 JSON 快照）', async () => {
+    // 回归：没带简报时曾返回 `brief_error: undefined`，dsh 侧快照判非无损，
+    // 整次调用被报成 invalid output（value is not lossless JSON），而交付其实已经成功。
+    const reportV3Task = vi.fn().mockResolvedValue(ok({ ...task, status: 'in_review' }))
+    const { byName } = buildOptions({ reportV3Task, createV3Material: vi.fn(), getV3Task: vi.fn() })
+
+    const result = await byName.get('echuan_task_report')!.execute(
+      { task_id: 't_1', lease_id: 'l_1', material_id: 'm_1' } as any,
+      {} as any,
+    )
+
+    expect(hasUndefinedKey(result)).toBe(false)
+    expect(JSON.parse(JSON.stringify(result))).toStrictEqual(result)
   })
 
   it('task_report 传 summary_md 时先建 material，再上报', async () => {

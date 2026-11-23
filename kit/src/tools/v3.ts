@@ -99,6 +99,38 @@ function unwrapClaim(data: unknown): { task: V3Task; inputs: V3ClaimInput[] } {
   return { task: data as V3Task, inputs: [] }
 }
 
+/**
+ * 剔除值为 `undefined` 的键（含嵌套对象与数组元素），保证工具结果是「无损 JSON」。
+ *
+ * 背景（实测事故）：dsh 侧会对工具返回的规范值做 JSON 快照，对象里只要有一个
+ * `undefined` 值的键，快照就不是无损的，整次调用被判成 `invalid output`
+ * （`value is not lossless JSON`）——即便副作用已经成功。
+ *
+ * 具体表现：`echuan_task_report` 在没有简报时返回 `brief_error: undefined`，
+ * 于是一次 4/4 交付全部报错，agent 只能靠额外的只读调用去确认「到底成没成」。
+ *
+ * 统一在写工具出口剔除 undefined，避免每个工具各自记得「只在有值时挂字段」。
+ * 只递归普通对象与数组：Date / Map 等非纯 JSON 值原样透传（本就不该出现在工具结果里）。
+ */
+export function dropUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value
+      .filter(item => item !== undefined)
+      .map(item => dropUndefined(item)) as unknown as T
+  }
+  if (value !== null && typeof value === 'object') {
+    const proto = Object.getPrototypeOf(value)
+    if (proto !== Object.prototype && proto !== null) return value
+    const out: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (item === undefined) continue
+      out[key] = dropUndefined(item)
+    }
+    return out as T
+  }
+  return value
+}
+
 function writeTool(
   name: string,
   description: string,
@@ -112,7 +144,8 @@ function writeTool(
     output: { schema: jsonObjectSchema, render: renderJSON },
     async execute(args) {
       try {
-        return (await run(args as Record<string, any>)) as any
+        // 出口统一净化：`undefined` 键会让整次调用被判 invalid output，见 dropUndefined 注释。
+        return dropUndefined((await run(args as Record<string, any>)) as any) as any
       } catch (err) {
         return toToolError(err)
       }
