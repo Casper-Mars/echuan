@@ -181,3 +181,43 @@ func TestRenderUnsupportedState(t *testing.T) {
 		t.Fatal("Render(completed) = nil error, want unsupported state")
 	}
 }
+
+// TestRenderWithoutDocURLHasNoPlaceholder guards issue #135: without a document
+// the card keeps its summary and form and carries no doc element at all. The
+// old "_文档生成中…_" placeholder claimed a background job that never existed.
+func TestRenderWithoutDocURLHasNoPlaceholder(t *testing.T) {
+	for _, tc := range goldenCases() {
+		if tc.opts.DocURL != "" {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := Render(tc.subject, tc.project, tc.item, Options{})
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			body := string(raw)
+			if strings.Contains(body, "文档生成中") {
+				t.Errorf("card renders the placeholder: %s", body)
+			}
+			if strings.Contains(body, "看全文") || strings.Contains(body, "open_doc") {
+				t.Errorf("card without a document carries a doc button: %s", body)
+			}
+		})
+	}
+}
+
+// TestRenderClosedWithoutDocURLHasNoPlaceholder is the terminal-card counterpart:
+// the outcome stays, no placeholder is appended.
+func TestRenderClosedWithoutDocURLHasNoPlaceholder(t *testing.T) {
+	raw, err := RenderClosed(Subject{Kind: KindWorkItem, ID: "APP-12-T0007", State: StateSubmitted, Title: "补齐库存接口"}, "已处理", Options{})
+	if err != nil {
+		t.Fatalf("RenderClosed: %v", err)
+	}
+	body := string(raw)
+	if strings.Contains(body, "文档生成中") || strings.Contains(body, "看全文") {
+		t.Errorf("closed card without a document carries a doc element: %s", body)
+	}
+	if !strings.Contains(body, "处理结果：已处理") {
+		t.Errorf("closed card lost the outcome: %s", body)
+	}
+}

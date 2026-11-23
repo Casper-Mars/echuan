@@ -64,6 +64,23 @@ func (s *V3Store) SaveAction(ctx context.Context, idemKey, subject, action, resu
 	return store.PutIMActionResult(ctx, s.st.Write(), idemKey, subject, action, result, formatIMTime(at))
 }
 
+// CachedDoc returns the imported document URL of one material version.
+func (s *V3Store) CachedDoc(ctx context.Context, materialID string) (string, bool, error) {
+	url, err := store.GetIMDocURL(ctx, s.st.Read(), materialID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return url, true, nil
+}
+
+// SaveDoc records the document a material version was imported into.
+func (s *V3Store) SaveDoc(ctx context.Context, materialID, docToken, url string, at time.Time) error {
+	return store.PutIMDoc(ctx, s.st.Write(), materialID, docToken, url, formatIMTime(at))
+}
+
 func toCardRecord(row store.IMCardRow) CardRecord {
 	rec := CardRecord{
 		SubjectKind: row.SubjectKind, SubjectID: row.SubjectID, ChatID: row.ChatID,

@@ -68,9 +68,17 @@ curl -s -X POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/int
 
 ### 「看全文」按钮不出现
 
-- `ECHUAN_IM_DOC_FOLDER` 为空 → 启动日志有 `im doc folder token is empty`
-- 导入失败 → 日志 `im doc import failed`，卡片仍保留摘要，审批不受影响
-- 应用需要 `docs:document:import` + `drive:drive`
+验收卡片**先发摘要与审批按钮**，文档就绪后再补「看全文」按钮（异步 patch），所以刚发出时没有按钮是正常的。
+按钮指向的是**该任务最新交付物**（latest output material）导入后的云文档；判定顺序如下：
+
+1. `ECHUAN_IM_DOC_FOLDER` 为空 → 功能整体关闭：启动日志 `im doc folder token is empty`，之后不再有任何导入请求。
+   卡片始终不带按钮，也**不再**出现 `_文档生成中…_` 这类占位文案。
+2. 任务没有交付物（`attachments` 里没有 `output` 角色材料）→ 没有可导入的材料，卡片不带按钮。
+3. 导入失败（错 app_secret、断网、目录无权限）→ 日志 `im doc import failed`；卡片保留摘要与审批按钮，审批不受影响。
+   失败不写 `im_doc`，下次渲染会重试。
+4. 导入成功 → 日志 `im doc imported`（同一材料只出现一次，之后命中 `im_doc` 缓存）与 `im card updated with doc`，
+   卡片随即带「看全文」。
+5. 应用需要 `docs:document:import` + `drive:drive`。
 
 ### 文档打不开（无权限）
 

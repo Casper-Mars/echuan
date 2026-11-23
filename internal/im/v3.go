@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Casper-Mars/echuan/internal/im/card"
@@ -34,12 +35,18 @@ type V3ReviewSource interface {
 // card carries approve/reject buttons and the callback resolves the task via
 // im_card(message_id).
 type V3Poller struct {
-	cfg    Config
-	source V3ReviewSource
-	cards  CardStore
-	msg    Messenger
-	logger *slog.Logger
-	now    func() time.Time
+	cfg       Config
+	source    V3ReviewSource
+	cards     CardStore
+	msg       Messenger
+	docs      DocProvider
+	materials TaskMaterialSource
+	logger    *slog.Logger
+	now       func() time.Time
+
+	mu         sync.Mutex
+	docFilling map[string]bool
+	fillWG     sync.WaitGroup
 }
 
 // NewV3Poller builds the V3 poller.
@@ -56,8 +63,16 @@ func NewV3Poller(cfg Config, source V3ReviewSource, cards CardStore, msg Messeng
 	if cfg.MaxCards <= 0 {
 		cfg.MaxCards = 10
 	}
-	return &V3Poller{cfg: cfg, source: source, cards: cards, msg: msg, logger: logger, now: now}
+	return &V3Poller{cfg: cfg, source: source, cards: cards, msg: msg, logger: logger, now: now,
+		docFilling: map[string]bool{}}
 }
+
+// SetDocs attaches the material → document importer. Without it, or when the
+// importer is switched off, cards carry no "看全文" button.
+func (p *V3Poller) SetDocs(docs DocProvider) { p.docs = docs }
+
+// SetMaterials attaches the resolver for a task's latest output material.
+func (p *V3Poller) SetMaterials(materials TaskMaterialSource) { p.materials = materials }
 
 // Run polls until ctx is cancelled.
 func (p *V3Poller) Run(ctx context.Context) {
@@ -112,10 +127,18 @@ func (p *V3Poller) tick(ctx context.Context) {
 			Title: fmt.Sprintf("%s · %s", review.ProjectID, review.Title),
 			Age:   ageOf(review.UpdateTime, now), Reason: review.Reason,
 		}
-		body, err := card.Render(subject, nil, &card.WorkItem{
+		item := card.WorkItem{
 			ProjectID: review.ProjectID, Worker: review.WorkerID,
 			Attempt: review.Attempt, MaxAttempts: review.MaxAttempts,
-		}, card.Options{})
+		}
+		// The doc link always points at this task's latest output material, so a
+		// re-report or a new artifact version yields a different document.
+		materialID := p.latestOutputMaterial(ctx, review.TaskID)
+		docURL := p.cachedDoc(ctx, materialID)
+		renderWithDoc := func(url string) ([]byte, error) {
+			return card.Render(subject, nil, &item, card.Options{DocURL: url})
+		}
+		body, err := renderWithDoc(docURL)
 		if err != nil {
 			p.logger.Warn("im v3: render card", "task", review.TaskID, "error", err)
 			continue
@@ -129,6 +152,7 @@ func (p *V3Poller) tick(ctx context.Context) {
 			record.Fingerprint = fingerprint
 			record.RenderedAt = now
 			_ = p.cards.Put(ctx, record)
+			p.fillDocLater(ctx, subject, materialID, record.MessageID, docURL, renderWithDoc)
 			continue
 		}
 
@@ -144,6 +168,7 @@ func (p *V3Poller) tick(ctx context.Context) {
 		}); err != nil {
 			p.logger.Warn("im v3: store card", "task", review.TaskID, "error", err)
 		}
+		p.fillDocLater(ctx, subject, materialID, messageID, docURL, renderWithDoc)
 	}
 
 	for id, record := range open {
@@ -151,12 +176,90 @@ func (p *V3Poller) tick(ctx context.Context) {
 			continue
 		}
 		subject := card.Subject{Kind: card.KindWorkItem, ID: id, State: card.StateSubmitted, Title: id}
-		body, err := card.RenderClosed(subject, "已处理", card.Options{})
+		materialID := p.latestOutputMaterial(ctx, id)
+		docURL := p.cachedDoc(ctx, materialID)
+		renderWithDoc := func(url string) ([]byte, error) {
+			return card.RenderClosed(subject, "已处理", card.Options{DocURL: url})
+		}
+		body, err := renderWithDoc(docURL)
 		if err == nil {
 			_ = p.msg.PatchCard(ctx, record.MessageID, string(body))
+			p.fillDocLater(ctx, subject, materialID, record.MessageID, docURL, renderWithDoc)
 		}
 		_ = p.cards.Close(ctx, card.KindWorkItem, id, p.now())
 	}
+}
+
+// latestOutputMaterial resolves the material a task's acceptance card links to.
+// A task without an output material simply renders without the button.
+func (p *V3Poller) latestOutputMaterial(ctx context.Context, taskID string) string {
+	if p.materials == nil || taskID == "" {
+		return ""
+	}
+	materialID, err := p.materials.LatestOutputMaterialID(ctx, taskID)
+	if err != nil {
+		p.logger.Debug("im doc material resolve skipped", "task", taskID, "error", err)
+		return ""
+	}
+	return materialID
+}
+
+// cachedDoc returns the already imported document URL, or "" when the document
+// is unknown, failed earlier, or the feature is switched off.
+func (p *V3Poller) cachedDoc(ctx context.Context, materialID string) string {
+	if p.docs == nil || materialID == "" {
+		return ""
+	}
+	return p.docs.Cached(ctx, materialID)
+}
+
+// fillDocLater imports the material in the background and patches the card once
+// the document URL is known. The card is sent first so the three-call import
+// never delays the review; on failure the card keeps its summary and its gate
+// form and simply never gains the button.
+func (p *V3Poller) fillDocLater(ctx context.Context, subject card.Subject, materialID, messageID, docURL string, render func(url string) ([]byte, error)) {
+	if p.docs == nil || materialID == "" || messageID == "" || docURL != "" {
+		return
+	}
+
+	p.mu.Lock()
+	if p.docFilling[messageID] {
+		p.mu.Unlock()
+		return
+	}
+	p.docFilling[messageID] = true
+	p.mu.Unlock()
+
+	p.fillWG.Add(1)
+	go func() {
+		defer p.fillWG.Done()
+		defer func() {
+			p.mu.Lock()
+			delete(p.docFilling, messageID)
+			p.mu.Unlock()
+		}()
+		defer func() {
+			if rec := recover(); rec != nil {
+				p.logger.Error("im doc fill panicked", "panic", rec)
+			}
+		}()
+
+		url, err := p.docs.Ensure(ctx, materialID, subject.Title)
+		if err != nil {
+			p.logger.Warn("im doc import failed", "subject", subject.ID, "material", materialID, "error", err)
+			return
+		}
+		raw, err := render(url)
+		if err != nil {
+			p.logger.Warn("im rerender with doc failed", "subject", subject.ID, "error", err)
+			return
+		}
+		if err := p.msg.PatchCard(ctx, messageID, string(raw)); err != nil {
+			p.logger.Warn("im patch with doc failed", "subject", subject.ID, "error", err)
+			return
+		}
+		p.logger.Info("im card updated with doc", "subject", subject.ID, "url", url)
+	}()
 }
 
 func reviewFingerprint(review V3Review) string {
