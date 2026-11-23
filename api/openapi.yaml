@@ -78,10 +78,44 @@ paths:
         '404': { description: product not found }
     get:
       operationId: listOrGetProject
-      summary: List projects or fetch one by id
+      summary: List projects (newest first) or fetch one by id
+      description: |
+        With `id` the single project is returned. Otherwise a page of projects is
+        returned ordered by `id DESC` — newest first. `next_after_id` is the
+        smallest id of the page and is the cursor for the next, *older* page:
+        pass it back as `after_id` to continue. Omitting `after_id` returns the
+        first (newest) page. `product_id` filters by the product business id;
+        a blank value means "no filter" and an unknown value returns 200 with an
+        empty `items` array (it is a filter, not a resource locator).
       tags: [projects]
+      parameters:
+        - name: id
+          in: query
+          required: false
+          schema: { type: string }
+          description: Business project id. When present, returns that single project instead of a page; the list parameters are then ignored.
+        - name: product_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: Product business id filter (not the internal numeric FK). Trimmed; blank means no filter. Unknown value yields 200 with empty items.
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [open, closed] }
+          description: Project status filter. Any other value is a 400 invalid_argument.
+        - name: after_id
+          in: query
+          required: false
+          schema: { type: integer }
+          description: Keyset cursor — returns projects with a smaller id, i.e. the page older than this id. Omit it (or pass 0) for the first, newest page.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer }
+          description: Page size. Defaults to 50 when omitted or not positive.
       responses:
-        '200': { description: project or page }
+        '200': { description: project, or a page of projects ordered newest first }
         '400': { description: invalid status }
         '404': { description: not found }
     patch:

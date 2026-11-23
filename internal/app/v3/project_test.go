@@ -203,3 +203,89 @@ func TestListProjectsFilter(t *testing.T) {
 		t.Errorf("closed projects = %d, want 1", len(closedList))
 	}
 }
+
+// TestListProjectsProductFilterAndOrder covers the service layer contract of
+// the issue #133 change: newest first, product_id passed through (blank means
+// "no filter", unknown means empty page), and status + product_id combined.
+func TestListProjectsProductFilterAndOrder(t *testing.T) {
+	now := testClock
+	_, st := newTestService(t, &now)
+	projects := NewProjectService(st).WithClock(func() time.Time { return now })
+	seedProductOnly(t, st, "APP")
+	seedProductOnly(t, st, "WEB")
+
+	appFirst, _ := projects.CreateProject(context.Background(), CreateProjectRequest{ProductID: "APP", Name: "APP 一"})
+	appSecond, err := projects.CreateProject(context.Background(), CreateProjectRequest{ProductID: "APP", Name: "APP 二"})
+	if err != nil {
+		t.Fatalf("create second APP project: %v", err)
+	}
+	web, err := projects.CreateProject(context.Background(), CreateProjectRequest{ProductID: "WEB", Name: "WEB 一"})
+	if err != nil {
+		t.Fatalf("create WEB project: %v", err)
+	}
+	if err := projects.CloseProject(context.Background(), appFirst.ProjectID, false, "cto"); err != nil {
+		t.Fatalf("close first APP project: %v", err)
+	}
+
+	all, err := projects.ListProjects(context.Background(), ProjectFilter{})
+	if err != nil {
+		t.Fatalf("ListProjects all: %v", err)
+	}
+	if len(all) != 3 || all[0].ID != web.ID {
+		t.Fatalf("all projects = %+v, want 3 newest first (%s)", all, web.ProjectID)
+	}
+
+	appOnly, err := projects.ListProjects(context.Background(), ProjectFilter{ProductID: "APP"})
+	if err != nil {
+		t.Fatalf("ListProjects APP: %v", err)
+	}
+	if len(appOnly) != 2 || appOnly[0].ID != appSecond.ID || appOnly[1].ID != appFirst.ID {
+		t.Errorf("APP projects = %+v, want [%s %s]", appOnly, appSecond.ProjectID, appFirst.ProjectID)
+	}
+
+	blank, err := projects.ListProjects(context.Background(), ProjectFilter{ProductID: "   "})
+	if err != nil {
+		t.Fatalf("ListProjects blank product: %v", err)
+	}
+	if len(blank) != 3 {
+		t.Errorf("blank product_id projects = %d, want 3 (treated as absent)", len(blank))
+	}
+
+	unknown, err := projects.ListProjects(context.Background(), ProjectFilter{ProductID: "NOPE"})
+	if err != nil {
+		t.Fatalf("ListProjects unknown product: %v", err)
+	}
+	if len(unknown) != 0 {
+		t.Errorf("unknown product projects = %d, want 0", len(unknown))
+	}
+
+	open := enum.ProjectOpen
+	openApp, err := projects.ListProjects(context.Background(), ProjectFilter{Status: &open, ProductID: "APP"})
+	if err != nil {
+		t.Fatalf("ListProjects open+APP: %v", err)
+	}
+	if len(openApp) != 1 || openApp[0].ID != appSecond.ID {
+		t.Errorf("open+APP = %+v, want only %s", openApp, appSecond.ProjectID)
+	}
+
+	// after_id walks towards older rows: the cursor is the last id of the page.
+	page1, err := projects.ListProjects(context.Background(), ProjectFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("ListProjects page 1: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("page 1 = %d rows, want 2", len(page1))
+	}
+	page2, err := projects.ListProjects(context.Background(), ProjectFilter{AfterID: page1[len(page1)-1].ID, Limit: 2})
+	if err != nil {
+		t.Fatalf("ListProjects page 2: %v", err)
+	}
+	if len(page2) != 1 || page2[0].ID != appFirst.ID {
+		t.Errorf("page 2 = %+v, want the older %s only", page2, appFirst.ProjectID)
+	}
+	for _, first := range page1 {
+		if page2[0].ID >= first.ID {
+			t.Errorf("page 2 id %d is not older than page 1 id %d", page2[0].ID, first.ID)
+		}
+	}
+}

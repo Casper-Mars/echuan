@@ -64,16 +64,19 @@ func (s *ProjectService) GetProject(ctx context.Context, projectID string) (stor
 	return project, Translate(err)
 }
 
-// ProjectFilter narrows ListProjects.
+// ProjectFilter narrows ListProjects. ProductID is the product business id
+// (empty means "no product filter"); AfterID is a keyset cursor walking towards
+// older projects.
 type ProjectFilter struct {
-	Status  *enum.ProjectStatus
-	AfterID int64
-	Limit   int
+	Status    *enum.ProjectStatus
+	ProductID string
+	AfterID   int64
+	Limit     int
 }
 
-// ListProjects lists projects ordered by id.
+// ListProjects lists projects newest first.
 func (s *ProjectService) ListProjects(ctx context.Context, filter ProjectFilter) ([]storev3.Project, error) {
-	projects, err := storev3.ListProjects(ctx, s.st.Read(), filter.Status, filter.AfterID, filter.Limit)
+	projects, err := storev3.ListProjects(ctx, s.st.Read(), filter.Status, filter.ProductID, filter.AfterID, filter.Limit)
 	return projects, Translate(err)
 }
 
