@@ -9,13 +9,14 @@
 // 三条硬口径（本文件是唯一实现处，页面只渲染）：
 //   1. 三个取数独立收口：`GET /v1/tasks?id=` 是详情主体，失败即错误态但**保留上一次数据**；
 //      依赖 / 附件任一失败只加一条错误条，已渲染的分区不整块消失（错误态矩阵原文）。
-//   2. 被评审附件只能来自 attachments 的 `output` 项，默认第一个；本文件不提供任何自由输入口。
+//   2. 被评审附件**不可手选**：由 `reviewTargetId(rawAttachments)` 取当前正文输出写入 `material_id`
+//      （技术方案 v0.5 §5.2 R-h、§8.1 第 2 步）；界面不提供任何自由输入口，也不提供下拉。
 //   3. 提交非 2xx：错误条用**服务端 message**（api/client 已从 body.message 取），并立即重拉详情。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../../api/client'
 import type { AttachmentRef, Task } from '../../api/types'
+import { currentTaskVersions, reviewTargetId } from '../../lib/current-versions'
 import { publishListWrite } from '../../lib/refresh'
-import type { SelectOption } from '../../ui'
 
 /** 六态（design/screens/task-detail.md 状态矩阵） */
 export type DetailState = 'default' | 'loading' | 'error' | 'leased' | 'failed' | 'rejected'
@@ -70,20 +71,21 @@ export function isRejected(task: Task): boolean {
 export interface TaskDetailApi {
   task: Task | null
   dependencies: string[]
+  /** **可见**附件（当前版本投影）：附件区计数与预览左列表同源同一数组（AC1/AC4/AC6） */
   attachments: AttachmentRef[]
-  /** 被评审附件候选项：**只**来自 attachments 的 output 项 */
-  materialOptions: SelectOption[]
-  /** 附件请求是否已收口（成功或失败）：下拉的 loading 态据此判断，不靠「列表非空」猜 */
+  /** 附件请求是否已收口（成功或失败）：结论按钮的禁用与评审区提示行据此判断，不靠「列表非空」猜 */
   attachmentsLoaded: boolean
+  /** 附件请求是否失败：收口但失败时提示「产出物读取失败…」（§5.3） */
+  attachmentsFailed: boolean
+  /** 本次结论要记录的被评审附件（当前正文输出）；null = 本任务没有正文输出，提交时不带 material_id（R-h） */
+  reviewTargetId: string | null
   state: DetailState
   loading: boolean
   error: DetailError | null
   reload: () => void
   reviewing: boolean
-  decision: ReviewDecision
-  setDecision: (decision: ReviewDecision) => void
-  materialId: string | null
-  setMaterialId: (materialId: string | null) => void
+  /** 上一次点下的结论按钮（只用来支撑「重试提交」；未点过 = null，按钮禁用） */
+  lastDecision: ReviewDecision | null
   reason: string
   setReason: (reason: string) => void
   reasonError: string
@@ -98,14 +100,15 @@ export interface TaskDetailApi {
 export function useTaskDetail(taskId: string): TaskDetailApi {
   const [task, setTask] = useState<Task | null>(null)
   const [dependencies, setDependencies] = useState<string[]>([])
-  const [attachments, setAttachments] = useState<AttachmentRef[]>([])
+  // 原始附件（接口顺序原样）；对外只暴露投影后的可见集合，二者同帧同源
+  const [rawAttachments, setRawAttachments] = useState<AttachmentRef[]>([])
   const [attachmentsLoaded, setAttachmentsLoaded] = useState(false)
+  const [attachmentsFailed, setAttachmentsFailed] = useState(false)
   const [error, setError] = useState<DetailError | null>(null)
   const [loading, setLoading] = useState(true)
 
   // 评审草稿（不持久化：flows F3 第 5 步「刷新即丢」，避免误提交旧文本）
-  const [decision, setDecision] = useState<ReviewDecision>('approve')
-  const [materialId, setMaterialId] = useState<string | null>(null)
+  const [lastDecision, setLastDecision] = useState<ReviewDecision | null>(null)
   const [reason, setReason] = useState('')
   const [reasonError, setReasonError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -140,8 +143,9 @@ export function useTaskDetail(taskId: string): TaskDetailApi {
     ])
     if (gen !== genRef.current) return
     if (depsResult.status === 'fulfilled') setDependencies(depsResult.value.items)
-    if (attachmentsResult.status === 'fulfilled') setAttachments(attachmentsResult.value.items)
+    if (attachmentsResult.status === 'fulfilled') setRawAttachments(attachmentsResult.value.items)
     setAttachmentsLoaded(true)
+    setAttachmentsFailed(attachmentsResult.status === 'rejected')
 
     if (depsResult.status === 'rejected') {
       setError(toDetailError(depsResult.reason, `/v1/tasks/dependencies?task_id=${taskId}`))
@@ -157,12 +161,12 @@ export function useTaskDetail(taskId: string): TaskDetailApi {
   useEffect(() => {
     setTask(null)
     setDependencies([])
-    setAttachments([])
+    setRawAttachments([])
     setAttachmentsLoaded(false)
+    setAttachmentsFailed(false)
     setError(null)
     setLoading(true)
-    setDecision('approve')
-    setMaterialId(null)
+    setLastDecision(null)
     setReason('')
     setReasonError('')
     setSubmitError(null)
@@ -177,22 +181,11 @@ export function useTaskDetail(taskId: string): TaskDetailApi {
     void load()
   }, [load])
 
-  const materialOptions = useMemo<SelectOption[]>(
-    () =>
-      attachments
-        .filter((ref) => ref.role === 'output')
-        .map((ref) => ({ value: ref.material_id, label: ref.title || ref.material_id })),
-    [attachments],
-  )
+  // 可见集合与评审目标都从同一份原始数组派生（§5.1「一处判定、两处呈现」）：同帧、同源，界面与审计取值不分叉
+  const attachments = useMemo<AttachmentRef[]>(() => currentTaskVersions(rawAttachments), [rawAttachments])
+  const reviewMaterialId = useMemo<string | null>(() => reviewTargetId(rawAttachments), [rawAttachments])
 
-  // 默认选中第一个 output；重拉后原选择失效（附件换了）时回落，绝不保留一个列表里没有的 material_id
-  useEffect(() => {
-    setMaterialId((current) => {
-      if (materialOptions.length === 0) return null
-      return materialOptions.some((option) => option.value === current) ? current : materialOptions[0].value
-    })
-  }, [materialOptions])
-
+  // 结论按钮的点击入口（route 的 askDecision 先调它）：驳回未填原因 → 就地标红、不发请求
   const validate = useCallback(
     (next: ReviewDecision): boolean => {
       if (submittingRef.current) return false
@@ -201,6 +194,8 @@ export function useTaskDetail(taskId: string): TaskDetailApi {
         return false
       }
       setReasonError('')
+      // 结论只在「点按钮且校验通过」时记账：只服务「重试提交」，不参与本次入参（入参永远是 reviewTargetId）
+      setLastDecision(next)
       return true
     },
     [reason],
@@ -216,7 +211,8 @@ export function useTaskDetail(taskId: string): TaskDetailApi {
         const decided = await api.decideTask({
           task_id: task.task_id,
           decision: next,
-          material_id: materialId ?? undefined,
+          // 被评审附件由系统写入当前正文输出（§7.3）：没有正文输出就不带，服务端 material_id 可空
+          material_id: reviewMaterialId ?? undefined,
           decided_by: ACTOR,
           reason: reason.trim() === '' ? undefined : reason.trim(),
         })
@@ -237,7 +233,7 @@ export function useTaskDetail(taskId: string): TaskDetailApi {
         setSubmitting(false)
       }
     },
-    [task, materialId, reason, load],
+    [task, reviewMaterialId, reason, load],
   )
 
   return {
@@ -245,16 +241,14 @@ export function useTaskDetail(taskId: string): TaskDetailApi {
     dependencies,
     attachments,
     attachmentsLoaded,
-    materialOptions,
+    attachmentsFailed,
+    reviewTargetId: reviewMaterialId,
     state: detailStateOf(task, error),
     loading,
     error,
     reload,
     reviewing: task !== null && task.status === 'in_review',
-    decision,
-    setDecision,
-    materialId,
-    setMaterialId,
+    lastDecision,
     reason,
     setReason,
     reasonError,

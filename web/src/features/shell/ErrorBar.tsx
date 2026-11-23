@@ -26,6 +26,8 @@ export interface ErrorBarProps {
   onRetry?: () => void
   /** 重试中：按钮进入 loading（design/components.md §ui/Alert loading 状态） */
   retrying?: boolean
+  /** 重试不可用（例如详情页「重试提交」还没有可复用的上一次结论）：按钮保留但禁用 */
+  retryDisabled?: boolean
   /** 额外动作（如「返回看板」「在新标签打开原文」），与重试同一行 */
   extraActions?: ReactNode
   className?: string
@@ -38,6 +40,7 @@ export function ErrorBar({
   retryLabel = '重试',
   onRetry,
   retrying = false,
+  retryDisabled = false,
   extraActions,
   className,
 }: ErrorBarProps) {
@@ -62,7 +65,7 @@ export function ErrorBar({
           <div className="fx-error-bar__actions" data-ui="error-bar-actions">
             {onRetry ? (
               // danger 描边而不是 primary：错误态下不出现第二处主操作（AC5 口径）
-              <Button variant="danger" size="sm" loading={retrying} onClick={onRetry}>
+              <Button variant="danger" size="sm" loading={retrying} disabled={retryDisabled} onClick={onRetry}>
                 {retryLabel}
               </Button>
             ) : null}

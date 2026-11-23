@@ -167,6 +167,8 @@ export default function TaskDetailRoute() {
     }
 
     if (detail.reviewing) {
+      // 附件未收口（首拉中）→ 两个结论按钮禁用：防「附件未到就提交」写进空 material_id（§5.3 / §8.3）
+      const decisionDisabled = detail.submitting || !detail.attachmentsLoaded
       return (
         <div className="fx-detail__actions" data-ui="detail-actions">
           <div className="fx-detail__actions-start" data-ui="detail-close">
@@ -176,12 +178,23 @@ export default function TaskDetailRoute() {
           </div>
           <div className="fx-detail__actions-end">
             <div data-ui="review-reject">
-              <Button variant="default" size="md" loading={detail.submitting} onClick={() => askDecision('reject')}>
+              <Button
+                variant="default"
+                size="md"
+                loading={detail.submitting}
+                disabled={decisionDisabled}
+                onClick={() => askDecision('reject')}
+              >
                 驳回
               </Button>
             </div>
             <div data-ui="review-submit">
-              <Button size="md" loading={detail.submitting} onClick={() => askDecision('approve')}>
+              <Button
+                size="md"
+                loading={detail.submitting}
+                disabled={decisionDisabled}
+                onClick={() => askDecision('approve')}
+              >
                 通过并关闭
               </Button>
             </div>
@@ -251,7 +264,10 @@ export default function TaskDetailRoute() {
                     message={detail.submitError.message}
                     detail={`${detail.submitError.meta} · 已自动重新拉取详情，下方是任务的最新状态`}
                     retryLabel="重试提交"
-                    onRetry={() => askDecision(detail.decision)}
+                    retryDisabled={detail.lastDecision === null}
+                    onRetry={() => {
+                      if (detail.lastDecision !== null) askDecision(detail.lastDecision)
+                    }}
                     retrying={detail.submitting}
                   />
                 </div>
@@ -272,16 +288,13 @@ export default function TaskDetailRoute() {
                   {showRejectBanner ? <RejectBanner task={task} /> : null}
                   {detail.reviewing ? (
                     <ReviewPanel
-                      decision={detail.decision}
-                      onDecisionChange={detail.setDecision}
-                      materialOptions={detail.materialOptions}
-                      materialId={detail.materialId}
-                      onMaterialChange={detail.setMaterialId}
                       reason={detail.reason}
                       onReasonChange={detail.setReason}
                       reasonError={detail.reasonError}
                       submitting={detail.submitting}
                       attachmentsLoaded={detail.attachmentsLoaded}
+                      attachmentsFailed={detail.attachmentsFailed}
+                      hasReviewTarget={detail.reviewTargetId !== null}
                     />
                   ) : null}
                   <AttachmentSection attachments={detail.attachments} onOpen={openAttachment} />
