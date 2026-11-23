@@ -54,6 +54,21 @@
   flex-wrap: wrap;
 }
 
+/* 页头「按状态筛选」（design/screens/projects.md：筛选形态与 products 屏一致）：
+ * 宽度与产品页同一档；控件标签「按状态筛选」留在 DOM 里作无障碍名，视觉上不占版位（与 .pd-filter 同口径）。 */
+.pj-filter {
+  inline-size: calc(var(--space-10) * 2);
+}
+
+.pj-filter label {
+  position: absolute;
+  inline-size: var(--border-width);
+  block-size: var(--border-width);
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 /* ===== 表格卡片 ========================================================= */
 .pj-card {
   flex: 0 0 auto;
@@ -152,6 +167,12 @@
 
   .pj-actions {
     inline-size: 100%;
+  }
+
+  /* 移动端筛选控件与「新建项目」平分一行（与产品页同一条媒体查询里的 .pd-filter 一致） */
+  .pj-filter {
+    flex: 1 1 0;
+    inline-size: auto;
   }
 
   .pj-card {
