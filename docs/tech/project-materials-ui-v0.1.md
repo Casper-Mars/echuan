@@ -62,10 +62,10 @@
 
 ### 4.3 交互
 
-- 点击任意材料行：在**行下方内联展开**正文（`ui/MarkdownViewer`），再点收起。
-- 正文按需拉取：`GET /v1/materials?id=<material_id>`，同一材料只拉一次，结果缓存在组件内（抽屉关闭即丢）。
-- 拉取失败：行下方显示错误条 + 「重试」，不阻塞其他行。
-- 键盘：行是按钮，Enter/Space 展开；焦点不丢。
+- 点击任意材料行：打开**附件预览面板**（复用任务详情的 `features/task-detail/attachment-preview`：左列表 = 本项目资料，右 = 正文六态）。
+- 返回：面板内「返回详情」/抽屉关闭键回到资料列表，滚动位置由抽屉保持。
+- 正文取数、8 秒超时、512 KB 上限、404/413 文案、并发去重全部复用既有实现，不另写一套。
+- 键盘：行是按钮，Enter/Space 打开；返回后焦点回到原行。
 
 ### 4.4 状态
 
@@ -102,9 +102,9 @@ GET /v1/projects/materials?id=<project_id>
 
 | 文件 | 改动 |
 |---|---|
-| `web/src/features/projects/ProjectDetailSheet.tsx` | 增加资料区块、拉取与内联展开 |
-| `web/src/features/projects/material-row.tsx`（新增） | 私有行组件：类型徽标 / 标题 / 简报标记 / 展开 |
-| `web/src/features/projects/useProjectMaterials.ts`（新增） | 拉列表 + 按需拉正文 + 错误重试 |
+| `web/src/features/projects/ProjectDetailSheet.tsx` | 增加资料区块、拉取、预览层级 |
+| `web/src/features/projects/MaterialsSection.tsx`（新增） | 分组 / 简报配对 / 折叠 / 骨架与错误态 |
+| `web/src/features/projects/use-project-materials.ts`（新增） | 拉列表 + 失败重试（正文取数复用预览面板） |
 | `web/src/api/client.ts` | 增 `getProjectMaterials(id)`、`getMaterialText(id)` |
 | `web/src/api/types.ts` | 增 `ProjectMaterial` 类型 |
 | `design/screens/projects.md` / `design/components.md` | 契约（第 5 节） |
@@ -115,7 +115,7 @@ GET /v1/projects/materials?id=<project_id>
 - AC2：`echuan-1` 这类项目显示 16 条，分组为 拆分 1 / 报告 15，与接口返回一致。
 - AC3：构造一份「正文 v1 + 简报 v1 + 正文 v2 + 简报 v2」的项目，简报分别缩进挂在对应正文下，不单独成条。
 - AC4：孤儿简报（source 不存在）落在「其他」组，不丢失。
-- AC5：点击行展开正文、再点收起；同一材料只发一次下载请求。
+- AC5：点击行打开附件预览面板（左列表 = 本项目资料），返回后回到列表；同一材料在面板内切换不发重复请求（并发去重）。
 - AC6：报告组超过 5 条时折叠，可展开/收起。
 - AC7：`make web` 门禁通过（style-debt / size / build），无新增单类名覆盖 Mantine 的写法。
 - AC8：键盘 Tab 可达每行，Enter 展开；焦点不丢。

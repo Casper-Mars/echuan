@@ -176,3 +176,129 @@
     gap: var(--space-2);
   }
 }
+
+/* ===== 项目详情「资料」区（docs/tech/project-materials-ui-v0.1.md §4） =====================
+ * 资料按任务归属，这里只是派生列表的分组投影：分组标题 + 行 + 缩进的简报行。
+ * 颜色与几何全部取 theme 令牌；不使用 px / hex 字面量。
+ */
+.fx-materials {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-block-start: var(--space-6);
+  padding-block-start: var(--space-4);
+  border-block-start: var(--border-width) solid var(--border-subtle);
+}
+
+.fx-materials__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.fx-materials__title-group {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-body-strong-size);
+  font-weight: var(--text-body-strong-weight);
+}
+
+.fx-materials__hint {
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+}
+
+.fx-materials__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.fx-materials__group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+}
+
+.fx-materials__count {
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-8);
+  background-color: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+.fx-materials__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fx-materials__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  inline-size: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-8);
+  background-color: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.fx-materials__row:hover {
+  border-color: var(--border-default);
+  background-color: var(--surface-raised);
+}
+
+.fx-materials__row:focus-visible {
+  outline: var(--border-width) solid var(--border-strong);
+  outline-offset: var(--border-width);
+}
+
+.fx-materials__row--brief {
+  margin-inline-start: var(--space-5);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+}
+
+.fx-materials__brief-tag {
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-4);
+  background-color: var(--surface-overlay);
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+}
+
+.fx-materials__title {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fx-materials__meta {
+  color: var(--text-muted);
+  font-size: var(--text-caption-size);
+}
+
+.fx-materials__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.fx-materials__skeleton-line {
+  block-size: var(--space-5);
+  border-radius: var(--radius-8);
+  background-color: var(--surface-raised);
+}

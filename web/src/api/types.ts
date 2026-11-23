@@ -58,6 +58,14 @@ export interface AttachmentRef {
 }
 
 /**
+ * `GET /v1/projects/materials` 的一行：材料按任务归属，项目视图是派生结果。
+ * source_material_id 把简报指向它解释的那一版正文；普通产物为空。
+ */
+export interface ProjectMaterial extends AttachmentRef {
+  source_material_id?: string
+}
+
+/**
  * `GET /v1/workers` 的一行（字段见 `internal/api/v3_handlers.go` 的 `v3WorkerResponse`；
  * 真正挂载的是 V3 路由，见 `cmd/echuan/main.go` 的 `NewRouterV3`）。
  *

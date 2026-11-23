@@ -4,20 +4,25 @@
 //   design/components.md §「屏内私有详情抽屉（不属于 ui/ 导出面）」——项目抽屉的页面私有部分落在
 //     `features/projects/ProjectDetailSheet.tsx`（9 字段），键值网格复用壳层 `features/shell/DetailFields.tsx`；
 //     容器复用 `ui/DetailSheet` 的 `readonly` 变体；`ui/` 导出面仍是 21 个组件（本文件不从 `ui/index.ts` 出）。
-//   design/screens/projects.md「交互」——行点击 → 只读详情抽屉（9 字段：项目编号 / 产品编号 / 序号 / 名称 /
-//     上下文 / 状态 / 创建时间 / 更新时间 / 关闭时间；抽屉不发请求，字段取当前行）；抽屉内不做编辑、不放动作
-//     （关闭键除外），「打开看板」只留在列表行。
+//   design/screens/projects.md「交互」——行点击 → 只读详情抽屉（9 字段 + 「资料」区）；字段取当前行，
+//     资料按项目 id 拉取（`GET /v1/projects/materials`），简报不单独成组、挂在对应正文版本下。
+//   docs/tech/project-materials-ui-v0.1.md §4（分组 / 折叠 / 简报配对）。
 //   docs/tech/web-ui-102-interaction-fix-v0.1.md §7.2（D1 字段口径）/ §7.3（D2 选 A）/ §7.8（一次点击一个结果）。
 //
 // 口径：
-//   * 只读、0 请求：字段全部从传入的当前行派生，不 copy 行对象、不发 API；
+//   * 字段只读、取当前行；资料是唯一按需拉取的部分，失败只影响「资料」区块；
+//   * 打开材料复用任务详情的附件预览面板（`features/task-detail/attachment-preview`），
+//     不另写一套取数/超时/超大逻辑；
 //   * 不持有打开状态：`project` 由页面按 id 从**当前** items 反查后传入，行不存在 → 抽屉自然关闭；
-//   * 不写死颜色与间距：键值网格样式在 shell.css 的 .fx-detail-fields*，抽屉几何在 ui/DetailSheet；
-//   * 状态沿用列表页既有映射（open→`in_progress`/进行中、closed→`cancelled`/已关闭），不新增 StatusPill 变体。
-import type { Project } from '../../api/types'
+//   * 不写死颜色与间距：键值网格样式在 shell.css 的 .fx-detail-fields*，资料区在 projects.css 的 .fx-materials*。
+import { useEffect, useState } from 'react'
+import type { Project, ProjectMaterial } from '../../api/types'
 import { DetailSheet, MarkdownViewer, StatusPill } from '../../ui'
 import { DetailFields } from '../shell/DetailFields'
 import type { DetailField } from '../shell/DetailFields'
+import { AttachmentPreview, previewSheetTitle } from '../task-detail/attachment-preview'
+import { MaterialsSection } from './MaterialsSection'
+import { useProjectMaterials } from './use-project-materials'
 
 export interface ProjectDetailSheetProps {
   /** 当前行：页面按 project_id 从当前列表数据反查（undefined = 抽屉关闭，不保留快照） */
@@ -26,11 +31,40 @@ export interface ProjectDetailSheetProps {
 }
 
 export function ProjectDetailSheet({ project, onClose }: ProjectDetailSheetProps) {
+  const materials = useProjectMaterials(project?.project_id)
+  const [preview, setPreview] = useState<ProjectMaterial | null>(null)
+
+  // 换项目或关抽屉：预览必须回到列表，否则会显示上一个项目的材料正文（幽灵数据）
+  const projectId = project?.project_id
+  useEffect(() => {
+    setPreview(null)
+  }, [projectId])
+
   // opened 由 project 派生而不是另立 prop：两者同时存在会出现「opened=true 但没有行」的中间态，
   // 那时抽屉只能显示上一个项目的残留内容——只读抽屉不允许出现这种幽灵数据。
+  const title = preview === null ? (project?.name ?? '') : previewSheetTitle(preview)
+
   return (
-    <DetailSheet variant="readonly" opened={project !== undefined} title={project?.name ?? ''} onClose={onClose}>
-      {project ? <DetailFields fields={fieldsOfProject(project)} /> : null}
+    <DetailSheet variant="readonly" opened={project !== undefined} title={title} onClose={onClose}>
+      {project === undefined ? null : preview === null ? (
+        <>
+          <DetailFields fields={fieldsOfProject(project)} />
+          <MaterialsSection
+            materials={materials.materials}
+            loading={materials.loading}
+            error={materials.error}
+            onRetry={materials.reload}
+            onOpen={setPreview}
+          />
+        </>
+      ) : (
+        <AttachmentPreview
+          attachments={materials.materials}
+          current={preview}
+          onSelect={setPreview}
+          onBack={() => setPreview(null)}
+        />
+      )}
     </DetailSheet>
   )
 }

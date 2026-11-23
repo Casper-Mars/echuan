@@ -3,6 +3,7 @@ import type {
   ListResponse,
   Product,
   Project,
+  ProjectMaterial,
   Task,
   TaskKind,
   TaskStatus,
@@ -59,6 +60,7 @@ export const api = {
       items: result.items.filter(project => project.product_id === productId),
     })),
   getProject: (id: string) => request<Project>(`/v1/projects${q({ id })}`),
+  getProjectMaterials: (id: string) => request<ListResponse<ProjectMaterial>>(`/v1/projects/materials${q({ id })}`),
   createProject: (body: { product_id: string; name: string; context_md?: string }) =>
     request<Project>('/v1/projects', { method: 'POST', body: JSON.stringify(body) }),
   closeProject: (id: string, force = false) =>
