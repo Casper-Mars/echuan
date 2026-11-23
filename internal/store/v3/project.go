@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
+	"strings"
 
 	"github.com/Casper-Mars/echuan/internal/domain/enum"
 	storedb "github.com/Casper-Mars/echuan/internal/store"
@@ -82,19 +84,48 @@ func GetProject(ctx context.Context, q storedb.Querier, projectID string) (Proje
 	return project, nil
 }
 
-// ListProjects lists projects ordered by id with an optional status filter.
-func ListProjects(ctx context.Context, q storedb.Querier, status *enum.ProjectStatus, afterID int64, limit int) ([]Project, error) {
+// projectFirstPageAfterID is the keyset sentinel meaning "no after_id given".
+//
+// The list is newest first (ORDER BY p.id DESC), so the cursor direction is
+// `p.id < ?` and the old "0 means the first page" convention no longer works:
+// `p.id < 0` is always false and would return an empty first page. Using the
+// largest possible id keeps the condition always true (every generated id is
+// smaller), i.e. exactly the "always true" shape the ascending query had.
+// Chosen over splicing the predicate conditionally (方案 §6 option ②) because
+// it keeps one SQL shape for all callers: no query-string assembly, no risk of
+// forgetting the predicate on a future branch.
+const projectFirstPageAfterID int64 = math.MaxInt64
+
+// ListProjects lists projects newest first (p.id DESC) with an optional status
+// filter and an optional product business id filter.
+//
+// afterID is a keyset cursor: rows older than that id are returned, so passing
+// the previous page's last id walks towards older projects. afterID <= 0 means
+// "first page" (see projectFirstPageAfterID). productID is the business id of
+// products.product_id (projects.product_id is the internal FK), trimmed; an
+// empty value means "no product filter" and an unknown value yields no rows.
+func ListProjects(ctx context.Context, q storedb.Querier, status *enum.ProjectStatus, productID string, afterID int64, limit int) ([]Project, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	if status == nil {
-		return storedb.All[Project](ctx, q,
-			`SELECT `+projectColumns+projectFrom+` WHERE p.id > ? ORDER BY p.id ASC LIMIT ?`,
-			afterID, limit)
+	if afterID <= 0 {
+		afterID = projectFirstPageAfterID
 	}
-	return storedb.All[Project](ctx, q,
-		`SELECT `+projectColumns+projectFrom+` WHERE p.id > ? AND p.status = ? ORDER BY p.id ASC LIMIT ?`,
-		afterID, *status, limit)
+
+	query := `SELECT ` + projectColumns + projectFrom + ` WHERE p.id < ?`
+	args := []any{afterID}
+	if status != nil {
+		query += ` AND p.status = ?`
+		args = append(args, *status)
+	}
+	if code := strings.TrimSpace(productID); code != "" {
+		query += ` AND pr.product_id = ?`
+		args = append(args, code)
+	}
+	query += ` ORDER BY p.id DESC LIMIT ?`
+	args = append(args, limit)
+
+	return storedb.All[Project](ctx, q, query, args...)
 }
 
 // CloseProject closes a project. Active tasks block the close unless force is

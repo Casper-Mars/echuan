@@ -240,10 +240,15 @@ func (h *v3Handler) listOrGetProject(w http.ResponseWriter, r *http.Request) {
 		}
 		status = &parsed
 	}
+	// product_id is an optional filter on the product business id: a blank
+	// value means "no filter" (the store trims and skips it), and an unknown
+	// value is not an error — it yields an empty page, because this is a
+	// filter parameter, not a resource locator (ADR-0002 §2.5).
+	productID := strings.TrimSpace(r.URL.Query().Get("product_id"))
 	afterID, _ := strconv.ParseInt(r.URL.Query().Get("after_id"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	projects, err := h.projects.ListProjects(r.Context(), appv3.ProjectFilter{
-		Status: status, AfterID: afterID, Limit: limit,
+		Status: status, ProductID: productID, AfterID: afterID, Limit: limit,
 	})
 	if err != nil {
 		h.fail(w, r, err)
@@ -253,6 +258,8 @@ func (h *v3Handler) listOrGetProject(w http.ResponseWriter, r *http.Request) {
 	for _, project := range projects {
 		items = append(items, v3ProjectDTO(project))
 	}
+	// The page is newest first, so its last row carries the smallest id: that
+	// is the cursor for the next (older) page. An empty page yields no cursor.
 	var next int64
 	if len(projects) > 0 {
 		next = projects[len(projects)-1].ID
