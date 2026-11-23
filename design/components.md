@@ -16,9 +16,9 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | `ui/KindBadge` | `Badge`（subtle） | 看板、详情 |
 | `ui/BoardColumn` | `Paper` + `ScrollArea` | 看板 |
 | `ui/DataTable` | `Table` | 产品、项目、执行节点 |
-| `ui/TextField` | `TextInput` | 详情评审、新建任务 |
+| `ui/TextField` | `TextInput` | 新建任务 |
 | `ui/TextArea` | `Textarea` | 详情评审、新建任务 |
-| `ui/SelectField` | `Select` | 看板筛选、详情评审 |
+| `ui/SelectField` | `Select` | 看板筛选 |
 | `ui/Alert` | `Alert` | 全部（错误条/提示条） |
 | `ui/EmptyState` | `Stack` + `Text` + `Button` | 全部 |
 | `ui/SkeletonCard` | `Skeleton` | 全部加载态 |
@@ -29,7 +29,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | `ui/SidebarNav` | `AppShell.Navbar` + `NavLink` | 桌面/平板 |
 | `ui/MarkdownViewer` | 无（marked + DOMPurify）+ `TypographyStylesProvider` | 详情、附件预览 |
 | `ui/AttachmentRow` | `UnstyledButton` | 详情、附件预览 |
-| `ui/Segmented` | `SegmentedControl` | 详情评审 |
+| `ui/Segmented` | `SegmentedControl` | 暂保留（当前无使用方） |
 | `ui/Chip` | `Pill` 或 `Badge` | 详情依赖、租约 |
 
 ## ui/Button
@@ -181,7 +181,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 ## ui/TextField / ui/TextArea
 
-- 用途：新建任务、评审意见等输入。
+- 用途：新建任务、驳回原因（评审）等输入。
 - 结构：标签 → 控件 →（错误文案）。
 - 使用 token：`surface.raised` `border.default` `text.primary` `feedback.danger` `radius.8`
 - 状态矩阵：
@@ -194,14 +194,14 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | focus-visible | 焦点环 + 描边品牌色 | `focus.ring` |
 | disabled | 淡底不可编辑 | `surface.overlay` |
 | loading | 不适用 | — |
-| invalid | 描边转红 + 错误文案（如「驳回必须填意见」） | `feedback.danger` |
+| invalid | 描边转红 + 错误文案（驳回原因为空的文案见 `screens/task-detail.md`） | `feedback.danger` |
 
 - 可访问性：`<label for>` 绑定；错误文案 `aria-describedby`；移动端 `font-size ≥15` 防 iOS 缩放。
 - 反例：只有 placeholder 没有标签（填完就看不见字段含义）。
 
 ## ui/SelectField
 
-- 用途：看板筛选（kind/status）、评审时选被评审附件。
+- 用途：看板筛选（kind/status）。
 - 底层：`Select`。
 - 使用 token：`surface.raised` `border.default` `space.3` `radius.8`
 - 状态矩阵：与 `TextField` 相同（rest/hover/active/focus-visible/disabled/invalid）；额外支持 `loading`（选项加载中禁用）。
@@ -396,7 +396,7 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 
 ## ui/Segmented
 
-- 用途：评审「通过 / 驳回」二选一。
+- 用途：**评审不再使用本组件**——评审结论由底部两个命令按钮（「驳回」/「通过并关闭」）承载，不再用开关表达；本组件**暂保留**在导出面（22 个组件不变，见总览表），当前无使用方，登记为待决债务（删除要同步 4 处：`ui/index.ts`、`ui-imports-check.mjs` 的 `EXPECTED`、本文件、`web/README.md`，另开卡）。
 - 底层：`SegmentedControl`。
 - 使用 token：`surface.overlay` `surface.raised` `feedback.danger` `shadow.e1`
 - 状态矩阵：
@@ -407,12 +407,12 @@ Mantine 版本：`@mantine/core@^8.3.18` + `@mantine/hooks@^8.3.18`（仅这两�
 | hover | 选项淡底 | `surface.overlay` |
 | active | 选中项白底 + 轻阴影 | `surface.raised` |
 | focus-visible | 焦点环 | `focus.ring` |
-| disabled | 提交中禁用 | `text.muted` |
-| loading | 提交中禁用 + 按钮 loading | — |
-| invalid | 驳回但意见为空 → 意见框标红 | `feedback.danger` |
+| disabled | 由调用方置灰（当前无使用方） | — |
+| loading | 由调用方决定（当前无使用方） | — |
+| invalid | 由调用方决定（当前无使用方） | — |
 
 - 可访问性：`radiogroup` 语义，左右键切换。
-- 反例：把「通过/驳回」做成两个并列按钮（无法表达互斥状态）。
+- 反例：把两个**互斥状态**做成两个按钮（无法表达状态互斥，读屏与键盘也丢了 `radiogroup` 语义）。注意区分：本组件反的是「状态开关」；评审区的两个结论按钮是两个**命令**（各自带确认与请求），不属于本条反例。
 
 ## ui/Chip
 

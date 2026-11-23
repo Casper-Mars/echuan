@@ -259,11 +259,7 @@ function detailBody() {
     ${rejected ? `<div class="banner" data-tone="info"><span>上次驳回：需要我定的问题都按照默认的来做</span><span class="spacer"></span><span class="row-sub">19:09</span></div>` : ''}
     ${review ? `<div class="review">
       <span class="section-title">评审</span>
-      <div class="segmented"><button class="is-on" type="button">通过</button><button class="is-danger" type="button">驳回</button></div>
-      <label class="field">被评审附件（自动带入 output）
-        <select class="select"><option>${esc(ATTACHMENTS[0].title)}</option></select>
-      </label>
-      <label class="field">评审意见（驳回必填）
+      <label class="field">驳回原因（驳回必填）
         <textarea class="textarea" placeholder="写清缺口与需要改的地方"></textarea>
       </label>
     </div>` : ''}
