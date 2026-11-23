@@ -147,13 +147,33 @@ func ListProjectAttachments(ctx context.Context, q storedb.Querier, projectID st
 	return storedb.All[Attachment](ctx, q, base+` AND a.role = ? ORDER BY a.id ASC`, projectID, *role)
 }
 
-// LatestOutput returns the newest output attachment of a task: the artifact a
-// gate decision reviews.
+// ListProjectMaterialRefs lists the materials produced inside a project, derived
+// from the tasks that produced them (attachments belong to tasks; a project has
+// no attachments of its own). Version order follows attachment id.
+func ListProjectMaterialRefs(ctx context.Context, q storedb.Querier, projectPK int64) ([]MaterialRef, error) {
+	refs, err := storedb.All[MaterialRef](ctx, q, `
+		SELECT `+materialRefColumns+`
+		  FROM attachments a
+		  JOIN materials m ON m.id = a.material_id
+		  JOIN tasks t ON t.id = a.task_id
+		 WHERE t.project_id = ?
+		 ORDER BY a.id ASC`, projectPK)
+	if err != nil {
+		return nil, fmt.Errorf("v3: list project materials: %w", err)
+	}
+	return refs, nil
+}
+
+// LatestOutput returns the newest artifact output of a task: the material a gate
+// decision reviews. Context/other materials attached to the same task (e.g. a
+// decision brief) are skipped, so they can never become the reviewed artifact.
 func LatestOutput(ctx context.Context, q storedb.Querier, taskID string) (Attachment, error) {
 	attachment, err := storedb.One[Attachment](ctx, q, `
 		SELECT a.id, a.project_id, a.task_id, a.material_id, a.role, a.sort_no, a.create_time
-		  FROM attachments a JOIN tasks t ON t.id = a.task_id
-		 WHERE t.task_id = ? AND a.role = ?
+		  FROM attachments a
+		  JOIN tasks t ON t.id = a.task_id
+		  JOIN materials m ON m.id = a.material_id
+		 WHERE t.task_id = ? AND a.role = ? AND m.kind IN (1, 2, 3, 4)
 		 ORDER BY a.id DESC LIMIT 1`, taskID, enum.Output)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Attachment{}, fmt.Errorf("v3: task %s has no output", taskID)

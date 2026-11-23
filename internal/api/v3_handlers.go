@@ -887,9 +887,10 @@ func (h *v3Handler) attachments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v3AttachmentList{Items: attachmentItems(refs)})
 }
 
-// projectAttachments lists the project-level attachments (requirement, brief,
-// context). role is optional: input / output.
-func (h *v3Handler) projectAttachments(w http.ResponseWriter, r *http.Request) {
+// projectMaterials lists the materials produced inside a project. It is derived
+// from the project's tasks (attachments belong to tasks). role is optional:
+// input / output.
+func (h *v3Handler) projectMaterials(w http.ResponseWriter, r *http.Request) {
 	projectID := strings.TrimSpace(r.URL.Query().Get("id"))
 	if projectID == "" {
 		writeError(w, r, http.StatusBadRequest, "invalid_argument", "id is required",
@@ -905,7 +906,7 @@ func (h *v3Handler) projectAttachments(w http.ResponseWriter, r *http.Request) {
 		}
 		role = &parsed
 	}
-	refs, err := h.tasks.ProjectAttachments(r.Context(), projectID, role)
+	refs, err := h.tasks.ProjectMaterials(r.Context(), projectID, role)
 	if err != nil {
 		h.fail(w, r, err)
 		return

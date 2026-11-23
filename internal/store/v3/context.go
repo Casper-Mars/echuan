@@ -118,17 +118,3 @@ func ListTaskAttachmentRefs(ctx context.Context, q storedb.Querier, taskPK int64
 	return refs, nil
 }
 
-// ListProjectAttachmentRefs lists every project-level attachment with the
-// material business id, for the project detail drawer. Task-level attachments
-// are excluded by a.project_id being set.
-func ListProjectAttachmentRefs(ctx context.Context, q storedb.Querier, projectPK int64) ([]MaterialRef, error) {
-	refs, err := storedb.All[MaterialRef](ctx, q, `
-		SELECT `+materialRefColumns+`
-		  FROM attachments a JOIN materials m ON m.id = a.material_id
-		 WHERE a.project_id = ?
-		 ORDER BY a.role ASC, a.sort_no ASC, a.id ASC`, projectPK)
-	if err != nil {
-		return nil, fmt.Errorf("v3: list project attachments: %w", err)
-	}
-	return refs, nil
-}

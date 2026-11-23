@@ -349,3 +349,53 @@ func TestStatusOfMaps(t *testing.T) {
 		}
 	}
 }
+
+// TestLatestOutputSkipsContext pins the gate contract: a context material (e.g.
+// a decision brief) attached as a second output must never become the artifact
+// a gate reviews.
+func TestLatestOutputSkipsContext(t *testing.T) {
+	now := testClock
+	svc, st := newTestService(t, &now)
+	projectID := seedProject(t, st, "APP")
+	createReadyTask(t, svc, projectID, "t_ctx", enum.Dev)
+	artifactID := createMaterial(t, svc, "m_artifact")
+
+	task, err := svc.Claim(context.Background(), "w1", enum.Dev)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if _, err := svc.Report(context.Background(), "t_ctx", *task.LeaseID, artifactID); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	briefID, err := svc.CreateMaterial(context.Background(), CreateMaterialRequest{
+		MaterialID: "m_brief",
+		Kind:       enum.MaterialContext,
+		Version:    1,
+		Title:      "决策简报",
+		Sha256:     "sha-brief",
+		Size:       1,
+		Path:       "/tmp/brief",
+		UploadedBy: "pm",
+	})
+	if err != nil {
+		t.Fatalf("CreateMaterial(brief): %v", err)
+	}
+	if _, err := svc.Attach(context.Background(), AttachRequest{
+		TaskID: "t_ctx", MaterialID: briefID, Role: enum.Output,
+	}); err != nil {
+		t.Fatalf("Attach(brief): %v", err)
+	}
+
+	output, err := svc.LatestOutput(context.Background(), "t_ctx")
+	if err != nil {
+		t.Fatalf("LatestOutput: %v", err)
+	}
+	artifact, err := storev3.GetMaterial(context.Background(), st.Read(), artifactID)
+	if err != nil {
+		t.Fatalf("GetMaterial: %v", err)
+	}
+	if output.MaterialID != artifact.ID {
+		t.Errorf("gate artifact = %d, want %d (brief must be skipped)", output.MaterialID, artifact.ID)
+	}
+}
