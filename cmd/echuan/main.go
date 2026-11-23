@@ -83,9 +83,13 @@ func run() error {
 	materialService := app.NewMaterialService(st, materialWriter)
 
 	// V3 services. The task service needs a reader for the breakdown plan, so
-	// the plan artifact can be materialised in the approval transaction.
+	// the plan artifact can be materialised in the approval transaction, and
+	// the configured max_attempts: every created task (explicit, flow-derived
+	// or breakdown child) is stamped with it at insert time.
 	projectService := appv3.NewProjectService(st)
-	taskService := appv3.New(st).WithMaterialReader(planReader{st: st, dataDir: cfg.DataDir})
+	taskService := appv3.New(st).
+		WithMaxAttempts(cfg.MaxAttempts).
+		WithMaterialReader(planReader{st: st, dataDir: cfg.DataDir})
 	workerService := appv3.NewWorkerService(st)
 
 	// Feishu bot: optional. The poller turns in_review tasks into cards and

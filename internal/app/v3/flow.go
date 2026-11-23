@@ -98,6 +98,7 @@ func (s *Service) ensureHook(kind enum.TaskKind, title, rule string) func(contex
 			Title:        title,
 			ContextMD:    fmt.Sprintf("由 %s 自动派生（%s）", approved.TaskID, rule),
 			DependsOn:    []string{approved.TaskID},
+			MaxAttempts:  s.attemptLimit(0),
 			Now:          now,
 		})
 		if err != nil {
@@ -150,6 +151,7 @@ func (s *Service) breakdownHook(items []planItem) func(context.Context, *sql.Tx,
 				Title:         item.Title,
 				DescriptionMD: item.BodyMD,
 				Priority:      item.Priority,
+				MaxAttempts:   s.attemptLimit(0),
 				DependsOn:     deps,
 				Now:           now,
 			})

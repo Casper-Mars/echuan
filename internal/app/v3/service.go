@@ -12,6 +12,13 @@ import (
 	storev3 "github.com/Casper-Mars/echuan/internal/store/v3"
 )
 
+// defaultMaxAttempts is the attempt budget used when the service was built
+// without WithMaxAttempts (tests, embedders). It mirrors
+// platform.DefaultConfig().MaxAttempts so an unwired service behaves exactly
+// like an unconfigured instance; production wiring passes
+// platform.Config.MaxAttempts explicitly.
+const defaultMaxAttempts = 3
+
 // Service is the V3 task use-case layer. It owns validation, time and error
 // translation; persistence stays in store/v3.
 type Service struct {
@@ -20,12 +27,42 @@ type Service struct {
 	leaseTTL    time.Duration
 	flowEnabled bool
 	materials   MaterialReader
+	maxAttempts int
 }
 
-// New returns a service with the real clock, a 60s default lease and the four
-// flow rules enabled.
+// New returns a service with the real clock, a 60s default lease, the four
+// flow rules enabled and the default attempt budget.
 func New(st *storedb.Store) *Service {
-	return &Service{st: st, now: time.Now, leaseTTL: 60 * time.Second, flowEnabled: true}
+	return &Service{
+		st:          st,
+		now:         time.Now,
+		leaseTTL:    60 * time.Second,
+		flowEnabled: true,
+		maxAttempts: defaultMaxAttempts,
+	}
+}
+
+// WithMaxAttempts sets the attempt budget written into every task this service
+// creates, including the tasks the flow rules derive. Non-positive values are
+// ignored: platform.Config.normalize rejects them before the wiring runs, so a
+// zero here can only be a caller bug and must not silently become unlimited.
+func (s *Service) WithMaxAttempts(n int) *Service {
+	if n > 0 {
+		s.maxAttempts = n
+	}
+	return s
+}
+
+// attemptLimit resolves the budget of a new task: an explicit request value
+// wins, otherwise the configured limit applies.
+func (s *Service) attemptLimit(requested int) int {
+	if requested > 0 {
+		return requested
+	}
+	if s.maxAttempts > 0 {
+		return s.maxAttempts
+	}
+	return defaultMaxAttempts
 }
 
 // WithClock replaces the clock (tests).
@@ -85,7 +122,7 @@ func (s *Service) CreateTask(ctx context.Context, req CreateTaskRequest) (storev
 		DescriptionMD: req.DescriptionMD,
 		ContextMD:     req.ContextMD,
 		Priority:      req.Priority,
-		MaxAttempts:   req.MaxAttempts,
+		MaxAttempts:   s.attemptLimit(req.MaxAttempts),
 		DependsOn:     req.DependsOn,
 		Now:           s.nowString(),
 	})
