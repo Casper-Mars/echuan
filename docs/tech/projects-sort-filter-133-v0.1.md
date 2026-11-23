@@ -1,6 +1,7 @@
 # 项目列表倒序 + 状态筛选 技术方案 v0.1
 
-- 状态：待评审
+- 状态：**已废弃**（2026-11-23 评审驳回：排序与筛选都需要改后端接口；由 [v0.2](./projects-sort-filter-133-v0.2.md) 取代，契约变更记于 [ADR-0002](../decisions/ADR-0002-projects-list-order-filter-api.md)）
+- 历史状态：待评审
 - 作者：CTO
 - 日期：2026-11-23
 - 输入：PRD `prd-issue-133-projects-sort-filter-v0.1.md`（级别 m）+ 需求卡决策简报（material `AGRAPUN5BRALWCBX7UWCFASTFE`）+ [issue #133](https://github.com/Casper-Mars/echuan/issues/133)
