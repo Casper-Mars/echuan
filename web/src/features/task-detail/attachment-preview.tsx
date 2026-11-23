@@ -70,12 +70,12 @@ export function useWidePreview(): boolean {
  * 形态（12 高 / 圆角 8 / 间距 12 / 无卡片外壳，替换旧的 `SkeletonCard lines={5}` 卡片壳）
  * 对齐 design/mock/styles.css 的 .sk + .sk-line，见 task-detail.css 的 `.fx-preview__skeleton` 段。
  *
- * ⚠️ 条数存在口径冲突（尚未裁决）：任务卡 AC 要求「恰好 4 条」，而 design/mock/mock.js 的
- * loading 分支是 `length: 5`、design/screens/attachment-preview.md 写「正文 5 行 Skeleton」，
- * ref PNG 像素扫描也是 5 段（间距 12）。当前按**任务卡 AC** 实现 4 条，设计源待同步/裁决；
- * 改条数只动这个常量，形态不变。
+ * 条数口径已裁决（T2 复查 D1）：以设计源为准 —— design/screens/attachment-preview.md 写「正文
+ * 5 行 Skeleton」、design/mock/mock.js 的 loading 分支是 `length: 5`、ref PNG 像素扫描也是 5 段
+ * （条高 12 / 间距 12），统一按 **5 条** 实现；早先任务卡 AC 的「恰好 4 条」作废。改条数只动这个
+ * 常量，形态不变。
  */
-const PREVIEW_SKELETON_LINES = 4
+const PREVIEW_SKELETON_LINES = 5
 
 /**
  * 渲染异常兜底（flows F2 第 3 步「渲染异常 → 降级 `<pre>` 原文」）：
@@ -145,7 +145,8 @@ function PreviewBody({
   }
 
   if (state === 'loading') {
-    // 4 条独立骨架条（issue #89 A6）：无卡片外壳、等距排列，对齐 design/refs 的 loading 态。
+    // 5 条独立骨架条（issue #89 A6）：无卡片外壳、等距排列，对齐 design/refs 的 loading 态
+    // （条高 12 / 间距 12，与 design/screens/attachment-preview.md「正文 5 行 Skeleton」一致）。
     // aria-busy 留在容器上，占位条自身 aria-hidden（读屏不朗读占位内容）。
     return (
       <div className="fx-preview__skeleton" data-ui="preview-loading" aria-busy="true">

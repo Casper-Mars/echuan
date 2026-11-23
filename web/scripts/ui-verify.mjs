@@ -774,8 +774,17 @@ async function runDetailChecks(page, browser, viewport, counters) {
     `clientHeight=${preview.clientHeight} text="${preview.text}"`,
   )
 
-  // 返回详情：预览态下头部关闭键即「返回详情」
-  await page.click('[aria-label="关闭详情"]')
+  // 返回详情：预览态下头部关闭键即「返回详情」。标签随形态不同——预览态是「关闭附件预览」
+  // （≥1024 浮层 ContentModal、<1024 抽屉 DetailSheet 的 closeLabel），非预览态才是「关闭详情」。
+  // ≥1024 时被让位（concealed）的抽屉里还留着一个**同标签但 visibility:hidden** 的关闭键，
+  // 按 aria-label 取会命中文档序里靠前的隐藏键、点了没反应；所以优先点浮层自己的可见关闭键
+  // （`.ui-content-modal__close`，ui/ContentModal 的类名），没有浮层（<1024）再点抽屉头部关闭键。
+  const overlayClose = await page.$('.ui-content-modal__close')
+  if (overlayClose !== null) {
+    await overlayClose.click()
+  } else {
+    await page.click('[aria-label="关闭附件预览"], [aria-label="关闭详情"]')
+  }
   await page.waitForFunction(() => document.querySelector('[data-testid="attachment-preview"]') === null, {
     timeout: 10000,
   })
