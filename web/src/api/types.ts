@@ -65,9 +65,14 @@ export interface AttachmentRef {
 /**
  * `GET /v1/projects/materials` 的一行：材料按任务归属，项目视图是派生结果。
  * source_material_id 把简报指向它解释的那一版正文；普通产物为空。
+ *
+ * `task_id` 是产出这条材料的任务业务号（`internal/api/v3_handlers.go` 的 `v3ProjectMaterialItem`
+ * 一直在返回它），资料区的 (任务, kind) 去重靠它。声明为可选：响应缺该字段（旧后端窗口）时
+ * `lib/current-versions` 按 R-g 当作「每条各成一版」不隐藏，而不是静默藏件。
  */
 export interface ProjectMaterial extends AttachmentRef {
   source_material_id?: string
+  task_id?: string
 }
 
 /**
