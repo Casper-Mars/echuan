@@ -600,11 +600,91 @@
   gap: var(--space-3);
 }
 
+/* ===== ContentModal（内容型整页浮层，附件预览 ≥1024） ====================
+ *
+ * 几何口径（design/components.md §ui/ContentModal / docs/tech §5.2）：
+ *   80vw × 80vh，水平垂直都居中于视口（1440×900 → 1152×720，上下左右余量对称）。
+ *   Mantine 的 content 默认 `flex: 0 0 var(--modal-size)`（440px）+ `overflow-y: auto` +
+ *   `max-height: calc(100dvh - yOffset*2)`，这里必须整组覆盖，否则宽度退回模态框默认尺寸。
+ * 选择器用 `.ui-content-modal .ui-content-modal__content`（两个类）压过 Mantine 的单类规则，
+ * 不写 !important，也不依赖 `.mantine-*` / `.m_*` 内部类名。
+ * 描边走 inset box-shadow 而不是 border：`data-preview-surface="overlay"` 挂在 content 上，
+ * 内容盒（clientWidth / clientHeight）必须正好是 1152×720，边框会各吃掉 1px。
+ */
+.ui-content-modal .ui-content-modal__content {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  width: 80vw;
+  max-width: 80vw;
+  height: 80vh;
+  max-height: 80vh;
+  overflow: hidden;
+  border-radius: var(--radius-16);
+  background-color: var(--surface-canvas);
+  box-shadow:
+    inset 0 0 0 var(--border-width) var(--border-default),
+    var(--shadow-e3);
+}
+
+.ui-content-modal .ui-content-modal__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-4) var(--space-5);
+  border-block-end: var(--border-width) solid var(--border-subtle);
+  background-color: var(--surface-raised);
+}
+
+.ui-content-modal .ui-content-modal__title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-h3-size);
+  font-weight: var(--text-h3-weight);
+}
+
+.ui-content-modal .ui-content-modal__close {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.ui-content-modal .ui-content-modal__close:hover {
+  color: var(--text-primary);
+  background-color: var(--surface-overlay);
+}
+
+/* 正文槽 padding:0 + 自管滚动（两栏里左列表与右正文各自滚动，浮层本身不滚） */
+.ui-content-modal .ui-content-modal__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.ui-content-modal__footer {
+  flex: 0 0 auto;
+  padding: var(--space-4) var(--space-5);
+  border-block-start: var(--border-width) solid var(--border-subtle);
+  background-color: var(--surface-raised);
+}
+
 .ui-detail-sheet__layout {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+
+/* 让位（design/components.md §ui/DetailSheet「concealed」）：
+ * ≥1024 的附件预览由 ui/ContentModal 接管时，抽屉整棵隐去——面板与遮罩都不进画面，
+ * 底图直接是看板 / 项目整页。visibility（而不是 display:none）保留布局盒与滚动槽的 scrollTop，
+ * 同时把这个 dialog 移出 tab 序与无障碍树（关闭回详情时滚动位置天然差 0）。 */
+.ui-detail-sheet[data-concealed='true'] {
+  visibility: hidden;
 }
 
 .ui-detail-sheet__body {
@@ -620,6 +700,14 @@
   padding: var(--space-4) var(--space-5);
   border-block-start: var(--border-width) solid var(--border-subtle);
   background-color: var(--surface-raised);
+}
+
+/* 抽屉头部标题可收缩（issue #128 AC10）：Mantine 的 title 是 flex 项且 min-width:auto，
+ * 标题取 min-content 宽度时不收缩，长标题（预览态「角色徽标 + 附件标题」尤其长）会把关闭键
+ * 顶出视口（390×844 实测关闭键 rect.x=478 > 390）。这里让出收缩权，标题内部自己省略。 */
+.ui-detail-sheet .mantine-Drawer-title {
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* 关闭键配色（T6 返工）：Mantine CloseButton 的前景色在暗色头像上与头部底色同值

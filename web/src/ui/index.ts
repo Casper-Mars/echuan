@@ -5,8 +5,8 @@
 // 不允许 import '@mantine/core'（design/components.md 分层红线 / 本卡 AC3），
 // 也不允许 import ui 内部的单个实现文件——类型与实现都从这一条口子出。
 //
-// 21 个组件与 design/components.md「总览」表一一对应，顺序也按该表排列。
-// 运行时导出必须恰好是这 21 个组件（scripts/ui-imports-check.mjs 会断言）；
+// 22 个组件与 design/components.md「总览」表一一对应，顺序也按该表排列。
+// 运行时导出必须恰好是这 22 个组件（scripts/ui-imports-check.mjs 会断言）；
 // 常量（STATUS_LABEL / KIND_LABEL / STATUS_TONE）留在各自实现文件内，页面需要时再从组件 props 传文案。
 import './ui.css'
 
@@ -51,6 +51,9 @@ export type { SkeletonCardProps } from './SkeletonCard'
 
 export { ConfirmModal } from './ConfirmModal'
 export type { ConfirmModalProps } from './ConfirmModal'
+
+export { ContentModal } from './ContentModal'
+export type { ContentModalProps } from './ContentModal'
 
 export { DetailSheet } from './DetailSheet'
 export type { DetailSheetProps } from './DetailSheet'

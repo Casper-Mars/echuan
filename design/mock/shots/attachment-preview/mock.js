@@ -350,14 +350,18 @@ make docker-build</code></pre>
               <p>证据基准 <code>main@3cdc89e</code>。</p>
             </div></div>`
 
-  return `
+  /* ≥1024：整页底图（看板）+ 视口居中的 80% 浮层，预览态画面里没有侧边抽屉；
+     <1024 由 styles.css 的 @media (max-width:63.99em) 回落成 720 抽屉形态。 */
+  const background = `<section class="page">${boardBody({})}</section>`
+
+  return `${background}
     <div class="scrim"></div>
-    <aside class="drawer" role="dialog" aria-label="附件预览">
+    <section class="content-modal" role="dialog" aria-modal="true" aria-label="附件预览">
       <header class="drawer-head">
         <span class="kind">输出</span>
         <h2 class="drawer-title">${esc(ATTACHMENTS[0].title)}</h2>
         <span style="margin-left:auto"></span>
-        <button class="icon-btn" type="button" aria-label="关闭预览">✕</button>
+        <button class="icon-btn" type="button" aria-label="关闭附件预览">✕</button>
       </header>
       <div class="drawer-body" style="padding:0;flex-direction:row">
         <div class="split">
@@ -370,7 +374,7 @@ make docker-build</code></pre>
           ${body}
         </div>
       </div>
-    </aside>`
+    </section>`
 }
 
 function inboxPage() {
