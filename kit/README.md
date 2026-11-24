@@ -236,12 +236,16 @@ dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
 
 ```bash
 curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, presence, kinds, current_work_item_id, last_seen}'
+curl -fsS --get --data-urlencode 'id=<worker_id>' http://127.0.0.1:8720/v1/workers | jq .
 ```
 
 - 看到 `w_` 开头的 `worker_id` 且 `presence=active`：已注册。
+- `presence` 由服务端按 `last_seen + worker_ttl` 推导，只有 `active` / `offline` 两个值；客户端不自己算过期。
 - `kinds` 与配置一致：平台只会派这些类别的卡。
 - `current_work_item_id` 非空：正在干活。
 - 超过 `worker_ttl`（默认 45s）没有心跳：`presence=offline`。
+- `?id=` 详情比列表多 `first_seen` / `heartbeat_interval_ms` / `lease_ttl_seconds` / `metadata`；
+  id 不在册是 `404 not_found`，空白 id 是 `400 invalid_argument`（`details[0].field=id`）。
 
 插件日志关键字（启动时 / 卸载时）：
 
@@ -261,11 +265,12 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 | 现象 | 原因 | 动作 |
 |---|---|---|
 | 心跳全部失败，日志 `warn` 网络错误 | `baseUrl` 写错 / 平台没起 / 端口不对 | `curl http://127.0.0.1:8720/readyz` 确认平台活着，再改 `baseUrl` |
-| 日志反复出现 `409 worker_unknown` | 平台库里没有这个 id（被保留期清理或换库） | 插件会自动清 id 重注册；持续出现则检查平台是否被重置 |
+| 日志反复出现 `409 conflict`（心跳不会回 409，只会出现在 claim） | 该 `worker_id` 未注册（被保留期清理或平台换库） | 插件会自动清 id 重注册；持续出现则检查平台是否被重置 |
+| `echuan_task_claim` 报 `409 conflict`，message 含「未注册，请先发一次心跳」 | 平台注册表里没有这个 `worker_id`（还没心跳过，或已被保留期清理） | 等本进程下一轮心跳成功后再领卡；插件每轮心跳会自动重新注册，不要并发重试 claim |
 | 日志 `worker.presetByKind 为空，不启动心跳循环` | 没有任何 kind → preset 映射 | 补至少一条映射，或保持 `poll.enable=false` |
 | 派单来了但没人干（日志 `没有可用 agent`） | 本进程还没有 root agent | 确认插件加载在有 agent 的 profile 里；下一轮心跳会自动重试投递 |
 | `echuan_task_claim` 本地拒绝 `worker_id 尚未就绪` | 心跳没开 / 尚未注册成功 | 打开 `worker.poll.enable` 并配好 `presetByKind`，等首轮心跳成功后再领 |
-| `echuan_task_claim` 报 `409 worker_busy` | 该 worker 已持有卡 | 先 `echuan_task_report` 交掉当前卡，不要并发抢卡 |
+| `echuan_task_claim` 报 `409 conflict`，message 含「已持卡」 | 该 worker 已持有卡（一个 worker 同时只持一张） | 先 `echuan_task_report` 交掉当前卡，不要并发抢卡 |
 | 续租/报告报 `409 lease_lost` | 租约过期或被回收 | 立即停止该卡，旧结果不可再提交，重新 `echuan_task_claim` |
 | `/v1/workers` 显示 `presence=offline` | 插件停了 / 心跳关了 / 超过 45s 没心跳 | 确认 `worker.poll.enable=true`、`presetByKind` 非空、进程在跑、网络通 |
 | 报告被拒 `422 material_required` | 非 breakdown 卡既没有 `material_id` 也没有 `summary_md` | 直接传 `summary_md`（平台落报告物料），或传已有物料的 `material_id`；breakdown 卡改用 `plan` 参数 |
@@ -273,10 +278,12 @@ curl -fsS http://127.0.0.1:8720/v1/workers | jq '.items[] | {worker_id, state, p
 ## 已知行为（实测）
 
 - 首轮心跳**延迟 5 秒**发出：几秒内就退出的命令（如 `dsh --profile <name> --help`）在 `worker.poll.enable=true` 时不会产生任何请求；若进程存活超过 5s 仍会注册（`--help` 不再是「必然打一次真实 POST」的命令）。
-- 心跳间隔只认平台回包 `heartbeat_interval_ms`（默认 15s），客户端夹紧在 [500ms, 24h]。
+- 心跳成功是 **204 空体**（不返回 worker 对象、不下发指令）：客户端不从心跳回包读任何字段，
+  心跳间隔取本进程配置/兜底常量（默认 15s）；平台建议值只由 `GET /v1/workers?id=` 的
+  `heartbeat_interval_ms` 发布，供运维核对。
 - 每次心跳都上报映射的键（`kinds`），平台据此覆盖本 worker 的声明；`dispatch` 按 `work_id + lease_id` 去重（内存 LRU 200 条），重复下发只投一次。
 - `state` 是**占用声明**，不是 agent 的瞬时运行态：inflight 非空（或上一轮回包 `current_work_item_id` 非空，覆盖手动 `echuan_task_claim` 领的卡）期间**每一轮都上报 `busy`**，所以回合间隙不会被平台当成空闲再派一张卡；只有 `echuan_task_report` 成功（`notifyReported`）或租约过期后才会回到 `idle`。一个 worker 同一时间只持一张卡。
-- 连续 `worker_unknown` 会退避 1s→2s→5s→15s，不会打爆平台。
+- 心跳失败（网络 / 平台 5xx）按 1s→2s→5s→15s 退避重试，不会打爆平台；心跳任何情况都不返回 409。
 
 ## 版本兼容性
 

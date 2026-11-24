@@ -132,7 +132,7 @@ func NewRouterV3(logger *slog.Logger, fallback http.Handler, checks []HealthChec
 		}
 		if services.Workers != nil {
 			handlers["POST /v1/workers/heartbeat"] = v3Handler.heartbeat
-			handlers["GET /v1/workers"] = v3Handler.listWorkers
+			handlers["GET /v1/workers"] = v3Handler.listOrGetWorker
 		}
 		if services.Materials != nil {
 			handlers["POST /v1/materials"] = v3Handler.createMaterial

@@ -128,10 +128,32 @@ type v3WorkerResponse struct {
 	CurrentWorkItemID *string `json:"current_work_item_id"`
 	CurrentLeaseID    *string `json:"current_lease_id,omitempty"`
 	LastSeen          string  `json:"last_seen"`
+	// Presence 是服务端按 `last_seen + worker_ttl` 推导的在线态，取值
+	// `active` / `offline`（domain.Presence）。客户端不再用自己的常量猜
+	// 过期；同一个 last_seen 在列表与详情里得到同一个值（AC5）。
+	Presence string `json:"presence"`
 }
 
 type v3WorkerListResponse struct {
 	Items []v3WorkerResponse `json:"items"`
+}
+
+// v3WorkerDetailResponse is the "?id=" form: the whole listing shape plus the
+// operators' fields — 详情 ⊇ 列表 (需求 §3.7), so a client never has to stitch
+// two shapes together.
+//
+// The two historical pointer fields are restated without omitempty: the detail
+// contract is "every field is present", so an idle worker answers null instead
+// of dropping the key. encoding/json prefers the shallower declaration, so the
+// embedded copies are shadowed rather than duplicated.
+type v3WorkerDetailResponse struct {
+	v3WorkerResponse
+	CurrentTaskID       *int64          `json:"current_task_id"`
+	CurrentLeaseID      *string         `json:"current_lease_id"`
+	FirstSeen           string          `json:"first_seen"`
+	HeartbeatIntervalMS int64           `json:"heartbeat_interval_ms"`
+	LeaseTTLSeconds     int64           `json:"lease_ttl_seconds"`
+	Metadata            json.RawMessage `json:"metadata"`
 }
 
 type v3EventResponse struct {
@@ -745,6 +767,55 @@ func (h *v3Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// listOrGetWorker handles GET /v1/workers: ?id= selects the detail form
+// (a bare worker object), otherwise the collection is listed. The presence of
+// the query key decides the shape, not the emptiness of its value, so
+// `?id=` is a 400 naming the field rather than a silent fallback to the list
+// (the same house style as GET /v1/products).
+func (h *v3Handler) listOrGetWorker(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if query.Has("id") {
+		h.getWorker(w, r, query.Get("id"))
+		return
+	}
+	h.listWorkers(w, r)
+}
+
+// getWorker answers GET /v1/workers?id=: 200 with the bare detail object,
+// 404 not_found for an id the registry never had (or retention already
+// retired), 400 invalid_argument with details[0].field == "id" for a blank id.
+func (h *v3Handler) getWorker(w http.ResponseWriter, r *http.Request, workerID string) {
+	if strings.TrimSpace(workerID) == "" {
+		writeDomainError(w, r, h.logger, invalidField("id", "is required"))
+		return
+	}
+	WithSubject(r.Context(), workerID)
+
+	worker, err := h.workers.Get(r.Context(), workerID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.workerDetailDTO(r, worker))
+}
+
+// workerDetailDTO assembles the detail object: the listing shape plus the
+// process-level freshness contract and first_seen/metadata. presence comes from
+// the service (the only place that owns worker_ttl), never from a handler-side
+// constant.
+func (h *v3Handler) workerDetailDTO(r *http.Request, worker storev3.Worker) v3WorkerDetailResponse {
+	rhythm := h.workers.Rhythm()
+	return v3WorkerDetailResponse{
+		v3WorkerResponse:    workerDTO(worker, h.workerKindNames(r, worker.WorkerID), h.workers.Presence(worker)),
+		CurrentTaskID:       worker.CurrentTaskID,
+		CurrentLeaseID:      worker.CurrentLeaseID,
+		FirstSeen:           worker.FirstSeen,
+		HeartbeatIntervalMS: rhythm.HeartbeatInterval.Milliseconds(),
+		LeaseTTLSeconds:     int64(rhythm.LeaseTTL / time.Second),
+		Metadata:            workerMetadata(worker),
+	}
+}
+
 func (h *v3Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	workers, err := h.workers.List(r.Context(), limit)
@@ -752,24 +823,52 @@ func (h *v3Handler) listWorkers(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	// One presence derivation for the whole page: two rows with the same
+	// last_seen cannot land on different sides of the TTL inside one response.
+	presences := h.workers.PresenceOf(workers)
 	items := make([]v3WorkerResponse, 0, len(workers))
-	for _, worker := range workers {
-		kinds, _ := h.workers.Kinds(r.Context(), worker.WorkerID)
-		kindNames := make([]string, 0, len(kinds))
-		for _, kind := range kinds {
-			kindNames = append(kindNames, kind.String())
-		}
-		// 占用口径是行 id（workers.current_task_id），对外契约要业务标识 `t_...`（issue #89 C1/E4）。
-		// 映射已经并进 ListWorkers 的 LEFT JOIN（一条 SQL 取完整页），这里不再逐节点查任务，
-		// 否则 100 个忙碌节点就是 100 次串行 SELECT（review：N+1）。
-		items = append(items, v3WorkerResponse{
-			WorkerID: worker.WorkerID, Kinds: kindNames, State: worker.State,
-			CurrentTaskID: worker.CurrentTaskID, CurrentWorkItemID: h.workers.CurrentWorkItemID(worker),
-			CurrentLeaseID: worker.CurrentLeaseID,
-			LastSeen:       worker.LastSeen,
-		})
+	for i, worker := range workers {
+		items = append(items, workerDTO(worker, h.workerKindNames(r, worker.WorkerID), presences[i]))
 	}
 	writeJSON(w, http.StatusOK, v3WorkerListResponse{Items: items})
+}
+
+// workerKindNames renders one worker's declared kinds as contract strings. A
+// failed kind lookup degrades to an empty list rather than failing the page:
+// kinds are informational, and a listing of a hundred workers must not turn
+// into a hundred fatal reads.
+func (h *v3Handler) workerKindNames(r *http.Request, workerID string) []string {
+	kinds, _ := h.workers.Kinds(r.Context(), workerID)
+	names := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		names = append(names, kind.String())
+	}
+	return names
+}
+
+// workerDTO maps one row to the shared listing shape. 占用口径是行 id
+// （workers.current_task_id），对外契约要业务标识 `t_...`（issue #89 C1/E4）；
+// 映射已经并进 ListWorkers/GetWorker 的 LEFT JOIN，这里不再逐节点查任务，
+// 否则 100 个忙碌节点就是 100 次串行 SELECT（review：N+1）。
+func workerDTO(worker storev3.Worker, kindNames []string, presence string) v3WorkerResponse {
+	return v3WorkerResponse{
+		WorkerID: worker.WorkerID, Kinds: kindNames, State: worker.State,
+		CurrentTaskID: worker.CurrentTaskID, CurrentWorkItemID: worker.CurrentTaskCode,
+		CurrentLeaseID: worker.CurrentLeaseID,
+		LastSeen:       worker.LastSeen, Presence: presence,
+	}
+}
+
+// workerMetadata renders workers.metadata_json as an object. A dirty row must
+// not turn the detail into a 500 (writeJSON cannot encode invalid JSON), so an
+// empty or malformed value degrades to {} — the same "no metadata" the column's
+// default expresses.
+func workerMetadata(worker storev3.Worker) json.RawMessage {
+	raw := json.RawMessage(worker.MetadataJSON)
+	if len(raw) == 0 || !json.Valid(raw) {
+		return json.RawMessage(`{}`)
+	}
+	return raw
 }
 
 func (h *v3Handler) inbox(w http.ResponseWriter, r *http.Request) {

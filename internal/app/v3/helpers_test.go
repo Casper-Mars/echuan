@@ -94,6 +94,16 @@ func createMaterial(t *testing.T, svc *Service, materialID string) string {
 	return got
 }
 
+// seedWorker registers a worker so Claim accepts it: Claim checks the registry
+// first and answers 409 otherwise (issue #165 §2). Registering before claiming is
+// what a real client does (one heartbeat, then claim).
+func seedWorker(t *testing.T, st *storedb.Store, workerID string) {
+	t.Helper()
+	if err := storev3.UpsertWorker(context.Background(), st, workerID, "{}", formatTime(testClock)); err != nil {
+		t.Fatalf("UpsertWorker %s: %v", workerID, err)
+	}
+}
+
 // createReadyTask is the common one-task seed.
 func createReadyTask(t *testing.T, svc *Service, projectID, taskID string, kind enum.TaskKind) storev3.Task {
 	t.Helper()

@@ -203,3 +203,133 @@ func TestSweepOnceReclaimsAndPrunes(t *testing.T) {
 			"pruned stale workers", got, ok, buf.String())
 	}
 }
+
+// readWorker loads the registry row of one worker.
+func readWorker(t *testing.T, st *store.Store, workerID string) storev3.Worker {
+	t.Helper()
+	worker, err := storev3.GetWorker(context.Background(), st.Read(), workerID)
+	if err != nil {
+		t.Fatalf("get worker %s: %v", workerID, err)
+	}
+	return worker
+}
+
+// assertHolderReleased pins the occupancy projection of one worker: idle, no
+// task, no lease.
+func assertHolderReleased(t *testing.T, st *store.Store, workerID string) {
+	t.Helper()
+	worker := readWorker(t, st, workerID)
+	if worker.State != enum.WorkerIdle {
+		t.Errorf("%s state = %s, want idle", workerID, worker.State)
+	}
+	if worker.CurrentTaskID != nil {
+		t.Errorf("%s current_task_id = %d, want NULL", workerID, *worker.CurrentTaskID)
+	}
+	if worker.CurrentLeaseID != nil {
+		t.Errorf("%s current_lease_id = %q, want NULL", workerID, *worker.CurrentLeaseID)
+	}
+}
+
+// hardDeleteTaskRow removes an in_progress task row the way an operator's manual
+// DELETE would: the V3 API refuses to delete a leased task, so the test suspends
+// foreign keys for the statement (single write connection, so the PRAGMA lands on
+// the connection that runs the DELETE).
+func hardDeleteTaskRow(t *testing.T, st *store.Store, taskID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := st.Write().ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		t.Fatalf("disable foreign_keys: %v", err)
+	}
+	if _, err := st.Write().ExecContext(ctx, `DELETE FROM tasks WHERE task_id = ?`, taskID); err != nil {
+		t.Fatalf("delete task %s: %v", taskID, err)
+	}
+	if _, err := st.Write().ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatalf("enable foreign_keys: %v", err)
+	}
+}
+
+// logCounts decodes the JSON log lines of one sweep into msg → count.
+func logCounts(t *testing.T, buf *bytes.Buffer) map[string]float64 {
+	t.Helper()
+	counts := map[string]float64{}
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line is not JSON: %v (%q)", err, line)
+		}
+		msg, _ := entry["msg"].(string)
+		count, _ := entry["count"].(float64)
+		counts[msg] = count
+	}
+	return counts
+}
+
+// TestSweepOncePrunesCancelledTaskHolder covers AC1 + AC2 through the
+// maintenance loop: cancelling a card releases its holder immediately, and the
+// holder — idle and past retention — is gone after one sweep. Before issue #165
+// §1 the pointer stayed set, so the prune skipped the row on every pass.
+func TestSweepOncePrunesCancelledTaskHolder(t *testing.T) {
+	st := maintenanceStore(t)
+	ctx := context.Background()
+	projectPK := seedProject(t, st)
+	seedWorkerRow(t, st, "w_cancel", staleStamp)
+	seedLeasedTask(t, st, projectPK, "t_cancel_0001", "w_cancel", staleStamp)
+
+	tasks := appv3.New(st)
+	workers := appv3.NewWorkerService(st)
+
+	if err := tasks.Cancel(ctx, "t_cancel_0001", "cto"); err != nil {
+		t.Fatalf("cancel task: %v", err)
+	}
+	// AC1: the cancel itself released the pointer, before any sweep.
+	assertHolderReleased(t, st, "w_cancel")
+
+	var buf bytes.Buffer
+	sweepOnce(ctx, tasks, workers, time.Hour, platform.NewLogger("info", &buf))
+
+	// AC2: the registry no longer lists the worker (GET /v1/workers reads this
+	// table), so one pass after retention is enough.
+	if workerExists(t, st, "w_cancel") {
+		t.Error("w_cancel (card cancelled, last_seen 2020) survived one sweep, want pruned")
+	}
+	counts := logCounts(t, &buf)
+	if got, ok := counts["pruned stale workers"]; !ok || got != 1 {
+		t.Errorf("log count of %q = %v (present=%v), want 1; output = %s",
+			"pruned stale workers", got, ok, buf.String())
+	}
+}
+
+// TestSweepOnceReleasesDanglingPointer is AC5 through the maintenance loop: a
+// task row hard-deleted under a live pointer is released by the sweep, and the
+// released row then ages out in the very same pass.
+func TestSweepOnceReleasesDanglingPointer(t *testing.T) {
+	st := maintenanceStore(t)
+	ctx := context.Background()
+	projectPK := seedProject(t, st)
+	seedWorkerRow(t, st, "w_orphan", staleStamp)
+	// Lease far in the future: the reclaim step must not be what clears this
+	// pointer, only the release step may.
+	seedLeasedTask(t, st, projectPK, "t_orphan_0001", "w_orphan", "2099-01-01T00:00:00.000Z")
+	hardDeleteTaskRow(t, st, "t_orphan_0001")
+
+	tasks := appv3.New(st)
+	workers := appv3.NewWorkerService(st)
+	var buf bytes.Buffer
+	sweepOnce(ctx, tasks, workers, time.Hour, platform.NewLogger("info", &buf))
+
+	if workerExists(t, st, "w_orphan") {
+		t.Error("w_orphan (dangling pointer, last_seen 2020) survived one sweep, want released then pruned")
+	}
+	counts := logCounts(t, &buf)
+	if got, ok := counts["released stale worker pointers"]; !ok || got != 1 {
+		t.Errorf("log count of %q = %v (present=%v), want 1; output = %s",
+			"released stale worker pointers", got, ok, buf.String())
+	}
+	if got, ok := counts["pruned stale workers"]; !ok || got != 1 {
+		t.Errorf("log count of %q = %v (present=%v), want 1; output = %s",
+			"pruned stale workers", got, ok, buf.String())
+	}
+}

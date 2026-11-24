@@ -207,15 +207,15 @@ describe('错误映射：每种错误都给出可读中文与下一步，并保�
     },
     {
       status: 409,
-      code: 'worker_unknown',
-      message: 'worker is unknown',
-      keyword: /重新注册/,
+      code: 'conflict',
+      message: 'worker "w_test" 未注册，请先发一次心跳',
+      keyword: /心跳/,
     },
     {
       status: 409,
-      code: 'worker_busy',
-      message: 'worker is busy',
-      keyword: /当前卡/,
+      code: 'conflict',
+      message: 'worker "w_test" 已持卡（busy），同一时间只能持有一张卡',
+      keyword: /已持卡/,
     },
     {
       status: 413,

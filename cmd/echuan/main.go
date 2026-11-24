@@ -88,7 +88,10 @@ func run() error {
 	// cmd/echuan/maxattempts_test.go).
 	projectService := appv3.NewProjectService(st)
 	taskService := newTaskService(st, cfg)
-	workerService := appv3.NewWorkerService(st)
+	// The worker service derives presence from worker_ttl and publishes the
+	// heartbeat/lease rhythm on the detail endpoint, so it must share the same
+	// configuration the rest of the server validates (issue #165 §2).
+	workerService := newWorkerService(st, cfg)
 
 	// Feishu bot: optional. The poller turns in_review tasks into cards and
 	// the card callback decides the task through the V3 service.
@@ -205,10 +208,23 @@ func run() error {
 // The wiring is load-bearing: dropping WithMaxAttempts makes the service fall
 // back to the built-in default of 3 and silently ignores the configuration,
 // which is exactly what TestConfigMaxAttemptsReachesCreatedTask fails on.
+// WithLeaseTTL is wired for the same reason: without it claim and renew keep the
+// built-in 60s while the detail endpoint publishes the configured lease_ttl,
+// i.e. two different lease durations in one process (issue #165 D-2).
 func newTaskService(st *store.Store, cfg platform.Config) *appv3.Service {
 	return appv3.New(st).
 		WithMaxAttempts(cfg.MaxAttempts).
+		WithLeaseTTL(cfg.LeaseTTL).
 		WithMaterialReader(planReader{st: st, dataDir: cfg.DataDir})
+}
+
+// newWorkerService builds the worker registry service. It publishes the same
+// lease_ttl the task service uses for claim/renew (GET /v1/workers?id=
+// lease_ttl_seconds), so both are fed from one platform.Config; the seam exists
+// so a test can prove that without starting the server.
+func newWorkerService(st *store.Store, cfg platform.Config) *appv3.WorkerService {
+	return appv3.NewWorkerService(st).
+		WithRhythm(cfg.WorkerTTL, cfg.HeartbeatInterval, cfg.LeaseTTL)
 }
 
 // maintenanceLoop runs one sweep before the first tick, then on a fixed
@@ -230,20 +246,32 @@ func maintenanceLoop(ctx context.Context, tasks *appv3.Service, workers *appv3.W
 }
 
 // sweepOnce is one maintenance pass: expired leases go back to the pool, then
-// the registry drops the rows of workers that stopped reporting longer than
-// retention ago and hold no task.
+// stale worker occupancy is released, then the registry drops the rows of
+// workers that stopped reporting longer than retention ago and hold no task.
 //
 // Reclaim runs first on purpose. It clears current_task_id for workers whose
 // lease expired, so a node that just lost its card is not deleted as a busy node
 // one interval later: the prune in the same pass already sees it idle. A worker
 // that is still holding a card is never pruned, however stale its last_seen is —
 // current_task_id is the only record of that occupancy (issue #163).
+//
+// The release step covers the pointers reclaim cannot: a task cancelled, failed
+// or cancelled by a project close before its holder was released, and a task row
+// hard-deleted under a live pointer (issue #165 §1). Running it before the prune
+// is what makes "holder went away, card is gone" one-pass instead of pending a
+// manual fix; rows holding an in_progress card are still never released.
 func sweepOnce(ctx context.Context, tasks *appv3.Service, workers *appv3.WorkerService,
 	retention time.Duration, logger *slog.Logger) {
 	if n, err := tasks.ReclaimExpired(ctx); err != nil {
 		logger.Error("reclaim expired leases", "error", err)
 	} else if n > 0 {
 		logger.Info("reclaimed expired leases", "count", n)
+	}
+
+	if n, err := workers.ReleaseStale(ctx); err != nil {
+		logger.Error("release stale worker pointers", "error", err)
+	} else if n > 0 {
+		logger.Info("released stale worker pointers", "count", n)
 	}
 
 	pruned, err := workers.PruneStale(ctx, retention)

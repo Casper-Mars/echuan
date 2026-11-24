@@ -68,9 +68,11 @@ Mantine 要求必须在 `<AppShell>` 里），三形态与几何仍全部由 `sr
 - **状态矩阵**：产品与项目 `default / empty / loading / error`；执行节点多一个 `stale`。
   `empty` 用 `ui/EmptyState`，`loading` 用 `ui/SkeletonCard`，`error` 用 `ui/Alert`（danger + 重试）。
   非 default 态下页头不出现「新建」动作（与 `design/refs` 一致）。
-- **心跳过期**：`src/features/workers/WorkersPage` 的 `STALE_AFTER_MS = 90000`（3 个 30s 心跳周期）。
+- **心跳过期**：只看服务端字段——`src/features/workers/WorkersPage` 的 `isStale` 判 `presence === 'offline'`
+  （服务端按 `last_seen + worker_ttl` 推导，缺省 45s）。前端不再保留 `last_seen` + 本地阈值的兜底：
+  `presence` 缺失或取值非法时**不淡底、不红徽标、不计入页头过期数**。
   过期的行整行淡底（`ui/DataTable` 的 warn-row 变体，行上有 `data-warn`），心跳格换成 `ui/StatusPill`
-  的 danger 徽标并明写「心跳过期」——不只靠颜色表达。
+  的 danger 徽标并明写「心跳过期」——不只靠颜色表达；心跳相对时长（`4m12s 前`）只是文案。
 - **移动端（<768）**：`ui/DataTable` 自带的卡片式媒体块生效，每格 `data-label` 就是字段名（产品 / 仓库 /
   项目 / 操作 …），页面不靠横向滚动；外层卡片在该断点让位给逐行卡片。
 - **数据**：只用既有接口——`GET /v1/products`（页头产品数与 `project_count`）、

@@ -59,6 +59,7 @@ func TestClaimTaskLatency(t *testing.T) {
 	const samples = 100
 	durations := make([]time.Duration, 0, samples)
 	for i := 0; i < samples; i++ {
+		seedWorker(t, st, fmt.Sprintf("w_perf_%03d", i), testNow)
 		start := time.Now()
 		_, err := ClaimTask(ctx, st, ClaimInput{
 			Kind:       enum.Dev,

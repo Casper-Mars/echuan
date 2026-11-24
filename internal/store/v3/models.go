@@ -27,6 +27,23 @@ var (
 	ErrLeaseLost         = errors.New("v3: lease lost")
 	ErrInvalidTransition = errors.New("v3: invalid task transition")
 	ErrInvalidAttachment = errors.New("v3: attachment must have exactly one owner")
+	// ErrWorkerNotFound reports a worker id the registry has no row for. The
+	// detail endpoint translates it to 404 not_found; a heartbeat naming an
+	// unknown id is a registration and never produces it.
+	ErrWorkerNotFound = errors.New("v3: worker not found")
+	// ErrWorkerNotRegistered reports a claim whose worker_id has no registry
+	// row: the card would lease to a holder nobody can list, renew or prune.
+	// ClaimTask raises it inside its transaction (after the worker projection
+	// matched no row), so the lease is rolled back and the caller answers 409 —
+	// the recovery is "send a heartbeat first", not "retry the claim".
+	ErrWorkerNotRegistered = errors.New("v3: worker not registered")
+	// ErrWorkerBusy reports a claim from a worker that still holds a card. One
+	// worker, one lease (ux_tasks_worker_lease), so the second claim has to be
+	// answered 409 rather than letting the unique index fail the transaction and
+	// surface as a 500 (issue #165 D-1). ClaimTask raises it only when a card is
+	// actually available to lease: a busy worker facing an empty queue keeps the
+	// ordinary 204 "no work".
+	ErrWorkerBusy = errors.New("v3: worker already holds a task")
 )
 
 // Project is one row of projects.

@@ -336,3 +336,68 @@ func TestListProjectsStatusAndProductCombined(t *testing.T) {
 		t.Errorf("open+WEB = %+v, want empty (WEB project is closed)", openWeb)
 	}
 }
+
+// TestCloseProjectForceReleasesWorkers is AC4 at the store layer: force close is
+// a bulk cancel, so it owes the same release a single-task cancel owes. Without
+// it the two holders would keep current_task_id forever and no sweep could ever
+// retire them (issue #165 §1).
+func TestCloseProjectForceReleasesWorkers(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	seedProduct(t, st, "APP")
+	project, err := CreateProject(ctx, st, CreateProjectInput{
+		ProductID: "APP", Name: "批量取消", Now: testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	held := []struct {
+		taskID   string
+		kind     enum.TaskKind
+		workerID string
+	}{
+		{"t_dev", enum.Dev, "w_dev"},
+		{"t_design", enum.Design, "w_design"},
+	}
+	for _, item := range held {
+		if _, err := CreateTask(ctx, st, CreateTaskInput{
+			ProjectID: project.ProjectID, TaskID: item.taskID, Kind: item.kind, Title: item.taskID, Now: testNow,
+		}); err != nil {
+			t.Fatalf("CreateTask %s: %v", item.taskID, err)
+		}
+		if err := UpsertWorker(ctx, st, item.workerID, "{}", testNow); err != nil {
+			t.Fatalf("UpsertWorker %s: %v", item.workerID, err)
+		}
+		if _, err := ClaimTask(ctx, st, ClaimInput{
+			Kind: item.kind, WorkerID: item.workerID, LeaseID: "l_" + item.taskID,
+			Now: testNow, LeaseUntil: testUntil,
+		}); err != nil {
+			t.Fatalf("ClaimTask %s: %v", item.taskID, err)
+		}
+	}
+
+	if err := CloseProject(ctx, st, project.ProjectID, true, "cto", testNow); err != nil {
+		t.Fatalf("force CloseProject: %v", err)
+	}
+
+	for _, item := range held {
+		task, err := GetTask(ctx, st.Read(), item.taskID)
+		if err != nil {
+			t.Fatalf("GetTask %s: %v", item.taskID, err)
+		}
+		if task.Status != enum.Cancelled {
+			t.Errorf("%s status = %s, want cancelled", item.taskID, task.Status)
+		}
+		assertWorkerReleased(t, st, item.workerID)
+	}
+
+	// Both rows are now prunable: retention only deletes rows without a pointer.
+	deleted, err := PruneStaleWorkers(ctx, st, "2026-11-19T00:00:00.000Z")
+	if err != nil {
+		t.Fatalf("PruneStaleWorkers: %v", err)
+	}
+	if deleted != len(held) {
+		t.Errorf("deleted = %d, want %d once the force close released both holders", deleted, len(held))
+	}
+}

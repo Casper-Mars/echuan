@@ -219,7 +219,8 @@ func UpdateProjectContext(ctx context.Context, s *storedb.Store, projectID, name
 }
 
 // cancelActiveTasks cancels pending/ready/in_progress/in_review tasks of one
-// project and clears their leases. Each cancellation writes an event.
+// project, clears their leases and releases the workers that pointed at them.
+// Each cancellation writes an event.
 func cancelActiveTasks(ctx context.Context, tx *sql.Tx, projectPK int64, actor, now string) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, task_id FROM tasks
@@ -254,6 +255,11 @@ func cancelActiveTasks(ctx context.Context, tx *sql.Tx, projectPK int64, actor, 
 			 WHERE id = ?`,
 			enum.Cancelled, now, item.pk); err != nil {
 			return fmt.Errorf("v3: cancel task %s: %w", item.key, err)
+		}
+		// Force close is a bulk cancel, so it owes the same release a
+		// single-task cancel owes (issue #165 §1).
+		if err := releaseWorkerForTask(ctx, tx, item.pk, now); err != nil {
+			return err
 		}
 		if err := appendEvent(ctx, tx, item.pk, enum.EventCancelled, actor, `{"reason":"project closed"}`, now); err != nil {
 			return err
