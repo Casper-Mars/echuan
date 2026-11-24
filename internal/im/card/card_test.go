@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -331,10 +332,10 @@ func TestRenderLinksEscapeMarkdown(t *testing.T) {
 		{MaterialID: "m2", Title: "第一行\n第二行", URL: "https://example.feishu.cn/docx/c"},
 		{MaterialID: "m3"},
 	})
-	want := "[&#91;方案&#93; &#42;v2&#42; &#95;草稿&#95; &sim;x&sim; &#96;y&#96; &#92; &amp; &lt;b&gt;]" +
+	want := "1. [&#91;方案&#93; &#42;v2&#42; &#95;草稿&#95; &sim;x&sim; &#96;y&#96; &#92; &amp; &lt;b&gt;]" +
 		"(https://example.feishu.cn/docx/a_b?x=1&y=2)\n" +
-		"[第一行 第二行](https://example.feishu.cn/docx/c)\n" +
-		"m3"
+		"2. [第一行 第二行](https://example.feishu.cn/docx/c)\n" +
+		"3. m3"
 	if got != want {
 		t.Errorf("renderLinks:\n got %q\nwant %q", got, want)
 	}
@@ -351,14 +352,61 @@ func TestRenderLinksOrderAndDegradation(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("lines = %d, want 3: %v", len(lines), lines)
 	}
-	if lines[0] != "[a.md](https://u/1)" || lines[2] != "[c.md](https://u/3)" {
+	if lines[0] != "1. [a.md](https://u/1)" || lines[2] != "3. [c.md](https://u/3)" {
 		t.Errorf("links out of order: %v", lines)
 	}
-	if lines[1] != "b.md" {
-		t.Errorf("failed row = %q, want the bare file name", lines[1])
+	if lines[1] != "2. b.md" {
+		t.Errorf("failed row = %q, want the bare file name with its number", lines[1])
 	}
 	if strings.Contains(renderLinks([]Link{{MaterialID: "m2", Title: "b.md"}}), "](") {
 		t.Error("failed row still renders as a link")
+	}
+}
+
+// TestRenderLinksTwoDigitNumbering pins a full ten-attachment card: every row
+// starts with its own number, the tenth row is "10. " at the same left margin as
+// the single-digit rows (no indentation, no re-numbering), and a degraded row in
+// the middle keeps its slot instead of skipping a number.
+func TestRenderLinksTwoDigitNumbering(t *testing.T) {
+	links := make([]Link, 0, 10)
+	for i := 1; i <= 10; i++ {
+		link := Link{
+			MaterialID: "m" + strconv.Itoa(i),
+			Title:      "f" + strconv.Itoa(i) + ".md",
+			URL:        "https://u/" + strconv.Itoa(i),
+		}
+		if i == 4 {
+			link.URL = "" // import not ready yet: plain text, same number
+		}
+		links = append(links, link)
+	}
+
+	want := []string{
+		"1. [f1.md](https://u/1)",
+		"2. [f2.md](https://u/2)",
+		"3. [f3.md](https://u/3)",
+		"4. f4.md",
+		"5. [f5.md](https://u/5)",
+		"6. [f6.md](https://u/6)",
+		"7. [f7.md](https://u/7)",
+		"8. [f8.md](https://u/8)",
+		"9. [f9.md](https://u/9)",
+		"10. [f10.md](https://u/10)",
+	}
+	lines := strings.Split(renderLinks(links), "\n")
+	if len(lines) != len(want) {
+		t.Fatalf("lines = %d, want %d: %v", len(lines), len(want), lines)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("line %d = %q, want %q", i+1, lines[i], want[i])
+		}
+		if strings.HasPrefix(lines[i], " ") {
+			t.Errorf("line %d is indented: %q", i+1, lines[i])
+		}
+	}
+	if tenth := lines[9]; !strings.HasPrefix(tenth, "10. ") {
+		t.Errorf("tenth row = %q, want the \"10. \" prefix", tenth)
 	}
 }
 
@@ -369,6 +417,9 @@ func TestRenderNoLinkRowsWithoutAttachments(t *testing.T) {
 	doc := decode(t, raw)
 	if body := bodyMarkdown(t, doc); strings.Contains(body, "](") {
 		t.Errorf("card without attachments renders link rows: %q", body)
+	}
+	if body := bodyMarkdown(t, doc); strings.Contains(body, "1. ") {
+		t.Errorf("card without attachments renders an orphan number: %q", body)
 	}
 	if strings.Contains(string(raw), "看全文") || strings.Contains(string(raw), "open_doc") {
 		t.Errorf("card still carries the doc button: %s", raw)
@@ -423,8 +474,8 @@ func TestRenderClosedCardShape(t *testing.T) {
 	if !strings.HasPrefix(body, "处理结果：已处理") {
 		t.Errorf("closed body does not start with the outcome: %q", body)
 	}
-	if !strings.Contains(body, "[方案-v2.md](https://example.feishu.cn/docx/aaa)") || !strings.Contains(body, "\n接口清单.xlsx") {
-		t.Errorf("closed body lost the link rows: %q", body)
+	if !strings.Contains(body, "1. [方案-v2.md](https://example.feishu.cn/docx/aaa)") || !strings.Contains(body, "\n2. 接口清单.xlsx") {
+		t.Errorf("closed body lost the numbered link rows: %q", body)
 	}
 	if strings.Contains(string(raw), `"gate_form"`) {
 		t.Error("closed card must not carry the form")

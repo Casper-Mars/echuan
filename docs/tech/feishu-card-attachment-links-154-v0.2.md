@@ -120,7 +120,7 @@ v0.2 **没有**改（返工不外溢）：链接集合与顺序（仍走 `curren
 | `internal/im/v3_source.go` | `V3Review.Title` = `项目名 + " · " + 任务标题`（`:45`），标题里项目名与 `ProjectID` 双份 | `V3Review` 拆成 `ProjectName` / `TaskTitle`；新增 `TaskMeta(ctx, taskID)`（`appv3.GetTask` + `ProjectService.GetProject`，`service.go:96`） | `v3.go` 标题拼接、终态卡标题来源 |
 | `internal/im/card/card.go` | header = `s.ID · 卡类型 · 已等 X`（`:122`）；`RenderClosed` header = `s.ID · 卡类型`（`:146`）；正文首行 `**标题**` + `worker/尝试/报告` 行 | header = 任务标题 + 副标题（项目名 · 卡类型）+ 语义色；正文 = 状态行 +（打回原因）+ 链接行 + 辅助信息行；终态卡 = `处理结果：` + 链接行 + 辅助信息行 | 卡片 JSON 契约 + golden 夹具 + 实卡观感（**返工主体**） |
 | `internal/im/card/elements.go` | `cardHeader{Title, Template}`；`markdownElement{Tag, Content}` | `cardHeader` 增 `Subtitle *text`；`markdownElement` 增 `TextSize string`（`text_size`，取值 `notation`） | 卡片元素结构；`validateNames` 不受影响 |
-| `internal/im/card/render_links.go`（**新增**） | 无 | `renderLinks(links []Link) string`：逐行 `[escapedTitle](url)`，`url==""` → 纯文本行；实体转义、换行归一都在这一处 | 转义错误的唯一风险点，集中 + 夹具 |
+| `internal/im/card/render_links.go`（**新增**） | 无 | `renderLinks(links []Link) string`：逐行 `<n>. [escapedTitle](url)`（`<n>` 1 起连续、在方括号外），`url==""` → `<n>. escapedTitle` 纯文本行；实体转义、换行归一都在这一处 | 转义错误的唯一风险点，集中 + 夹具 |
 | `internal/im/v3.go` | 单材料解析（`:136-137`）、单 doc 填充（`:220-263`）、指纹不含附件（`:265-269`）、关单时 `Title: id`（`:178`） | 解析附件集合 → 投影 → 渲染多链接；指纹纳入集合摘要；按卡一个填充任务；关单时用 `cardState` 缓存或 `TaskMeta` 取真实标题 | 轮询行为、导入量、日志、终态卡标题 |
 | `internal/im/docs.go` | `Ensure(ctx, materialID, title)`，`title` = 卡片标题（`v3.go:247`） | 调用方改传材料显示名；`sanitizeDocName`（`:146-155`）逻辑不动 | 新文档名；历史文档不改 |
 | `internal/im/card/testdata/*.json` | 5 份 golden | 更新 5 份（header 去掉任务号、改标题+副标题+语义色；验收卡删按钮、正文改链接行）、新增 3 份（5 行混合成功与失败降级、60 字标题含特殊字符、终态卡） | 纯测试夹具 |
@@ -350,12 +350,12 @@ type Options struct {
 |---|---|---|
 | 1 | 状态行：`已等待 2 小时 · dev-1 第 2/3 次提交` | 正文；失败卡为 `… 第 3/3 次失败`；无上限时 `… dev-1 提交`；无 worker 时省略 worker 段 |
 | 2 | 上次打回 / 失败原因（有才出现）：`上次打回：<原因>` / `失败原因：<原因>` | 正文，沿用现有 80 字截断（`card.go:296-302`） |
-| 3 | 链接行：每份一行 `[文件名](URL)`，失败行只留文件名 | PRD §4.1 定义，位置不变 |
+| 3 | 链接行：每份一行 `N. [文件名](URL)`，失败行 `N. 文件名`（纯文本、仍占号） | PRD §4.1 定义，位置不变；`N` 序号为 issue #177 的形态变更 |
 | 4 | 辅助信息行：`任务 t_01M84N0TTJA4BK5HEM3T8YF6E · 报告 r0099aab`（无报告号时只留任务号） | **独立元素**，`text_size=notation`（12px），`<font color='grey'>` 包裹 |
 | 5 | 审批表单：驳回理由输入框 + `验收通过` / `打回` | 位置与行为不变 |
 
 - 正文**不再**出现 `**项目码 · 项目名 · 任务标题**` 粗体行（与 header 重复，且正是「三个字段挤一行」的来源）。
-- 链接块仍不加标题行、不加计数、不加分隔线、不加序号、不加 kind 前缀（PRD §4.1 原样）。
+- 链接块仍不加标题行、不加计数、不加分隔线、不加 kind 前缀；每行以 `N. ` 开头（`N` 从 1 连续递增，**降级行同样占号、不跳号**，前缀在方括号之外、不进链接文字）。原「不加序号」口径已被 issue #177 变更取代，见 §7.3.4。
 - 输入框占位文案由 `驳回理由（通过可留空）` 改为 `打回理由（通过可留空）`，与按钮「打回」一致（纯文案）。
 - 失败卡的按钮仍只有「打回重做」（`rejectOnly`），不变。
 
@@ -366,7 +366,7 @@ header.title    = 任务标题（取不到 → 交付验收）
 header.subtitle = <项目名> · 交付验收
 header.template = grey
 body            = 处理结果：已处理
-                  [文件名](URL) × N
+                  N. [文件名](URL)（N 从 1 连续；失败行为 `N. 文件名`）
                   任务 t_xxx · 报告 r_yyy   （notation）
 ```
 
@@ -377,8 +377,8 @@ body            = 处理结果：已处理
 | 情形 | 输出 |
 |---|---|
 | `len(Links) == 0` | 正文不追加任何行；无占位文案（AC16） |
-| `URL != ""` | `[<escaped title>](<url>)`，一行一份 |
-| `URL == ""` | `<escaped title>`，一行一份，纯文本（AC8） |
+| `URL != ""` | `<n>. [<escaped title>](<url>)`，一行一份；`<n>` 为 1 起的序号，拼在方括号**外** |
+| `URL == ""` | `<n>. <escaped title>`，一行一份，纯文本（AC8）；序号照样占位，不跳号 |
 | 标题含换行 | `\r\n`/`\n`/`\r` 归一为一个空格（保证「一行一份」） |
 | 标题含 `& < > [ ] ( ) * _ ~ \` ` | 按飞书官方「特殊字符转义说明」用 HTML 实体：`&amp;` `&lt;` `&gt;` `&#91;` `&#93;` `&#40;` `&#41;` `&#42;` `&#95;` `&sim;` `&#96;` `&#92;`；URL 段不转义（AC15） |
 
