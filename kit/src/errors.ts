@@ -119,8 +119,8 @@ export const DEFAULT_RETRY_AFTER_MS = 5_000
  * 各错误码对应的「下一步」。
  *
  * 平台错误码枚举见 `api/openapi.yaml#/components/schemas/Error`；
- * 新增码（`worker_unknown` / `worker_busy` / `lease_lost`）的处置口径见
- * `docs/worker-ops.md` 第 3 节。
+ * claim 的两种 409（worker 未注册 / 已持卡）在平台侧统一折成 `conflict`，
+ * 具体原因看 `message`，处置口径见 `docs/worker-ops.md` 第 2.3 / 3 节。
  */
 const CODE_HINTS: Record<string, string> = {
   invalid_argument:
@@ -132,7 +132,10 @@ const CODE_HINTS: Record<string, string> = {
   invalid_version:
     '下一步：重新读取资源拿到最新版本号，再带正确的 If-Match 重试。',
   conflict:
-    '下一步：重新拉取最新数据后再决定，不要原样重试。',
+    '下一步：重新拉取最新数据后再决定，不要原样重试。'
+    + 'claim 的 409 看 message：含「未注册」= 该 worker_id 没心跳过（或已被保留期清理），'
+    + '先发一次心跳（POST /v1/workers/heartbeat）再领卡；含「已持卡」= 还持着一张 in_progress 的卡，'
+    + '先用 `echuan_task_report` 交掉或等租约过期。',
   lease_lost:
     '下一步：租约已失效（过期 / 被回收 / lease_id 不匹配），立即停止执行这张卡，旧结果不可再提交；'
     + '重新调用 `echuan_work_claim` 领卡后再继续。',
@@ -151,11 +154,6 @@ const CODE_HINTS: Record<string, string> = {
     '下一步：按退避重试；持续超时则检查平台负载与网络。',
   range_not_satisfiable:
     '下一步：去掉 Range 头，或按资源总长度重新请求。',
-  worker_unknown:
-    '下一步：本地 worker 未注册（或平台已丢弃该 id），等下一次心跳自动重新注册后再试；'
-    + '不要手工伪造 worker_id，也不要重新领卡硬试。',
-  worker_busy:
-    '下一步：你已持卡，先完成当前卡并用 `echuan_work_report` 汇报，再领新卡；不要并发抢卡。',
 }
 
 /** 错误体缺失 code 时，按 HTTP 状态兜底（`docs/worker-ops.md` 第 3 节）。 */

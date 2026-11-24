@@ -203,11 +203,20 @@ paths:
     post:
       operationId: claimTask
       summary: Lease the next ready task of a kind
+      description: |
+        Body `{worker_id, kind}`. The worker registry is checked **before** the
+        queue, so an unregistered `worker_id` is a 409 even when nothing is
+        waiting (that id could otherwise spin forever on 204). One worker holds
+        at most one card (`ux_tasks_worker_lease`): a second claim while the
+        first lease is still live is also a 409, and the queued card is left
+        untouched. Both 409s carry `code=conflict`; the reason is in `message`
+        (「未注册」/「已持卡」), not in a separate code.
       tags: [tasks]
       responses:
-        '200': { description: leased task }
-        '204': { description: no ready task }
-        '400': { description: invalid kind }
+        '200': { description: leased task (dispatch envelope) }
+        '204': { description: no ready task — empty body, not an error }
+        '400': { description: invalid_argument — blank worker_id or invalid kind }
+        '409': { description: 'conflict — `message` contains 「未注册，请先发一次心跳」(recovery: POST /v1/workers/heartbeat, then claim again) or 「已持卡」(recovery: report the held card or wait for the lease to expire)' }
   /v1/tasks/lease:
     post:
       operationId: renewLease
@@ -287,17 +296,56 @@ paths:
     post:
       operationId: workerHeartbeat
       summary: Register or refresh a worker
+      description: |
+        Body `{worker_id, kinds, metadata}` (`state` is accepted and ignored —
+        occupancy is derived from `current_work_item_id`). `worker_id` is
+        client-generated and required; the server neither generates nor returns
+        one. Heartbeat is an upsert: it refreshes `last_seen` and **replaces**
+        `kinds` / `metadata` wholesale, never touches the task pointer.
+
+        The answer is **204 with an empty body** — no worker object, no command
+        list. To read back the registration result use
+        `GET /v1/workers?id=<worker_id>` (see `presence` there).
       tags: [workers]
       responses:
-        '204': { description: accepted }
-        '400': { description: invalid worker or kind }
+        '204': { description: accepted — empty body }
+        '400': { description: invalid_argument — blank worker_id, unknown field, or invalid kind }
   /v1/workers:
     get:
       operationId: listWorkers
-      summary: List workers
+      summary: List workers, or fetch one by id
+      description: |
+        Without `id` a page of rows is returned as `{"items":[...]}`; with `id`
+        the single worker is returned as a bare object (detail ⊇ list).
+
+        List item fields: `worker_id`, `kinds`, `state` (`idle`/`busy`),
+        `current_task_id` (internal row id, omitted when idle), `current_work_item_id`
+        (task business id `t_...`, explicit `null` when idle), `current_lease_id`
+        (omitted when idle), `last_seen`, `presence`.
+
+        Detail adds `first_seen`, `heartbeat_interval_ms`, `lease_ttl_seconds`,
+        `metadata`, and always carries `current_task_id` / `current_lease_id`
+        (explicit `null` when idle).
+
+        `presence` is derived by the server from `last_seen + worker_ttl` and is
+        `active` or `offline`; one derivation per response, and list/detail agree
+        for the same row. Clients must not re-derive it from `last_seen`.
       tags: [workers]
+      parameters:
+        - name: id
+          in: query
+          required: false
+          schema: { type: string }
+          description: Worker id. When the key is present the detail object is returned instead of a page; a blank value is a 400 naming the field.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer }
+          description: Page size for the list form. Defaults to 100 when omitted or not positive; a non-numeric value falls back to the default.
       responses:
-        '200': { description: workers }
+        '200': { description: 'worker page (items[] of the list fields) or the bare detail object' }
+        '400': { description: 'invalid_argument — blank id (details[0].field == "id")' }
+        '404': { description: 'not_found — id the registry never had, or one retention already retired' }
   /v1/materials:
     post:
       operationId: createMaterial

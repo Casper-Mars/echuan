@@ -6,10 +6,11 @@
 //                                stale 行 = 整行淡底（ui/DataTable 的 warn-row）+ 红色心跳徽标。
 //   design/components.md         §ui/DataTable（warn-row 变体）、§ui/StatusPill（圆点 + 文案）、§ui/EmptyState、
 //                                §ui/SkeletonCard、§ui/Alert、§ui/Button。
-//   docs/tech/web-ui-redo-v0.1.md §7   数据源：GET /v1/workers（worker_id / state / current_work_item_id / last_seen）。
+//   docs/tech/web-ui-redo-v0.1.md §7   数据源：GET /v1/workers（worker_id / state / current_work_item_id / last_seen / presence）。
 //   字段口径以 internal/api/v3_handlers.go 的 v3WorkerResponse 为准（真正挂载的是 V3 路由）：
 //   当前任务给的是 `t_...` 业务标识（string|null）。详情路由要 project_id，而 worker 行没有，
 //   所以「查看任务」点一次先反查 GET /v1/tasks?id=<tid>，见 openWorkerTask。
+//   过期判定只认服务端 `presence`（`active` / `offline`，由 `last_seen + worker_ttl` 推导），见 isStale。
 //
 // 分层：只 import ui / api / hooks / lib，不直接 import Mantine（分层红线）；样式见 workers.css（只消费令牌）。
 //
@@ -31,10 +32,16 @@ const EMPTY_WORKERS: Worker[] = []
 const SKELETON_CARDS = 3
 
 /**
- * 心跳过期阈值：3 个心跳周期（后端约定 30s 一次，见 /v1/workers 的 heartbeat_interval_ms）→ 90s。
- * 超过即判为过期：整行淡底 + 心跳换成红色徽标（design/screens/workers.md stale 态）。
+ * 心跳过期判定：**只认服务端 `presence`**（`GET /v1/workers` 每项都返回，服务端按
+ * `last_seen + worker_ttl` 推导，缺省 `worker_ttl=45s`）。
+ *
+ * 以前前端用 `last_seen` + 90s 常量自己算过期，与 `worker_ttl` 各说一套（R1）；现在服务端字段是唯一口径，
+ * 前端不再保留阈值兜底：`presence` 缺失或取值非法（不是 `offline`）→ 不淡底、不红徽标、不计入过期。
+ * 心跳列里的相对时长（`4m12s 前`）只是文案，不参与判定。
  */
-export const STALE_AFTER_MS = 90_000
+export function isStale(worker: Worker): boolean {
+  return worker.presence === 'offline'
+}
 
 /**
  * 「查看任务」的定位方式（issue #89 C2）：/v1/workers 只给 `current_work_item_id`（`t_...`），
@@ -133,11 +140,10 @@ export function WorkersPage() {
 
   // 相对时间的基准：每次渲染取一次，自动刷新（15s）会带着它一起推进，不引入第二条计时器。
   const now = Date.now()
-  const beats = items.map((worker) => heartbeatOf(worker.last_seen, now))
-  const staleCount = beats.filter((beat) => beat.stale).length
+  const staleCount = items.filter(isStale).length
   // 忙碌计数不含过期节点：过期节点在页头单独计数，否则「忙碌 + 空闲 + 过期」会大于表格行数。
-  const busyCount = items.filter((worker, index) => worker.state === 'busy' && !beats[index].stale).length
-  const idleCount = items.filter((worker, index) => worker.state !== 'busy' && !beats[index].stale).length
+  const busyCount = items.filter((worker) => worker.state === 'busy' && !isStale(worker)).length
+  const idleCount = items.filter((worker) => worker.state !== 'busy' && !isStale(worker)).length
 
   /**
    * 点「查看任务」：反查一次任务拿 project_id，然后跳详情抽屉。
@@ -204,18 +210,18 @@ export function WorkersPage() {
       key: 'last_seen',
       header: '心跳',
       render: (worker) => {
-        const beat = heartbeatOf(worker.last_seen, now)
-        if (!beat.stale) {
+        const label = heartbeatLabel(worker.last_seen, now)
+        if (!isStale(worker)) {
           return (
             <span className="wk-beat" data-heartbeat="fresh">
-              {beat.label}
+              {label}
             </span>
           )
         }
-        // 过期：红色徽标 + 明写「心跳过期」——语义不只靠颜色（色盲用户与截图都能读出来）
+        // 过期（服务端 presence=offline）：红色徽标 + 明写「心跳过期」——语义不只靠颜色（色盲用户与截图都能读出来）
         return (
           <span className="wk-beat" data-heartbeat="stale">
-            <StatusPill status="failed" label={beat.label} />
+            <StatusPill status="failed" label={label} />
             <span className="wk-beat__note">心跳过期</span>
           </span>
         )
@@ -304,7 +310,7 @@ export function WorkersPage() {
             rows={items}
             getRowKey={(worker) => worker.worker_id}
             // 心跳过期行：整行淡底（ui/DataTable 的 warn-row 变体，行上有 data-warn）
-            isWarnRow={(worker) => heartbeatOf(worker.last_seen, now).stale}
+            isWarnRow={isStale}
           />
         </div>
       )}
@@ -320,12 +326,12 @@ function subtitleOf(loading: boolean, failed: boolean, busy: number, idle: numbe
   return stale === 0 ? base : `${base} · ${stale} 个心跳过期`
 }
 
-/** 心跳文案 + 是否过期（阈值见 STALE_AFTER_MS）。脏值不崩：给「—」并按不过期处理。 */
-export function heartbeatOf(lastSeen: string, nowMs: number): { label: string; stale: boolean } {
+/** 心跳文案（相对时长）；脏值不崩：给「—」。是否过期只看 {@link isStale}，与这里无关。 */
+export function heartbeatLabel(lastSeen: string, nowMs: number): string {
   const parsed = Date.parse(lastSeen)
-  if (Number.isNaN(parsed)) return { label: '—', stale: false }
+  if (Number.isNaN(parsed)) return '—'
   const elapsed = Math.max(0, nowMs - parsed)
-  return { label: `${elapsedLabel(elapsed)} 前`, stale: elapsed > STALE_AFTER_MS }
+  return `${elapsedLabel(elapsed)} 前`
 }
 
 /** 时长 → 「3s」/「21s」/「4m 12s」/「2h 5m」（design/refs 的心跳列写法）。 */
