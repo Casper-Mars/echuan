@@ -487,3 +487,141 @@ func TestListUpstreamOutputsSkipsContext(t *testing.T) {
 		})
 	}
 }
+
+// claimOneTask seeds a product, a project and one task of kind, then leases it to
+// workerID — the "worker holds a card" state ClaimTask leaves behind.
+func claimOneTask(t *testing.T, st *storedb.Store, taskID string, kind enum.TaskKind, workerID string) Task {
+	t.Helper()
+	ctx := context.Background()
+	seedProduct(t, st, "APP")
+	project, err := CreateProject(ctx, st, CreateProjectInput{ProductID: "APP", Name: "释放占用", Now: testNow})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := CreateTask(ctx, st, CreateTaskInput{
+		ProjectID: project.ProjectID, TaskID: taskID, Kind: kind, Title: "卡片", Now: testNow,
+	}); err != nil {
+		t.Fatalf("CreateTask %s: %v", taskID, err)
+	}
+	if err := UpsertWorker(ctx, st, workerID, "{}", testNow); err != nil {
+		t.Fatalf("UpsertWorker %s: %v", workerID, err)
+	}
+	task, err := ClaimTask(ctx, st, ClaimInput{
+		Kind: kind, WorkerID: workerID, LeaseID: "l_" + taskID, Now: testNow, LeaseUntil: testUntil,
+	})
+	if err != nil {
+		t.Fatalf("ClaimTask %s: %v", taskID, err)
+	}
+	return task
+}
+
+// assertWorkerReleased pins the occupancy projection: idle, no task, no lease.
+func assertWorkerReleased(t *testing.T, st *storedb.Store, workerID string) {
+	t.Helper()
+	worker, err := GetWorker(context.Background(), st.Read(), workerID)
+	if err != nil {
+		t.Fatalf("GetWorker %s: %v", workerID, err)
+	}
+	if worker.State != enum.WorkerIdle {
+		t.Errorf("%s state = %s, want idle", workerID, worker.State)
+	}
+	if worker.CurrentTaskID != nil {
+		t.Errorf("%s current_task_id = %d, want NULL", workerID, *worker.CurrentTaskID)
+	}
+	if worker.CurrentLeaseID != nil {
+		t.Errorf("%s current_lease_id = %q, want NULL", workerID, *worker.CurrentLeaseID)
+	}
+}
+
+// TestCancelTaskReleasesWorker is AC1 at the store layer: cancelling an
+// in_progress task clears the holder's pointer, so the row can be pruned by
+// retention instead of sticking around forever (issue #165 §1).
+func TestCancelTaskReleasesWorker(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	claimOneTask(t, st, "t_cancel", enum.Dev, "w_cancel")
+
+	if err := CancelTask(ctx, st, "t_cancel", "cto", testNow); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+
+	task, err := GetTask(ctx, st.Read(), "t_cancel")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.Status != enum.Cancelled {
+		t.Errorf("task status = %s, want cancelled", task.Status)
+	}
+	if task.WorkerID != nil || task.LeaseID != nil {
+		t.Errorf("cancelled task still has worker=%v lease=%v", task.WorkerID, task.LeaseID)
+	}
+	assertWorkerReleased(t, st, "w_cancel")
+}
+
+// TestCancelTaskReleasesOnlyItsHolder keeps the release conditional: cancelling
+// one card must not clear the pointer of a worker holding a different card.
+func TestCancelTaskReleasesOnlyItsHolder(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	seedProduct(t, st, "APP")
+	project, err := CreateProject(ctx, st, CreateProjectInput{ProductID: "APP", Name: "两张卡", Now: testNow})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	for _, taskID := range []string{"t_a", "t_b"} {
+		if _, err := CreateTask(ctx, st, CreateTaskInput{
+			ProjectID: project.ProjectID, TaskID: taskID, Kind: enum.Dev, Title: taskID, Now: testNow,
+		}); err != nil {
+			t.Fatalf("CreateTask %s: %v", taskID, err)
+		}
+	}
+	for _, workerID := range []string{"w_a", "w_b"} {
+		if err := UpsertWorker(ctx, st, workerID, "{}", testNow); err != nil {
+			t.Fatalf("UpsertWorker %s: %v", workerID, err)
+		}
+	}
+	if _, err := ClaimTask(ctx, st, ClaimInput{
+		Kind: enum.Dev, WorkerID: "w_a", LeaseID: "l_a", Now: testNow, LeaseUntil: testUntil,
+	}); err != nil {
+		t.Fatalf("ClaimTask w_a: %v", err)
+	}
+	if _, err := ClaimTask(ctx, st, ClaimInput{
+		Kind: enum.Dev, WorkerID: "w_b", LeaseID: "l_b", Now: testNow, LeaseUntil: testUntil,
+	}); err != nil {
+		t.Fatalf("ClaimTask w_b: %v", err)
+	}
+
+	if err := CancelTask(ctx, st, "t_a", "cto", testNow); err != nil {
+		t.Fatalf("CancelTask t_a: %v", err)
+	}
+	assertWorkerReleased(t, st, "w_a")
+
+	held, err := GetWorker(ctx, st.Read(), "w_b")
+	if err != nil {
+		t.Fatalf("GetWorker w_b: %v", err)
+	}
+	if held.State != enum.WorkerBusy || held.CurrentTaskID == nil || held.CurrentLeaseID == nil {
+		t.Errorf("w_b (holds t_b, still in_progress) = %+v, want busy with pointer", held)
+	}
+}
+
+// TestFailTaskReleasesWorker is the failure-path half of AC1: FailTask also ends
+// the occupancy, not just the lease.
+func TestFailTaskReleasesWorker(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	claimOneTask(t, st, "t_fail", enum.Dev, "w_fail")
+
+	if err := FailTask(ctx, st, "t_fail", "boom", testNow); err != nil {
+		t.Fatalf("FailTask: %v", err)
+	}
+
+	task, err := GetTask(ctx, st.Read(), "t_fail")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.Status != enum.Failed {
+		t.Errorf("task status = %s, want failed", task.Status)
+	}
+	assertWorkerReleased(t, st, "w_fail")
+}

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Casper-Mars/echuan/internal/app"
 	appv3 "github.com/Casper-Mars/echuan/internal/app/v3"
@@ -718,8 +719,11 @@ func TestListWorkersTaskMappingDoesNotScale(t *testing.T) {
 	}
 }
 
-// TestWorkersCurrentWorkItemIDDanglingTask 保留「悬空指针」的行为：worker 指向已删任务行时，
-// 列表仍 200，该节点的 current_work_item_id 为 null（不能 500，也不能把行 id 当标识吐出去）。
+// TestWorkersCurrentWorkItemIDDanglingTask 钉住悬空指针的完整契约（issue #165 §1）：
+// worker 指向已删任务行时列表仍 200、该节点 current_work_item_id 为 null（不能 500，
+// 也不能把行 id 当标识吐出去）；维护循环跑过一轮 sweep 后指针被清掉、行本身保留到
+// 超过 retention 才删。改动理由：旧断言「悬空行 id 仍在」正是 §1 要修的永久残留，
+// 清指针后该行才能按保留期正常退休。
 func TestWorkersCurrentWorkItemIDDanglingTask(t *testing.T) {
 	a := newAPIServer(t)
 	a.seedProduct(t, "APP")
@@ -758,6 +762,27 @@ func TestWorkersCurrentWorkItemIDDanglingTask(t *testing.T) {
 		}
 	}
 
+	// 硬删之后指针确实还悬着：不先钉住这一点，下面的「sweep 后为 nil」也可能是
+	// claim 根本没绑上而假绿。
+	var dangling sql.NullInt64
+	if err := a.store.Read().QueryRowContext(ctx,
+		`SELECT current_task_id FROM workers WHERE worker_id = 'w_dangling'`).Scan(&dangling); err != nil {
+		t.Fatalf("read dangling pointer: %v", err)
+	}
+	if !dangling.Valid {
+		t.Fatalf("硬删后 w_dangling.current_task_id 已为 NULL，悬空指针场景没造出来")
+	}
+
+	// 「任务行被硬删、worker 指针还留着」只能由维护循环的一轮 sweep 收敛
+	// （issue #165 §1）：先释放不再指向 in_progress 任务的指针，再按 retention 删行。
+	// 该节点刚心跳过，未过 retention，所以这一轮清指针、留行。
+	if _, err := a.workers.ReleaseStale(ctx); err != nil {
+		t.Fatalf("ReleaseStale: %v", err)
+	}
+	if _, err := a.workers.PruneStale(ctx, time.Hour); err != nil {
+		t.Fatalf("PruneStale: %v", err)
+	}
+
 	resp, payload = a.do(t, http.MethodGet, "/v1/workers", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("悬空指针下的列表 = %d (%s)，want 200", resp.StatusCode, payload)
@@ -769,8 +794,10 @@ func TestWorkersCurrentWorkItemIDDanglingTask(t *testing.T) {
 			continue
 		}
 		found = true
-		if worker.CurrentTaskID == nil {
-			t.Errorf("w_dangling current_task_id = nil，want 悬空行 id 仍在")
+		// 一轮 sweep 之后悬空指针必须被清掉：留着它就再也没人能把该行退休
+		// （PruneStaleWorkers 不删带指针的行）。
+		if worker.CurrentTaskID != nil {
+			t.Errorf("w_dangling current_task_id = %d，want nil（sweep 后悬空指针应被清掉）", *worker.CurrentTaskID)
 		}
 		if worker.CurrentWorkItemID != nil {
 			t.Errorf("w_dangling current_work_item_id = %q，want null", *worker.CurrentWorkItemID)
@@ -799,6 +826,106 @@ func TestWorkersCurrentWorkItemIDDanglingTask(t *testing.T) {
 		if got := string(item.CurrentWorkItemID); got != "null" {
 			t.Errorf("w_dangling raw current_work_item_id = %s, want null", got)
 		}
+	}
+}
+
+// TestWorkersProjectForceCloseReleasesHolder 覆盖 AC1/AC2/AC4 的 HTTP 面：
+// 项目 force 关闭批量取消持卡任务后，GET /v1/workers 里该节点的
+// current_task_id / current_lease_id 立刻为空；超过 worker_retention 再跑一轮 sweep，
+// 列表不再含该节点（旧实现在这里永久残留，issue #165 §1）。
+func TestWorkersProjectForceCloseReleasesHolder(t *testing.T) {
+	a := newAPIServer(t)
+	ctx := context.Background()
+	a.seedProduct(t, "APP")
+
+	_, payload := a.do(t, http.MethodPost, "/v1/projects", map[string]any{"product_id": "APP", "name": "关闭"})
+	project := decodeBody[v3ProjectResponse](t, payload)
+
+	resp, payload := a.do(t, http.MethodPost, "/v1/tasks", map[string]any{
+		"project_id": project.ProjectID, "task_id": "t_close", "kind": "dev", "title": "会被 force 取消的任务",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create task = %d (%s)", resp.StatusCode, payload)
+	}
+	resp, payload = a.do(t, http.MethodPost, "/v1/workers/heartbeat", map[string]any{
+		"worker_id": "w_close", "kinds": []string{"dev"},
+	})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("heartbeat = %d (%s)", resp.StatusCode, payload)
+	}
+	resp, payload = a.do(t, http.MethodPost, "/v1/tasks/claim", map[string]any{
+		"worker_id": "w_close", "kind": "dev",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("claim = %d (%s)", resp.StatusCode, payload)
+	}
+
+	// helper: GET /v1/workers 并按 worker_id 取一项。
+	workerOf := func(workerID string) (v3WorkerResponse, bool) {
+		t.Helper()
+		resp, payload := a.do(t, http.MethodGet, "/v1/workers", nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /v1/workers = %d (%s)", resp.StatusCode, payload)
+		}
+		for _, worker := range decodeBody[v3WorkerListResponse](t, payload).Items {
+			if worker.WorkerID == workerID {
+				return worker, true
+			}
+		}
+		return v3WorkerResponse{}, false
+	}
+
+	busy, found := workerOf("w_close")
+	if !found {
+		t.Fatalf("w_close 领卡后不在列表里")
+	}
+	if busy.State != enum.WorkerBusy || busy.CurrentTaskID == nil || busy.CurrentLeaseID == nil {
+		t.Fatalf("w_close 领卡后 = %+v，want busy 且带指针", busy)
+	}
+	if busy.CurrentWorkItemID == nil || *busy.CurrentWorkItemID != "t_close" {
+		t.Fatalf("w_close current_work_item_id = %v, want t_close", busy.CurrentWorkItemID)
+	}
+
+	resp, payload = a.do(t, http.MethodPost, "/v1/projects/close?id="+project.ProjectID+"&force=1", nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("force close = %d (%s)", resp.StatusCode, payload)
+	}
+
+	// AC1 / AC4：批量取消必须当场归还占用。
+	idle, found := workerOf("w_close")
+	if !found {
+		t.Fatalf("w_close 在 force 关闭后从列表消失（未过 retention，行应保留）")
+	}
+	if idle.State != enum.WorkerIdle {
+		t.Errorf("w_close state = %s, want idle", idle.State)
+	}
+	if idle.CurrentTaskID != nil {
+		t.Errorf("w_close current_task_id = %d, want nil", *idle.CurrentTaskID)
+	}
+	if idle.CurrentLeaseID != nil {
+		t.Errorf("w_close current_lease_id = %q, want nil", *idle.CurrentLeaseID)
+	}
+	if idle.CurrentWorkItemID != nil {
+		t.Errorf("w_close current_work_item_id = %q, want null", *idle.CurrentWorkItemID)
+	}
+
+	// AC2：超过 retention 后一轮 sweep，列表不再含该节点。
+	if _, err := a.store.Write().ExecContext(ctx,
+		`UPDATE workers SET last_seen = '2020-01-01T00:00:00.000Z' WHERE worker_id = 'w_close'`); err != nil {
+		t.Fatalf("age worker: %v", err)
+	}
+	if _, err := a.workers.ReleaseStale(ctx); err != nil {
+		t.Fatalf("ReleaseStale: %v", err)
+	}
+	pruned, err := a.workers.PruneStale(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("PruneStale: %v", err)
+	}
+	if pruned != 1 {
+		t.Errorf("pruned = %d, want 1", pruned)
+	}
+	if _, found := workerOf("w_close"); found {
+		t.Errorf("w_close 超过 retention 且 sweep 一轮后仍在列表里")
 	}
 }
 

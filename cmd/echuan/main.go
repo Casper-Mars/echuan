@@ -230,20 +230,32 @@ func maintenanceLoop(ctx context.Context, tasks *appv3.Service, workers *appv3.W
 }
 
 // sweepOnce is one maintenance pass: expired leases go back to the pool, then
-// the registry drops the rows of workers that stopped reporting longer than
-// retention ago and hold no task.
+// stale worker occupancy is released, then the registry drops the rows of
+// workers that stopped reporting longer than retention ago and hold no task.
 //
 // Reclaim runs first on purpose. It clears current_task_id for workers whose
 // lease expired, so a node that just lost its card is not deleted as a busy node
 // one interval later: the prune in the same pass already sees it idle. A worker
 // that is still holding a card is never pruned, however stale its last_seen is —
 // current_task_id is the only record of that occupancy (issue #163).
+//
+// The release step covers the pointers reclaim cannot: a task cancelled, failed
+// or cancelled by a project close before its holder was released, and a task row
+// hard-deleted under a live pointer (issue #165 §1). Running it before the prune
+// is what makes "holder went away, card is gone" one-pass instead of pending a
+// manual fix; rows holding an in_progress card are still never released.
 func sweepOnce(ctx context.Context, tasks *appv3.Service, workers *appv3.WorkerService,
 	retention time.Duration, logger *slog.Logger) {
 	if n, err := tasks.ReclaimExpired(ctx); err != nil {
 		logger.Error("reclaim expired leases", "error", err)
 	} else if n > 0 {
 		logger.Info("reclaimed expired leases", "count", n)
+	}
+
+	if n, err := workers.ReleaseStale(ctx); err != nil {
+		logger.Error("release stale worker pointers", "error", err)
+	} else if n > 0 {
+		logger.Info("released stale worker pointers", "count", n)
 	}
 
 	pruned, err := workers.PruneStale(ctx, retention)

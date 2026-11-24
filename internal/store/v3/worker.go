@@ -51,6 +51,30 @@ func Heartbeat(ctx context.Context, s *storedb.Store, workerID, now string) erro
 	return nil
 }
 
+// releaseWorkerForTask clears the occupancy of whichever worker points at
+// taskPK, inside the caller's transaction. It is the counterpart of the
+// ClaimTask projection: every path that takes a task away from a worker (report,
+// lease reclaim, cancel, fail, project close) must give the pointer back, or the
+// row keeps a current_task_id forever and PruneStaleWorkers can never retire it
+// (issue #165 §1).
+//
+// The statement is conditional on current_task_id, so a stale release cannot
+// clear a pointer a worker already moved to another card; ux_workers_current_task
+// makes it match at most one row. last_seen is deliberately left alone: cancel,
+// fail and project close are operator actions, not worker reports, so refreshing
+// last_seen here would keep a dead node looking active for another worker_ttl and
+// delay its retention.
+func releaseWorkerForTask(ctx context.Context, tx *sql.Tx, taskPK int64, now string) error {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE workers
+		   SET state = ?, current_task_id = NULL, current_lease_id = NULL, update_time = ?
+		 WHERE current_task_id = ?`,
+		enum.WorkerIdle, now, taskPK); err != nil {
+		return fmt.Errorf("v3: release worker holding task %d: %w", taskPK, err)
+	}
+	return nil
+}
+
 // GetWorker loads one worker by business id.
 func GetWorker(ctx context.Context, q storedb.Querier, workerID string) (Worker, error) {
 	worker, err := storedb.One[Worker](ctx, q,
@@ -129,6 +153,41 @@ func ListWorkers(ctx context.Context, q storedb.Querier, limit int) ([]Worker, e
 		 LIMIT ?`, limit)
 }
 
+// ClearStaleWorkerPointers gives back the occupancy of workers whose pointer no
+// longer names a live card, returning how many rows were released.
+//
+// The invariant is "current_task_id names an in_progress task, or it is NULL".
+// A pointer that violates it is stale occupancy, and because PruneStaleWorkers
+// refuses to delete a row while a pointer is set, such a row would otherwise
+// stay listed forever. Two shapes reach it:
+//
+//   - the task row is gone (hard-deleted outside the API, e.g. a manual DELETE);
+//   - the task left in_progress through a path that did not release the worker
+//     (rows written before cancel/fail/close learned to release, issue #165 §1).
+//
+// A worker holding an in_progress task is never touched, however stale its
+// last_seen is: current_task_id is the only record of that occupancy. Like
+// releaseWorkerForTask, last_seen is not refreshed — the release is a
+// reconciliation, not a report, so the row still ages out by retention.
+func ClearStaleWorkerPointers(ctx context.Context, s *storedb.Store, now string) (int, error) {
+	res, err := s.Write().ExecContext(ctx, `
+		UPDATE workers
+		   SET state = ?, current_task_id = NULL, current_lease_id = NULL, update_time = ?
+		 WHERE current_task_id IS NOT NULL
+		   AND NOT EXISTS (
+		         SELECT 1 FROM tasks t
+		          WHERE t.id = workers.current_task_id AND t.status = ?)`,
+		enum.WorkerIdle, now, enum.InProgress)
+	if err != nil {
+		return 0, fmt.Errorf("v3: clear stale worker pointers: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("v3: clear stale worker pointers rows: %w", err)
+	}
+	return int(n), nil
+}
+
 // PruneStaleWorkers deletes the rows of workers that stopped reporting before
 // the retention cutoff and hold no task. `before` is the cutoff itself (now -
 // worker_retention), compared strictly: a row whose last_seen equals it stays.
@@ -136,7 +195,10 @@ func ListWorkers(ctx context.Context, q storedb.Querier, limit int) ([]Worker, e
 // current_task_id is never ignored: the pointer is the only place a worker's
 // occupancy lives, so deleting the row while it is set would orphan the task it
 // names (issue #163). A node holding a card is therefore pruned only after its
-// lease was reclaimed or its report released the pointer.
+// lease was reclaimed, its report released the pointer, or
+// ClearStaleWorkerPointers dropped a pointer that no longer names an in_progress
+// task; the sweep runs that reconciliation before this prune, so one pass does
+// both (issue #165 §1).
 //
 // worker_kinds goes with the row in the same transaction: the table has no
 // foreign key back to workers, so leaving the rows behind would leak a kind list
