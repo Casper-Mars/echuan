@@ -744,55 +744,66 @@ export interface EchuanClient extends V3Client {
 
 export type WorkerState = 'idle' | 'busy'
 
-/** `POST /v1/workers/heartbeat` 的请求体；首次注册时 `worker_id` 字段**完全不出现**。 */
+/**
+ * 服务端推导的在线态（`GET /v1/workers` 的 `presence`）。
+ *
+ * 只有服务端知道 `worker_ttl`，客户端**不得**再用 `last_seen` + 本地阈值猜过期；
+ * 响应缺该字段或取值非法时按「不是 offline」处理（不淡底、不计数），不要兜底推导。
+ */
+export type WorkerPresence = 'active' | 'offline'
+
+/** `POST /v1/workers/heartbeat` 的请求体（`worker_id` 由客户端生成并持久化，必填）。 */
 export interface WorkerHeartbeatInput {
-  worker_id?: string
+  worker_id: string
   state: WorkerState
-  /** 声明可执行的 work item 类别（必填、非空；每次心跳覆盖）。 */
+  /** 声明可执行的 work item 类别（必填；每次心跳整体覆盖）。 */
   kinds: readonly WorkItemKind[]
   metadata: Record<string, unknown>
 }
 
-/** 心跳回包里的 worker 快照（只声明本工具包读取的字段）。 */
+/**
+ * worker 注册表详情快照 = `GET /v1/workers?id=<worker_id>` 的响应体。
+ *
+ * 12 个字段与 `internal/api/v3_handlers.go` 的 `v3WorkerDetailResponse` **逐个对齐**
+ * （多一个少一个都算契约漂移，见 tests/worker-snapshot.spec.ts）：详情 ⊇ 列表，
+ * 内嵌指针字段不带 omitempty，所以空闲节点这里是显式 `null` 而不是缺键。
+ */
 export interface WorkerSnapshot {
   worker_id: string
-  presence?: string
-  state?: WorkerState
-  kinds?: readonly WorkItemKind[]
-  current_work_item_id?: string | null
-  metadata?: Record<string, unknown>
-  first_seen?: string
-  last_seen?: string
-  heartbeat_interval_ms?: number
-  lease_ttl_seconds?: number
-  [key: string]: unknown
+  kinds: readonly WorkItemKind[]
+  state: WorkerState
+  /** 任务行 id（历史字段，仍随详情下发）。 */
+  current_task_id: number | null
+  /** 任务业务标识 `t_...`；空闲节点为显式 `null`。 */
+  current_work_item_id: string | null
+  current_lease_id: string | null
+  last_seen: string
+  presence: WorkerPresence
+  first_seen: string
+  /** 服务端建议的心跳间隔（毫秒），与 `heartbeat_interval` 配置同源。 */
+  heartbeat_interval_ms: number
+  /** claim 实际写入的租约时长（秒），与 `lease_ttl` 配置同源。 */
+  lease_ttl_seconds: number
+  metadata: Record<string, unknown>
 }
 
-/** 指令公共形状；当前枚举只有 `dispatch`。 */
-export interface WorkerCommandBase {
-  kind: string
+/** 心跳成功结果（HTTP 204、空响应体）：没有回包对象，属终态成功，不要重试。 */
+export interface HeartbeatResult {
+  kind: 'accepted'
+  status: 204
+  message: string
+  requestId?: string
 }
 
-export interface WorkerDispatchCommand extends WorkerCommandBase {
-  kind: 'dispatch'
-  dispatch: Dispatch
-}
-
-/** 心跳返回的一条指令；未识别的 kind 由调用方忽略。 */
-export type WorkerCommand = WorkerDispatchCommand | WorkerCommandBase
-
-/** `POST /v1/workers/heartbeat` 的 200 回包。 */
-export interface WorkerHeartbeatPayload {
-  worker: WorkerSnapshot
-  /** 无工作项时恒为 `[]`（不会是 null 或省略）。 */
-  commands: WorkerCommand[]
-  [key: string]: unknown
-}
+/** 心跳成功（204 空体）的统一文案。 */
+export const HEARTBEAT_ACCEPTED_MESSAGE =
+  '已接受：平台返回 HTTP 204，心跳没有响应体（不返回 worker 对象、也不下发指令）。'
+  + '下一步：要复核注册结果请读 `GET /v1/workers?id=<worker_id>`（含 presence）；不要当失败重试。'
 
 /** worker 心跳客户端；与 22 个客户端方法分开，避免污染 `TOOL_METHODS`。 */
 export interface WorkerClient {
-  /** `POST /v1/workers/heartbeat`（operationId `heartbeatWorker`）。 */
-  heartbeat(input: WorkerHeartbeatInput): Promise<ApiResult<WorkerHeartbeatPayload>>
+  /** `POST /v1/workers/heartbeat`（operationId `workerHeartbeat`）；204 空体 → {@link HeartbeatResult}。 */
+  heartbeat(input: WorkerHeartbeatInput): Promise<HeartbeatResult>
 }
 
 // ---------------------------------------------------------------------------
@@ -1485,7 +1496,7 @@ export function createClient(
  * 与 {@link createClient} 分开：22 个客户端方法的对象键必须**恰好**是
  * {@link TOOL_METHODS}（任务-02 有断言），worker 心跳走独立命名空间。
  *
- * 首次注册时请求体里**没有** `worker_id` 键（不是空串、不是 null）；
+ * `worker_id` 必填（由客户端生成并持久化，服务端不再下发、也不生成）；
  * `kinds` 原样上报（配置已在归一化阶段校验枚举）；`metadata` 原样上报，
  * 仍会经过 {@link assertWorkerMetadataSize} 的 8KiB 前置校验。
  */
@@ -1499,19 +1510,22 @@ export function createWorkerClient(
     async heartbeat(input) {
       const state: WorkerState = input?.state === 'busy' ? 'busy' : 'idle'
       const kinds = requireKinds(input?.kinds)
-      const body: Record<string, unknown> = {}
-      if (input?.worker_id !== undefined && input.worker_id !== '') {
-        body.worker_id = input.worker_id
+      const body: Record<string, unknown> = {
+        worker_id: requireNonEmpty(input?.worker_id, 'worker_id'),
+        state,
+        kinds,
+        metadata: input?.metadata ?? {},
       }
-      body.state = state
-      body.kinds = kinds
-      body.metadata = input?.metadata ?? {}
 
-      return requestJson<WorkerHeartbeatPayload>(ctx, {
+      // 心跳成功是 204 空体（不返回 worker、不下发指令）：不能用 requestJson
+      // （那会把 204 转成「无活」的 NoWorkResult），这里走 requestRaw 返回确定结果
+      // HeartbeatResult；非 2xx 仍由 requestRaw 转 EchuanApiError。
+      const raw = await requestRaw(ctx, {
         method: 'POST',
         path: '/v1/workers/heartbeat',
         body,
       })
+      return heartbeatAcceptedResult(raw.status, raw.requestId)
     },
   }
 }
@@ -1676,6 +1690,12 @@ function deletedResult(status: number, requestId: string | undefined): DeletedRe
   return requestId === undefined
     ? { kind: 'deleted', status, message: DELETED_MESSAGE }
     : { kind: 'deleted', status, message: DELETED_MESSAGE, requestId }
+}
+
+function heartbeatAcceptedResult(status: number, requestId: string | undefined): HeartbeatResult {
+  return requestId === undefined
+    ? { kind: 'accepted', status: 204, message: HEARTBEAT_ACCEPTED_MESSAGE }
+    : { kind: 'accepted', status: 204, message: HEARTBEAT_ACCEPTED_MESSAGE, requestId }
 }
 
 function okResult<T>(status: number, data: T, requestId: string | undefined): OkResult<T> {

@@ -89,6 +89,14 @@ export interface Worker {
   state: 'idle' | 'busy'
   current_work_item_id: string | null
   last_seen: string
+  /**
+   * 服务端按 `last_seen + worker_ttl` 推导的在线态（`domain.Presence`），只有 `active` / `offline`。
+   *
+   * 过期判定**只**认这个字段：`worker_ttl` 只有服务端知道，前端不再用 `last_seen` + 本地阈值兜底。
+   * 类型上放宽为可选字符串：响应缺字段或取值非法时按「不是 offline」处理（不淡底、不计数），
+   * 而不是把缺字段误判成过期。
+   */
+  presence?: string
 }
 
 export interface ListResponse<T> {

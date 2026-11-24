@@ -76,9 +76,12 @@ function requireKind(value: unknown): V3TaskKind {
 function requireWorker(identity: WorkerIdentity): string {
   const workerID = identity.workerId
   if (workerID === undefined || workerID.trim() === '') {
+    // 平台对未注册 worker 的 claim 答 409 conflict（message 含「未注册」），
+    // 本地前置拒绝沿用同一 code，恢复动作也一致：先成功发一次心跳再领卡。
     throw new EchuanValidationError(
-      'worker 尚未注册（心跳循环未就绪），不能领取任务',
-      'worker_unknown',
+      'worker 尚未注册（心跳循环未就绪），不能领取任务。下一步：等首轮心跳成功'
+        + '（或先向 POST /v1/workers/heartbeat 发一次心跳）后再领卡；不要伪造 worker_id。',
+      'conflict',
       'worker_id',
     )
   }
