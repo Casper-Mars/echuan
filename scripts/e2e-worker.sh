@@ -37,8 +37,10 @@ HTTP_CODE=""
 HTTP_BODY=""
 
 # 与 write_config 写进 TOML 的值保持一致；第 9 步的等待窗口按这几个常量算。
-# lease_ttl 在当前 V3 构建里只做解析与校验、尚未接线到任务服务（租约仍是服务
-# 内置的 60s），所以脚本不硬断言租约时长，只断言「续租后 lease_until 递增」。
+# lease_ttl 已接线到任务服务（claim / 续租都按它写 lease_until）：本脚本断言
+# 「详情端点发布的 lease_ttl_seconds 等于配置值」与「续租后 lease_until 递增」，
+# 但不解析时间戳硬算租期长度——镜像里的 date 未必支持 -d 解析毫秒定宽 UTC 串，
+# 硬算会把断言变成平台相关的。
 LEASE_TTL_SECONDS=90
 WORKER_TTL_SECONDS=45
 WORKER_RETENTION_SECONDS=46
@@ -429,7 +431,14 @@ WORKER_JSON="$(printf '%s' "$HTTP_BODY" | jq -c --arg w "$WORKER_ID" '.items[]|s
   || fail "心跳不应释放已持有的卡"
 [[ "$(jq -r '.current_lease_id' <<<"$WORKER_JSON")" == "$REQ_LEASE" ]] \
   || fail "心跳不应改动 current_lease_id"
-pass "5/9 显式续租 lease_until 递增且 lease_id 不变；错误 lease 409 lease lost；持卡心跳不归还占用"
+
+# lease_ttl 接线（issue #165 D-2）：详情端点发布的租期必须等于配置值，也就是
+# claim 刚才实际用的那个时长（两处同源于 platform.Config.LeaseTTL）。
+http_get "/v1/workers?id=$WORKER_ID"
+require_code 200 "读取持卡 worker 详情"
+[[ "$(jqr '.lease_ttl_seconds')" == "$LEASE_TTL_SECONDS" ]] \
+  || fail "详情 lease_ttl_seconds 应为配置的 ${LEASE_TTL_SECONDS}s，实际 $(jqr '.lease_ttl_seconds')"
+pass "5/9 显式续租 lease_until 递增且 lease_id 不变；错误 lease 409 lease lost；持卡心跳不归还占用；详情 lease_ttl_seconds=${LEASE_TTL_SECONDS}s 与配置同源"
 
 # --- 6. 报告 / 驳回 / 验收 ---------------------------------------------------
 
@@ -662,6 +671,24 @@ require_code 200 "持卡后读取注册表"
 [[ "$(jqr --arg w "$WORKER_HOLDER" '.items[]|select(.worker_id==$w)|.current_work_item_id')" == "$CANCEL_TASK" ]] \
   || fail "$WORKER_HOLDER 持卡后 current_work_item_id 应为 $CANCEL_TASK"
 
+# 持卡再 claim（issue #165 D-1 防回归）：队列里还有一张同类卡时，持卡 Worker
+# 再 claim 必须是 409 conflict + 「已持卡」，而不是唯一索引撞出来的 500。
+http_post "/v1/tasks" "$(jq -nc \
+  --arg pid "$PROJECT_ID" \
+  '{project_id:$pid,kind:"dev",title:"E2E 排队中的第二张执行卡",description_md:"# 执行\n\n用于验证持卡再 claim 的 409。\n"}')"
+require_code 201 "建排队中的第二张卡"
+QUEUED_TASK="$(jqr '.task_id')"
+http_post "/v1/tasks/claim" "$(jq -nc --arg wid "$WORKER_HOLDER" '{worker_id:$wid,kind:"dev"}')"
+require_code 409 "持卡 Worker 再 claim（队列里有卡）"
+require_body "conflict" "持卡再 claim 应返回 409 conflict"
+require_body "已持卡" "持卡再 claim 的 message 应指出已持卡"
+# 被拒的 claim 整笔回滚：排队的卡仍是 ready、无属主。
+http_get "/v1/tasks?id=$QUEUED_TASK"
+require_code 200 "读取排队中的第二张卡"
+[[ "$(jqr '.status')" == "ready" ]] || fail "被拒的 claim 不应改动排队卡状态，实际 $(jqr '.status')"
+[[ "$(jqr '.worker_id // "null"')" == "null" ]] || fail "被拒的 claim 不应写排队卡 worker_id"
+say "持卡再 claim：409 conflict（已持卡），$QUEUED_TASK 仍为 ready"
+
 # 单任务没有取消/失败路由：DELETE /v1/tasks 只允许 pending/ready（硬删），
 # 对 in_progress 的卡是 409 invalid transition。
 http_delete "/v1/tasks?id=$CANCEL_TASK"
@@ -706,7 +733,7 @@ require_code 200 "读取含无卡 worker 的注册表"
   || fail "无卡 worker $WORKER_IDLE 应出现在注册表里"
 [[ "$(jqr --arg w "$WORKER_IDLE" '.items[]|select(.worker_id==$w)|.current_work_item_id')" == "null" ]] \
   || fail "无卡 worker 的 current_work_item_id 应为 null"
-pass "8/9 重启后注册表与任务仍在；force 关闭取消持卡卡并当场归还指针；无卡 worker 正常在册"
+pass "8/9 重启后注册表与任务仍在；持卡再 claim 409 conflict 且队列卡未被改动；force 关闭取消持卡卡并当场归还指针；无卡 worker 正常在册"
 
 # --- 9. 保留期清理 ----------------------------------------------------------
 

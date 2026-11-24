@@ -89,6 +89,7 @@ func TestUpdateTask(t *testing.T) {
 		t.Errorf("updated = %+v", updated)
 	}
 
+	seedWorker(t, st, "w1")
 	if _, err := svc.Claim(context.Background(), "w1", enum.Dev); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -133,6 +134,7 @@ func TestDeleteTask(t *testing.T) {
 
 	// A started task cannot be deleted either.
 	createReadyTask(t, svc, projectID, "t_started", enum.Dev)
+	seedWorker(t, st, "w1")
 	if _, err := svc.Claim(context.Background(), "w1", enum.Dev); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -143,7 +145,8 @@ func TestDeleteTask(t *testing.T) {
 
 func TestClaimNoWork(t *testing.T) {
 	now := testClock
-	svc, _ := newTestService(t, &now)
+	svc, st := newTestService(t, &now)
+	seedWorker(t, st, "w1")
 	_, err := svc.Claim(context.Background(), "w1", enum.Dev)
 	if !IsNoWork(err) {
 		t.Fatalf("Claim = %v, want NoWorkError", err)
@@ -160,6 +163,7 @@ func TestReportAndDecide(t *testing.T) {
 	createReadyTask(t, svc, projectID, "t_a", enum.Dev)
 	materialID := createMaterial(t, svc, "m_v1")
 
+	seedWorker(t, st, "w1")
 	task, err := svc.Claim(context.Background(), "w1", enum.Dev)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
@@ -215,6 +219,7 @@ func TestDecideReject(t *testing.T) {
 	createReadyTask(t, svc, projectID, "t_a", enum.Requirement)
 	materialID := createMaterial(t, svc, "m_v1")
 
+	seedWorker(t, st, "w1")
 	task, err := svc.Claim(context.Background(), "w1", enum.Requirement)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
@@ -250,6 +255,7 @@ func TestReclaimExpired(t *testing.T) {
 	projectID := seedProject(t, st, "APP")
 	createReadyTask(t, svc, projectID, "t_a", enum.Dev)
 
+	seedWorker(t, st, "w1")
 	task, err := svc.Claim(context.Background(), "w1", enum.Dev)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
@@ -273,6 +279,7 @@ func TestReclaimExpired(t *testing.T) {
 	if after.Status != enum.Ready {
 		t.Errorf("status = %s, want ready", after.Status)
 	}
+	seedWorker(t, st, "w2")
 	if _, err := svc.Claim(context.Background(), "w2", enum.Dev); err != nil {
 		t.Fatalf("re-claim after reclaim: %v", err)
 	}
@@ -287,6 +294,7 @@ func TestReclaimExpiredExhaustsBudget(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
+	seedWorker(t, st, "w1")
 	if _, err := svc.Claim(context.Background(), "w1", enum.Dev); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -360,6 +368,7 @@ func TestLatestOutputSkipsContext(t *testing.T) {
 	createReadyTask(t, svc, projectID, "t_ctx", enum.Dev)
 	artifactID := createMaterial(t, svc, "m_artifact")
 
+	seedWorker(t, st, "w1")
 	task, err := svc.Claim(context.Background(), "w1", enum.Dev)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)

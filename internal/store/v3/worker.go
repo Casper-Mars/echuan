@@ -34,23 +34,6 @@ func UpsertWorker(ctx context.Context, s *storedb.Store, workerID, metadataJSON,
 	return nil
 }
 
-// Heartbeat refreshes last_seen without touching occupancy.
-func Heartbeat(ctx context.Context, s *storedb.Store, workerID, now string) error {
-	res, err := s.Write().ExecContext(ctx,
-		`UPDATE workers SET last_seen = ?, update_time = ? WHERE worker_id = ?`, now, now, workerID)
-	if err != nil {
-		return fmt.Errorf("v3: heartbeat %s: %w", workerID, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("v3: heartbeat rows: %w", err)
-	}
-	if n == 0 {
-		return fmt.Errorf("v3: worker %s not registered", workerID)
-	}
-	return nil
-}
-
 // releaseWorkerForTask clears the occupancy of whichever worker points at
 // taskPK, inside the caller's transaction. It is the counterpart of the
 // ClaimTask projection: every path that takes a task away from a worker (report,
@@ -76,11 +59,20 @@ func releaseWorkerForTask(ctx context.Context, tx *sql.Tx, taskPK int64, now str
 }
 
 // GetWorker loads one worker by business id.
+//
+// The held task's business id (`t_...`) is resolved by the same LEFT JOIN the
+// listing uses (Worker.CurrentTaskCode), so the detail endpoint and the list
+// agree on occupancy instead of the detail answering null for a busy node
+// (issue #165 §2 G1). A dangling pointer (task row gone) stays nil, exactly like
+// "no work item".
 func GetWorker(ctx context.Context, q storedb.Querier, workerID string) (Worker, error) {
-	worker, err := storedb.One[Worker](ctx, q,
-		`SELECT `+workerColumns+` FROM workers WHERE worker_id = ?`, workerID)
+	worker, err := storedb.One[Worker](ctx, q, `
+		SELECT `+workerColumnsAliased+`, t.task_id AS current_task_code
+		  FROM workers w
+		  LEFT JOIN tasks t ON t.id = w.current_task_id
+		 WHERE w.worker_id = ?`, workerID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Worker{}, fmt.Errorf("v3: worker %s not found", workerID)
+		return Worker{}, fmt.Errorf("%w: %s", ErrWorkerNotFound, workerID)
 	}
 	if err != nil {
 		return Worker{}, fmt.Errorf("v3: get worker %s: %w", workerID, err)

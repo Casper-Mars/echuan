@@ -21,6 +21,7 @@ import (
 	appv3 "github.com/Casper-Mars/echuan/internal/app/v3"
 	"github.com/Casper-Mars/echuan/internal/domain/enum"
 	"github.com/Casper-Mars/echuan/internal/material"
+	"github.com/Casper-Mars/echuan/internal/platform"
 	storedb "github.com/Casper-Mars/echuan/internal/store"
 	storev3 "github.com/Casper-Mars/echuan/internal/store/v3"
 )
@@ -35,6 +36,15 @@ type apiServer struct {
 }
 
 func newAPIServer(t *testing.T) *apiServer {
+	t.Helper()
+	return newAPIServerWithConfig(t, platform.DefaultConfig())
+}
+
+// newAPIServerWithConfig builds the same router from an explicit
+// platform.Config, so a test can prove a configured value reaches the HTTP
+// surface instead of falling back to the built-in defaults (lease_ttl,
+// max_attempts, the worker rhythm). Callers that do not care use newAPIServer.
+func newAPIServerWithConfig(t *testing.T, cfg platform.Config) *apiServer {
 	t.Helper()
 
 	st, err := storedb.Open(storedb.Config{
@@ -53,8 +63,9 @@ func newAPIServer(t *testing.T) *apiServer {
 	t.Cleanup(func() { _ = st.Close() })
 
 	projects := appv3.NewProjectService(st)
-	tasks := appv3.New(st)
-	workers := appv3.NewWorkerService(st)
+	tasks := appv3.New(st).WithMaxAttempts(cfg.MaxAttempts).WithLeaseTTL(cfg.LeaseTTL)
+	workers := appv3.NewWorkerService(st).
+		WithRhythm(cfg.WorkerTTL, cfg.HeartbeatInterval, cfg.LeaseTTL)
 	writer, err := material.NewWriter(t.TempDir(), 1<<20)
 	if err != nil {
 		t.Fatalf("material writer: %v", err)
@@ -84,6 +95,18 @@ func (a *apiServer) seedProduct(t *testing.T, code string) {
 		return err
 	}); err != nil {
 		t.Fatalf("seed product: %v", err)
+	}
+}
+
+// registerWorker sends one heartbeat, which is how a worker enters the registry
+// and how a client recovers from the claim 409 (issue #165 §2).
+func (a *apiServer) registerWorker(t *testing.T, workerID string) {
+	t.Helper()
+	resp, payload := a.do(t, http.MethodPost, "/v1/workers/heartbeat", map[string]any{
+		"worker_id": workerID, "kinds": []string{"dev", "requirement", "design"},
+	})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("heartbeat %s = %d (%s)", workerID, resp.StatusCode, payload)
 	}
 }
 
@@ -261,6 +284,13 @@ func TestClaimConcurrentReturns204(t *testing.T) {
 		t.Fatalf("create task = %d (%s)", resp.StatusCode, body)
 	}
 
+	// Both contenders must be registered: claim answers 409 for an unregistered
+	// worker_id, and the point of this case is still the 200/204 race over one
+	// card (issue #165 §2 regression point 1).
+	for i := 0; i < 2; i++ {
+		a.registerWorker(t, fmt.Sprintf("w_%d", i))
+	}
+
 	var (
 		wg    sync.WaitGroup
 		mu    sync.Mutex
@@ -304,6 +334,7 @@ func TestReportDecideAndFlow(t *testing.T) {
 		t.Fatalf("CreateMaterial: %v", err)
 	}
 
+	a.registerWorker(t, "w1")
 	resp, payload := a.do(t, http.MethodPost, "/v1/tasks/claim", map[string]any{
 		"worker_id": "w1", "kind": "requirement",
 	})
@@ -458,6 +489,7 @@ func TestCreateMaterialAndReport(t *testing.T) {
 		t.Fatalf("material = %+v", materialRow)
 	}
 
+	a.registerWorker(t, "w1")
 	resp, payload = a.do(t, http.MethodPost, "/v1/tasks/claim", map[string]any{
 		"worker_id": "w1", "kind": "requirement",
 	})

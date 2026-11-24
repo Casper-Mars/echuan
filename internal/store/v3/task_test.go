@@ -88,6 +88,7 @@ func TestDecidePromotesDependent(t *testing.T) {
 		t.Error("promoted event missing")
 	}
 
+	seedWorker(t, st, "w_design", testNow)
 	if _, err := ClaimTask(ctx, st, ClaimInput{
 		Kind: enum.Design, WorkerID: "w_design", LeaseID: "l_design", Now: testNow, LeaseUntil: testUntil,
 	}); err != nil {
@@ -173,6 +174,7 @@ func TestRejectReturnsToReady(t *testing.T) {
 	}
 
 	// The rework must be claimable immediately, without an operator touch.
+	seedWorker(t, st, "w_rework", testNow)
 	if _, err := ClaimTask(ctx, st, ClaimInput{
 		Kind: enum.Requirement, WorkerID: "w_rework", LeaseID: "l_rework",
 		Now: testNow, LeaseUntil: testUntil,
@@ -198,6 +200,7 @@ func TestClaimRespectsDependencies(t *testing.T) {
 		t.Fatalf("CreateTask B: %v", err)
 	}
 
+	seedWorker(t, st, "w1", testNow)
 	if _, err := ClaimTask(ctx, st, ClaimInput{
 		Kind: enum.Design, WorkerID: "w1", LeaseID: "l1", Now: testNow, LeaseUntil: testUntil,
 	}); !errors.Is(err, ErrNoWork) {
@@ -239,6 +242,9 @@ func TestClaimConcurrent(t *testing.T) {
 		got   = make(map[string]bool, workers)
 		errCh = make(chan error, workers)
 	)
+	for i := 0; i < workers; i++ {
+		seedWorker(t, st, fmt.Sprintf("w_%02d", i), testNow)
+	}
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -302,6 +308,7 @@ func TestLeaseRenewAndLost(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
+	seedWorker(t, st, "w1", testNow)
 	if _, err := ClaimTask(ctx, st, ClaimInput{
 		Kind: enum.Dev, WorkerID: "w1", LeaseID: "l1", Now: testNow, LeaseUntil: testUntil,
 	}); err != nil {
