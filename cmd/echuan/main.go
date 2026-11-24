@@ -91,8 +91,7 @@ func run() error {
 	// The worker service derives presence from worker_ttl and publishes the
 	// heartbeat/lease rhythm on the detail endpoint, so it must share the same
 	// configuration the rest of the server validates (issue #165 §2).
-	workerService := appv3.NewWorkerService(st).
-		WithRhythm(cfg.WorkerTTL, cfg.HeartbeatInterval, cfg.LeaseTTL)
+	workerService := newWorkerService(st, cfg)
 
 	// Feishu bot: optional. The poller turns in_review tasks into cards and
 	// the card callback decides the task through the V3 service.
@@ -209,10 +208,23 @@ func run() error {
 // The wiring is load-bearing: dropping WithMaxAttempts makes the service fall
 // back to the built-in default of 3 and silently ignores the configuration,
 // which is exactly what TestConfigMaxAttemptsReachesCreatedTask fails on.
+// WithLeaseTTL is wired for the same reason: without it claim and renew keep the
+// built-in 60s while the detail endpoint publishes the configured lease_ttl,
+// i.e. two different lease durations in one process (issue #165 D-2).
 func newTaskService(st *store.Store, cfg platform.Config) *appv3.Service {
 	return appv3.New(st).
 		WithMaxAttempts(cfg.MaxAttempts).
+		WithLeaseTTL(cfg.LeaseTTL).
 		WithMaterialReader(planReader{st: st, dataDir: cfg.DataDir})
+}
+
+// newWorkerService builds the worker registry service. It publishes the same
+// lease_ttl the task service uses for claim/renew (GET /v1/workers?id=
+// lease_ttl_seconds), so both are fed from one platform.Config; the seam exists
+// so a test can prove that without starting the server.
+func newWorkerService(st *store.Store, cfg platform.Config) *appv3.WorkerService {
+	return appv3.NewWorkerService(st).
+		WithRhythm(cfg.WorkerTTL, cfg.HeartbeatInterval, cfg.LeaseTTL)
 }
 
 // maintenanceLoop runs one sweep before the first tick, then on a fixed

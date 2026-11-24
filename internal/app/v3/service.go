@@ -220,6 +220,13 @@ func (s *Service) Claim(ctx context.Context, workerID string, kind enum.TaskKind
 		// answer, same recovery: send a heartbeat, then claim again.
 		return storev3.Task{}, workerNotRegistered(workerID)
 	}
+	if errors.Is(err, storev3.ErrWorkerBusy) {
+		// One worker, one lease: the registry pointer is still set and the
+		// unique index ux_tasks_worker_lease would reject the second lease.
+		// The transaction already rolled back, so the queued card is untouched
+		// and the caller gets a conflict instead of a 500 (issue #165 D-1).
+		return storev3.Task{}, workerBusy(workerID)
+	}
 	return task, Translate(err)
 }
 

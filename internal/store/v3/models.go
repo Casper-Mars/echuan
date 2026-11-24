@@ -37,6 +37,13 @@ var (
 	// matched no row), so the lease is rolled back and the caller answers 409 —
 	// the recovery is "send a heartbeat first", not "retry the claim".
 	ErrWorkerNotRegistered = errors.New("v3: worker not registered")
+	// ErrWorkerBusy reports a claim from a worker that still holds a card. One
+	// worker, one lease (ux_tasks_worker_lease), so the second claim has to be
+	// answered 409 rather than letting the unique index fail the transaction and
+	// surface as a 500 (issue #165 D-1). ClaimTask raises it only when a card is
+	// actually available to lease: a busy worker facing an empty queue keeps the
+	// ordinary 204 "no work".
+	ErrWorkerBusy = errors.New("v3: worker already holds a task")
 )
 
 // Project is one row of projects.

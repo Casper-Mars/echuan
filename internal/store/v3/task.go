@@ -208,6 +208,24 @@ func ClaimTask(ctx context.Context, s *storedb.Store, in ClaimInput) (Task, erro
 			return fmt.Errorf("v3: pick task: %w", err)
 		}
 
+		// One worker, one lease (ux_tasks_worker_lease). Occupancy is checked
+		// before the UPDATE, inside the same transaction as the write, because
+		// the unique index would otherwise abort the statement and the driver
+		// error ("UNIQUE constraint failed: tasks.worker_id") reads as a 500
+		// (issue #165 D-1). The read is the index's own predicate, so a stale
+		// workers.current_task_id cannot hide a held card.
+		var held string
+		err = tx.QueryRowContext(ctx, `
+			SELECT task_id FROM tasks
+			 WHERE worker_id = ? AND status = ?
+			 LIMIT 1`, in.WorkerID, enum.InProgress).Scan(&held)
+		switch {
+		case err == nil:
+			return fmt.Errorf("%w: %s holds %s", ErrWorkerBusy, in.WorkerID, held)
+		case !errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("v3: check worker %s occupancy: %w", in.WorkerID, err)
+		}
+
 		res, err := tx.ExecContext(ctx, `
 			UPDATE tasks
 			   SET status = ?, lease_id = ?, lease_until = ?, worker_id = ?,

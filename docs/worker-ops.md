@@ -15,7 +15,7 @@
 | `listen` | `ECHUAN_LISTEN` | `127.0.0.1:8720` | HTTP 监听地址 | 容器内需 `0.0.0.0:8720`；本机默认只绑回环 |
 | `data_dir` | `ECHUAN_DATA_DIR` | `~/.echuan` | SQLite、objects 等运行数据根目录 | 备份/迁移要整目录一起 |
 | `read_pool_size` | `ECHUAN_READ_POOL_SIZE` | `4` | SQLite 读连接池大小（写池固定 1） | 读多时上调，写不会因此并行 |
-| `lease_ttl` | `ECHUAN_LEASE_TTL` | `90s` | 任务租约有效期 | **当前 V3 构建只做解析与校验，任务服务仍用内置 60s**（`cmd/echuan/main.go` 的 `newTaskService` 没有接线 `WithLeaseTTL`）；改这个值暂时不影响租约，验收脚本因此不硬断言租约时长 |
+| `lease_ttl` | `ECHUAN_LEASE_TTL` | `90s` | 任务租约有效期 | claim 与续租都按这个值写 `lease_until = now + lease_ttl`（`cmd/echuan/main.go` 的 `newTaskService` 显式接线 `WithLeaseTTL(cfg.LeaseTTL)`）；`GET /v1/workers?id=` 发布的 `lease_ttl_seconds` 与 claim 的实际租期同源，改配置后两处一起变 |
 | `max_attempts` | `ECHUAN_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 | 建卡时写入，显式卡、流程派生卡、拆解计划子卡都一样；改配置不影响存量卡 |
 | `poll_timeout` | `ECHUAN_POLL_TIMEOUT` | `25s` | 保留配置项 | V3 的 `POST /v1/tasks/claim` 是一次查询、没有长轮询，当前不消费 |
 | `review_stale_hours` | `ECHUAN_REVIEW_STALE_HOURS` | `72` | 保留配置项 | `GET /v1/inbox` 只取 `ready` / `in_review`，当前不消费 |
@@ -77,6 +77,8 @@ curl -sS -X POST http://127.0.0.1:8721/v1/tasks/claim \
 |---|---|
 | `200` + 派单信封 | 卡转 `in_progress`（`attempt+1`、写 `lease_id`/`lease_until`/`worker_id`），Worker 行转 `busy` 并绑定指针 |
 | `204`（空体） | 当前没有可领的卡：队列空、kind 不匹配、项目已关闭、或依赖还没结清（不是错误，按退避重试） |
+| `409` `conflict`，message 含「未注册」 | `worker_id` 不在注册表里（从未心跳，或已过保留期被清理）：先 `POST /v1/workers/heartbeat` 再 claim |
+| `409` `conflict`，message 含「已持卡」 | 该 Worker 还持着一张 `in_progress` 的卡（一个 Worker 同时只持一张）：先 `POST /v1/tasks/report` 结清，或等租约过期被回收后再 claim；队列空时仍然只是 `204` |
 
 派单信封字段：
 
@@ -93,7 +95,7 @@ curl -sS -X POST http://127.0.0.1:8721/v1/tasks/claim \
 
 - `inputs` 是挂在这张卡上的输入附件，`upstream` 是依赖卡及其已验收交付物；
 - 一个 Worker 同时只持一张卡（`ux_tasks_worker_lease` 唯一索引）：先报告结清，再领下一张；
-- claim 不校验注册表：没心跳过的 id 也能调用，但占用指针只会落到注册行上，所以**先注册再领卡**。
+- claim 先校验注册表：没心跳过的 `worker_id` 是 `409 conflict`（message 含「未注册」），不会拿到卡，所以**先注册再领卡**；已持卡的 Worker 再 claim（且队列里有卡）同样是 `409`，message 含「已持卡」。
 
 ### 2.4 续租、报告、验收与取消
 
@@ -116,13 +118,13 @@ curl -sS -X POST http://127.0.0.1:8721/v1/tasks/claim \
 |---|---|---|---|
 | 400 | `invalid_argument` | 请求体字段缺失/类型错/未知字段（严格解码）；枚举非法（`kind`/`status`/`role`/`decision`）；驳回不带 `reason`；心跳缺 `worker_id` | 修正请求；不要重试同一 body |
 | 404 | `not_found` | 产品/项目/任务/物料不存在；**未注册的 `/v1` 路径**（V3 已删除的旧路由也走这里） | 查询语义用 404；路径写错就改路径 |
-| 409 | `conflict` | 状态冲突：`invalid task transition`（如硬删在跑的卡）、`lease lost`（续租/报告时租约过期或 lease_id 不匹配）、`unfinished`（未结清的项目关闭没带 force）、项目已关闭 | 重新读取状态再决定；租约丢失就重新领卡，旧结果不能再提交 |
+| 409 | `conflict` | 状态冲突：`invalid task transition`（如硬删在跑的卡）、`lease lost`（续租/报告时租约过期或 lease_id 不匹配）、`unfinished`（未结清的项目关闭没带 force）、项目已关闭、claim 时 worker 未注册（message 含「未注册」）或已持卡（message 含「已持卡」） | 重新读取状态再决定；租约丢失就重新领卡，旧结果不能再提交；未注册就先发心跳 |
 | 413 | `too_large` | 物料超过 `material_max_bytes` | 缩小物料；不要重试原 body |
 | 204 | — | claim 无卡可领；心跳 / 关闭 / 重开 / 删除成功 | 都不是错误 |
 
 补充：
 
-- V3 的 409 统一用 `code=conflict`，**具体原因看 `message`**（`lease lost` / `invalid task transition` / `unfinished`），不再有 v2 的 `worker_unknown` / `worker_busy` 细分码——心跳是 upsert（没有「未知 worker」路径），claim 也不校验注册表。
+- V3 的 409 统一用 `code=conflict`，**具体原因看 `message`**（`lease lost` / `invalid task transition` / `unfinished` / 「未注册」/「已持卡」），不再有 v2 的 `worker_unknown` / `worker_busy` 细分码——心跳是 upsert（没有「未知 worker」路径），claim 的在册校验与「一个 Worker 只持一张卡」约束都折算成 `conflict`。
 
 ---
 
@@ -231,12 +233,12 @@ bash scripts/e2e-worker.sh   # 或 make e2e
   2. 产品 / 项目容器语义（建项不建卡）、未注册 `/v1` 路径 404、参数错误 400；
   3. Worker 注册：`worker_id` 客户端生成、心跳 204 空体、注册表 `state` / `kinds` / `last_seen` / `current_work_item_id` 的契约；
   4. 建卡 → claim 拿到派单信封（task / project / product / inputs / upstream），队列空时 claim 204；
-  5. 显式续租 `lease_until` 递增且 `lease_id` 不变、错误 lease 409 `lease lost`、持卡心跳不归还占用；
+  5. 显式续租 `lease_until` 递增且 `lease_id` 不变、错误 lease 409 `lease lost`、持卡心跳不归还占用；`GET /v1/workers?id=` 的 `lease_ttl_seconds` 等于配置 `lease_ttl`（与 claim 同源）；
   6. 报告（卡转 `in_review` 且归还占用）→ 驳回（缺 reason 400、决策落库）→ 重新领取（attempt 递增）→ 验收 → 派生方案卡并带上游交付物；
   7. 方案验收派生拆解卡 → 计划物料落成 dev 卡 → 派发 / 报告 / 验收；项目材料视图与待办为空；项目关闭 / 重开；
-  8. 重启后注册表与任务仍在；项目 `force=1` 关闭批量取消持卡卡并**当场**归还指针（卡 A）；无卡 Worker 只注册不领卡（#164 前置）；
+  8. 重启后注册表与任务仍在；持卡 Worker 再 claim（队列里有卡）是 `409 conflict`「已持卡」且排队卡未被改动；项目 `force=1` 关闭批量取消持卡卡并**当场**归还指针（卡 A）；无卡 Worker 只注册不领卡（#164 前置）；
   9. 保留期前不删、超过 `worker_retention` 且一轮 sweep 后两行都从注册表消失（卡 A 后半 + #164 防回归），并核对服务日志里的 `pruned stale workers`；
-- **未覆盖**：列表 `presence` 字段与 `GET /v1/workers?id=` 详情语义（卡 B / issue #165 未落地），脚本内对应位置以 `TODO(issue #165)` 标注，不写会必然失败的断言；
+- **未覆盖**：列表 `presence` 字段（脚本内对应位置以 `TODO(issue #165)` 标注，不写会必然失败的断言）；`GET /v1/workers?id=` 详情只断言了 `lease_ttl_seconds` 一项，其余字段语义由 `internal/api/v3_worker_detail_test.go` 覆盖；
 - 任一步失败会打印步骤名、HTTP 状态码、响应体、临时目录和服务日志尾部，便于定位；
 - 完整跑一轮约 70s（其中约 60s 用于等保留期 + 一轮 sweep）；
 - 依赖 `bash` / `go` / `jq` / `curl`；随机端口的占用检测用 bash 的 `/dev/tcp`（镜像里的 `lsof` 是 busybox 兼容层，`-iTCP/-sTCP` 过滤参数无效，会恒判「占用」）。

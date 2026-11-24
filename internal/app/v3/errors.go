@@ -55,6 +55,14 @@ func workerNotRegistered(workerID string) *Error {
 	return conflict("worker %q 未注册，请先发一次心跳", workerID)
 }
 
+// workerBusy is the answer to a claim from a worker that still holds a card.
+// One worker, one lease (ux_tasks_worker_lease): the second claim must not
+// surface as a 500 from the unique index (issue #165 D-1), and the recovery is
+// report (or wait for the lease to expire), never a blind retry.
+func workerBusy(workerID string) *Error {
+	return conflict("worker %q 已持卡（busy），同一时间只能持有一张卡；请先上报交付或等租约过期后再 claim", workerID)
+}
+
 // NoWorkError is returned by Claim when the queue is empty. It carries 204 so
 // the HTTP layer can answer "no content" without a body.
 type NoWorkError struct{}
