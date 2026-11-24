@@ -23,6 +23,9 @@ func TestLeaseTTLConfigReachesClaimAndWorkerDetail(t *testing.T) {
 		name string
 		ttl  time.Duration
 	}{
+		// The config default. Before the wiring this row failed with 60s (the
+		// service's built-in default), which is D-2 itself.
+		{name: "default 90s", ttl: 90 * time.Second},
 		{name: "5s", ttl: 5 * time.Second},
 		{name: "40s", ttl: 40 * time.Second},
 	} {
