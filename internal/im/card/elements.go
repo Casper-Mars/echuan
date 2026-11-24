@@ -18,7 +18,11 @@ type cardConfig struct {
 }
 
 type cardHeader struct {
-	Title    text   `json:"title"`
+	Title text `json:"title"`
+	// Subtitle is the second header line ("<project> · <card type>"). It is
+	// plain_text as well: the title/subtitle never go through markdown parsing,
+	// so a task title containing `*`, `_`, `[` or a line break is shown verbatim.
+	Subtitle *text  `json:"subtitle,omitempty"`
 	Template string `json:"template,omitempty"`
 }
 
@@ -38,6 +42,9 @@ func plainText(content string) text {
 type markdownElement struct {
 	Tag     string `json:"tag"`
 	Content string `json:"content"`
+	// TextSize is empty for the body and "notation" (12px) for the footer that
+	// carries the raw task / report ids.
+	TextSize string `json:"text_size,omitempty"`
 }
 
 type formElement struct {
