@@ -49,6 +49,13 @@ COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./web/
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
     pnpm --dir web install --frozen-lockfile --registry=${NPM_REGISTRY}
 COPY web ./web
+# 前端门禁（web/package.json 的 build 脚本）不只读 web/：最后一道
+# scripts/current-versions-parity.mjs 要拿 Go 侧共享夹具
+# internal/currentver/testdata/current-versions-cases.json 逐组比对 Web 实现
+# （夹具全仓只有这一份，Go 的 TestCurrentFixtures 读同一文件）。
+# 因此本阶段必须把该夹具按仓库相对路径一起放进镜像，否则门禁读不到文件
+# 直接 ENOENT 退出 2；不要复制第二份夹具，也不要跳过这条门禁。
+COPY internal/currentver/testdata ./internal/currentver/testdata
 RUN pnpm --dir web build
 
 # ---- 阶段 2：编译 Go 单二进制 ----------------------------------------------
