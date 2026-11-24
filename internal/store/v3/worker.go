@@ -128,3 +128,46 @@ func ListWorkers(ctx context.Context, q storedb.Querier, limit int) ([]Worker, e
 		 ORDER BY w.last_seen DESC, w.id ASC
 		 LIMIT ?`, limit)
 }
+
+// PruneStaleWorkers deletes the rows of workers that stopped reporting before
+// the retention cutoff and hold no task. `before` is the cutoff itself (now -
+// worker_retention), compared strictly: a row whose last_seen equals it stays.
+//
+// current_task_id is never ignored: the pointer is the only place a worker's
+// occupancy lives, so deleting the row while it is set would orphan the task it
+// names (issue #163). A node holding a card is therefore pruned only after its
+// lease was reclaimed or its report released the pointer.
+//
+// worker_kinds goes with the row in the same transaction: the table has no
+// foreign key back to workers, so leaving the rows behind would leak a kind list
+// per retired worker id.
+func PruneStaleWorkers(ctx context.Context, s *storedb.Store, before string) (int, error) {
+	deleted := 0
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+			DELETE FROM workers
+			 WHERE current_task_id IS NULL
+			   AND last_seen < ?`, before)
+		if err != nil {
+			return fmt.Errorf("v3: prune stale workers: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("v3: prune stale workers rows: %w", err)
+		}
+		deleted = int(n)
+		if deleted == 0 {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM worker_kinds
+			 WHERE worker_id NOT IN (SELECT worker_id FROM workers)`); err != nil {
+			return fmt.Errorf("v3: prune stale worker kinds: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}

@@ -60,6 +60,21 @@ func (s *WorkerService) Kinds(ctx context.Context, workerID string) ([]enum.Task
 	return kinds, Translate(err)
 }
 
+// PruneStale deletes the registry rows of workers that stopped reporting longer
+// ago than retention and hold no task, returning how many rows went away.
+//
+// retention comes from platform.Config.WorkerRetention (the maintenance loop
+// injects it). A non-positive value is rejected here instead of being turned
+// into "cutoff = now", which would wipe every idle worker on the next sweep.
+func (s *WorkerService) PruneStale(ctx context.Context, retention time.Duration) (int, error) {
+	if retention <= 0 {
+		return 0, invalid("retention must be positive, got %s", retention)
+	}
+	cutoff := formatTime(s.now().Add(-retention))
+	n, err := storev3.PruneStaleWorkers(ctx, s.st, cutoff)
+	return n, Translate(err)
+}
+
 // CurrentWorkItemID is the business id (`t_...`) of the task a worker holds,
 // or nil when it holds nothing.
 //

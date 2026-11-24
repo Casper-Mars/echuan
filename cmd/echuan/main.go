@@ -30,8 +30,9 @@ import (
 // shutdownTimeout bounds how long in-flight requests may take to finish.
 const shutdownTimeout = 10 * time.Second
 
-// reclaimInterval is how often expired leases are returned to the pool.
-const reclaimInterval = 30 * time.Second
+// maintenanceInterval is how often one maintenance sweep runs: expired leases
+// go back to the pool and retired worker rows are pruned.
+const maintenanceInterval = 30 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -128,7 +129,7 @@ func run() error {
 
 	reclaimCtx, stopReclaim := context.WithCancel(context.Background())
 	defer stopReclaim()
-	go reclaimLoop(reclaimCtx, taskService, logger)
+	go maintenanceLoop(reclaimCtx, taskService, workerService, cfg.WorkerRetention, logger)
 
 	handler := api.Chain(
 		api.NewRouterV3(logger, web.Handler(), checks, api.V3Services{
@@ -210,24 +211,48 @@ func newTaskService(st *store.Store, cfg platform.Config) *appv3.Service {
 		WithMaterialReader(planReader{st: st, dataDir: cfg.DataDir})
 }
 
-// reclaimLoop returns expired leases to the pool on a fixed interval.
-func reclaimLoop(ctx context.Context, tasks *appv3.Service, logger *slog.Logger) {
-	ticker := time.NewTicker(reclaimInterval)
+// maintenanceLoop runs one sweep before the first tick, then on a fixed
+// interval. Sweeping at startup matters: rows that went stale while the process
+// was down would otherwise stay listed for a whole interval (issue #163).
+func maintenanceLoop(ctx context.Context, tasks *appv3.Service, workers *appv3.WorkerService,
+	retention time.Duration, logger *slog.Logger) {
+	ticker := time.NewTicker(maintenanceInterval)
 	defer ticker.Stop()
+	sweepOnce(ctx, tasks, workers, retention, logger)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n, err := tasks.ReclaimExpired(ctx)
-			if err != nil {
-				logger.Error("reclaim expired leases", "error", err)
-				continue
-			}
-			if n > 0 {
-				logger.Info("reclaimed expired leases", "count", n)
-			}
+			sweepOnce(ctx, tasks, workers, retention, logger)
 		}
+	}
+}
+
+// sweepOnce is one maintenance pass: expired leases go back to the pool, then
+// the registry drops the rows of workers that stopped reporting longer than
+// retention ago and hold no task.
+//
+// Reclaim runs first on purpose. It clears current_task_id for workers whose
+// lease expired, so a node that just lost its card is not deleted as a busy node
+// one interval later: the prune in the same pass already sees it idle. A worker
+// that is still holding a card is never pruned, however stale its last_seen is —
+// current_task_id is the only record of that occupancy (issue #163).
+func sweepOnce(ctx context.Context, tasks *appv3.Service, workers *appv3.WorkerService,
+	retention time.Duration, logger *slog.Logger) {
+	if n, err := tasks.ReclaimExpired(ctx); err != nil {
+		logger.Error("reclaim expired leases", "error", err)
+	} else if n > 0 {
+		logger.Info("reclaimed expired leases", "count", n)
+	}
+
+	pruned, err := workers.PruneStale(ctx, retention)
+	if err != nil {
+		logger.Error("prune stale workers", "error", err, "retention", retention.String())
+		return
+	}
+	if pruned > 0 {
+		logger.Info("pruned stale workers", "count", pruned, "retention", retention.String())
 	}
 }
 
