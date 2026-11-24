@@ -252,10 +252,10 @@ curl -fsS --get --data-urlencode 'id=<worker_id>' http://127.0.0.1:8720/v1/worke
 ```
 [dsh-echuan] 插件加载 ... poll=true kinds=[dev] presets=[dev→dev-leader]
 [dsh-echuan] 已注册 25 个工具（17 写 + 8 读）：...
-[dsh-echuan] 已注册技能 echuan-task-execution, echuan-doc-writing（source=runtime）
+[dsh-echuan] 已注册技能 echuan-task-execution, echuan-fork-delegation（source=runtime）
 [dsh-echuan] worker 心跳已启动（kinds=dev；首轮心跳将在 5000ms 后发出，兜底间隔 15000ms）
 [dsh-echuan] worker 心跳已停止（plugin dispose）：定时器已清除，不再产生请求与日志
-[dsh-echuan] 已注销技能 echuan-task-execution, echuan-doc-writing
+[dsh-echuan] 已注销技能 echuan-task-execution, echuan-fork-delegation
 ```
 
 日志里的 `worker_id` 一律打码（如 `w_01M6****`），不会输出完整 id。

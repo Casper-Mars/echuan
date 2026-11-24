@@ -43,7 +43,7 @@ import type { Logger } from './runtime.js'
 import { validateExclude } from './tool-names.js'
 import { ECHUAN_SERVICE, type EchuanService } from './service.js'
 import { ECHUAN_SKILL_NAME, registerEchuanSkill } from './skill.js'
-import { ECHUAN_DOC_SKILL_NAME, registerEchuanDocSkill } from './doc-skill.js'
+import { ECHUAN_FORK_SKILL_NAME, registerEchuanForkSkill } from './fork-skill.js'
 import type { WorkerInfoDeps } from './tools/worker-info.js'
 
 export {
@@ -71,13 +71,13 @@ export {
   registerEchuanSkill,
 } from './skill.js'
 export {
-  ECHUAN_DOC_SKILL_DESCRIPTION,
-  ECHUAN_DOC_SKILL_NAME,
-  ECHUAN_DOC_SKILL_WHEN_TO_USE,
-  createEchuanDocSkillRegistration,
-  loadEchuanDocSkillGuide,
-  registerEchuanDocSkill,
-} from './doc-skill.js'
+  ECHUAN_FORK_SKILL_DESCRIPTION,
+  ECHUAN_FORK_SKILL_NAME,
+  ECHUAN_FORK_SKILL_WHEN_TO_USE,
+  createEchuanForkSkillRegistration,
+  loadEchuanForkSkillGuide,
+  registerEchuanForkSkill,
+} from './fork-skill.js'
 
 /** Cordis 函数式插件标识（同时是 patch 行里的 `id`）。 */
 export const name = 'echuan'
@@ -231,8 +231,8 @@ export function apply(ctx: Context, config?: ConfigInput): void {
     let disposeDocSkill: (() => void) | undefined
     try {
       disposeSkill = registerEchuanSkill(ctx)
-      disposeDocSkill = registerEchuanDocSkill(ctx)
-      log(`${TAG} 已注册技能 ${ECHUAN_SKILL_NAME}, ${ECHUAN_DOC_SKILL_NAME}（source=runtime）`)
+      disposeDocSkill = registerEchuanForkSkill(ctx)
+      log(`${TAG} 已注册技能 ${ECHUAN_SKILL_NAME}, ${ECHUAN_FORK_SKILL_NAME}（source=runtime）`)
     } catch (err) {
       disposeSkill?.()
       disposeDocSkill?.()
@@ -248,7 +248,7 @@ export function apply(ctx: Context, config?: ConfigInput): void {
       if (!off && !offDoc) return
       off?.()
       offDoc?.()
-      log(`${TAG} 已注销技能 ${ECHUAN_SKILL_NAME}, ${ECHUAN_DOC_SKILL_NAME}`)
+      log(`${TAG} 已注销技能 ${ECHUAN_SKILL_NAME}, ${ECHUAN_FORK_SKILL_NAME}`)
     }
   }, 'echuan.skill()')
 
