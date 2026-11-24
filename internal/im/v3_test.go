@@ -244,9 +244,9 @@ func TestV3PollerRendersOneLinePerAttachment(t *testing.T) {
 	}
 	want := []string{
 		"已等待 5 分钟 · dev-1 第 1/3 次提交",
-		"[需求简报.md](https://example.feishu.cn/docx/m_brief)",
-		"[实施计划.md](https://example.feishu.cn/docx/m_plan)",
-		"[验收报告.md](https://example.feishu.cn/docx/m_report)",
+		"1. [需求简报.md](https://example.feishu.cn/docx/m_brief)",
+		"2. [实施计划.md](https://example.feishu.cn/docx/m_plan)",
+		"3. [验收报告.md](https://example.feishu.cn/docx/m_report)",
 	}
 	for i, line := range want {
 		if lines[i] != line {
@@ -329,7 +329,7 @@ func TestV3PollerPartialImportFailureDegradesOneRow(t *testing.T) {
 	if !strings.Contains(body, "[需求简报.md](https://example.feishu.cn/docx/m_brief)") {
 		t.Errorf("brief row lost its link: %q", body)
 	}
-	if !strings.Contains(body, "\n实施计划.md") {
+	if !strings.Contains(body, "\n2. 实施计划.md") {
 		t.Errorf("failed row is not plain text: %q", body)
 	}
 	if strings.Contains(body, "实施计划.md](") {
