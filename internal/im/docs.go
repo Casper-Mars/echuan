@@ -122,6 +122,14 @@ func (d *Docs) Ensure(ctx context.Context, materialID, title string) (string, er
 		d.mu.Unlock()
 	}()
 
+	// Re-check the cache now that this call owns the slot: an import that
+	// finished between the lookup at the top and the claim above has already
+	// written im_doc, and importing it again would spend another three API
+	// calls from the daily quota for the very same document.
+	if url := d.Cached(ctx, materialID); url != "" {
+		return url, nil
+	}
+
 	name, content, err := d.materials.MaterialMarkdown(ctx, materialID)
 	if err != nil {
 		return "", fmt.Errorf("im: read material %s: %w", materialID, err)

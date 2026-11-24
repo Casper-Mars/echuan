@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && node scripts/check-size.mjs",
+    "build": "tsc --noEmit && vite build && node scripts/check-size.mjs && node scripts/current-versions-parity.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
