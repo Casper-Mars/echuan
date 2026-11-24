@@ -194,14 +194,12 @@ describe('apply：host 加载与生命周期', () => {
     apply(fake.ctx, undefined)
     await waitForService(fake)
 
-    expect(fake.skillRegistrations).toEqual(['echuan-task-execution', 'echuan-fork-delegation'])
+    expect(fake.skillRegistrations).toEqual(['echuan-task-execution'])
     expect(logLines(spy).some(line => line.includes('已注册技能 echuan-task-execution'))).toBe(true)
-    expect(logLines(spy).some(line => line.includes('echuan-fork-delegation'))).toBe(true)
 
     fake.disposeAll()
     expect(fake.skillRegistrations).toEqual([])
     expect(logLines(spy).some(line => line.includes('已注销技能 echuan-task-execution'))).toBe(true)
-    expect(logLines(spy).some(line => line.includes('echuan-fork-delegation'))).toBe(true)
   })
 
   it('默认配置（poll=false）下零定时器', async () => {

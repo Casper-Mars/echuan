@@ -16,7 +16,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { ECHUAN_SKILL_NAME } from '../src/skill.js'
-import { ECHUAN_FORK_SKILL_NAME } from '../src/fork-skill.js'
 import { TOOL_NAMES } from '../src/tool-names.js'
 
 /** `scripts/compat-probe.mjs` 暴露给测试的两个清单（.mjs 无类型声明，这里手写契约）。 */
@@ -101,6 +100,6 @@ describe('兼容探针清单与源码真源一致', () => {
 
     expect(EXPECTED_SKILLS.length).toBeGreaterThan(0)
     for (const name of EXPECTED_SKILLS) expect(name.trim()).not.toBe('')
-    expect([...EXPECTED_SKILLS]).toEqual([ECHUAN_SKILL_NAME, ECHUAN_FORK_SKILL_NAME])
+    expect([...EXPECTED_SKILLS]).toEqual([ECHUAN_SKILL_NAME])
   })
 })

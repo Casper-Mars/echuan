@@ -80,7 +80,18 @@ Agent 不改状态、不改优先级、不取消任务。
 - 字段校验失败（400 / 409）按 `details` 修正后重报；租约类错误按 §3 处理。
 - 读类工具返回空集是正常结果，不代表任务失败。
 
-## 8. 一页速查
+## 8. 大文档：fork 子 agent
+
+长文档 / 长报告且需要继承当前会话时，用 `subagent_fork`，不要在主会话里反复重放正文。
+
+- 时机：父会话已有**已完成轮次**；当前轮不会被子 agent 继承，Work Order 必须带任务和 `material_id`。
+- Work Order 最小集：`goal / task_id / inputs(material_id) / output_path / must / must_not / return / stop`。
+- 子 agent：只写文件；不调用 `echuan_task_report`；不改项目 / 任务状态；不再 fork；返回 `path / title / summary`。
+- 父 agent：校验文件、上传 material、`echuan_task_report(material_id)`；不要把正文读回主会话。
+- 超时或中断时，半成品不提交；重试或按卡住报告处理。
+- 文档格式与验收标准：遵循当前角色自己的 skill / persona，本文不重复。
+
+## 9. 一页速查
 
 | 场景 | 动作 |
 | --- | --- |
@@ -89,6 +100,7 @@ Agent 不改状态、不改优先级、不取消任务。
 | 返工卡 | 只改被指出的原因，逐条回应 |
 | 租约 | 心跳托管的卡不碰续租；手动领的卡到期前自己续 |
 | 交付 | `echuan_task_report` + 四段式；成功后不重复提交 |
+| 大文档 | 已完成轮次后用 `subagent_fork`；Work Order + `material_id`；子 agent 只写文件 |
 | 卡住 | 用同一工具报告卡点，不静默失败 |
 | 验收 / 状态 | 一律不碰 |
 | 无活 204 | 等下一轮 |

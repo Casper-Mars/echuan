@@ -145,6 +145,12 @@ describe('正文协议事实可检索', () => {
     expect(content).toContain('204')
     expect(content).toContain('409')
   })
+
+  it('⑧ 大文档 fork：subagent_fork + Work Order + 子 agent 只写文件', () => {
+    for (const word of ['subagent_fork', 'Work Order', 'material_id', '不调用', 'echuan_task_report', '不再 fork']) {
+      expect(content).toContain(word)
+    }
+  })
 })
 
 describe('只讲协议，不掺角色与领域工作流', () => {

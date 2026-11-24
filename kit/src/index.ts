@@ -43,7 +43,6 @@ import type { Logger } from './runtime.js'
 import { validateExclude } from './tool-names.js'
 import { ECHUAN_SERVICE, type EchuanService } from './service.js'
 import { ECHUAN_SKILL_NAME, registerEchuanSkill } from './skill.js'
-import { ECHUAN_FORK_SKILL_NAME, registerEchuanForkSkill } from './fork-skill.js'
 import type { WorkerInfoDeps } from './tools/worker-info.js'
 
 export {
@@ -70,14 +69,6 @@ export {
   loadEchuanSkillGuide,
   registerEchuanSkill,
 } from './skill.js'
-export {
-  ECHUAN_FORK_SKILL_DESCRIPTION,
-  ECHUAN_FORK_SKILL_NAME,
-  ECHUAN_FORK_SKILL_WHEN_TO_USE,
-  createEchuanForkSkillRegistration,
-  loadEchuanForkSkillGuide,
-  registerEchuanForkSkill,
-} from './fork-skill.js'
 
 /** Cordis 函数式插件标识（同时是 patch 行里的 `id`）。 */
 export const name = 'echuan'
@@ -228,27 +219,20 @@ export function apply(ctx: Context, config?: ConfigInput): void {
   // fiber 卸载（含 HMR 重载、profile 停用）时随插件一并注销。
   ctx.effect(() => {
     let disposeSkill: (() => void) | undefined
-    let disposeDocSkill: (() => void) | undefined
     try {
       disposeSkill = registerEchuanSkill(ctx)
-      disposeDocSkill = registerEchuanForkSkill(ctx)
-      log(`${TAG} 已注册技能 ${ECHUAN_SKILL_NAME}, ${ECHUAN_FORK_SKILL_NAME}（source=runtime）`)
+      log(`${TAG} 已注册技能 ${ECHUAN_SKILL_NAME}（source=runtime）`)
     } catch (err) {
-      disposeSkill?.()
-      disposeDocSkill?.()
       warn(`${TAG} 技能注册失败：${messageOf(err)}`)
       return () => {}
     }
 
     return () => {
       const off = disposeSkill
-      const offDoc = disposeDocSkill
       disposeSkill = undefined
-      disposeDocSkill = undefined
-      if (!off && !offDoc) return
-      off?.()
-      offDoc?.()
-      log(`${TAG} 已注销技能 ${ECHUAN_SKILL_NAME}, ${ECHUAN_FORK_SKILL_NAME}`)
+      if (!off) return
+      off()
+      log(`${TAG} 已注销技能 ${ECHUAN_SKILL_NAME}`)
     }
   }, 'echuan.skill()')
 

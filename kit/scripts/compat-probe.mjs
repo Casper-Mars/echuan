@@ -46,7 +46,7 @@ export const EXPECTED_TOOLS = [
 ]
 
 /** 期望注册的技能（随插件静态注册）。 */
-export const EXPECTED_SKILLS = ['echuan-task-execution', 'echuan-fork-delegation']
+export const EXPECTED_SKILLS = ['echuan-task-execution']
 
 /** 探针硬超时：冷启动挂死时不能拖住 CI。 */
 const DEFAULT_TIMEOUT_MS = 90_000
