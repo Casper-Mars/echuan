@@ -1,8 +1,8 @@
 # Worker 运维手册
 
-面向部署与值班：说明 Worker 注册表相关配置、注册/心跳流程、常见错误码，以及如何判断一个 Worker 是在线、离线还是已经被清理。
+面向部署与值班：说明 Worker 注册表相关配置、注册/心跳/领卡流程、常见错误码，以及如何判断一个 Worker 是在线、离线还是已经被清理。
 
-相关实现：`internal/app/worker.go`（注册与派卡）、`internal/app/claim.go`（30s 回收器与保留期清理）、`internal/api/workers.go`（HTTP 层）、`api/openapi.yaml`（契约）。
+相关实现：`internal/app/v3/worker.go`（注册与注册表用例）、`internal/store/v3/worker.go`（占用指针的绑定/归还/清理）、`internal/store/v3/task.go`（claim / 续租 / 报告 / 验收）、`internal/api/v3_handlers.go`（HTTP 层）、`cmd/echuan/main.go`（30s 维护循环）、`api/openapi.yaml`（契约）。
 
 ---
 
@@ -15,128 +15,114 @@
 | `listen` | `ECHUAN_LISTEN` | `127.0.0.1:8720` | HTTP 监听地址 | 容器内需 `0.0.0.0:8720`；本机默认只绑回环 |
 | `data_dir` | `ECHUAN_DATA_DIR` | `~/.echuan` | SQLite、objects 等运行数据根目录 | 备份/迁移要整目录一起 |
 | `read_pool_size` | `ECHUAN_READ_POOL_SIZE` | `4` | SQLite 读连接池大小（写池固定 1） | 读多时上调，写不会因此并行 |
-| `lease_ttl` | `ECHUAN_LEASE_TTL` | `90s` | 任务租约有效期；派卡与续租都写这个时长 | 必须明显大于 Worker 心跳间隔，否则一次网络抖动就丢卡；建议 ≥ 3×`heartbeat_interval` |
-| `max_attempts` | `ECHUAN_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 | 新建任务时写入，改配置不影响存量任务 |
-| `poll_timeout` | `ECHUAN_POLL_TIMEOUT` | `25s` | `POST /v1/tasks/claim` 长轮询超时 | Worker 侧 HTTP 超时应大于它 |
-| `review_stale_hours` | `ECHUAN_REVIEW_STALE_HOURS` | `72` | 评审/验收超过多少小时视为 stale | 仅影响收件箱标记 |
-| `worker_ttl` | `ECHUAN_WORKER_TTL` | `45s` | 最后一次心跳后多久判定离线（presence 推导窗口） | **必须远大于 `heartbeat_interval`**；建议 ≥ 3×，否则 Worker 会被频繁误判 offline |
-| `heartbeat_interval` | `ECHUAN_HEARTBEAT_INTERVAL` | `15s` | 服务端建议 Worker 使用的心跳间隔 | 只通过响应下发，服务端不强制；Worker 不应硬编码 |
-| `worker_metadata_max_bytes` | `ECHUAN_WORKER_METADATA_MAX_BYTES` | `8192` | 注册/心跳 metadata 序列化后的最大字节数 | 超限返回 413；metadata 是整体替换，不是合并 |
-| `worker_retention` | `ECHUAN_WORKER_RETENTION` | `1h` | 离线且不持卡的 Worker 行保留多久后被删除 | **必须大于 `worker_ttl`**，否则行会在变为 offline 之前就被删掉；默认 1 小时，需要更长审计窗口时按需调大 |
-| `material_max_bytes` | `ECHUAN_MATERIAL_MAX_BYTES` | `20971520` | 单个物料最大字节数（20 MiB） | 影响报告/规格上传 |
+| `lease_ttl` | `ECHUAN_LEASE_TTL` | `90s` | 任务租约有效期 | **当前 V3 构建只做解析与校验，任务服务仍用内置 60s**（`cmd/echuan/main.go` 的 `newTaskService` 没有接线 `WithLeaseTTL`）；改这个值暂时不影响租约，验收脚本因此不硬断言租约时长 |
+| `max_attempts` | `ECHUAN_MAX_ATTEMPTS` | `3` | 单任务最大尝试次数 | 建卡时写入，显式卡、流程派生卡、拆解计划子卡都一样；改配置不影响存量卡 |
+| `poll_timeout` | `ECHUAN_POLL_TIMEOUT` | `25s` | 保留配置项 | V3 的 `POST /v1/tasks/claim` 是一次查询、没有长轮询，当前不消费 |
+| `review_stale_hours` | `ECHUAN_REVIEW_STALE_HOURS` | `72` | 保留配置项 | `GET /v1/inbox` 只取 `ready` / `in_review`，当前不消费 |
+| `worker_ttl` | `ECHUAN_WORKER_TTL` | `45s` | 最后一次心跳后多久算离线（规划中的 presence 窗口） | 当前只参与配置校验（必须严格小于 `worker_retention`）：列表响应还没有 `presence` 字段（issue #165）；控制台按固定阈值在客户端判定 |
+| `heartbeat_interval` | `ECHUAN_HEARTBEAT_INTERVAL` | `15s` | 服务端建议的心跳间隔 | 当前只在配置里保留，没有随响应下发（列表不返回 `heartbeat_interval_ms`），Worker 侧自己定节奏 |
+| `worker_metadata_max_bytes` | `ECHUAN_WORKER_METADATA_MAX_BYTES` | `8192` | metadata 上限 | 当前 V3 心跳未做大小校验（超限不会 413），配置值只参与校验 |
+| `worker_retention` | `ECHUAN_WORKER_RETENTION` | `1h` | 离线且不持卡的 Worker 行保留多久后被删除 | **必须严格大于 `worker_ttl`**，否则进程拒绝启动；判定基于 `last_seen`（不是「进入 offline 之后又过了多久」） |
+| `material_max_bytes` | `ECHUAN_MATERIAL_MAX_BYTES` | `20971520` | 单个物料最大字节数（20 MiB） | 超限 413 `too_large`（`POST /v1/materials`） |
 | `log_level` | `ECHUAN_LOG_LEVEL` | `info` | `debug/info/warn/error` | 排查注册/派卡问题时用 `debug` |
 
-配置校验：所有时长必须为正；`worker_ttl`、`heartbeat_interval`、`worker_retention` 任一 ≤ 0 都会导致进程启动失败。此外 `worker_retention` 必须严格大于 `worker_ttl`，否则同样拒绝启动。`worker_ttl` 与 `heartbeat_interval` 的倍数关系当前不做强校验，需要部署方自行保证。
+配置校验：所有时长必须为正；`worker_retention` 必须严格大于 `worker_ttl`，否则进程启动失败；`log_level` 只接受四个枚举值；配置文件里的未知键被忽略（老二进制遇到新配置不会崩）。
 
-> `worker_retention` 的判定基于 `last_seen`（而不是“进入 offline 之后又过了多久”），所以把它设得比 `worker_ttl` 还小，会让 Worker 在还显示 active 时就被删除。压测/验收需要缩短保留期时，至少要满足 `worker_retention > worker_ttl`（例如 `worker_ttl=45s`、`worker_retention=46s`）。
+> `worker_retention` 的判定基于 `last_seen`，所以把它设得比 `worker_ttl` 还小没有意义（会在 Worker 还显示活跃时就被删）。压测/验收需要缩短保留期时，至少要满足 `worker_retention > worker_ttl`（例如 `worker_ttl=45s`、`worker_retention=46s`）。
 
 ---
 
-## 2. 注册与心跳
+## 2. 注册、心跳与领卡
 
-### 2.1 首次注册
+### 2.1 注册（心跳即注册）
 
-`POST /v1/workers/heartbeat`，请求体不带 `worker_id`：
+`POST /v1/workers/heartbeat`，`worker_id` **必填且由客户端生成**（服务端不再生成、也不下发 id）：
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8721/v1/workers/heartbeat \
   -H 'Content-Type: application/json' \
   -H 'X-Actor: agent:worker' \
-  -d '{"state":"idle","metadata":{"host":"build-01","os":"linux","agent_version":"0.6.0"}}'
+  -d '{"worker_id":"w_build_01","kinds":["requirement","design","breakdown","dev"],
+       "metadata":{"host":"build-01","os":"linux","agent_version":"0.6.0"}}'
 ```
 
-响应 `200`：
+响应 **204 No Content（空响应体）**：
+
+- 没有 `worker` 对象、没有 `commands`：注册与续命的结果只能靠 `GET /v1/workers` 复核；
+- `worker_id` 是自己写的字符串（建议 `w_` 前缀 + 稳定标识），必须自行持久化；同一个 id 重复心跳就是 upsert，不会报错；
+- `kinds` 每次心跳**整体替换**（允许为空数组）；不传 `kinds` 等于把能力清单清空，之后真的领不到卡；
+- `metadata` 同样是整体替换：不传会被写成 `{}`，不是在旧文档上合并；
+- 请求体里的 `state` 字段在 V3 被忽略：占用事实只由 `current_task_id` 表达（见 2.2）。
+
+### 2.2 心跳做什么、不做什么
+
+心跳只做两件事：把注册行 upsert 进 `workers`（刷新 `last_seen`）、整体替换 `kinds` / `metadata`。
+
+- **不派卡**、不改 `state`、不动 `current_task_id` / `current_lease_id`；
+- 占用（谁持哪张卡）只由 claim / 报告 / 取消 / 失败 / 项目关闭改写；
+- 所以「心跳还在但卡没了」不是心跳干的，要去查 4.2 的清理规则或 2.4 的取消路径；
+- 反过来，持卡的 Worker 继续心跳既不会丢卡，也不会换租约——续租只有 `POST /v1/tasks/lease` 一条路。
+
+### 2.3 领卡（claim）
+
+```bash
+curl -sS -X POST http://127.0.0.1:8721/v1/tasks/claim \
+  -H 'Content-Type: application/json' \
+  -d '{"worker_id":"w_build_01","kind":"dev"}'
+```
+
+派卡规则（`internal/store/v3/task.go` 的 `ClaimTask`）：kind 匹配、`status=ready`、所属项目 `open`、依赖全部 `done`，按 `priority DESC, id ASC` 取第一条。
+
+| 结果 | 含义 |
+|---|---|
+| `200` + 派单信封 | 卡转 `in_progress`（`attempt+1`、写 `lease_id`/`lease_until`/`worker_id`），Worker 行转 `busy` 并绑定指针 |
+| `204`（空体） | 当前没有可领的卡：队列空、kind 不匹配、项目已关闭、或依赖还没结清（不是错误，按退避重试） |
+
+派单信封字段：
 
 ```json
 {
-  "worker": {
-    "worker_id": "w_01M5Z45MXYVDV3FAHG543RZ5JQ",
-    "presence": "active",
-    "state": "idle",
-    "current_task_id": null,
-    "metadata": {"host": "build-01"},
-    "first_seen": "2026-10-27T16:47:51.230Z",
-    "last_seen": "2026-10-27T16:47:51.230Z",
-    "heartbeat_interval_ms": 15000,
-    "lease_ttl_seconds": 90
-  },
-  "commands": []
+  "task":   {"task_id": "t_...", "status": "in_progress", "attempt": 1, "lease_id": "l_...", "lease_until": "...", "worker_id": "w_build_01"},
+  "project": {"project_id": "APP-1", "name": "...", "context_md": "..."},
+  "product": {"product_id": "APP", "name": "...", "git_url": "..."},
+  "inputs":  [{"material_id": "...", "title": "...", "kind": "requirement", "role": "input"}],
+  "upstream": [{"task_id": "t_upstream", "material_id": "...", "title": "..."}],
+  "has_downstream_dev": false
 }
 ```
 
-- `worker_id` 由服务端生成，客户端只读，格式 `w_` + ULID。
-- 客户端必须持久化这个 id；后续每次心跳回填。
-- `heartbeat_interval_ms` / `lease_ttl_seconds` 是服务端下发的节奏，Worker 应按它安排心跳与续租，不要写死。
-- `metadata` 必须在 JSON 层面是对象；数组/字符串/null 会 400。提供即**整体替换**，不提供则保留旧文档。
+- `inputs` 是挂在这张卡上的输入附件，`upstream` 是依赖卡及其已验收交付物；
+- 一个 Worker 同时只持一张卡（`ux_tasks_worker_lease` 唯一索引）：先报告结清，再领下一张；
+- claim 不校验注册表：没心跳过的 id 也能调用，但占用指针只会落到注册行上，所以**先注册再领卡**。
 
-### 2.1.1 角色由 worker 决定，平台不参与
+### 2.4 续租、报告、验收与取消
 
-派单 payload 只带 `kind`（平台自己的工作项词汇），**不带任何角色/preset 字段**。
-哪张卡交给哪个角色，是 worker 侧（`dsh-echuan` kit）的 `kind → preset` 映射决定的：
-kit 最清楚本 Host 装了哪些 preset，也天然承担「换 agent 运行时」的适配责任。
-
-- 平台侧零角色概念：加一个新角色不需要改平台代码、不需要重新构建平台镜像。
-- worker 的 `kinds` 声明仍然决定「能领什么卡」；映射决定「领到后挂哪个 preset」。
-- 映射未命中的 kind 回落到 registry 默认 preset，不会让派单卡死。
-- `dev-developer` / `dev-tester` 不参与派单：它们是 dev 会话内部由 subagent 派生的角色。
-
-### 2.2 持续心跳与派卡
-
-```bash
-curl -sS -X POST http://127.0.0.1:8721/v1/workers/heartbeat \
-  -H 'Content-Type: application/json' \
-  -d '{"worker_id":"w_01M5...","state":"idle"}'
-```
-
-派卡规则：
-
-| Worker 现状 | 心跳 state | 结果 |
+| 动作 | 端点 | 结果 |
 |---|---|---|
-| 未持有任务 | `idle` | 若队列有可领取卡，`commands` 返回一条 `kind=run_task`，同时绑定指针与租约；否则 `commands=[]` |
-| 未持有任务 | `busy` | 不派新卡（`commands=[]`），等待 Worker 自己声明 idle |
-| 已持有任务 | `busy` | 续租：`lease_until = now + lease_ttl`，不回传新 command |
-| 已持有任务 | `idle` | 同样续租，不回传新 command（`idle` 只表示“别再给我新卡”，不等于放弃续租） |
+| 续租 | `POST /v1/tasks/lease` `{task_id,lease_id}` | `200 {task_id,lease_id,lease_until}`：`lease_id` 不变，只延长到期时间；lease 不匹配/已释放 → `409`，message 含 `lease lost` |
+| 报告 | `POST /v1/tasks/report` `{task_id,lease_id,material_id}` | `200`：卡转 `in_review`，释放租约与 `worker_id`，Worker 回 `idle` 并归还指针；`material_id` 必须是已存在的物料（先 `POST /v1/materials`） |
+| 验收 | `POST /v1/tasks/decide` `{task_id,decision,decided_by,reason?,material_id?}` | `200`：`approve` → `done` 并按 kind 派生下一阶段卡（requirement→design→breakdown→dev，拆解按计划物料落成 dev 子卡）；`reject` → `ready`，**必须带 `reason`**（缺 reason 是 `400`），同时写一条 `gate_decisions` |
+| 取消 | `POST /v1/projects/close?id=<项目>&force=1` | `204`：项目内 `pending`/`ready`/`in_progress`/`in_review` 的卡批量转 `cancelled`，**当场归还持卡 Worker 的指针**（不必等 sweep） |
 
-注意：
-
-- `state` 是**声明值**，不代表占用事实；占用与否只看 `current_task_id`。
-- 如果 Worker 声明 `idle` 但还持有卡，它不会拿到第二张卡，租约也照常续期。
-- 只有当 Worker 不再心跳（进程退出 / 心跳链路断开）时租约才会过期；**本轮心跳顺手回收了自己刚丢的卡时，本轮不派新卡**，下一轮才可领——避免“刚丢掉旧卡就立刻接新卡”的双持。响应里 `current_task_id` 为 `null`、`commands` 为空，客户端据此知道要等下一轮。
-- 一个 Worker 最多持有一张卡（`ux_workers_current_task` 唯一索引保证）。
-- `POST /v1/tasks/claim` 带 `worker_id` 也能领卡；与心跳派卡共用同一套指针/租约规则。
-
-### 2.3 `409 worker_unknown` 的恢复
-
-心跳或 claim 带了注册表里不存在的 `worker_id`（从未注册，或行已被保留期清理）时：
-
-```json
-{"code":"worker_unknown","message":"worker is unknown","details":[]}
-```
-
-处理方式：**丢弃旧 id，重新走 2.1 注册拿新 id**，不要原 id 重试。Worker 侧建议把 `worker_unknown` 当作可恢复错误：清空本地 id → 注册 → 继续心跳/领卡。
+取消/失败的现状（本构建）：**没有单任务的取消 / 失败路由**。`DELETE /v1/tasks?id=` 只允许 `pending`/`ready`（硬删），对 `in_progress`/`in_review` 是 `409`。要停掉一张在跑的卡，只能 `POST /v1/projects/close?force=1` 把整个项目关闭并批量取消。
 
 ---
 
 ## 3. 常见错误码
 
-所有错误响应统一为 `{"code":"...","message":"...","details":[]}`，并带 `X-Request-Id`。
+所有错误响应统一为 `{"code":"...","message":"...","details":[],"request_id":"..."}`，并带 `X-Request-Id`。
 
 | HTTP | `code` | 出现场景 | 处理 |
 |---|---|---|---|
-| 400 | `invalid_argument` | `state` 不是 `idle/busy`；`metadata` 不是 JSON 对象；列表 `limit/cursor` 非法；`?id=` 为空 | 修正请求；不要重试同一 body |
-| 404 | `not_found` | `GET /v1/workers?id=` 的 id 不存在；任务/项目不存在 | 查询语义用 404；Worker 详情查不到说明已被清理或 id 写错 |
-| 409 | `worker_unknown` | 心跳/claim 携带未注册 id | 丢弃旧 id，重新注册 |
-| 409 | `worker_busy` | claim 时该 worker 已持有任务卡 | 先完成/报告当前卡；不要并发抢卡 |
-| 409 | `lease_lost` | 任务心跳/报告时租约已过期、已被回收或 lease_id 不匹配 | 停止执行该卡；重新领卡（旧结果不可再提交） |
-| 409 | `invalid_state` | 任务/项目状态不允许该动作（如对 pending_acceptance 再报告） | 重新读取状态后再决定 |
-| 409 | `invalid_version` | 决策接口 `If-Match` 与当前版本不一致 | 重新 GET 拿最新 `version` 再决策 |
-| 413 | `too_large` | metadata 超过 `worker_metadata_max_bytes`；物料超限 | 缩小 metadata；不要重试原 body |
-| 204 | — | `POST /v1/tasks/claim` 无卡可领（空响应体） | 按退避轮询，不是错误 |
+| 400 | `invalid_argument` | 请求体字段缺失/类型错/未知字段（严格解码）；枚举非法（`kind`/`status`/`role`/`decision`）；驳回不带 `reason`；心跳缺 `worker_id` | 修正请求；不要重试同一 body |
+| 404 | `not_found` | 产品/项目/任务/物料不存在；**未注册的 `/v1` 路径**（V3 已删除的旧路由也走这里） | 查询语义用 404；路径写错就改路径 |
+| 409 | `conflict` | 状态冲突：`invalid task transition`（如硬删在跑的卡）、`lease lost`（续租/报告时租约过期或 lease_id 不匹配）、`unfinished`（未结清的项目关闭没带 force）、项目已关闭 | 重新读取状态再决定；租约丢失就重新领卡，旧结果不能再提交 |
+| 413 | `too_large` | 物料超过 `material_max_bytes` | 缩小物料；不要重试原 body |
+| 204 | — | claim 无卡可领；心跳 / 关闭 / 重开 / 删除成功 | 都不是错误 |
 
 补充：
 
-- `POST /v1/tasks/claim` 的并发抢卡失败统一返回 **204**，不是 409；409 只用于 `worker_unknown` / `worker_busy`。
-- Worker 详情查询用 404 `not_found`，与心跳的 409 `worker_unknown` 区分：前者是“查不到”，后者是“你给的 id 我不认识”。
+- V3 的 409 统一用 `code=conflict`，**具体原因看 `message`**（`lease lost` / `invalid task transition` / `unfinished`），不再有 v2 的 `worker_unknown` / `worker_busy` 细分码——心跳是 upsert（没有「未知 worker」路径），claim 也不校验注册表。
 
 ---
 
@@ -144,89 +130,92 @@ curl -sS -X POST http://127.0.0.1:8721/v1/workers/heartbeat \
 
 ### 4.1 API
 
-**列表**（按 `last_seen` 倒序）：
+**列表**（按 `last_seen` 倒序，无分页游标）：
 
 ```bash
 curl -sS 'http://127.0.0.1:8721/v1/workers?limit=200'
 ```
 
-响应 `{"items":[...],"next_cursor":"..."}`；`next_cursor` 只在还有下一页时出现。
-
-**详情**：
-
-```bash
-curl -sS 'http://127.0.0.1:8721/v1/workers?id=w_01M5...'
+```json
+{"items":[{"worker_id":"w_build_01","kinds":["requirement","design"],
+           "state":"busy","current_task_id":12,"current_work_item_id":"t_...",
+           "current_lease_id":"l_...","last_seen":"2026-10-27T16:47:51.230Z"}]}
 ```
-
-响应是裸 `Worker` 对象（没有 `items` 包装）；`?id=` 为空 400，id 不存在 404。
 
 字段判读：
 
 | 字段 | 含义 |
 |---|---|
-| `presence` | 由 `now - last_seen` 与 `worker_ttl` 推导，**不落库**；超过 TTL 即 `offline` |
-| `state` | Worker 最近一次声明的 `idle/busy`；不代表是否持有卡 |
-| `current_task_id` | 真正表示占用的指针；`null` 才是空闲 |
-| `first_seen` / `last_seen` | 首次注册 / 最近一次成功心跳（UTC，毫秒定宽） |
-| `heartbeat_interval_ms` | 服务端期望心跳间隔 |
-| `lease_ttl_seconds` | 服务端发放的租约时长，与 claim 同源 |
+| `worker_id` | 客户端生成并持久化的注册 id |
+| `kinds` | 最近一次心跳声明的能力清单（按 kind 数值序） |
+| `state` | `idle` / `busy`；V3 里由占用推导（claim 置 busy，报告/取消/失败/关闭置 idle），不是心跳里的声明值 |
+| `current_task_id` | 内部行 id，历史字段；只在持卡时出现 |
+| `current_work_item_id` | 真正的占用指针，业务标识 `t_...`；空闲时是**显式 `null`** |
+| `current_lease_id` | 当前租约；只在持卡时出现 |
+| `last_seen` | 最近一次成功心跳（UTC，毫秒定宽） |
 
-推导规则：`presence = active` 当且仅当 `last_seen` 距当前时间不超过 `worker_ttl`；超过即 `offline`。`offline` 只表示“没心跳”，行仍在注册表里，直到满足保留期清理条件。
+**详情未落地**：`GET /v1/workers?id=<worker_id>` 目前仍按列表处理（`id` 被忽略，不校验存在性），`presence` 字段也还没有。按 issue #165 的排期，这两项随卡 B 落地；在那之前：
+
+- 在线/离线由调用方用 `last_seen` 自己算（控制台用固定 90s 阈值，见 `web/src/features/workers/WorkersPage.tsx` 的 `STALE_AFTER_MS`）；
+- 判断某行是否还在，用列表里是否出现这个 `worker_id`。
 
 ### 4.2 清理规则
 
-后台 `Reclaimer` 每 **30s** 扫一轮（进程启动时先扫一次），同一轮做两件事：
+后台 `Reclaimer` 每 **30s** 扫一轮（进程启动时先扫一次），同一轮按固定顺序做三件事：
 
-1. 回收过期任务租约，把卡放回 ready，并清掉对应 Worker 指针；
-2. 删除 `current_task_id IS NULL` 且 `last_seen` 早于 `now - worker_retention` 的 Worker 行。
+1. **回收过期租约**：`in_progress` 且 `lease_until` 已过期的卡放回 `ready`（尝试次数用尽则 `failed`），并清掉持卡 Worker 的指针；
+2. **释放悬空指针**：`current_task_id` 指向的卡已不在 `in_progress`（被取消、失败，或行被硬删）时清空指针——`last_seen` 不动，让该行照常按保留期退休；
+3. **按保留期删行**：`current_task_id IS NULL` 且 `last_seen < now - worker_retention` 的 Worker 行连同 `worker_kinds` 一起删除。
 
 因此：
 
-- 持卡 Worker 即使离线也不会被删（先等租约回收/上报释放指针）；
-- 无卡离线 Worker 在保留期到点后的下一轮 sweep 被删除；
-- 删除后 `GET /v1/workers?id=` 变为 404，原 id 心跳变为 409 `worker_unknown`。
+- 持卡 Worker 即使离线也不会被删（`current_task_id` 是唯一的占用记录，先等租约回收 / 报告 / 取消 / 关闭归还指针）；
+- 取消、失败、项目 force 关闭在事务里**当场**归还指针，不依赖 sweep；
+- 无卡离线 Worker 在保留期到点后的下一轮 sweep 被删除；删除后列表不再含该行；
+- 指向已被硬删任务、或指向非 `in_progress` 卡的指针由第 2 步收敛，不会永久残留。
+
+时间线示例（验收脚本用的参数：`worker_ttl=45s`、`worker_retention=46s`、sweep 30s）：最后一次心跳后约 **60s** 该行从列表消失（保留期到点 + 最多一轮 sweep）。
 
 ### 4.3 UI
 
-Web 控制台侧栏 **Worker**（路由 `#/workers`）展示注册表：在线数/总数、presence、state、当前任务。页面数据来自 `GET /v1/workers`，与 API 同源；判定规则一致。
+Web 控制台侧栏 **Worker**（路由 `#/workers`）展示注册表：在线数/总数、state、当前任务、心跳时间。页面数据来自 `GET /v1/workers`，与 API 同源；因为响应里还没有 `presence`，过期判定由前端按 `last_seen` + 90s 阈值计算（issue #165 落地后改回服务端字段）。
 
-### 4.4 计划批次与依赖巡检
+### 4.4 SQL 巡检
 
-批次评审通过时，项目内**全部** `blocked` 工作项在同一事务里转 `queued`；能不能被 claim 只看依赖是否全部 `accepted`（派卡时的依赖过滤），与「哪批过审」无关。验收一张卡只写这一张，不会再去动下游卡。所以「看板有卡、心跳不派」最常见的两个原因是：卡还没重批（仍是 `blocked`，`待评审`），或它已经是 `queued`（`待开发`）但依赖没验收完——两者要分开查。下面两条 SQL 直接粘进 `sqlite3 state.db` 即可（数据目录见 `docs/deploy.md` §3.1）：
+派卡只看三件事：卡是 `ready`、项目 `open`、依赖全部 `done`。所以「看板有卡、claim 却 204」最常见的原因只有两类：卡还在 `pending`（依赖没结清），或项目已 `closed`。下面两条 SQL 直接粘进 `sqlite3 state.db` 即可（数据目录见 `docs/deploy.md` §3.1）：
 
 ```bash
-sqlite3 "${ECHUAN_DATA_DIR:-$HOME/echuan-v2-data}/state.db" '<SQL>'
+sqlite3 "${ECHUAN_DATA_DIR:-$HOME/.echuan}/state.db" '<SQL>'
 ```
 
-**SQL A：审批后仍停在「待评审」的 dev 卡**
+状态码：task `status` 1=pending 2=ready 3=in_progress 4=in_review 5=done 6=failed 7=cancelled；project `status` 1=open 2=closed；`kind` 1=requirement 2=design 3=breakdown 4=dev。
+
+**SQL A：停在 pending（依赖未结清）的卡**
 
 ```sql
-SELECT w.work_id, w.project_id, w.title
-  FROM work_items w JOIN projects p ON p.id = w.project_id
- WHERE w.kind = 'dev' AND w.state = 'blocked'
- ORDER BY w.project_id, w.seq_no;
+SELECT t.task_id, p.project_id, t.kind, t.title
+  FROM tasks t JOIN projects p ON p.id = t.project_id
+ WHERE t.status = 1
+ ORDER BY p.project_id, t.id;
 ```
 
-用途：找出**审批后仍停在「待评审」**的 dev 卡。常见于同一项目在审批后又新建了一批计划（并发新建），或升级前遗留、没有走新逻辑重批的批次。这些卡任何 claim 都看不到——有行就是「卡住了」。
+用途：这些卡任何 claim 都看不到。逐条看它的依赖什么时候结清——正常路径是把上游卡推进到 `done`。
 
-处理：对命中的项目点一次「全部通过」（`POST /v1/work-items/review`，`{"project_id":"<项目业务编号>","decision":"approve"}`），项目内所有 `blocked` 卡会一起转 `queued`；接口返回 409 `has no blocked work item to approve` 说明这批早已放行，不用再点。
-
-> 两条 SQL 输出的 `project_id` 都是 `work_items.project_id`（内部数字 id），不是接口用的业务编号（如 `APP-1`）。重批前先换成业务编号：`SELECT project_id FROM projects WHERE id = <上面查到的数字 id>;`，或直接在 GUI 工作项看板按项目名找到。
-
-**SQL B：已「待开发」但依赖未验收、当前不可派发的卡**
+**SQL B：已 ready 但依赖还没 done 的卡**
 
 ```sql
-SELECT w.work_id, w.project_id, dep.work_id AS waiting_on, dep.state AS waiting_state
-  FROM work_items w
-  JOIN work_deps d ON d.work_item_id = w.id
-  JOIN work_items dep ON dep.id = d.depends_on_id
- WHERE w.state = 'queued' AND dep.state <> 'accepted'
- ORDER BY w.project_id, w.seq_no;
+SELECT t.task_id, p.project_id, dep.task_id AS waiting_on, dep.status AS waiting_status
+  FROM tasks t
+  JOIN projects p ON p.id = t.project_id
+  JOIN task_deps d ON d.task_id = t.id
+  JOIN tasks dep ON dep.id = d.depends_on_task_id
+ WHERE t.status = 2 AND dep.status <> 5
+ ORDER BY p.project_id, t.id;
 ```
 
-用途：找出**已待开发但依赖未验收、当前不可派发**的卡（`waiting_on` / `waiting_state` 指出在等哪张、它到哪一步了）。**「看板有卡、心跳不派」时先查 B**：这是审批后的正常中间态，不是故障。
+用途：`waiting_on` / `waiting_status` 指出在等哪张卡、它到哪一步了。这是审批后的正常中间态，不是故障。
 
-处理：去推进 `waiting_on`（派发、报告、催验收），不要手工改下游卡的状态；B 为空且心跳仍不派卡，再看 2.2 派卡规则与 Worker 的 `current_work_item_id`（是否还持有旧卡）。
+处理：推进 `waiting_on`（派发 / 报告 / 验收），不要手工改下游卡的状态；B 为空而 claim 仍 204 时，再看项目状态（`closed` 不派卡）和注册表的 `current_work_item_id`（是否还持有旧卡）。
 
 ---
 
@@ -236,9 +225,20 @@ SELECT w.work_id, w.project_id, dep.work_id AS waiting_on, dep.state AS waiting_
 bash scripts/e2e-worker.sh   # 或 make e2e
 ```
 
-- 每次新建临时目录 + 随机高位端口 + 独立 TOML，不触碰 `~/.echuan` 或仓库内数据；
-- 覆盖：注册 → 派卡 → busy 续租 / 持卡 idle 仍续租 → 报告 → 重启恢复 → 45s 离线 → 保留期清理；
-- 任一步失败会打印 HTTP 状态码、响应体、临时目录和服务日志尾部，便于定位；
-- 完整跑一轮约 90s（其中约 60s 用于等待离线与 30s sweep）。
+- 每次新建临时目录（`TMPDIR`，默认 `/tmp`）+ 随机高位端口 + 独立 TOML，不触碰 `~/.echuan` 或仓库内数据；空数据目录启动会自动跑迁移并生成 `state.db`；
+- 覆盖 9 步：
+  1. 空数据目录一键启动（自动迁移）、`/healthz` `/readyz` `/version`；
+  2. 产品 / 项目容器语义（建项不建卡）、未注册 `/v1` 路径 404、参数错误 400；
+  3. Worker 注册：`worker_id` 客户端生成、心跳 204 空体、注册表 `state` / `kinds` / `last_seen` / `current_work_item_id` 的契约；
+  4. 建卡 → claim 拿到派单信封（task / project / product / inputs / upstream），队列空时 claim 204；
+  5. 显式续租 `lease_until` 递增且 `lease_id` 不变、错误 lease 409 `lease lost`、持卡心跳不归还占用；
+  6. 报告（卡转 `in_review` 且归还占用）→ 驳回（缺 reason 400、决策落库）→ 重新领取（attempt 递增）→ 验收 → 派生方案卡并带上游交付物；
+  7. 方案验收派生拆解卡 → 计划物料落成 dev 卡 → 派发 / 报告 / 验收；项目材料视图与待办为空；项目关闭 / 重开；
+  8. 重启后注册表与任务仍在；项目 `force=1` 关闭批量取消持卡卡并**当场**归还指针（卡 A）；无卡 Worker 只注册不领卡（#164 前置）；
+  9. 保留期前不删、超过 `worker_retention` 且一轮 sweep 后两行都从注册表消失（卡 A 后半 + #164 防回归），并核对服务日志里的 `pruned stale workers`；
+- **未覆盖**：列表 `presence` 字段与 `GET /v1/workers?id=` 详情语义（卡 B / issue #165 未落地），脚本内对应位置以 `TODO(issue #165)` 标注，不写会必然失败的断言；
+- 任一步失败会打印步骤名、HTTP 状态码、响应体、临时目录和服务日志尾部，便于定位；
+- 完整跑一轮约 70s（其中约 60s 用于等保留期 + 一轮 sweep）；
+- 依赖 `bash` / `go` / `jq` / `curl`；随机端口的占用检测用 bash 的 `/dev/tcp`（镜像里的 `lsof` 是 busybox 兼容层，`-iTCP/-sTCP` 过滤参数无效，会恒判「占用」）。
 
-脚本把 `worker_retention` 设为 `46s`（而不是更小的值），原因见第 1 节：保留期从 `last_seen` 起算，必须大于 `worker_ttl` 才能先观察到 `offline`、再观察到清理。
+脚本把 `worker_retention` 设为 `46s`（而不是更小的值），原因见第 1 节：保留期从 `last_seen` 起算，必须大于 `worker_ttl` 才能先观察到「离线仍在册」、再观察到清理。
