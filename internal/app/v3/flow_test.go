@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Casper-Mars/echuan/internal/domain/enum"
+	storedb "github.com/Casper-Mars/echuan/internal/store"
 	storev3 "github.com/Casper-Mars/echuan/internal/store/v3"
 )
 
@@ -31,9 +32,10 @@ func planBody(items ...planItem) []byte {
 }
 
 // approveRequirement drives one requirement task to done.
-func approveRequirement(t *testing.T, svc *Service, projectID string) {
+func approveRequirement(t *testing.T, svc *Service, st *storedb.Store, projectID string) {
 	t.Helper()
 	ctx := context.Background()
+	seedWorker(t, st, "w_req")
 	if _, err := svc.CreateTask(ctx, CreateTaskRequest{
 		ProjectID: projectID, TaskID: "t_req", Kind: enum.Requirement, Title: "需求",
 	}); err != nil {
@@ -68,7 +70,7 @@ func TestFlowDisabled(t *testing.T) {
 	svc, st := newTestService(t, &now)
 	svc.WithAutoFlow(false)
 	projectID := seedProject(t, st, "APP")
-	approveRequirement(t, svc, projectID)
+	approveRequirement(t, svc, st, projectID)
 
 	if tasks := listKind(t, svc, projectID, enum.Design); len(tasks) != 0 {
 		t.Fatalf("design tasks = %d, want 0 with flow disabled", len(tasks))
@@ -79,7 +81,7 @@ func TestRequirementCreatesDesign(t *testing.T) {
 	now := testClock
 	svc, st := newTestService(t, &now)
 	projectID := seedProject(t, st, "APP")
-	approveRequirement(t, svc, projectID)
+	approveRequirement(t, svc, st, projectID)
 
 	designs := listKind(t, svc, projectID, enum.Design)
 	if len(designs) != 1 {
@@ -123,7 +125,7 @@ func TestEnsureDoesNotDuplicate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateTask design: %v", err)
 	}
-	approveRequirement(t, svc, projectID)
+	approveRequirement(t, svc, st, projectID)
 
 	if designs := listKind(t, svc, projectID, enum.Design); len(designs) != 1 {
 		t.Fatalf("design tasks = %d, want 1 (ensure must reuse)", len(designs))
@@ -134,7 +136,7 @@ func TestDoubleApproveDoesNotDuplicate(t *testing.T) {
 	now := testClock
 	svc, st := newTestService(t, &now)
 	projectID := seedProject(t, st, "APP")
-	approveRequirement(t, svc, projectID)
+	approveRequirement(t, svc, st, projectID)
 
 	if _, err := svc.Decide(context.Background(), DecideRequest{
 		TaskID: "t_req", Decision: enum.Approve, DecidedBy: "cto",
@@ -156,6 +158,7 @@ func TestDesignCreatesBreakdown(t *testing.T) {
 		t.Fatalf("CreateTask design: %v", err)
 	}
 	materialID := createMaterial(t, svc, "m_design")
+	seedWorker(t, st, "w_design")
 	task, err := svc.Claim(context.Background(), "w_design", enum.Design)
 	if err != nil {
 		t.Fatalf("Claim design: %v", err)
@@ -199,6 +202,7 @@ func TestBreakdownMaterializesPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMaterial: %v", err)
 	}
+	seedWorker(t, st, "w_break")
 	task, err := svc.Claim(context.Background(), "w_break", enum.Breakdown)
 	if err != nil {
 		t.Fatalf("Claim breakdown: %v", err)
@@ -274,6 +278,7 @@ func TestBreakdownInvalidPlanRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMaterial: %v", err)
 	}
+	seedWorker(t, st, "w_break")
 	task, err := svc.Claim(context.Background(), "w_break", enum.Breakdown)
 	if err != nil {
 		t.Fatalf("Claim breakdown: %v", err)
@@ -306,6 +311,7 @@ func TestDevApprovalCreatesNothing(t *testing.T) {
 	projectID := seedProject(t, st, "APP")
 	createReadyTask(t, svc, projectID, "t_dev", enum.Dev)
 	materialID := createMaterial(t, svc, "m_dev")
+	seedWorker(t, st, "w_dev")
 	task, err := svc.Claim(context.Background(), "w_dev", enum.Dev)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)

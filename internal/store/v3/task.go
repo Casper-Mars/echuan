@@ -225,12 +225,27 @@ func ClaimTask(ctx context.Context, s *storedb.Store, in ClaimInput) (Task, erro
 			return ErrNoWork
 		}
 
-		if _, err := tx.ExecContext(ctx, `
+		// The projection must match a registry row: an UPDATE that matches
+		// nothing silently succeeds, which would lease the card to a holder
+		// that no listing, heartbeat or prune can ever see (the dangling
+		// pointer of issue #165 §2 E-5). Returning the sentinel rolls the
+		// whole transaction back — task row, worker row and claimed event —
+		// so the invariant "a leased task has a registered holder" holds even
+		// when the sweep deletes the row between the pre-check and this write.
+		res, err = tx.ExecContext(ctx, `
 			UPDATE workers
 			   SET state = ?, current_task_id = ?, current_lease_id = ?, last_seen = ?, update_time = ?
 			 WHERE worker_id = ?`,
-			enum.WorkerBusy, pk, in.LeaseID, in.Now, in.Now, in.WorkerID); err != nil {
+			enum.WorkerBusy, pk, in.LeaseID, in.Now, in.Now, in.WorkerID)
+		if err != nil {
 			return fmt.Errorf("v3: bind worker %s: %w", in.WorkerID, err)
+		}
+		bound, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("v3: bind worker %s rows: %w", in.WorkerID, err)
+		}
+		if bound == 0 {
+			return fmt.Errorf("%w: %s", ErrWorkerNotRegistered, in.WorkerID)
 		}
 
 		if err := appendEvent(ctx, tx, pk, enum.EventClaimed, in.WorkerID,

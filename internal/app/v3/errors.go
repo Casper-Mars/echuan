@@ -47,6 +47,14 @@ func conflict(format string, args ...any) *Error {
 	return &Error{Status: 409, Message: fmt.Sprintf(format, args...)}
 }
 
+// workerNotRegistered is the single message both claim checks answer with: the
+// pre-check (before taking a card) and the transaction's own guard (a row that
+// vanished between the two). The worker_id is the recovery instruction — a
+// client that never sent a heartbeat is one heartbeat away from claiming.
+func workerNotRegistered(workerID string) *Error {
+	return conflict("worker %q 未注册，请先发一次心跳", workerID)
+}
+
 // NoWorkError is returned by Claim when the queue is empty. It carries 204 so
 // the HTTP layer can answer "no content" without a body.
 type NoWorkError struct{}
@@ -69,7 +77,8 @@ func Translate(err error) error {
 	case errors.Is(err, storev3.ErrNoWork):
 		return &NoWorkError{}
 	case errors.Is(err, storev3.ErrProjectNotFound), errors.Is(err, storev3.ErrProductNotFound),
-		errors.Is(err, storev3.ErrTaskNotFound), errors.Is(err, storev3.ErrMaterialNotFound):
+		errors.Is(err, storev3.ErrTaskNotFound), errors.Is(err, storev3.ErrMaterialNotFound),
+		errors.Is(err, storev3.ErrWorkerNotFound):
 		return notFound("%s", err.Error())
 	case errors.Is(err, storedb.ErrUniqueViolation):
 		return conflict("%s", err.Error())

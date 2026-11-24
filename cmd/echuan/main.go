@@ -88,7 +88,11 @@ func run() error {
 	// cmd/echuan/maxattempts_test.go).
 	projectService := appv3.NewProjectService(st)
 	taskService := newTaskService(st, cfg)
-	workerService := appv3.NewWorkerService(st)
+	// The worker service derives presence from worker_ttl and publishes the
+	// heartbeat/lease rhythm on the detail endpoint, so it must share the same
+	// configuration the rest of the server validates (issue #165 §2).
+	workerService := appv3.NewWorkerService(st).
+		WithRhythm(cfg.WorkerTTL, cfg.HeartbeatInterval, cfg.LeaseTTL)
 
 	// Feishu bot: optional. The poller turns in_review tasks into cards and
 	// the card callback decides the task through the V3 service.

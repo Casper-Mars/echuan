@@ -3,6 +3,7 @@ package v3
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -183,12 +184,24 @@ func (s *Service) DeleteTask(ctx context.Context, taskID string) error {
 }
 
 // Claim leases the next ready task for a worker.
+//
+// The registry is checked before the queue, deliberately: a claim with an
+// unregistered worker_id is a 409 even when no card is waiting, so a stale id
+// cannot spin forever on "no work" while the operator has no way to learn it is
+// not registered. The transaction repeats the check with its own projection
+// guard, which covers the row disappearing between this read and the lease.
 func (s *Service) Claim(ctx context.Context, workerID string, kind enum.TaskKind) (storev3.Task, error) {
 	if strings.TrimSpace(workerID) == "" {
 		return storev3.Task{}, invalid("worker_id is required")
 	}
 	if !kind.Valid() {
 		return storev3.Task{}, invalid("kind: invalid value %d", kind)
+	}
+	if _, err := storev3.GetWorker(ctx, s.st.Read(), workerID); err != nil {
+		if errors.Is(err, storev3.ErrWorkerNotFound) {
+			return storev3.Task{}, workerNotRegistered(workerID)
+		}
+		return storev3.Task{}, Translate(err)
 	}
 	now := s.now()
 	ulid, err := platform.NewULID(now)
@@ -202,6 +215,11 @@ func (s *Service) Claim(ctx context.Context, workerID string, kind enum.TaskKind
 		Now:        formatTime(now),
 		LeaseUntil: formatTime(now.Add(s.leaseTTL)),
 	})
+	if errors.Is(err, storev3.ErrWorkerNotRegistered) {
+		// The row was deleted after the pre-check (retention sweep). Same
+		// answer, same recovery: send a heartbeat, then claim again.
+		return storev3.Task{}, workerNotRegistered(workerID)
+	}
 	return task, Translate(err)
 }
 

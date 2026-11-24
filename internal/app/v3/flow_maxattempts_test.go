@@ -26,7 +26,7 @@ func TestFlowDerivedTasksInheritMaxAttempts(t *testing.T) {
 	projectID := seedProject(t, st, "APP")
 
 	// requirement --approve--> design
-	approveRequirement(t, svc, projectID)
+	approveRequirement(t, svc, st, projectID)
 	requirement, err := svc.GetTask(ctx, "t_req")
 	if err != nil {
 		t.Fatalf("GetTask requirement: %v", err)
@@ -44,6 +44,7 @@ func TestFlowDerivedTasksInheritMaxAttempts(t *testing.T) {
 
 	// design --approve--> breakdown
 	designMaterial := createMaterial(t, svc, "m_design")
+	seedWorker(t, st, "w_design")
 	design, err := svc.Claim(ctx, "w_design", enum.Design)
 	if err != nil {
 		t.Fatalf("Claim design: %v", err)
@@ -72,6 +73,7 @@ func TestFlowDerivedTasksInheritMaxAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMaterial plan: %v", err)
 	}
+	seedWorker(t, st, "w_break")
 	breakdown, err := svc.Claim(ctx, "w_break", enum.Breakdown)
 	if err != nil {
 		t.Fatalf("Claim breakdown: %v", err)

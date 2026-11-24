@@ -101,6 +101,7 @@ func TestCloseAfterAllTasksDone(t *testing.T) {
 	createReadyTask(t, tasks, project.ProjectID, "t_dev", enum.Dev)
 	materialID := createMaterial(t, tasks, "m_done")
 
+	seedWorker(t, st, "w1")
 	claimed, err := tasks.Claim(context.Background(), "w1", enum.Dev)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)

@@ -61,11 +61,14 @@ func seedProduct(t *testing.T, st *storedb.Store, code string) int64 {
 	return pk
 }
 
-// claimAndReport moves one task from ready to in_review.
+// claimAndReport moves one task from ready to in_review. The worker is
+// registered first: ClaimTask refuses a worker_id without a registry row
+// (issue #165 §2), and a real client heartbeats before claiming.
 func claimAndReport(t *testing.T, st *storedb.Store, taskID string, kind enum.TaskKind) {
 	t.Helper()
 	ctx := context.Background()
 	leaseID := "l_" + taskID
+	seedWorker(t, st, "w_"+taskID, testNow)
 	if _, err := ClaimTask(ctx, st, ClaimInput{
 		Kind:       kind,
 		WorkerID:   "w_" + taskID,

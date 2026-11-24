@@ -87,6 +87,18 @@ func (a *apiServer) seedProduct(t *testing.T, code string) {
 	}
 }
 
+// registerWorker sends one heartbeat, which is how a worker enters the registry
+// and how a client recovers from the claim 409 (issue #165 §2).
+func (a *apiServer) registerWorker(t *testing.T, workerID string) {
+	t.Helper()
+	resp, payload := a.do(t, http.MethodPost, "/v1/workers/heartbeat", map[string]any{
+		"worker_id": workerID, "kinds": []string{"dev", "requirement", "design"},
+	})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("heartbeat %s = %d (%s)", workerID, resp.StatusCode, payload)
+	}
+}
+
 func (a *apiServer) do(t *testing.T, method, path string, body any) (*http.Response, []byte) {
 	t.Helper()
 	var reader io.Reader
@@ -261,6 +273,13 @@ func TestClaimConcurrentReturns204(t *testing.T) {
 		t.Fatalf("create task = %d (%s)", resp.StatusCode, body)
 	}
 
+	// Both contenders must be registered: claim answers 409 for an unregistered
+	// worker_id, and the point of this case is still the 200/204 race over one
+	// card (issue #165 §2 regression point 1).
+	for i := 0; i < 2; i++ {
+		a.registerWorker(t, fmt.Sprintf("w_%d", i))
+	}
+
 	var (
 		wg    sync.WaitGroup
 		mu    sync.Mutex
@@ -304,6 +323,7 @@ func TestReportDecideAndFlow(t *testing.T) {
 		t.Fatalf("CreateMaterial: %v", err)
 	}
 
+	a.registerWorker(t, "w1")
 	resp, payload := a.do(t, http.MethodPost, "/v1/tasks/claim", map[string]any{
 		"worker_id": "w1", "kind": "requirement",
 	})
@@ -458,6 +478,7 @@ func TestCreateMaterialAndReport(t *testing.T) {
 		t.Fatalf("material = %+v", materialRow)
 	}
 
+	a.registerWorker(t, "w1")
 	resp, payload = a.do(t, http.MethodPost, "/v1/tasks/claim", map[string]any{
 		"worker_id": "w1", "kind": "requirement",
 	})
