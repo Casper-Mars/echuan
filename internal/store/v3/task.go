@@ -406,6 +406,11 @@ func FailTask(ctx context.Context, s *storedb.Store, taskID, reason, now string)
 		if n == 0 {
 			return fmt.Errorf("%w: %s", ErrInvalidTransition, taskID)
 		}
+		// The failure ends the occupancy: a worker still pointing at this card
+		// would keep a current_task_id no prune can retire (issue #165 §1).
+		if err := releaseWorkerForTask(ctx, tx, pk, now); err != nil {
+			return err
+		}
 		return appendEvent(ctx, tx, pk, enum.EventFailed, "", fmt.Sprintf(`{"reason":%q}`, reason), now)
 	})
 }
@@ -462,6 +467,11 @@ func CancelTask(ctx context.Context, s *storedb.Store, taskID, actor, now string
 		}
 		if n == 0 {
 			return fmt.Errorf("%w: %s", ErrInvalidTransition, taskID)
+		}
+		// A cancelled task is nobody's occupancy, so a worker still pointing at
+		// it must stop pointing at it (issue #165 §1).
+		if err := releaseWorkerForTask(ctx, tx, pk, now); err != nil {
+			return err
 		}
 		return appendEvent(ctx, tx, pk, enum.EventCancelled, actor, `{}`, now)
 	})

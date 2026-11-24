@@ -75,6 +75,19 @@ func (s *WorkerService) PruneStale(ctx context.Context, retention time.Duration)
 	return n, Translate(err)
 }
 
+// ReleaseStale clears the occupancy pointers of workers that no longer hold a
+// live card (the task row is gone, or it left in_progress through a path that
+// did not release the worker) and returns how many rows were given back.
+//
+// The maintenance sweep runs it before PruneStale: a pointer is the only thing
+// that keeps a stale row out of the prune, so a row that held a card and then
+// lost it to a cancel/fail/close must be released in the same pass that tries to
+// retire it (issue #165 §1).
+func (s *WorkerService) ReleaseStale(ctx context.Context) (int, error) {
+	n, err := storev3.ClearStaleWorkerPointers(ctx, s.st, formatTime(s.now()))
+	return n, Translate(err)
+}
+
 // CurrentWorkItemID is the business id (`t_...`) of the task a worker holds,
 // or nil when it holds nothing.
 //
