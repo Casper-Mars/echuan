@@ -15,6 +15,7 @@ import { api } from '../../api/client'
 import type { Project, Task, TaskStatus } from '../../api/types'
 import { useAutoRefresh } from '../../hooks/useAutoRefresh'
 import { kindLabelOf, stageLabel, useFlow } from '../../lib/flow'
+import { statusLabel } from '../../lib/labels'
 import { REFRESH_INTERVALS, isAutoRefreshEnabled, subscribeAutoRefresh, subscribeListWrite } from '../../lib/refresh'
 import { Alert, BoardColumn, Button, EmptyState, SelectField, StatusPill, TaskCard } from '../../ui'
 import type { SelectOption } from '../../ui'
@@ -25,16 +26,14 @@ import { useBoardFilters } from './use-board-filters'
 import { useColumnCursor } from './use-column-cursor'
 import './board.css'
 
-/** 筛选项的中文文案：状态筛选与 kind 无关，所以不复用 lib/labels 的 kind 维度文案 */
-const STATUS_OPTIONS: SelectOption[] = [
-  { value: 'pending', label: '待领取' },
-  { value: 'ready', label: '待开工' },
-  { value: 'in_progress', label: '进行中' },
-  { value: 'in_review', label: '待审核' },
-  { value: 'done', label: '已完成' },
-  { value: 'failed', label: '失败' },
-  { value: 'cancelled', label: '已取消' },
-]
+/**
+ * 状态筛选选项：**直接从单一状态表派生**（`lib/labels.ts` 的 `statusLabel`），
+ * 顺序与取值复用 `BOARD_COLUMNS`（7 列固定枚举），不在这里维护第二份中文文案。
+ *
+ * 返工 D1 的由来：这里曾写死「待领取 / 待开工 / 进行中」，与卡片/详情的状态文案分叉；
+ * 状态文案只有一份真源，看板列、筛选、详情、收件箱都从它取。
+ */
+const STATUS_OPTIONS: SelectOption[] = BOARD_COLUMNS.map((status) => ({ value: status, label: statusLabel(status) }))
 
 /** 卡片的更新时间只显示时分（design/refs 卡片元信息行末尾是 18:12 这样的时间） */
 const TIME_FORMAT = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
