@@ -14,7 +14,8 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../../api/client'
 import type { Project, Task, TaskStatus } from '../../api/types'
 import { useAutoRefresh } from '../../hooks/useAutoRefresh'
-import { KINDS, kindLabel } from '../../lib/labels'
+import { kindLabelOf, stageLabel, useFlow } from '../../lib/flow'
+import { statusLabel } from '../../lib/labels'
 import { REFRESH_INTERVALS, isAutoRefreshEnabled, subscribeAutoRefresh, subscribeListWrite } from '../../lib/refresh'
 import { Alert, BoardColumn, Button, EmptyState, SelectField, StatusPill, TaskCard } from '../../ui'
 import type { SelectOption } from '../../ui'
@@ -25,18 +26,14 @@ import { useBoardFilters } from './use-board-filters'
 import { useColumnCursor } from './use-column-cursor'
 import './board.css'
 
-/** 筛选项的中文文案：状态筛选与 kind 无关，所以不复用 lib/labels 的 kind 维度文案 */
-const STATUS_OPTIONS: SelectOption[] = [
-  { value: 'pending', label: '待领取' },
-  { value: 'ready', label: '待开工' },
-  { value: 'in_progress', label: '进行中' },
-  { value: 'in_review', label: '待审核' },
-  { value: 'done', label: '已完成' },
-  { value: 'failed', label: '失败' },
-  { value: 'cancelled', label: '已取消' },
-]
-
-const KIND_OPTIONS: SelectOption[] = KINDS.map((kind) => ({ value: kind, label: kindLabel(kind) }))
+/**
+ * 状态筛选选项：**直接从单一状态表派生**（`lib/labels.ts` 的 `statusLabel`），
+ * 顺序与取值复用 `BOARD_COLUMNS`（7 列固定枚举），不在这里维护第二份中文文案。
+ *
+ * 返工 D1 的由来：这里曾写死「待领取 / 待开工 / 进行中」，与卡片/详情的状态文案分叉；
+ * 状态文案只有一份真源，看板列、筛选、详情、收件箱都从它取。
+ */
+const STATUS_OPTIONS: SelectOption[] = BOARD_COLUMNS.map((status) => ({ value: status, label: statusLabel(status) }))
 
 /** 卡片的更新时间只显示时分（design/refs 卡片元信息行末尾是 18:12 这样的时间） */
 const TIME_FORMAT = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
@@ -54,7 +51,15 @@ type BoardState = 'default' | 'empty' | 'loading' | 'error'
 export function BoardPage() {
   const { projectId = '' } = useParams()
   const navigate = useNavigate()
-  const filters = useBoardFilters()
+  // 类型清单来自 `GET /v1/flow`（配置驱动）：筛选下拉与「新建任务」抽屉同源，
+  // 配置里加了环节（重启后端生效）这里就多一项，前端不再写死 4 个 kind。
+  const flow = useFlow()
+  const kindNames = useMemo(() => flow.stages.map((stage) => stage.name), [flow.stages])
+  const kindOptions = useMemo<SelectOption[]>(
+    () => flow.stages.map((stage) => ({ value: stage.name, label: stageLabel(stage) })),
+    [flow.stages],
+  )
+  const filters = useBoardFilters(kindNames)
 
   const [project, setProject] = useState<Project | null>(null)
   const [collapsed, setCollapsed] = useState<TaskStatus[]>(readCollapsed)
@@ -185,6 +190,7 @@ export function BoardPage() {
                 title={task.title}
                 taskId={task.task_id}
                 kind={task.kind}
+                kindLabel={kindLabelOf(task)}
                 status={task.status}
                 priority={task.priority}
                 attempts={task.attempt}
@@ -233,7 +239,7 @@ export function BoardPage() {
           <SelectField
             id="bp-filter-kind"
             label="类型"
-            data={KIND_OPTIONS}
+            data={kindOptions}
             value={filters.kind || null}
             onChange={(value) => filters.setKind(value ?? '')}
             placeholder="全部类型"
@@ -329,6 +335,10 @@ export function BoardPage() {
       <CreateTaskSheet
         opened={createOpen}
         projectId={projectId}
+        stages={flow.stages}
+        flowError={flow.error}
+        flowLoading={flow.loading}
+        onReloadFlow={flow.reload}
         onClose={() => setCreateOpen(false)}
         onCreated={() => {
           setCreateOpen(false)

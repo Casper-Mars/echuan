@@ -3,6 +3,7 @@
 // 结构：圆点 + 文案（不只靠颜色区分，色盲用户靠文案）；非交互，无 hover/active/disabled 状态。
 // 变体：neutral（pending/cancelled）/ info（ready/in_progress）/ warning（in_review）/ success（done）/ danger（failed）。
 import { Badge } from '@mantine/core'
+import { statusLabel } from '../lib/labels'
 import { cssVar } from '../theme/tokens'
 import { cssVars, cx } from './internal'
 
@@ -28,20 +29,14 @@ export const STATUS_TONE: Record<TaskStatus, StatusTone> = {
   cancelled: 'neutral',
 }
 
-/** 默认中文文案；页面按 kind 定制时用 label 覆盖（与 lib/labels.ts 的 kind 维度保持一致） */
-export const STATUS_LABEL: Record<TaskStatus, string> = {
-  pending: '待领取',
-  ready: '待开工',
-  in_progress: '进行中',
-  in_review: '待审核',
-  done: '已完成',
-  failed: '失败',
-  cancelled: '已取消',
-}
-
 export interface StatusPillProps {
   status: TaskStatus
-  /** 覆盖默认文案（如按 kind 显示「待设计」） */
+  /**
+   * 覆盖文案（项目「进行中 / 已关闭」、执行节点「忙碌 / 空闲」这类非任务状态语义）。
+   *
+   * 不传时走 `lib/labels.ts` 的单一状态表 —— 任务状态文案只有一份真源，
+   * 本组件不再自带第二张默认表（返工 D1/S1：两套文案分叉就是从这里开始的）。
+   */
   label?: string
   className?: string
 }
@@ -64,7 +59,7 @@ export function StatusPill({ status, label, className }: StatusPillProps) {
         '--badge-radius': cssVar('radius-pill'),
       })}
     >
-      {label ?? STATUS_LABEL[status]}
+      {label ?? statusLabel(status)}
     </Badge>
   )
 }

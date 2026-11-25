@@ -64,7 +64,13 @@
   background-color: currentColor;
 }
 
+/* 徽标单行：显示名不再固定两个字（来自流程配置的 label，最长可能十几个汉字）。
+   宽度按 8em 封顶（= 8 个汉字，见 design/components.md §ui/KindBadge「长 label」），超出走省略号；
+   完整文案在组件上以 title 提供。上限按「12 字 label 不把卡片元信息行挤到第二行」实测取值，
+   避免长 label 把卡片高度撑高（看板列宽 280 下，元信息行剩余预算 ≈ 130px）。 */
 .ui-kind-badge.ui-kind-badge {
+  max-width: 8em;
+  overflow: hidden;
   text-transform: none;
   letter-spacing: var(--text-caption-letter-spacing);
 }

@@ -1,5 +1,6 @@
 import type {
   AttachmentRef,
+  Flow,
   ListResponse,
   Product,
   Project,
@@ -48,6 +49,14 @@ const q = (params: Record<string, string | number | undefined>) => {
 }
 
 export const api = {
+  /**
+   * `GET /v1/flow`：当前进程实际加载的环节表（配置里加了环节并重启，这里就多一段）。
+   *
+   * 类型下拉与筛选的唯一来源；失败时界面回退本地 4 个默认 name→中文映射（见 `lib/flow`），
+   * 不影响已有卡片渲染（卡片显示名来自任务 DTO 的 `kind_label`）。
+   */
+  getFlow: () => request<Flow>('/v1/flow'),
+
   listProducts: () => request<ListResponse<Product>>('/v1/products'),
   getProduct: (id: string) => request<Product>(`/v1/products${q({ id })}`),
   createProduct: (body: { product_id: string; name: string; git_url: string }) =>
@@ -74,7 +83,7 @@ export const api = {
   reopenProject: (id: string) =>
     request<void>(`/v1/projects/reopen${q({ id })}`, { method: 'POST' }),
 
-  listTasks: (query: { project_id?: string; kind?: TaskKind; status?: TaskStatus; limit?: number }) =>
+  listTasks: (query: { project_id?: string; kind?: TaskKind | ''; status?: TaskStatus; limit?: number }) =>
     request<ListResponse<Task>>(`/v1/tasks${q(query)}`),
   getTask: (id: string) => request<Task>(`/v1/tasks${q({ id })}`),
   createTask: (body: {

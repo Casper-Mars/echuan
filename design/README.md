@@ -132,6 +132,17 @@ design_ref 指 `design/` 物料入库的仓库 commit：`design/screens/*.md`、
 - `design_ref`：既有 `032c2ca…` 仍是**物料入库 commit**（未变形状态的对照基线）；issue #148 的 dev 卡**取图按本条 commit 的 `task-detail` 24 张、取口径按本条的契约文本**。
 - 随本次登记的已知状态：①`ui/Segmented` 从此没有使用方，登记为待决债务（导出面 22 个不变，删要同步 `ui/index.ts` / `ui-imports-check.mjs` / `components.md` / `web/README.md` 四处）；②`design/mock/` 根目录交互入口与 `mock/shots/*` 共用同一份 `mock.js`，本次已同步（8 份 md5 全等）；③**`error`/`leased` 两态的过期 refs 已关闭**——方案 §4.2 D6 原定只重出 `default`/`rejected`，但这两态同样渲染评审区，旧图里留着「通过/驳回」开关与「被评审附件」下拉；已在紧随其后的 commit 里连同这两态一并重出（12 张），与现 mock 和本条契约一致，不再挂待补。
 
+
+### issue #180 徽标显示环节名称 + 状态文案去类型维度（2026-11-25）
+
+- 契约增量 commit：`b273770ca316b64a85776470d8bac15a292e36e0`（`docs(task-t_01M89A9JR60DDW4BAG0ZWAEAA5): 徽标显示名与长 label 单行省略的契约增量`）。源头方案 `tech-echuan-180-workflow-config-v0.5.md` §4 web 行 / §7.2（工作区文档，不在仓库内）；issue #180，任务卡 `t_01M89A9JR60DDW4BAG0ZWAEAA5`。
+- 范围：只改 `components.md` 两处 —— §ui/KindBadge（类型 = 流程配置里的一个环节：文案取任务 DTO 的 `kind_label`、缺省回退 name，组件不持有类型清单与中文映射；新增「长 label」口径：8em 上限 + 单行省略 + `title` 全文）与 §ui/TaskCard「换行与省略」第 2 条（元信息行由「每个徽标与数字项都不压缩」改为「数字项不压缩；类型徽标按 KindBadge 长 label 规则省略」）。`tokens.json`、`mock/**`、`refs/**`、`screens/**`、`flows.md` 零变动。
+- 为什么不动数值、不重出截图：类型徽标从「固定 2 字」放宽为「配置驱动的显示名」，像素目标没变（token 与几何沿用）；refs 里的 2 字徽标仍满足新规则（2 字 < 8em）。refs 数量口径仍 **240 张**，既有「42 张 refs 偏差」挂账继续挂。
+- `MANIFEST.sha256`：沿用「保留旧值，不重算」——仓库内仍没有生成该哈希的脚本，复算口径不可复现；物料完整性以 git 版本（`design_ref` 及其后的 commit）为准。
+- `design_ref` 仍为 `032c2ca…`（物料入库 commit）；本卡的实现/验收**取图按 `design_ref`、取口径按本条记录的 commit**。
+- 实现侧同步（同 PR 的 web 改动）：`lib/labels.ts` 收敛为单一状态表（删「kind × status」二维表、`kindLabel`、写死 `KINDS`）；`api/types.ts` 的 `TaskKind` 放宽为 `string`，任务 DTO 声明 `kind_id` / `kind_label` / `material_kind`，新增 `Flow` 类型；`ui/KindBadge` 显示名改由调用方传 `kind_label`（缺省回退 name）；看板类型筛选与「新建任务」下拉改为读 `GET /v1/flow`（`value` = 环节 `name`，显示 = `label`）；`/v1/flow` 不可达时下拉禁用 + 提示「无法获取类型清单」，已有卡片照常显示（卡片显示名来自任务 DTO，不依赖该接口）。状态文案实测 4 环节 × 7 状态均为单一状态表（关键对照：方案 + ready = 待处理、开发 + in_review = 待审核）。
+- 随本次登记的已知状态：①`design/mock/` 不新增「新增环节 / 长 label」形态 —— mock 是默认流程（4 环节）的静态原型，新形态由运行时配置决定，出多套图没有对照价值；②长 label 的 8em 上限是为「卡片高度不跳动」实测取的值（看板 280 列宽下 12 字 label 单行省略、卡片高度与 2 字徽标一致），后续若设计要求更宽的徽标，需连同卡片元信息行一起重出 refs。
+
 ## 视觉方向（已定：B 暗色仪表盘）
 
 默认主题 = **暗色**（决策人 2026-11-19 选定「B 好看点」）。亮色同套保留为对照，切换成本一行 `data-theme`。
