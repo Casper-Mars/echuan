@@ -132,7 +132,20 @@ export interface FlowStage {
   open_cards?: string
   closing?: boolean
   title?: string
+  /**
+   * 阶段描述（人读文本）：v2 起这个字段只描述环节本身，**不再**当派生卡的任务说明。
+   *
+   * 后端投影恒定给值（未配置为 `""`）；声明为可选与 `Flow` 其它字段同口径，
+   * 兼容「前端先上、后端未升」的短窗口。
+   */
   description?: string
+  /**
+   * 派生的下游卡用的任务说明模板（v2 新增，见 echuan-188 §5 D9 / §7.1）。
+   *
+   * 看板不消费它（选环节只用 `name` / `label`）；声明为可选是因为升级顺序上
+   * 前端可能先于后端上线，缺这个键不能影响渲染。
+   */
+  task?: string
   derive?: {
     mode?: string
     to?: string
@@ -142,8 +155,13 @@ export interface FlowStage {
   }
 }
 
+/**
+ * `GET /v1/flow` 的快照（v2 投影见 echuan-188 §5 D9 / §7.1）。
+ *
+ * v2 删掉了顶层 `auto`：自动派生改由每个环节的 `stages[].derive` 内 `auto: true` 表达
+ *（配置侧开关），而看板本来就不读它——界面只取 `stages[].name` / `label`，删字段无行为影响。
+ */
 export interface Flow {
-  auto: boolean
   default: boolean
   source: string
   fingerprint: string
