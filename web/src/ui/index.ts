@@ -7,7 +7,8 @@
 //
 // 22 个组件与 design/components.md「总览」表一一对应，顺序也按该表排列。
 // 运行时导出必须恰好是这 22 个组件（scripts/ui-imports-check.mjs 会断言）；
-// 常量（STATUS_LABEL / KIND_LABEL / STATUS_TONE）留在各自实现文件内，页面需要时再从组件 props 传文案。
+// 常量（STATUS_LABEL / STATUS_TONE）留在各自实现文件内，页面需要时再从组件 props 传文案；
+// 类型（kind）的显示名不在这里写死：文案由页面从任务 DTO 的 kind_label 传给 ui/KindBadge。
 import './ui.css'
 
 export { Button } from './Button'
@@ -23,7 +24,7 @@ export { StatusPill } from './StatusPill'
 export type { StatusPillProps, StatusTone, TaskStatus } from './StatusPill'
 
 export { KindBadge } from './KindBadge'
-export type { KindBadgeProps, TaskKind } from './KindBadge'
+export type { KindBadgeProps } from './KindBadge'
 
 export { BoardColumn } from './BoardColumn'
 export type { BoardColumnProps } from './BoardColumn'

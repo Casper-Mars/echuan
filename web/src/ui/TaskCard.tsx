@@ -5,14 +5,17 @@
 // 可访问性：整卡是一个 UnstyledButton（Enter/Space 打开详情），卡片内不再嵌二级按钮（避免误触）。
 import { Paper, UnstyledButton } from '@mantine/core'
 import { cssVar } from '../theme/tokens'
-import { KindBadge, type TaskKind } from './KindBadge'
+import { KindBadge } from './KindBadge'
 import { cssVars, cx } from './internal'
 
 export interface TaskCardProps {
   title: string
   /** 任务 id（mono 截断显示，title 里保留完整值） */
   taskId?: string
-  kind?: TaskKind
+  /** 环节 name（配置驱动，见 ui/KindBadge）；不给则不显示类型徽标 */
+  kind?: string
+  /** 环节的显示名（任务 DTO 的 `kind_label`）；不传则徽标回退显示 `kind` 原值 */
+  kindLabel?: string
   /** 状态只用于左侧状态色条（状态的文字表达交给 StatusPill，页面按需放在元信息行） */
   status?: string
   priority?: number
@@ -36,6 +39,7 @@ export function TaskCard({
   title,
   taskId,
   kind,
+  kindLabel,
   status,
   priority,
   attempts,
@@ -63,7 +67,7 @@ export function TaskCard({
       >
         <span className="ui-task-card__title">{title}</span>
         <span className="ui-task-card__meta">
-          {kind ? <KindBadge kind={kind} /> : null}
+          {kind ? <KindBadge kind={kind} label={kindLabel} /> : null}
           {priority !== undefined ? <span className="ui-task-card__num">P{priority}</span> : null}
           {attempts !== undefined ? (
             <span className="ui-task-card__num">

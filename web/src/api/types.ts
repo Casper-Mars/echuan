@@ -1,4 +1,11 @@
-export type TaskKind = 'requirement' | 'design' | 'breakdown' | 'dev'
+/**
+ * 任务类型 = 流程配置里某个环节的 `stage.name`（唯一对外标识）。
+ *
+ * 词汇由 `GET /v1/flow` 的 `stages[].name` 给出，前端不再写死联合类型：
+ * 配置里加一个环节（如 `safety_review`），只要重启后端就能出现新类型，
+ * 不需要改前端代码与类型。显示名一律取 DTO 的 `kind_label`（缺省 = name）。
+ */
+export type TaskKind = string
 export type TaskStatus =
   | 'pending'
   | 'ready'
@@ -34,7 +41,14 @@ export interface Task {
   task_id: string
   project_id: string
   parent_task_id?: string | null
+  /** 环节 name（例：`design`；配置里新加的环节也是原值），不是显示名 */
   kind: TaskKind
+  /** 环节 id（= 库里的 `tasks.kind` 整数），前端不使用，留着便于排查 */
+  kind_id?: number
+  /** 显示名：配置的 `label`，未配置时后端回退成 name；徽标用这个 */
+  kind_label?: string
+  /** 交付物素材类别（`requirement|design|plan|report|context|other`） */
+  material_kind?: string
   title: string
   description_md: string
   context_md: string
@@ -101,4 +115,37 @@ export interface Worker {
 
 export interface ListResponse<T> {
   items: T[]
+}
+
+/**
+ * `GET /v1/flow` 的一个环节（响应契约见 tech-echuan-180 §7.2）。
+ *
+ * 只有 `name` / `label` 对界面有意义：下拉的 value 用 `name`（提交给 `POST /v1/tasks` 的也是它），
+ * 显示用 `label`。`id` 落库不外显，其余字段（material/derive/...）留给运维排查。
+ */
+export interface FlowStage {
+  id: number
+  name: string
+  /** 显示名；后端保证「未配置 label 时 = name」，所以界面可以无条件用 */
+  label: string
+  material: string
+  open_cards?: string
+  closing?: boolean
+  title?: string
+  description?: string
+  derive?: {
+    mode?: string
+    to?: string
+    source?: string
+    format?: string
+    items?: unknown[]
+  }
+}
+
+export interface Flow {
+  auto: boolean
+  default: boolean
+  source: string
+  fingerprint: string
+  stages: FlowStage[]
 }

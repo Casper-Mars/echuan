@@ -16,6 +16,7 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../../api/client'
 import type { Task } from '../../api/types'
 import { useAutoRefresh } from '../../hooks/useAutoRefresh'
+import { kindLabelOf } from '../../lib/flow'
 import { REFRESH_INTERVALS } from '../../lib/refresh'
 import { Alert, Button, EmptyState, SkeletonCard, TaskCard } from '../../ui'
 import { ErrorBar } from '../shell/ErrorBar'
@@ -183,6 +184,7 @@ export function InboxPage() {
                       title={task.title}
                       taskId={task.task_id}
                       kind={task.kind}
+                      kindLabel={kindLabelOf(task)}
                       status={task.status}
                       priority={task.priority}
                       attempts={task.attempt}

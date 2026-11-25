@@ -9,7 +9,8 @@
 // 分层：只用 ui/ 组件与 lib/labels；不 import Mantine（design/components.md 红线）。
 import type { ReactNode } from 'react'
 import type { AttachmentRef, Task } from '../../api/types'
-import { formatTime, kindLabel, statusLabel } from '../../lib/labels'
+import { kindLabelOf } from '../../lib/flow'
+import { formatTime, statusLabel } from '../../lib/labels'
 import { AttachmentRow, Chip, KindBadge, MarkdownViewer, SkeletonCard, StatusPill } from '../../ui'
 
 /** 分区头：标题 +（可选）右侧计数/说明，样式与几何全在 task-detail.css */
@@ -26,12 +27,13 @@ function SectionHead({ title, hint }: { title: string; hint?: ReactNode }) {
  * 附件 kind 的展示文案。
  *
  * `AttachmentRef.kind` 是**material kind** 枚举（后端 internal/domain/enum 的
- * `requirement|design|plan|report|context|other`），不是任务 kind。文案一律先走
- * `lib/labels.ts` 的 `kindLabel`（requirement→需求、design→方案，`features/board` 同源），
- * 只有 `kindLabel` 管不到的 4 个 material 专有枚举（plan/report/context/other）在本地补最小兜底，
- * 不复制 task kind 的映射；未知值原样显示，避免出现空白。
+ * `requirement|design|plan|report|context|other`），与任务类型（流程环节）是两套词汇：
+ * 任务类型的显示名来自流程配置（`kind_label`），素材类别是固定 6 值的平台枚举，
+ * 所以这里本地维护完整 6 项映射（不再借用已删除的 `kindLabel`）；未知值原样显示，避免空白。
  */
 const MATERIAL_KIND_LABEL: Record<string, string> = {
+  requirement: '需求',
+  design: '方案',
   plan: '计划',
   report: '报告',
   context: '上下文',
@@ -39,7 +41,7 @@ const MATERIAL_KIND_LABEL: Record<string, string> = {
 }
 
 function attachmentKindLabel(kind: string): string {
-  return kindLabel(kind as Parameters<typeof kindLabel>[0]) ?? MATERIAL_KIND_LABEL[kind] ?? kind
+  return MATERIAL_KIND_LABEL[kind] ?? kind
 }
 
 /** 元信息：状态 · 类型 · 尝试 · 优先级（桌面一行四格，移动 2×2） */
@@ -50,13 +52,13 @@ export function MetaGrid({ task }: { task: Task }) {
         <div className="fx-detail__meta-cell">
           <dt className="fx-detail__meta-label">状态</dt>
           <dd className="fx-detail__meta-value">
-            <StatusPill status={task.status} label={statusLabel(task.kind, task.status)} />
+            <StatusPill status={task.status} label={statusLabel(task.status)} />
           </dd>
         </div>
         <div className="fx-detail__meta-cell">
           <dt className="fx-detail__meta-label">类型</dt>
           <dd className="fx-detail__meta-value">
-            <KindBadge kind={task.kind} label={kindLabel(task.kind)} />
+            <KindBadge kind={task.kind} label={kindLabelOf(task)} />
           </dd>
         </div>
         <div className="fx-detail__meta-cell">
