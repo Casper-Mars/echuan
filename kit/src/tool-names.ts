@@ -1,10 +1,10 @@
 /**
  * 工具名清单与 `exclude` 校验（**唯一真源**）。
  *
- * V3 工具面：18 个 = 10 写 + 8 读。
+ * V3 工具面：19 个 = 10 写 + 9 读。
  * - 写：任务执行 6 个（claim/renew/report/create/update/attach）
  *       项目 4 个（create/close/reopen/product_create）
- * - 读：inbox / product_list / project_list / project_get /
+ * - 读：inbox / product_list / project_list / project_get / stage_list /
  *       task_list / task_get / material_get / worker_info
  *
  * 已删除的 v2 工具：work_*（改名为 task_*）、project_requirement_write、
@@ -29,6 +29,7 @@ export const READ_TOOL_NAMES = [
   'echuan_product_list',
   'echuan_project_list',
   'echuan_project_get',
+  'echuan_stage_list',
   'echuan_task_list',
   'echuan_task_get',
   'echuan_material_get',

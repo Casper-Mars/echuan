@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createAllEchuanTools } from '../src/tools/index.js'
+import { READ_TOOL_NAMES, createAllEchuanTools } from '../src/tools/index.js'
+import { EchuanApiError, EchuanClientError, EchuanNetworkError } from '../src/errors.js'
 import type { EchuanToolOptions, WorkerIdentity } from '../src/tools/write.js'
 import { renderTextValue } from '../src/tools/render.js'
 import type { V3Project, V3Task } from '../src/v3-types.js'
@@ -39,9 +40,9 @@ function buildOptions(client: Record<string, any>, identity: WorkerIdentity = { 
 }
 
 describe('V3 工具清单', () => {
-  it('恰好 18 个：10 写 + 8 读，旧 work_* 全部消失', () => {
+  it('恰好 19 个：10 写 + 9 读，旧 work_* 全部消失', () => {
     const { tools } = buildOptions({})
-    expect(tools).toHaveLength(18)
+    expect(tools).toHaveLength(19)
     expect(tools.filter(tool => tool.name.startsWith('echuan_task_'))).toHaveLength(8)
     expect(tools.some(tool => tool.name.startsWith('echuan_work_'))).toBe(false)
     expect(tools.some(tool => tool.name === 'echuan_spec_create')).toBe(false)
@@ -424,6 +425,154 @@ describe('V3 读工具：成功即非空中文文本', () => {
   })
 })
 
+
+/**
+ * `GET /v1/flow` 的回包（照平台真实投影抄，冗余字段是**故意**留的：
+ * 渲染必须只取 id / name / 阶段描述，其余一律不出现）。
+ */
+const flow = {
+  default: false,
+  source: '/etc/echuan/echuan.yaml',
+  fingerprint: 'a1b2c3d4e5f6',
+  stages: [
+    {
+      id: 1,
+      name: 'requirement',
+      label: '需求',
+      description: '把需求写成验收标准',
+      material: 'requirement',
+      open_cards: 'single',
+      closing: true,
+      title: '需求',
+      task: '写需求：{上游卡号}',
+      derive: { mode: 'single', to: 'design', source: '', format: '', items: [] },
+    },
+    {
+      id: 2,
+      name: 'design',
+      label: '方案',
+      description: '',
+      material: 'design',
+      open_cards: 'single',
+      closing: true,
+      title: '方案',
+      task: '',
+      derive: { mode: 'single', to: 'breakdown', source: '', format: '', items: [] },
+    },
+    {
+      id: 3,
+      name: 'breakdown',
+      label: '拆分',
+      description: '把方案拆成可并行的小卡',
+      material: 'plan',
+      open_cards: 'single',
+      closing: false,
+      title: '拆分',
+      task: '',
+      derive: { mode: 'list', to: 'dev', source: 'output', format: 'md', items: [] },
+    },
+  ],
+}
+
+describe('echuan_stage_list：只读环节清单（1 行表头 + 每条 1 行）', () => {
+  it('每条只渲染 id / name / 阶段描述，label / derive / fingerprint 等一律不出现', async () => {
+    const getV3Flow = vi.fn().mockResolvedValue(ok(flow))
+    const { byName } = buildOptions({ getV3Flow })
+
+    const { value, text } = await runAndRender(byName, 'echuan_stage_list')
+
+    // 无入参：一次调用、零参。
+    expect(getV3Flow).toHaveBeenCalledTimes(1)
+    expect(getV3Flow.mock.calls[0]).toEqual([])
+    expect(value).toMatchObject({ text: expect.any(String) })
+    expect(text.split('\n')).toEqual([
+      '环节清单（共 3 个）',
+      '[1] requirement：把需求写成验收标准',
+      '[2] design',
+      '[3] breakdown：把方案拆成可并行的小卡',
+    ])
+    for (const field of ['label', 'material', 'derive', 'fingerprint', 'source', 'open_cards']) {
+      expect(text, `渲染结果里出现了不该有的字段名：${field}`).not.toContain(field)
+    }
+  })
+
+  it('阶段描述为空（"" 或纯空白）→ 该行只有 id 与 name，没有孤立冒号', async () => {
+    for (const description of ['', '   ']) {
+      const getV3Flow = vi.fn().mockResolvedValue(ok({
+        stages: [{ id: 2, name: 'design', label: '方案', description }],
+      }))
+      const { byName } = buildOptions({ getV3Flow })
+
+      const { text } = await runAndRender(byName, 'echuan_stage_list')
+      expect(text.split('\n')).toEqual(['环节清单（共 1 个）', '[2] design'])
+      expect(text).not.toContain('：')
+    }
+  })
+
+  it('后端没配 flow（回包 default: true，4 条内置环节）照渲染，不是空集', async () => {
+    const getV3Flow = vi.fn().mockResolvedValue(ok({
+      default: true,
+      source: '<builtin>',
+      fingerprint: 'ffffffffffff',
+      stages: [
+        { id: 1, name: 'requirement', label: '需求', description: '把需求写成验收标准' },
+        { id: 2, name: 'design', label: '方案', description: '把需求变成技术方案' },
+        { id: 3, name: 'breakdown', label: '拆分', description: '把方案拆成可并行的小卡' },
+        { id: 4, name: 'dev', label: '开发', description: '按卡实现并交付' },
+      ],
+    }))
+    const { byName } = buildOptions({ getV3Flow })
+
+    const { text } = await runAndRender(byName, 'echuan_stage_list')
+    const lines = text.split('\n')
+
+    expect(lines).toHaveLength(5)
+    expect(lines[0]).toBe('环节清单（共 4 个）')
+    expect(text).toContain('[4] dev：按卡实现并交付')
+    // 运维字段（source / fingerprint）不进模型视野。
+    expect(text).not.toContain('<builtin>')
+    expect(text).not.toContain('ffffffffffff')
+  })
+
+  it('回包 stages 为空数组时只给表头（共 0 个），不是报错也不是空串', async () => {
+    const getV3Flow = vi.fn().mockResolvedValue(ok({ stages: [] }))
+    const { byName } = buildOptions({ getV3Flow })
+
+    const { text } = await runAndRender(byName, 'echuan_stage_list')
+    expect(text).toBe('环节清单（共 0 个）')
+  })
+
+  it('平台 500 / 网络错误 / 非 JSON 都抛错，不回落成空清单', async () => {
+    const failures = [
+      new EchuanApiError({
+        code: 'internal',
+        status: 500,
+        message: '平台返回 500：内部错误。',
+        platformMessage: 'internal error',
+        hint: '下一步：稍后重试。',
+        details: [],
+      }),
+      new EchuanNetworkError(12),
+      new EchuanClientError('invalid_response', '平台返回 200，但响应体不是合法 JSON（无 requestId）。'),
+    ]
+
+    for (const failure of failures) {
+      const { byName } = buildOptions({ getV3Flow: vi.fn().mockRejectedValue(failure) })
+      const tool = byName.get('echuan_stage_list')!
+      await expect(tool.execute({} as any, {} as any)).rejects.toThrow(failure.message)
+    }
+  })
+
+  it('无入参、在 READ_TOOL_NAMES 里，描述写明只给三字段', () => {
+    const { byName } = buildOptions({})
+    const tool = byName.get('echuan_stage_list')!
+
+    expect(Object.keys((tool.parameters as any).properties ?? {})).toEqual([])
+    expect(tool.description).toContain('id / name / 阶段描述')
+    expect(READ_TOOL_NAMES).toContain('echuan_stage_list')
+  })
+})
+
 describe('V3 写工具：成功即带关键编号的确认文本', () => {
   it('claim 成功文本含 task_id 与 lease_id（issue #65 危害最高的一条）', async () => {
     const claimV3Task = vi.fn().mockResolvedValue(ok({
@@ -580,7 +729,7 @@ describe('V3 渲染兜底：任何情况都不返回空串', () => {
     expect(text).toContain('t_1')
   })
 
-  it('18 个工具的 render 对空/异常规范值都不返回空串', () => {
+  it('19 个工具的 render 对空/异常规范值都不返回空串', () => {
     const { tools } = buildOptions({})
     const values: unknown[] = [undefined, null, {}, { items: [] }, '']
     for (const tool of tools) {

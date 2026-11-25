@@ -13,7 +13,7 @@ import type {
   Project,
   WorkItemDetail,
 } from '../client.js'
-import type { V3Attachment, V3ClaimInput, V3Project, V3Task } from '../v3-types.js'
+import type { V3Attachment, V3ClaimInput, V3FlowStage, V3Project, V3Task } from '../v3-types.js'
 
 /** render 返回的最小文本块形态（等价于 ContentBlock 的 `text` 分支）。 */
 export interface TextContent {
@@ -776,6 +776,49 @@ export function formatV3Products(value: unknown): string {
   const products = extractProducts(value)
   if (products.length === 0) return '当前没有产品（0 个）。'
   return formatProductList(products)
+}
+
+/* ------------------------------ 读：流程环节 ------------------------------ */
+
+/**
+ * 从 `GET /v1/flow` 回包里取出 `stages[]`。
+ *
+ * 形状不对（回包不是对象、`stages` 不是数组）时返回空数组而不是抛错：这是**读**接口，
+ * 平台已经把非 2xx 与非法 JSON 拦在客户端了；能走到这里的只有「形状与预期不同」，
+ * 渲染层按空清单说明事实，比编一段错误更诚实。
+ */
+export function extractFlowStages(value: unknown): V3FlowStage[] {
+  if (!isRecord(value)) return []
+  const stages = value['stages']
+  return Array.isArray(stages) ? (stages.filter(isRecord) as unknown as V3FlowStage[]) : []
+}
+
+/** 环节 id → 方括号里的那段文本；数字与字符串两种回包都认。 */
+function formatStageId(stage: V3FlowStage): string {
+  const numeric = asNumber(stage.id)
+  if (numeric !== undefined) return String(numeric)
+  const text = asString(stage.id)?.trim()
+  return text === undefined || text === '' ? '?' : text
+}
+
+/**
+ * 环节清单：1 行表头（只给条数）+ 每条一行 `[<id>] <name>：<description>`。
+ *
+ * 渲染口径由方案的实现约束定死（§7.2）：每条**只有** id / name / 阶段描述三个值，
+ * 顺序固定；描述为空时省略冒号与空串（写成 `[2] design`）；`label` / `material` /
+ * `derive` / `source` / `fingerprint` 一律不出现（N7）——模型拿这份清单是去选环节
+ * `name` 的，多给的字段只会诱导它把 label 当成 name 发回来。
+ */
+export function formatV3StageList(value: unknown): string {
+  const stages = extractFlowStages(value)
+  const lines = [`环节清单（共 ${stages.length} 个）`]
+  for (const stage of stages) {
+    const name = asString(stage.name)?.trim() ?? ''
+    const description = asString(stage.description)?.trim() ?? ''
+    const head = `[${formatStageId(stage)}] ${name === '' ? '（名称缺失）' : name}`
+    lines.push(description === '' ? head : `${head}：${description}`)
+  }
+  return lines.join('\n')
 }
 
 /* ------------------------- 写工具：成功确认文本 ------------------------- */
