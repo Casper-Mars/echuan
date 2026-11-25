@@ -17,9 +17,9 @@ func seedReadyDevTasks(t *testing.T, st *storedb.Store, projectPK int64, n int) 
 	t.Helper()
 	err := st.Tx(context.Background(), func(tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(context.Background(), `
-			INSERT INTO tasks (task_id, project_id, kind, title, description_md, context_md,
+			INSERT INTO tasks (task_id, project_id, kind, kind_parallel, title, description_md, context_md,
 			                   status, attempt, max_attempts, create_time, update_time)
-			VALUES (?, ?, ?, 'dev', '', '', ?, 0, 3, ?, ?)`)
+			VALUES (?, ?, ?, 1, 'dev', '', '', ?, 0, 3, ?, ?)`)
 		if err != nil {
 			return err
 		}

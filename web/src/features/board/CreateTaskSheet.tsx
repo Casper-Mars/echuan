@@ -8,13 +8,20 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { api, ApiError } from '../../api/client'
-import type { TaskKind } from '../../api/types'
-import { KINDS, kindLabel } from '../../lib/labels'
-import { Button, DetailSheet, SelectField, TextArea, TextField } from '../../ui'
+import type { FlowStage } from '../../api/types'
+import { stageLabel } from '../../lib/flow'
+import { Alert, Button, DetailSheet, SelectField, TextArea, TextField } from '../../ui'
 import type { SelectOption } from '../../ui'
 import { ErrorBar } from '../shell/ErrorBar'
 
-const KIND_OPTIONS: SelectOption[] = KINDS.map((kind) => ({ value: kind, label: kindLabel(kind) }))
+/**
+ * 默认选中的类型：保持改造前的行为（默认 `dev`/开发），流程里没有 dev 时退回第一个环节。
+ * 提交时 value 用的是环节 name（不是 label）——`POST /v1/tasks` 的 kind 唯一对外标识。
+ */
+function defaultKind(stages: readonly FlowStage[]): string {
+  const dev = stages.find((stage) => stage.name === 'dev')
+  return dev?.name ?? stages[0]?.name ?? ''
+}
 
 /** 错误条口径（方案 §9.1 表格 + §6.2 E9）：主文案中文，服务端原文只进 detail */
 interface SubmitError {
@@ -78,13 +85,28 @@ function toSubmitError(err: unknown): SubmitError {
 export interface CreateTaskSheetProps {
   opened: boolean
   projectId: string
+  /** 类型清单：`GET /v1/flow` 的 stages（value=name，显示=label），由看板页取一次传进来 */
+  stages: readonly FlowStage[]
+  /** 非空 = 类型清单取不到（接口不可达）：禁用「创建」并给出「无法获取类型清单」提示 */
+  flowError: string
+  flowLoading: boolean
+  onReloadFlow: () => void
   onClose: () => void
   /** 创建成功：调用方负责 refresh('write') 与关闭 */
   onCreated: () => void
 }
 
-export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: CreateTaskSheetProps) {
-  const [kind, setKind] = useState<TaskKind>('dev')
+export function CreateTaskSheet({
+  opened,
+  projectId,
+  stages,
+  flowError,
+  flowLoading,
+  onReloadFlow,
+  onClose,
+  onCreated,
+}: CreateTaskSheetProps) {
+  const [kind, setKind] = useState('')
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [error, setError] = useState<SubmitError | null>(null)
@@ -93,10 +115,15 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
   // 只有 ref 是同步可读的——所以「已提交」用 ref 守门，state 只负责 UI 的 loading/禁用。
   const submittingRef = useRef(false)
 
+  // 类型下拉的选项：value 用环节 name，显示用 label（两者不能混，§7.3）
+  const kindOptions: SelectOption[] = stages.map((stage) => ({ value: stage.name, label: stageLabel(stage) }))
+  // 清单取不到时没有任何合法类型可提交：禁用「创建」与服务端请求（不是「猜一个 dev」）
+  const noKindList = stages.length === 0
+  const kindMissing = flowError !== ''
+
   // 每次重新打开都是干净表单：残留的标题 / 错误不影响下一次创建。
   useEffect(() => {
     if (!opened) return
-    setKind('dev')
     setTitle('')
     setDescription('')
     setError(null)
@@ -104,8 +131,14 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
     submittingRef.current = false
   }, [opened])
 
+  // 默认类型跟随清单：打开时选中 dev（与改造前一致），清单晚到或流程里没有 dev 时落到第一项。
+  useEffect(() => {
+    if (!opened) return
+    setKind((prev) => (prev !== '' && stages.some((stage) => stage.name === prev) ? prev : defaultKind(stages)))
+  }, [opened, stages])
+
   const submit = async () => {
-    if (submittingRef.current || title.trim() === '') return
+    if (submittingRef.current || title.trim() === '' || kind === '') return
     submittingRef.current = true
     setBusy(true)
     setError(null)
@@ -135,19 +168,33 @@ export function CreateTaskSheet({ opened, projectId, onClose, onCreated }: Creat
           <Button variant="default" size="md" disabled={busy} onClick={onClose}>
             取消
           </Button>
-          <Button size="md" loading={busy} disabled={title.trim() === ''} onClick={submit}>
+          <Button size="md" loading={busy} disabled={title.trim() === '' || noKindList} onClick={submit}>
             创建
           </Button>
         </div>
       }
     >
       <div className="bp-form">
+        {kindMissing ? (
+          // 类型清单不可达（GET /v1/flow 失败）：保留已有卡片、不白屏，只把「创建」拦下来
+          <Alert
+            tone="warning"
+            title="无法获取类型清单"
+            actionLabel="重试"
+            onAction={onReloadFlow}
+            actionLoading={flowLoading}
+          >
+            类型来自流程配置（GET /v1/flow），当前取不到，暂时不能新建任务；已有任务不受影响。
+          </Alert>
+        ) : null}
         <SelectField
           id="bp-create-kind"
           label="类型"
-          data={KIND_OPTIONS}
+          data={kindOptions}
           value={kind}
-          onChange={(value) => setKind((value ?? 'dev') as TaskKind)}
+          disabled={noKindList}
+          placeholder={flowLoading ? '正在获取类型…' : '暂无可用类型'}
+          onChange={(value) => setKind(value ?? '')}
         />
         <TextField
           id="bp-create-title"

@@ -9,11 +9,24 @@ refactor: the project is only a container, the task is the single execution
 unit, and the workflow is expressed by `task_deps` instead of a project state
 machine.
 
-**There is exactly one migration.** `0001_init.sql` creates the complete V3
-schema at `user_version = 1`. There is no incremental chain and no v2 data
-migration: a v2 database (`user_version = 6`) is rejected by the
+`0001_init.sql` creates the complete V3 schema at `user_version = 1`. There is
+no v2 *data* migration: a v2 database (`user_version = 6`) is rejected by the
 `SchemaVersionError` guard at startup, so a development database must be
 recreated from scratch.
+
+| Version | File | Change |
+|---------|------|--------|
+| 1 | `0001_init.sql` | complete V3 schema |
+| 2 | `0002_material_source.sql` | `materials.source_material_id` + `ux_materials_source` |
+| 3 | `0003_kind_from_config.sql` | stage ids (kind/gate) become `> 0`; `tasks.kind_parallel`; `ux_tasks_open_per_kind` replaces `ux_tasks_active_doc` |
+
+`0003` is a **structural** migration (ADR-0003 D6″): it rebuilds `tasks`,
+`gate_decisions` and `worker_kinds` to widen their CHECK from `IN (1,2,3,4)` to
+`> 0` and adds `tasks.kind_parallel`, but not a single stored value changes.
+`kind_parallel` is backfilled with today's behaviour (`kind = 4 → 1`, everything
+else `0`). It has **no down SQL**: rolling back means restoring the pre-upgrade
+database snapshot together with the previous binary, because the old code would
+insert dev cards with the default `kind_parallel = 0` and hit the new index.
 
 ## Tables
 
@@ -22,7 +35,7 @@ recreated from scratch.
 | `products` | 产品 |
 | `materials` | 资料内容与版本链（`previous_material_id`） |
 | `projects` | 项目容器：名称、产品、背景上下文、`open/closed` |
-| `tasks` | 唯一执行与派单单元；四类 kind，七态 status |
+| `tasks` | 唯一执行与派单单元；环节 id（`kind > 0`，词汇由流程配置裁决）、`kind_parallel` 快照、七态 status |
 | `task_deps` | 任务依赖 DAG（上游 `done` 才算满足） |
 | `attachments` | 任务/项目的输入与交付物，必须且只能挂一个属主 |
 | `gate_decisions` | 任务级评审决策（只追加，精确指向 material 版本） |
@@ -40,7 +53,7 @@ All enums are `INTEGER` and start at 1; 0 is invalid and is rejected by CHECK.
 | Enum | Values |
 |------|--------|
 | `projects.status` | 1=open, 2=closed |
-| `tasks.kind` | 1=requirement, 2=design, 3=breakdown, 4=dev |
+| `tasks.kind` / `worker_kinds.kind` / `gate_decisions.gate` | 正整数（`> 0`）；内置默认流程 1=requirement, 2=design, 3=breakdown, 4=dev，其余 id 由 `flow.stages` 配置定义（ADR-0003 D2″） |
 | `tasks.status` | 1=pending, 2=ready, 3=in_progress, 4=in_review, 5=done, 6=failed, 7=cancelled |
 | `materials.kind` | 1=requirement, 2=design, 3=plan, 4=report, 5=context, 6=other |
 | `attachments.role` | 1=input, 2=output |
@@ -56,7 +69,7 @@ All enums are `INTEGER` and start at 1; 0 is invalid and is rejected by CHECK.
 | `ix_tasks_queue` | `tasks(kind, status, priority DESC, id)` |
 | `ix_tasks_lease` | `tasks(status, lease_until)` |
 | `ix_tasks_project` | `tasks(project_id, kind, id)` |
-| `ux_tasks_active_doc` | 唯一，`tasks(project_id, kind)`，仅文档类 kind 的活跃态 |
+| `ux_tasks_open_per_kind` | 唯一，`tasks(project_id, kind)`，仅 `kind_parallel = 0` 的活跃态（pending/ready/in_progress/in_review）；`kind_parallel = 1` 的环节可并存多张 |
 | `ux_tasks_worker_lease` | 唯一，`tasks(worker_id)`，仅 `status = 3` |
 | `ix_task_deps_upstream` | `task_deps(depends_on_task_id)` |
 | `ix_task_events_task` | `task_events(task_id, id)` |
@@ -80,8 +93,8 @@ NNNN_<description>.sql
 
 ## V3 的约定
 
-1. **只有初始 schema**。V3 未上线，不写增量迁移；schema 变化直接改
-   `0001_init.sql` 并重建开发库。
+1. **已上线的 schema 只加迁移，不改历史文件**。`0001_init.sql` 冻结；放宽
+   CHECK、加列、换索引一律走新的 `NNNN_*.sql`（`0003` 是第一个这样的迁移）。
 2. 只写 DDL/DML，**不要**写 `PRAGMA user_version`（由代码统一回写）。
 3. 文件内可包含多条语句，执行器会按分号拆分（能识别注释与引号）。
 4. 时间字段统一为 RFC3339 毫秒 UTC 字符串，SQL 按字典序比较。

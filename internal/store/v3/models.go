@@ -64,12 +64,17 @@ type Project struct {
 
 // Task is one row of tasks.
 type Task struct {
-	ID            int64           `db:"id"`
-	TaskID        string          `db:"task_id"`
-	ProjectID     int64           `db:"project_id"`
-	ParentTaskID  *int64          `db:"parent_task_id"`
-	ParentCode    *string         `db:"parent_code"`
-	Kind          enum.TaskKind   `db:"kind"`
+	ID           int64         `db:"id"`
+	TaskID       string        `db:"task_id"`
+	ProjectID    int64         `db:"project_id"`
+	ParentTaskID *int64        `db:"parent_task_id"`
+	ParentCode   *string       `db:"parent_code"`
+	Kind         enum.TaskKind `db:"kind"`
+	// KindParallel is the "unfinished cards of this kind in one project" budget
+	// snapshotted when the card was created (ADR-0003 D4"): 0 = at most one open
+	// card per (project, kind), 1 = several may coexist. The partial unique index
+	// ux_tasks_open_per_kind only covers kind_parallel = 0.
+	KindParallel  int             `db:"kind_parallel"`
 	Title         string          `db:"title"`
 	DescriptionMD string          `db:"description_md"`
 	ContextMD     string          `db:"context_md"`
@@ -174,10 +179,15 @@ type CreateProjectInput struct {
 
 // CreateTaskInput is the write model for CreateTask.
 type CreateTaskInput struct {
-	ProjectID     string
-	TaskID        string
-	ParentTaskID  string
-	Kind          enum.TaskKind
+	ProjectID    string
+	TaskID       string
+	ParentTaskID string
+	Kind         enum.TaskKind
+	// KindParallel is the open_cards snapshot for this new card: 0 = single,
+	// 1 = multiple. Nil means "the derive engine did not decide" and falls back
+	// to the built-in default flow, where only dev is multiple (exactly the
+	// migration's backfill). The flow-config derivation card sets it explicitly.
+	KindParallel  *int
 	Title         string
 	DescriptionMD string
 	ContextMD     string

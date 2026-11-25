@@ -1,7 +1,14 @@
 /** V3 平台的 JSON 形状（只声明工具包读取的字段）。 */
 import type { ApiResult } from './client.js'
 
-export type V3TaskKind = 'requirement' | 'design' | 'breakdown' | 'dev'
+/**
+ * 环节 name：平台流程里的**对外标识**（ADR-0003 D2‴），不是 kit 的枚举。
+ *
+ * kit **不维护词汇**：能接哪些环节由平台配置决定（`GET /v1/flow` 的
+ * `stages[].name`），加环节不需要升包。拼错的名字由平台 400 裁决并回可用清单，
+ * 本地只校验形态（非空、≤32 字符），见 `tools/v3.ts` 的 `requireKindName`。
+ */
+export type V3TaskKind = string
 
 export type V3TaskStatus =
   | 'pending'
@@ -29,6 +36,16 @@ export interface V3Task {
   project_id: string
   parent_task_id?: string | null
   kind: V3TaskKind
+  /** 环节 id（`tasks.kind` 落库的整数）；旧平台不带。 */
+  kind_id?: number
+  /** 环节显示名（label，缺省等于 name）；旧平台不带。 */
+  kind_label?: string
+  /**
+   * 本环节交付物的素材类别（`requirement` / `design` / `plan` / `report` /
+   * `context` / `other`），由平台按流程配置裁定。旧平台不带，历史卡也可能是空串
+   * （环节已从配置里删掉）——两种情况都由调用方回落 `report`。
+   */
+  material_kind?: string
   title: string
   description_md: string
   context_md: string

@@ -595,3 +595,121 @@ describe('V3 渲染兜底：任何情况都不返回空串', () => {
     }
   })
 })
+
+
+describe('环节 name：词汇由平台裁决（0.7.0，ADR-0003 D7″）', () => {
+  it('task_claim 接受平台流程里新增的环节 name，不再有本地白名单', async () => {
+    const safetyTask: V3Task = {
+      ...task,
+      kind: '安全评审',
+      kind_id: 5,
+      kind_label: '安全评审',
+      material_kind: 'report',
+    }
+    const claimV3Task = vi.fn().mockResolvedValue(ok(safetyTask))
+    const { byName } = buildOptions({ claimV3Task })
+
+    const claimed = await byName.get('echuan_task_claim')!.execute({ kind: '  安全评审  ' } as any, {} as any)
+
+    // trim 后原样交给平台：平台按配置把 name 映射成 id，kit 不做词表比对。
+    expect(claimV3Task).toHaveBeenCalledWith({ worker_id: 'w_1', kind: '安全评审' })
+    expect(claimed).toMatchObject({ kind: 'claimed', task: { task_id: 't_1', kind: '安全评审' } })
+  })
+
+  it('task_claim 对不认识的 name 不本地拦截：请求照发，平台 400 的可用清单透传', async () => {
+    const claimV3Task = vi.fn().mockRejectedValue(
+      new Error('[invalid_argument] kind "deploy" 不是流程配置里的环节（可用环节: requirement(需求), dev(开发)）'),
+    )
+    const { byName } = buildOptions({ claimV3Task })
+
+    await expect(
+      byName.get('echuan_task_claim')!.execute({ kind: 'deploy' } as any, {} as any),
+    ).rejects.toThrow(/可用环节/)
+    expect(claimV3Task).toHaveBeenCalledWith({ worker_id: 'w_1', kind: 'deploy' })
+  })
+
+  it('task_claim 只拦形态：空 name 与超 32 字符在本地拒绝，零请求', async () => {
+    const claimV3Task = vi.fn()
+    const { byName } = buildOptions({ claimV3Task })
+
+    await expect(
+      byName.get('echuan_task_claim')!.execute({ kind: '   ' } as any, {} as any),
+    ).rejects.toThrow(/kind 不能为空/)
+    await expect(
+      byName.get('echuan_task_claim')!.execute({ kind: 'a'.repeat(33) } as any, {} as any),
+    ).rejects.toThrow(/32/)
+    expect(claimV3Task).not.toHaveBeenCalled()
+  })
+
+  it('32 个字符的 name 放行，按码点计数（中文也算 1 个）', async () => {
+    const name = '安'.repeat(32)
+    const claimV3Task = vi.fn().mockResolvedValue(ok({ ...task, kind: name }))
+    const { byName } = buildOptions({ claimV3Task })
+
+    await byName.get('echuan_task_claim')!.execute({ kind: name } as any, {} as any)
+    expect(claimV3Task).toHaveBeenCalledWith({ worker_id: 'w_1', kind: name })
+  })
+
+  it('task_create / task_list 的 kind 走同一套放宽规则', async () => {
+    const createV3Task = vi.fn().mockResolvedValue(ok({ ...task, kind: 'safety_review' }))
+    const listV3Tasks = vi.fn().mockResolvedValue(ok({ items: [] }))
+    const { byName } = buildOptions({ createV3Task, listV3Tasks })
+
+    await byName.get('echuan_task_create')!.execute(
+      { project_id: 'APP-1', kind: 'safety_review', title: '安全评审' } as any,
+      {} as any,
+    )
+    expect(createV3Task).toHaveBeenCalledWith(expect.objectContaining({ kind: 'safety_review' }))
+
+    await byName.get('echuan_task_list')!.execute({ kind: 'safety_review' } as any, {} as any)
+    expect(listV3Tasks).toHaveBeenCalledWith(expect.objectContaining({ kind: 'safety_review' }))
+  })
+})
+
+describe('上报素材类别取平台 material_kind，不按 kind 本地猜（0.7.0，ADR-0003 D7″）', () => {
+  /** 跑一次 task_report(summary_md)，返回它建 material 时用的 kind。 */
+  async function materialKindOf(taskDTO: V3Task): Promise<string> {
+    const getV3Task = vi.fn().mockResolvedValue(ok(taskDTO))
+    const createV3Material = vi.fn().mockResolvedValue(
+      ok({ material_id: 'm_new', kind: 'x', version: 1, title: '交付' }),
+    )
+    const reportV3Task = vi.fn().mockResolvedValue(ok({ ...taskDTO, status: 'in_review' }))
+    const { byName } = buildOptions({ getV3Task, createV3Material, reportV3Task })
+
+    await byName.get('echuan_task_report')!.execute(
+      { task_id: 't_1', lease_id: 'l_1', summary_md: '交付正文' } as any,
+      {} as any,
+    )
+    expect(reportV3Task).toHaveBeenCalled()
+    return createV3Material.mock.calls[0]![0].kind as string
+  }
+
+  it('环节声明 material: plan → 上报 plan（不再按 kind 猜）', async () => {
+    expect(await materialKindOf({ ...task, kind: 'review', material_kind: 'plan' })).toBe('plan')
+  })
+
+  it('material: report 的环节与改造前一致（0.6.10 的 dev 也落 report）', async () => {
+    expect(await materialKindOf({ ...task, kind: 'dev', material_kind: 'report' })).toBe('report')
+  })
+
+  it('内置三个资料环节与改造前的本地映射逐一相同', async () => {
+    expect(await materialKindOf({ ...task, kind: 'requirement', material_kind: 'requirement' }))
+      .toBe('requirement')
+    expect(await materialKindOf({ ...task, kind: 'design', material_kind: 'design' })).toBe('design')
+    expect(await materialKindOf({ ...task, kind: 'breakdown', material_kind: 'plan' })).toBe('plan')
+  })
+
+  it('旧平台不带 material_kind（回滚期）→ 回落 report', async () => {
+    expect(await materialKindOf({ ...task, kind: 'dev' })).toBe('report')
+  })
+
+  it('历史卡的环节已从配置删掉（material_kind 空串）→ 回落 report', async () => {
+    expect(await materialKindOf({
+      ...task,
+      kind: 'kind(9)',
+      kind_id: 9,
+      kind_label: 'kind(9)',
+      material_kind: '',
+    })).toBe('report')
+  })
+})

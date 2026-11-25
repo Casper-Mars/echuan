@@ -25,15 +25,25 @@ type v3Handler struct {
 	workers   *appv3.WorkerService
 	materials *app.MaterialService
 	logger    *slog.Logger
+	// flow is the process-wide snapshot, read from the task service so the
+	// engine and the HTTP projection can never disagree about the stage table
+	// (GET /v1/flow, kind/kind_id/kind_label). It is never a second copy of the
+	// configuration.
+	flow platform.FlowConfig
 }
 
 func newV3Handler(services V3Services, logger *slog.Logger) *v3Handler {
+	flow := platform.DefaultFlowProfile()
+	if services.Tasks != nil {
+		flow = services.Tasks.Flow()
+	}
 	return &v3Handler{
 		projects:  services.Projects,
 		tasks:     services.Tasks,
 		workers:   services.Workers,
 		materials: services.Materials,
 		logger:    logger,
+		flow:      flow,
 	}
 }
 
@@ -70,11 +80,25 @@ func v3ProjectDTO(p storev3.Project) v3ProjectResponse {
 	}
 }
 
+// v3TaskResponse is the task wire shape. The kind triple is what §7.4 asks for:
+//
+//   - kind is the stage name (the public identifier every client already used:
+//     the built-in names are unchanged, a configured stage contributes its name);
+//   - kind_id is the integer stored in tasks.kind;
+//   - kind_label is the display name (label, falling back to name);
+//   - material_kind is the stage's deliverable category.
+//
+// A card whose kind the configuration no longer has answers kind =
+// kind_label = "kind(<id>)" and an empty material_kind instead of failing the
+// page: history outlives the flow it was created under (§7.4, AC10).
 type v3TaskResponse struct {
 	TaskID        string          `json:"task_id"`
 	ProjectID     string          `json:"project_id"`
 	ParentTaskID  *string         `json:"parent_task_id,omitempty"`
-	Kind          enum.TaskKind   `json:"kind"`
+	Kind          string          `json:"kind"`
+	KindID        int             `json:"kind_id"`
+	KindLabel     string          `json:"kind_label"`
+	MaterialKind  string          `json:"material_kind"`
 	Title         string          `json:"title"`
 	DescriptionMD string          `json:"description_md"`
 	ContextMD     string          `json:"context_md"`
@@ -90,12 +114,16 @@ type v3TaskResponse struct {
 	UpdateTime    string          `json:"update_time"`
 }
 
-func v3TaskDTO(t storev3.Task) v3TaskResponse {
+func (h *v3Handler) taskDTO(t storev3.Task) v3TaskResponse {
+	name, label, material := h.stageNames(t.Kind)
 	return v3TaskResponse{
 		TaskID:        t.TaskID,
 		ProjectID:     t.ProjectCode,
 		ParentTaskID:  t.ParentCode,
-		Kind:          t.Kind,
+		Kind:          name,
+		KindID:        int(t.Kind),
+		KindLabel:     label,
+		MaterialKind:  material,
 		Title:         t.Title,
 		DescriptionMD: t.DescriptionMD,
 		ContextMD:     t.ContextMD,
@@ -212,6 +240,21 @@ func invalidEnum(w http.ResponseWriter, r *http.Request, field, raw string) {
 	writeError(w, r, http.StatusBadRequest, "invalid_argument",
 		fmt.Sprintf("invalid %s", field),
 		[]ErrorDetail{{Field: field, Reason: fmt.Sprintf("unknown value %q", raw)}})
+}
+
+// resolveKind maps a client-supplied stage spelling (name, label or numeric id)
+// onto the id the service works with. Every inbound kind goes through this one
+// function, and the failure answer is a 400 naming the field plus the stages the
+// running flow actually has — a client that asked for a stage this deployment
+// does not know cannot recover from a bare "invalid kind".
+func (h *v3Handler) resolveKind(w http.ResponseWriter, r *http.Request, field, raw string) (enum.TaskKind, bool) {
+	kind, err := h.tasks.ResolveKind(raw)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_argument", err.Error(),
+			[]ErrorDetail{{Field: field, Reason: err.Error()}})
+		return 0, false
+	}
+	return kind, true
 }
 
 // ── projects ────────────────────────────────────────────────────────────
@@ -367,9 +410,8 @@ func (h *v3Handler) createTask(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, h.logger, err)
 		return
 	}
-	kind, err := enum.ParseTaskKind(body.Kind)
-	if err != nil {
-		invalidEnum(w, r, "kind", body.Kind)
+	kind, ok := h.resolveKind(w, r, "kind", body.Kind)
+	if !ok {
 		return
 	}
 	taskID := strings.TrimSpace(body.TaskID)
@@ -398,7 +440,7 @@ func (h *v3Handler) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Location", "/v1/tasks?id="+task.TaskID)
-	writeJSON(w, http.StatusCreated, v3TaskDTO(task))
+	writeJSON(w, http.StatusCreated, h.taskDTO(task))
 }
 
 func (h *v3Handler) listOrGetTask(w http.ResponseWriter, r *http.Request) {
@@ -408,15 +450,14 @@ func (h *v3Handler) listOrGetTask(w http.ResponseWriter, r *http.Request) {
 			h.fail(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, v3TaskDTO(task))
+		writeJSON(w, http.StatusOK, h.taskDTO(task))
 		return
 	}
 
 	filter := storev3.TaskFilter{ProjectID: strings.TrimSpace(r.URL.Query().Get("project_id"))}
 	if raw := strings.TrimSpace(r.URL.Query().Get("kind")); raw != "" {
-		kind, err := enum.ParseTaskKind(raw)
-		if err != nil {
-			invalidEnum(w, r, "kind", raw)
+		kind, ok := h.resolveKind(w, r, "kind", raw)
+		if !ok {
 			return
 		}
 		filter.Kind = &kind
@@ -438,7 +479,7 @@ func (h *v3Handler) listOrGetTask(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]v3TaskResponse, 0, len(tasks))
 	for _, task := range tasks {
-		items = append(items, v3TaskDTO(task))
+		items = append(items, h.taskDTO(task))
 	}
 	writeJSON(w, http.StatusOK, v3TaskListResponse{Items: items})
 }
@@ -470,7 +511,7 @@ func (h *v3Handler) updateTask(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, v3TaskDTO(task))
+	writeJSON(w, http.StatusOK, h.taskDTO(task))
 }
 
 func (h *v3Handler) deleteTask(w http.ResponseWriter, r *http.Request) {
@@ -564,9 +605,8 @@ func (h *v3Handler) claim(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, r, h.logger, err)
 		return
 	}
-	kind, err := enum.ParseTaskKind(body.Kind)
-	if err != nil {
-		invalidEnum(w, r, "kind", body.Kind)
+	kind, ok := h.resolveKind(w, r, "kind", body.Kind)
+	if !ok {
 		return
 	}
 	task, err := h.tasks.Claim(r.Context(), body.WorkerID, kind)
@@ -587,7 +627,7 @@ func (h *v3Handler) claim(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, v3ClaimResponse{
-		Task: v3TaskDTO(task),
+		Task: h.taskDTO(task),
 		Project: v3ClaimProject{
 			ProjectID: envelope.Project.ProjectID, Name: envelope.Project.Name, ContextMD: envelope.Project.ContextMD,
 		},
@@ -636,7 +676,7 @@ func (h *v3Handler) report(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, v3TaskDTO(task))
+	writeJSON(w, http.StatusOK, h.taskDTO(task))
 }
 
 type v3DecideRequest struct {
@@ -666,7 +706,7 @@ func (h *v3Handler) decide(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, v3TaskDTO(task))
+	writeJSON(w, http.StatusOK, h.taskDTO(task))
 }
 
 type v3ResetRequest struct {
@@ -684,7 +724,7 @@ func (h *v3Handler) reset(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, v3TaskDTO(task))
+	writeJSON(w, http.StatusOK, h.taskDTO(task))
 }
 
 func (h *v3Handler) events(w http.ResponseWriter, r *http.Request) {
@@ -749,9 +789,8 @@ func (h *v3Handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	kinds := make([]enum.TaskKind, 0, len(body.Kinds))
 	for _, raw := range body.Kinds {
-		kind, err := enum.ParseTaskKind(raw)
-		if err != nil {
-			invalidEnum(w, r, "kinds", raw)
+		kind, ok := h.resolveKind(w, r, "kinds", raw)
+		if !ok {
 			return
 		}
 		kinds = append(kinds, kind)
@@ -841,7 +880,10 @@ func (h *v3Handler) workerKindNames(r *http.Request, workerID string) []string {
 	kinds, _ := h.workers.Kinds(r.Context(), workerID)
 	names := make([]string, 0, len(kinds))
 	for _, kind := range kinds {
-		names = append(names, kind.String())
+		// A configured stage answers its name; an id the flow no longer has
+		// keeps the "kind(<id>)" spelling of the task DTO, so one worker row
+		// cannot render a value no task ever shows.
+		names = append(names, h.stageName(kind))
 	}
 	return names
 }
@@ -888,7 +930,7 @@ func (h *v3Handler) inbox(w http.ResponseWriter, r *http.Request) {
 	tasks = append(tasks, review...)
 	items := make([]v3TaskResponse, 0, len(tasks))
 	for _, task := range tasks {
-		items = append(items, v3TaskDTO(task))
+		items = append(items, h.taskDTO(task))
 	}
 	writeJSON(w, http.StatusOK, v3TaskListResponse{Items: items})
 }

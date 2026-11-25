@@ -42,9 +42,13 @@ func main() {
 }
 
 func run() error {
-	configPath := flag.String("config", "./echuan.toml", "path to the TOML config file (optional)")
+	configPath := flag.String("config", "./echuan.yaml", "path to the YAML config file (optional)")
 	flag.Parse()
 
+	// Load resolves the file, the environment and the default flow. A broken
+	// configuration (including an invalid flow, R1–R17) returns here, before the
+	// database is opened and before net.Listen, so a rejected config never
+	// accepts traffic and the error carries "<path>:<line>: <reason>".
 	cfg, err := platform.Load(*configPath)
 	if err != nil {
 		return err
@@ -52,6 +56,7 @@ func run() error {
 
 	logger := platform.NewLogger(cfg.LogLevel, os.Stdout)
 	banner := platform.NewBannerLogger(os.Stdout)
+	logFlow(banner, cfg.Flow)
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return fmt.Errorf("create directory %s: %w", cfg.DataDir, err)
@@ -87,7 +92,10 @@ func run() error {
 	// config → service wiring stays a single testable seam (see
 	// cmd/echuan/maxattempts_test.go).
 	projectService := appv3.NewProjectService(st)
-	taskService := newTaskService(st, cfg)
+	// The logger is chained here rather than inside newTaskService so the
+	// derivation warnings ("flow derivation skipped(...)") and the post-commit
+	// derivation line land in the process log, naming stages instead of ids.
+	taskService := newTaskService(st, cfg).WithLogger(logger)
 	// The worker service derives presence from worker_ttl and publishes the
 	// heartbeat/lease rhythm on the detail endpoint, so it must share the same
 	// configuration the rest of the server validates (issue #165 §2).
@@ -199,20 +207,23 @@ func run() error {
 }
 
 // newTaskService builds the V3 task service the HTTP layer uses. It is the one
-// seam where platform.Config meets the task service: the configured
-// max_attempts is passed explicitly so every task created at runtime (explicit,
-// flow-derived or breakdown child) is stamped with it at insert time. The
-// breakdown flow needs the plan reader as well, so the artifact can be
-// materialised inside the approval transaction.
+// seam where platform.Config meets the task service: the configured flow,
+// max_attempts and lease_ttl are passed explicitly so every task created at
+// runtime (explicit, flow-derived or list-derived) is stamped with them at
+// insert time. A list derivation needs the plan reader as well, so the artifact
+// can be materialised inside the approval transaction.
 //
-// The wiring is load-bearing: dropping WithMaxAttempts makes the service fall
-// back to the built-in default of 3 and silently ignores the configuration,
+// The wiring is load-bearing: dropping WithFlow leaves the built-in default flow
+// and silently ignores the configuration's stage table (GET /v1/flow would show
+// the wrong stages and approvals would derive the wrong kind). Dropping
+// WithMaxAttempts makes the service fall back to the built-in default of 3,
 // which is exactly what TestConfigMaxAttemptsReachesCreatedTask fails on.
 // WithLeaseTTL is wired for the same reason: without it claim and renew keep the
 // built-in 60s while the detail endpoint publishes the configured lease_ttl,
 // i.e. two different lease durations in one process (issue #165 D-2).
 func newTaskService(st *store.Store, cfg platform.Config) *appv3.Service {
 	return appv3.New(st).
+		WithFlow(cfg.Flow).
 		WithMaxAttempts(cfg.MaxAttempts).
 		WithLeaseTTL(cfg.LeaseTTL).
 		WithMaterialReader(planReader{st: st, dataDir: cfg.DataDir})
@@ -355,6 +366,20 @@ func schemaVersion(st *store.Store) int {
 		return 0
 	}
 	return version
+}
+
+// logFlow writes the effective flow at startup (§8.1 step 6): which
+// configuration it came from, the fingerprint that derivation events carry, the
+// auto switch and one line per stage so the operator can compare the loaded
+// chain with the file without querying anything.
+func logFlow(banner *slog.Logger, flow platform.FlowConfig) {
+	banner.Info("flow chain loaded",
+		"source", flow.Source,
+		"default", flow.Source == platform.BuiltinFlowSource,
+		"fingerprint", flow.Fingerprint(),
+		"auto", flow.Auto,
+		"stages", flow.ChainSummary(),
+	)
 }
 
 // logStartup writes the startup banner. It must be called with the banner

@@ -31,12 +31,12 @@
 | `internal/material/` | 内容寻址对象存储：`objects/<sha 前 2 位>/<sha256>` |
 | `internal/inbox/` | 待办推导（待评审项目 + 待决策任务） |
 | `internal/contract/` | 契约校验：`routeSpecs` 与 `api/openapi.yaml` 的 operation 集合必须一致 |
-| `internal/platform/` | 配置加载（TOML + 环境变量）、日志、时钟、版本注入 |
+| `internal/platform/` | 配置加载（YAML + 环境变量）+ 任务流程定义（`flow` 段、R1–R17 启动校验、内置默认流程、派生卡描述三级解析）、日志、时钟、版本注入 |
 | `internal/web/` | 前端嵌入点（`//go:embed dist`） |
 | `web/` | 前端源码；`make web` 构建后同步到 `internal/web/dist` |
 | `migrations/` | SQL 迁移，`//go:embed` 打包（README 不打包） |
 | `api/openapi.yaml` | 接口契约，与路由表强校验 |
-| `configs/echuan.toml` | 配置样例；服务默认读 `./echuan.toml`（`-config` 可指定），文件不存在则全部走默认值 |
+| `configs/echuan.yaml` | 配置样例（含 `flow` 段）；服务默认读 `./echuan.yaml`（`-config` 可指定），文件不存在则全部走默认值。容器用 `configs/echuan.container.yaml` |
 | `kit/` | dsh 接入工具包：`dsh-echuan` 插件（TypeScript / Cordis 4，独立 pnpm 包，含自己的 `pnpm-lock.yaml`）。声明 `dsh.bundle.patch` 把自己插进 dsh profile；只依赖平台 HTTP 契约，**不 import 任何 Go 代码**，不参与 Go 构建 |
 
 ## 3. 常用命令
@@ -78,10 +78,10 @@ curl -s 127.0.0.1:18720/healthz   # 200 即活
 curl -s 127.0.0.1:18720/readyz    # 库可写 + 迁移版本匹配
 ```
 
-容器停掉、8721 空闲时才用下面这条（`configs/echuan.toml` 指向 `~/echuan-v2-data`，会读写该目录，别对着线上数据用）：
+容器停掉、8721 空闲时才用下面这条（`configs/echuan.yaml` 指向 `~/echuan-v2-data`，会读写该目录，别对着线上数据用）：
 
 ```bash
-./echuan -config configs/echuan.toml
+./echuan -config configs/echuan.yaml
 ```
 
 前端热更新：`cd web && pnpm dev`。**没有 `make dev` 这个目标。** 注意 `web/vite.config.ts:15-18` 把 `/v1`、`/healthz`、`/readyz`、`/version` 的 proxy **硬编码**指向 `127.0.0.1:8721`：要么让后端/容器跑在 8721（v2 compose 默认），要么临时改 proxy 目标（不会自动跟随上面的 18720）。
@@ -90,7 +90,10 @@ curl -s 127.0.0.1:18720/readyz    # 库可写 + 迁移版本匹配
 
 ## 4. 配置
 
-优先级：**环境变量 `ECHUAN_*` > 配置文件 > 内置默认值**。默认读 `./echuan.toml`，文件不存在不报错。
+优先级：**环境变量 `ECHUAN_*` > 配置文件 > 内置默认值**。默认读 `./echuan.yaml`，文件不存在不报错。
+格式只支持 YAML（`.yaml`/`.yml`）：旧的 TOML 解析器已删除，传 `.toml` 会报错指路。
+配置非法（含 `flow` 段的 R1–R17）时启动直接失败，输出 `<路径>:<行号>: <原因>`；`flow` 子树对未知字段是严格的（顶层未知字段仍忽略）。
+任务流程、校验规则与派生卡描述取值顺序见 `docs/decisions/ADR-0003-workflow-config-stage-model.md`。
 
 | 键 | 环境变量 | 默认 |
 |---|---|---|
@@ -181,7 +184,7 @@ go test ./... -coverprofile=/tmp/cover.out && go tool cover -func=/tmp/cover.out
 | 项 | 事实 |
 |---|---|
 | 运行镜像 | 三阶段（node 构前端 → golang 编译 embed → alpine 运行）；UID/GID `10001`；内置 `sqlite3` CLI；体积基线 **23,680,349 bytes**（以 `623b8c5` 构建为准，本机现存镜像可能来自更早提交）；不含 go/node/pnpm |
-| compose | `restart: unless-stopped`；项目/容器/镜像默认 `echuan-v2`；端口 `127.0.0.1:8721:8720`（容器内 `0.0.0.0:8720`）；`/data` bind mount 到宿主 `~/echuan-v2-data`；`configs/echuan.container.toml` 只读挂到 `/etc/echuan/echuan.toml`；json-file 日志 `max-size 10m / max-file 3`；healthcheck 打 `/readyz` |
+| compose | `restart: unless-stopped`；项目/容器/镜像默认 `echuan-v2`；端口 `127.0.0.1:8721:8720`（容器内 `0.0.0.0:8720`）；`/data` bind mount 到宿主 `~/echuan-v2-data`；`configs/echuan.container.yaml` 只读挂到 `/etc/echuan/echuan.yaml`；json-file 日志 `max-size 10m / max-file 3`；healthcheck 打 `/readyz` |
 | 数据 | 全在宿主 `~/echuan-v2-data`：`state.db`、`objects/`、`workspaces/`；删容器不丢数据 |
 | 备份/恢复 | `scripts/backup.sh`（`VACUUM INTO` + rsync，同秒并发自动 `-N` 后缀、上限 99，全量 `integrity_check`）；`scripts/restore.sh`（down → 放回 → up → 等 `/readyz`） |
 

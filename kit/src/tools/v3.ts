@@ -61,16 +61,42 @@ function requireText(value: unknown, field: string): string {
   return value.trim()
 }
 
-function requireKind(value: unknown): V3TaskKind {
-  const kind = requireText(value, 'kind')
-  if (kind !== 'requirement' && kind !== 'design' && kind !== 'breakdown' && kind !== 'dev') {
+/** 环节 name 的长度上限，与平台 R3（`name` trim 后 1–32 字符）一致。 */
+const KIND_NAME_MAX_LENGTH = 32
+
+/**
+ * 校验环节 name：非空、trim 后 ≤32 字符。
+ *
+ * **词汇由平台裁决**（ADR-0003 D7″）：kit 不维护环节枚举，平台流程加一个环节不需要
+ * 发新包。这里只拦形态错误（空串、超长），名字拼错时把请求照发，由平台 400 的
+ * 「可用环节: name(label), …」原样透传给模型——那比本地白名单更准（平台才知道
+ * 当前配置了哪些环节）。
+ */
+function requireKindName(value: unknown, field = 'kind'): V3TaskKind {
+  const kind = requireText(value, field)
+  // 按码点计数：环节 name 允许中文，`string.length` 数的是 UTF-16 码元。
+  if ([...kind].length > KIND_NAME_MAX_LENGTH) {
     throw new EchuanValidationError(
-      `kind 必须是 requirement / design / breakdown / dev，收到 ${kind}`,
+      `${field} 超过 ${KIND_NAME_MAX_LENGTH} 字符（收到 ${[...kind].length} 字符）：${kind}。`
+        + '请填平台流程里的环节 name（见 GET /v1/flow）。',
       'invalid_argument',
-      'kind',
+      field,
     )
   }
   return kind
+}
+
+/**
+ * 交付物素材类别：取平台给这张卡裁定的 `material_kind`（ADR-0003 D7″）。
+ *
+ * 环节 → 素材类别属于**流程配置**（`flow.stages[].material`），kit 不再按 kind 本地猜。
+ * 两种情况下平台给不出值，都回落 `report`：旧平台（回滚期）不带这个字段；历史卡的
+ * 环节已经被从配置里删掉（平台回 `kind(<id>)` + 空 material_kind）。回落值与 0.6.10
+ * 对未知 kind 的落点一致，所以默认流程下 `dev` 卡的素材类别逐字不变。
+ */
+function requireMaterialKind(task: V3Task | undefined): string {
+  const fromPlatform = typeof task?.material_kind === 'string' ? task.material_kind.trim() : ''
+  return fromPlatform === '' ? 'report' : fromPlatform
 }
 
 function requireWorker(identity: WorkerIdentity): string {
@@ -190,7 +216,7 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
     writeTool(
       'echuan_task_claim',
       '领取一张 ready 任务（POST /v1/tasks/claim）。无任务时返回 no_work，不要当错误重试。',
-      { kind: { type: 'string', required: true, description: 'requirement / design / breakdown / dev' } },
+      { kind: { type: 'string', required: true, description: '平台流程里的环节 name（见 GET /v1/flow）' } },
       async args => {
         // worker.poll 开启时领卡是心跳循环的职责：再手动 claim 会让同一张卡
         // 出现两个持有者（本会话 + 派单投递到的会话），两边重复干活。
@@ -201,7 +227,7 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
             'kind',
           )
         }
-        const result = await client.claimV3Task({ worker_id: requireWorker(identity), kind: requireKind(args.kind) })
+        const result = await client.claimV3Task({ worker_id: requireWorker(identity), kind: requireKindName(args.kind) })
         if (result.kind === 'empty') return { kind: 'no_work', text: NO_WORK_TEXT }
         const claimed = unwrapClaim(result.data)
         identity.notifyReported?.(claimed.task.task_id)
@@ -262,13 +288,8 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
         let materialID = typeof args.material_id === 'string' && args.material_id.trim() !== '' ? args.material_id.trim() : ''
         if (materialID === '') {
           const summary = requireText(args.summary_md, 'summary_md')
-          const taskKind = task?.kind
-          const materialKind = taskKind === 'requirement' ? 'requirement'
-            : taskKind === 'design' ? 'design'
-              : taskKind === 'breakdown' ? 'plan'
-                : 'report'
           const created = await client.createV3Material({
-            kind: materialKind,
+            kind: requireMaterialKind(task),
             title: typeof args.material_title === 'string' && args.material_title.trim() !== ''
               ? args.material_title
               : (task?.title ?? taskID),
@@ -333,7 +354,7 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
       '创建任务（POST /v1/tasks）。项目只是容器；依赖未满足时平台会落 pending。',
       {
         project_id: { type: 'string', required: true },
-        kind: { type: 'string', required: true },
+        kind: { type: 'string', required: true, description: '平台流程里的环节 name（见 GET /v1/flow）' },
         title: { type: 'string', required: true },
         task_id: { type: 'string', description: '可选；缺省由平台生成 t_<ULID>' },
         parent_task_id: { type: 'string' },
@@ -346,7 +367,7 @@ export function createV3WriteTools(options: EchuanToolOptions): ToolDefinition[]
       async args => {
         const result = await client.createV3Task(({
           project_id: requireText(args.project_id, 'project_id'),
-          kind: requireKind(args.kind),
+          kind: requireKindName(args.kind),
           title: requireText(args.title, 'title'),
           task_id: typeof args.task_id === 'string' ? args.task_id : undefined,
           parent_task_id: typeof args.parent_task_id === 'string' ? args.parent_task_id : undefined,
@@ -547,12 +568,12 @@ export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] 
       '任务列表（GET /v1/tasks），可按 project_id / kind / status 过滤。',
       {
         project_id: { type: 'string' },
-        kind: { type: 'string' },
+        kind: { type: 'string', description: '环节 name（见 GET /v1/flow）；省略即不按环节过滤' },
         status: { type: 'string' },
         limit: { type: 'integer' },
       },
       async args => {
-        const kind = typeof args.kind === 'string' && args.kind !== '' ? requireKind(args.kind) : undefined
+        const kind = typeof args.kind === 'string' && args.kind !== '' ? requireKindName(args.kind) : undefined
         const result = await client.listV3Tasks({
           project_id: typeof args.project_id === 'string' ? args.project_id : undefined,
           kind,

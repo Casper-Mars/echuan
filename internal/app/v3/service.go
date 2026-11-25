@@ -2,8 +2,8 @@ package v3
 
 import (
 	"context"
-	"database/sql"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -26,21 +26,48 @@ type Service struct {
 	st          *storedb.Store
 	now         func() time.Time
 	leaseTTL    time.Duration
-	flowEnabled bool
+	flow        platform.FlowConfig
+	logger      *slog.Logger
 	materials   MaterialReader
 	maxAttempts int
 }
 
-// New returns a service with the real clock, a 60s default lease, the four
-// flow rules enabled and the default attempt budget.
+// New returns a service with the real clock, a 60s default lease, the built-in
+// default flow and the default attempt budget.
+//
+// The default flow is the same value a configuration without a flow section
+// resolves to, so a service built without WithFlow behaves exactly like the
+// platform always has (AC7 / AC10). The logger starts as a discard handler: a
+// service used by a test or an embedder must not write to the process logger.
 func New(st *storedb.Store) *Service {
 	return &Service{
 		st:          st,
 		now:         time.Now,
 		leaseTTL:    60 * time.Second,
-		flowEnabled: true,
+		flow:        platform.DefaultFlowProfile(),
+		logger:      slog.New(slog.DiscardHandler),
 		maxAttempts: defaultMaxAttempts,
 	}
+}
+
+// WithFlow installs the flow snapshot the service derives from. It is wired once
+// at startup (cmd/echuan), so a running process keeps the configuration it
+// started with even if the file changes on disk. A zero flow is ignored: it
+// would make every kind lookup fail.
+func (s *Service) WithFlow(flow platform.FlowConfig) *Service {
+	if len(flow.Stages) > 0 {
+		s.flow = flow
+	}
+	return s
+}
+
+// WithLogger installs the process logger used by the derivation warnings and by
+// the post-commit derivation line.
+func (s *Service) WithLogger(logger *slog.Logger) *Service {
+	if logger != nil {
+		s.logger = logger
+	}
+	return s
 }
 
 // WithMaxAttempts sets the attempt budget written into every task this service
@@ -120,10 +147,15 @@ func (s *Service) CreateTask(ctx context.Context, req CreateTaskRequest) (storev
 	}
 
 	task, err := storev3.CreateTask(ctx, s.st, storev3.CreateTaskInput{
-		ProjectID:     req.ProjectID,
-		TaskID:        req.TaskID,
-		ParentTaskID:  req.ParentTaskID,
-		Kind:          req.Kind,
+		ProjectID:    req.ProjectID,
+		TaskID:       req.TaskID,
+		ParentTaskID: req.ParentTaskID,
+		Kind:         req.Kind,
+		// The open_cards snapshot must come from the same flow that derives
+		// cards (§12 integration point). An id the configuration does not know
+		// leaves the column to the store's built-in default, which is what a
+		// card created from a removed stage would do.
+		KindParallel:  s.kindParallel(req.Kind),
 		Title:         req.Title,
 		DescriptionMD: req.DescriptionMD,
 		ContextMD:     req.ContextMD,
@@ -296,13 +328,18 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (storev3.Task, 
 		materialPK = &material.ID
 	}
 
-	var hook func(context.Context, *sql.Tx, storev3.Task) error
-	if req.Decision == enum.Approve && s.flowEnabled {
+	// The derivation plan is built outside the approval transaction: reading a
+	// plan artifact can fail on operator data, and that failure must answer 409
+	// with the card untouched in in_review (§8.5). The hook then runs inside the
+	// transaction, so a failure while creating the batch rolls the approval back
+	// with the cards.
+	var plan *derivation
+	if req.Decision == enum.Approve {
 		current, err := storev3.GetTask(ctx, s.st.Read(), req.TaskID)
 		if err != nil {
 			return storev3.Task{}, Translate(err)
 		}
-		hook, err = s.approveHook(ctx, current)
+		plan, err = s.planDerivation(ctx, current)
 		if err != nil {
 			return storev3.Task{}, Translate(err)
 		}
@@ -315,9 +352,30 @@ func (s *Service) Decide(ctx context.Context, req DecideRequest) (storev3.Task, 
 		DecidedBy:    req.DecidedBy,
 		Reason:       req.Reason,
 		Now:          s.nowString(),
-		AfterApprove: hook,
+		AfterApprove: plan.hook(s),
 	})
-	return task, Translate(err)
+	if err != nil {
+		return task, Translate(err)
+	}
+	// Logged after the commit: a line about cards that a rolled-back
+	// transaction did not create would be a lie.
+	plan.log(s)
+	return task, nil
+}
+
+// kindParallel is the kind_parallel snapshot of a new card: 1 when the stage
+// allows several unfinished cards per project, 0 when it allows one. A nil
+// result means "the flow does not know this id" and leaves the store default.
+func (s *Service) kindParallel(kind enum.TaskKind) *int {
+	stage, ok := s.flow.ByID(int(kind))
+	if !ok {
+		return nil
+	}
+	parallel := 0
+	if stage.OpenCards == platform.OpenCardsMultiple {
+		parallel = 1
+	}
+	return &parallel
 }
 
 // Reset re-queues a failed task.

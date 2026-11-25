@@ -63,7 +63,9 @@ func newAPIServerWithConfig(t *testing.T, cfg platform.Config) *apiServer {
 	t.Cleanup(func() { _ = st.Close() })
 
 	projects := appv3.NewProjectService(st)
-	tasks := appv3.New(st).WithMaxAttempts(cfg.MaxAttempts).WithLeaseTTL(cfg.LeaseTTL)
+	// The flow is wired the same way cmd/echuan wires it: one snapshot on the
+	// task service, which the router also projects (GET /v1/flow, kind/kind_id).
+	tasks := appv3.New(st).WithFlow(cfg.Flow).WithMaxAttempts(cfg.MaxAttempts).WithLeaseTTL(cfg.LeaseTTL)
 	workers := appv3.NewWorkerService(st).
 		WithRhythm(cfg.WorkerTTL, cfg.HeartbeatInterval, cfg.LeaseTTL)
 	writer, err := material.NewWriter(t.TempDir(), 1<<20)
@@ -158,7 +160,7 @@ func TestRoutesV3Contract(t *testing.T) {
 	want := []string{
 		"DELETE /v1/products", "DELETE /v1/tasks",
 		"GET /healthz", "GET /readyz", "GET /version",
-		"GET /v1/decisions", "GET /v1/inbox", "GET /v1/materials",
+		"GET /v1/decisions", "GET /v1/flow", "GET /v1/inbox", "GET /v1/materials",
 		"GET /v1/products", "GET /v1/projects", "GET /v1/projects/materials", "GET /v1/tasks",
 		"GET /v1/tasks/events", "GET /v1/tasks/dependencies", "GET /v1/tasks/attachments", "GET /v1/workers",
 		"PATCH /v1/products", "PATCH /v1/projects", "PATCH /v1/tasks",
@@ -237,7 +239,7 @@ func TestCreateProjectAndTask(t *testing.T) {
 		t.Fatalf("create task = %d (%s)", resp.StatusCode, payload)
 	}
 	task := decodeBody[v3TaskResponse](t, payload)
-	if task.TaskID == "" || task.Status != enum.Ready || task.Kind != enum.Dev {
+	if task.TaskID == "" || task.Status != enum.Ready || task.Kind != "dev" || task.KindID != int(enum.Dev) {
 		t.Errorf("task = %+v", task)
 	}
 

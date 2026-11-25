@@ -150,4 +150,4 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
 
 # 不用 ENTRYPOINT，保留 `docker run <img> sh -c ...` 的调试能力；
 # 直接 `docker run <img>` 时执行下面的默认命令。
-CMD ["/usr/local/bin/echuan", "-config", "/etc/echuan/echuan.toml"]
+CMD ["/usr/local/bin/echuan", "-config", "/etc/echuan/echuan.yaml"]

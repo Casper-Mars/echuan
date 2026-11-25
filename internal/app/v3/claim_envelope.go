@@ -3,6 +3,7 @@ package v3
 import (
 	"context"
 
+	"github.com/Casper-Mars/echuan/internal/domain/enum"
 	storedb "github.com/Casper-Mars/echuan/internal/store"
 	storev3 "github.com/Casper-Mars/echuan/internal/store/v3"
 )
@@ -53,7 +54,7 @@ func (s *Service) ClaimEnvelope(ctx context.Context, task storev3.Task) (ClaimEn
 	if err != nil {
 		return ClaimEnvelope{}, Translate(err)
 	}
-	hasDownstream, err := storev3.HasDownstreamDev(ctx, s.st.Read(), task.ID)
+	hasDownstream, err := s.hasDownstreamClosing(ctx, task.ID)
 	if err != nil {
 		return ClaimEnvelope{}, Translate(err)
 	}
@@ -70,4 +71,25 @@ func (s *Service) ClaimEnvelope(ctx context.Context, task storev3.Task) (ClaimEn
 		Upstream:         upstream,
 		HasDownstreamDev: hasDownstream,
 	}, nil
+}
+
+// hasDownstreamClosing reports whether a later card of a closing stage still
+// depends on this one. "Closing" is the stage whose settlement opens the project
+// merge PR, so this is the "is the project's last card" question the claim
+// envelope answers (§7.6). For the built-in default flow the closing stage is
+// dev, which is exactly the hard-coded question of the previous release.
+func (s *Service) hasDownstreamClosing(ctx context.Context, taskPK int64) (bool, error) {
+	for _, stage := range s.flow.Stages {
+		if !stage.Closing {
+			continue
+		}
+		has, err := storev3.HasDownstream(ctx, s.st.Read(), taskPK, enum.TaskKind(stage.ID))
+		if err != nil {
+			return false, Translate(err)
+		}
+		if has {
+			return true, nil
+		}
+	}
+	return false, nil
 }

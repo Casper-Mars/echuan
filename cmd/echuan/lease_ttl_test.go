@@ -14,7 +14,7 @@ import (
 )
 
 // TestConfigLeaseTTLReachesClaimAndWorkerService walks the production path for
-// D-2 (issue #165): TOML → platform.Load → newTaskService / newWorkerService
+// D-2 (issue #165): YAML → platform.Load → newTaskService / newWorkerService
 // (the wiring in run) → claim. It is the regression guard for "lease_ttl is
 // parsed and validated but never wired": delete WithLeaseTTL from
 // newTaskService and the claim falls back to the built-in 60s while the worker
@@ -26,12 +26,12 @@ import (
 func TestConfigLeaseTTLReachesClaimAndWorkerService(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "data")
-	configPath := filepath.Join(dir, "echuan.toml")
-	toml := "listen = \"127.0.0.1:18721\"\n" +
-		"data_dir = \"" + dataDir + "\"\n" +
-		"read_pool_size = 2\n" +
-		"lease_ttl = \"7s\"\n"
-	if err := os.WriteFile(configPath, []byte(toml), 0o600); err != nil {
+	configPath := filepath.Join(dir, "echuan.yaml")
+	yaml := "listen: \"127.0.0.1:18721\"\n" +
+		"data_dir: \"" + dataDir + "\"\n" +
+		"read_pool_size: 2\n" +
+		"lease_ttl: \"7s\"\n"
+	if err := os.WriteFile(configPath, []byte(yaml), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 

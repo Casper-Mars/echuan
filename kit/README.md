@@ -1,12 +1,12 @@
 # dsh-echuan — 驿传平台接入工具包
 
-这是驿传（echuan）的 dsh（Cordis 4）Agent 接入插件：把平台 HTTP 契约接进 Agent。装进一个 profile 后，Agent 能领 work item、续租、交报告，平台也能按 worker 声明的 `kinds` 把派单投递给它。
+这是驿传（echuan）的 dsh（Cordis 4）Agent 接入插件：把平台 HTTP 契约接进 Agent。装进一个 profile 后，Agent 能领 work item、续租、交报告，平台也能按 worker 声明的 `kinds`（平台流程里的**环节 name**）把派单投递给它。
 
 ## 能力边界（先看这段）
 
 插件**只做三件事**：
 
-1. **定时心跳**：上报 `state`（`busy` = 手里有未交付的 work item，`idle` = 没有）、`kinds`（本 worker 能做的类别）与 metadata，并带上平台下发的 `worker_id`（仅存内存）。
+1. **定时心跳**：上报 `state`（`busy` = 手里有未交付的 work item，`idle` = 没有）、`kinds`（本 worker 能做的环节 name）与 metadata，并带上平台下发的 `worker_id`（仅存内存）。
 2. **投递派单**：心跳只做注册；任务用 `POST /v1/tasks/claim` 拉取。领到后按 `project_id` + `presetByKind` 找/建会话（sessionId = `<project>--<preset>`，分隔符见 `session.ts` 的 `SESSION_ID_SEPARATOR`——宿主 per-record 存储要求键无 `:`；cwd 取会话数最多的 workspace），再投给该会话的 agent。不做 kind → agent 的分流；需要角色 / 模型隔离就拆 worker。
 3. **提供 25 个工具**（默认全量；可用 `exclude` 按 agent 裁剪，见「配置」）：
    - 生命周期写：`echuan_project_create`（建项目，`requirement_md` 必填，建项即入需求评审）、`echuan_project_requirement_write`（改写需求正文）、`echuan_project_submit`（草稿提交评审，仅历史草稿项目 / 驳回返工需要）、`echuan_spec_create`（建方案）、`echuan_spec_revise`（修订方案）、`echuan_plan_submit`（批量建卡）
@@ -14,7 +14,7 @@
    - 辅助写：`echuan_task_create`（单卡新增）、`echuan_task_update`（改卡）、`echuan_task_delete`（删卡）、`echuan_project_update`（改项目标题）、`echuan_product_create`（建产品）、`echuan_product_update`（整体改产品四字段）、`echuan_product_delete`（删无项目产品）、`echuan_project_package`（下载资料包）
    - 读：`echuan_inbox`（待办）、`echuan_product_list`（产品列表）、`echuan_project_list`（项目列表）、`echuan_task_list`（工作项列表）、`echuan_project_get`（项目详情）、`echuan_task_get`（工作项详情）、`echuan_material_get`（资料）、`echuan_worker_info`（worker 诊断，零 HTTP）
 
-`echuan_worker_info` 只读进程内状态（心跳开关、声明的 `kinds`、打码的 `worker_id`、派单目标 agent、inflight 工作项与租约），**不发任何 HTTP 请求、不写盘、不改状态**；`ctx.agents` 缺失时只降级展示。
+`echuan_worker_info` 只读进程内状态（心跳开关、声明的环节 name、打码的 `worker_id`、派单目标 agent、inflight 工作项与租约），**不发任何 HTTP 请求、不写盘、不改状态**；`ctx.agents` 缺失时只降级展示。
 
 生命周期写工具的参数与副作用：
 
@@ -31,7 +31,7 @@
 
 | 工具 | 端点 | 关键入参 | 返回 / 下一步 |
 |---|---|---|---|
-| `echuan_task_create` | `POST /v1/work-items` | `project_id`、`kind`（四类之一）、`title`、`body_md`，可选 `priority`、`depends_on`（`work_id` 数组） | `work_id`、`seq_no`、`state`；依赖以 `work_id` 表示 |
+| `echuan_task_create` | `POST /v1/work-items` | `project_id`、`kind`（环节 name）、`title`、`body_md`，可选 `priority`、`depends_on`（`work_id` 数组） | `work_id`、`seq_no`、`state`；依赖以 `work_id` 表示 |
 | `echuan_task_update` | `PATCH /v1/work-items?id=` | `work_id` + 至少一个 `title` / `body_md` / `priority`（空白不算有效修改） | 空 patch 本地拒绝、零请求；驳回提示随写入清空 |
 | `echuan_task_delete` | `DELETE /v1/work-items?id=` | `work_id` | 204 成功；已领取/不可删时 409 原样透出 |
 | `echuan_project_update` | `PATCH /v1/projects?id=` | `project_id`、`title` | 只改标题，状态与需求/方案指针不变 |
@@ -155,16 +155,17 @@ dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
     worker:
       poll:
         enable: true                      # 默认关闭；打开才会定时心跳
-      presetByKind:                       # kind → preset（角色路由在 worker 侧）
+      presetByKind:                       # 环节 name → preset（角色路由在 worker 侧）
         dev: dev-leader
-      # 键即本 worker 声明的 kinds，不再单独配置 kinds
+      # 键即本 worker 声明的环节 name（心跳上报的 kinds），不再单独配置 kinds
       metadata:                           # 原样上报，序列化后 ≤8KiB
         host: build-01
         os: darwin
         agent_version: 1.0.0
 ```
 
-- `worker.presetByKind` 是 **worker 侧的角色路由表**：默认 `requirement=pm, design=cto, breakdown=cto, dev=dev-leader`。平台的派单只带 `kind`，不带任何 preset 字段——新增角色只改这里（+ 在 Host 装好 preset），平台零改动。写空对象 `{}` 表示不做映射，会话回落 registry 默认 preset。
+- `worker.presetByKind` 是 **worker 侧的角色路由表**：键是平台流程里的**环节 name**（`GET /v1/flow` 的 `stages[].name`），默认 `requirement=pm, design=cto, breakdown=cto, dev=dev-leader`——就是内置默认流程的四个环节，所以存量配置零改动。平台的派单只带环节 name，不带任何 preset 字段——新增角色只改这里（+ 在 Host 装好 preset），平台零改动。写空对象 `{}` 表示不做映射，会话回落 registry 默认 preset。
+- **加环节不需要升包（0.7.0 起）**：平台流程配置里新增一个环节后，在 agent 配置的 `presetByKind` 里加一条 `<环节 name>: <preset>` 即可，心跳、领取、上报全部走名字，kit 不维护环节词汇。名字写错不会在本地被拒，而是把平台的 `400`（含「可用环节: name(label), …」清单）原样透出。唯一保留的本地校验是形态：非空、trim 后 ≤32 字符（与平台 R3 一致）。
 - **`worker.presetByKind` 是唯一的角色/能力配置项**：键即本 worker 声明的 `kinds`（能领什么卡），值即拿到卡后挂哪个 preset。心跳上报的 `kinds` 是它的键（派生值），没有独立的 `worker.kinds` 配置——有映射就必然有可接的卡。kind 词汇属于平台，kit 不维护枚举：拼错的 kind 由平台心跳拒绝（错误信息更准），不会因平台新增阶段而编译失败。
 - `worker.presetByKind` 为空（`{}`）时**不启动心跳循环**：没有映射就没有可接的 kind，心跳发出去只会每轮 400。此时只 warn 一条，工具仍可正常调用（但 `echuan_task_claim` 因没有 `worker_id` 会在本地拒绝）。
 - `worker.poll.enable=false` 是默认值：不建定时器、零请求；**手动领卡需要先注册**（见上一条）。
@@ -241,7 +242,7 @@ curl -fsS --get --data-urlencode 'id=<worker_id>' http://127.0.0.1:8720/v1/worke
 
 - 看到 `w_` 开头的 `worker_id` 且 `presence=active`：已注册。
 - `presence` 由服务端按 `last_seen + worker_ttl` 推导，只有 `active` / `offline` 两个值；客户端不自己算过期。
-- `kinds` 与配置一致：平台只会派这些类别的卡。
+- `kinds` 与配置一致（都是环节 name）：平台只会派这些环节的卡。
 - `current_work_item_id` 非空：正在干活。
 - 超过 `worker_ttl`（默认 45s）没有心跳：`presence=offline`。
 - `?id=` 详情比列表多 `first_seen` / `heartbeat_interval_ms` / `lease_ttl_seconds` / `metadata`；
@@ -267,7 +268,7 @@ curl -fsS --get --data-urlencode 'id=<worker_id>' http://127.0.0.1:8720/v1/worke
 | 心跳全部失败，日志 `warn` 网络错误 | `baseUrl` 写错 / 平台没起 / 端口不对 | `curl http://127.0.0.1:8720/readyz` 确认平台活着，再改 `baseUrl` |
 | 日志反复出现 `409 conflict`（心跳不会回 409，只会出现在 claim） | 该 `worker_id` 未注册（被保留期清理或平台换库） | 插件会自动清 id 重注册；持续出现则检查平台是否被重置 |
 | `echuan_task_claim` 报 `409 conflict`，message 含「未注册，请先发一次心跳」 | 平台注册表里没有这个 `worker_id`（还没心跳过，或已被保留期清理） | 等本进程下一轮心跳成功后再领卡；插件每轮心跳会自动重新注册，不要并发重试 claim |
-| 日志 `worker.presetByKind 为空，不启动心跳循环` | 没有任何 kind → preset 映射 | 补至少一条映射，或保持 `poll.enable=false` |
+| 日志 `worker.presetByKind 为空，不启动心跳循环` | 没有任何环节 name → preset 映射 | 补至少一条映射，或保持 `poll.enable=false` |
 | 派单来了但没人干（日志 `没有可用 agent`） | 本进程还没有 root agent | 确认插件加载在有 agent 的 profile 里；下一轮心跳会自动重试投递 |
 | `echuan_task_claim` 本地拒绝 `worker_id 尚未就绪` | 心跳没开 / 尚未注册成功 | 打开 `worker.poll.enable` 并配好 `presetByKind`，等首轮心跳成功后再领 |
 | `echuan_task_claim` 报 `409 conflict`，message 含「已持卡」 | 该 worker 已持有卡（一个 worker 同时只持一张） | 先 `echuan_task_report` 交掉当前卡，不要并发抢卡 |
@@ -281,7 +282,7 @@ curl -fsS --get --data-urlencode 'id=<worker_id>' http://127.0.0.1:8720/v1/worke
 - 心跳成功是 **204 空体**（不返回 worker 对象、不下发指令）：客户端不从心跳回包读任何字段，
   心跳间隔取本进程配置/兜底常量（默认 15s）；平台建议值只由 `GET /v1/workers?id=` 的
   `heartbeat_interval_ms` 发布，供运维核对。
-- 每次心跳都上报映射的键（`kinds`），平台据此覆盖本 worker 的声明；`dispatch` 按 `work_id + lease_id` 去重（内存 LRU 200 条），重复下发只投一次。
+- 每次心跳都上报映射的键（`kinds` = 环节 name），平台据此覆盖本 worker 的声明；`dispatch` 按 `work_id + lease_id` 去重（内存 LRU 200 条），重复下发只投一次。
 - `state` 是**占用声明**，不是 agent 的瞬时运行态：inflight 非空（或上一轮回包 `current_work_item_id` 非空，覆盖手动 `echuan_task_claim` 领的卡）期间**每一轮都上报 `busy`**，所以回合间隙不会被平台当成空闲再派一张卡；只有 `echuan_task_report` 成功（`notifyReported`）或租约过期后才会回到 `idle`。一个 worker 同一时间只持一张卡。
 - 心跳失败（网络 / 平台 5xx）按 1s→2s→5s→15s 退避重试，不会打爆平台；心跳任何情况都不返回 409。
 
