@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Casper-Mars/echuan/internal/domain/enum"
@@ -13,14 +14,21 @@ import (
 
 type fakeReader struct {
 	bodies map[string][]byte
+	// fallback is served for every material the map does not know. It lets a
+	// test drive a whole chain through the real flow without registering the
+	// throwaway report material of every intermediate card.
+	fallback []byte
 }
 
 func (f fakeReader) Read(_ context.Context, materialID string) ([]byte, error) {
 	body, ok := f.bodies[materialID]
-	if !ok {
-		return nil, fmt.Errorf("material %s not found", materialID)
+	if ok {
+		return body, nil
 	}
-	return body, nil
+	if f.fallback != nil {
+		return f.fallback, nil
+	}
+	return nil, fmt.Errorf("material %s not found", materialID)
 }
 
 func planBody(items ...planItem) []byte {
@@ -68,7 +76,7 @@ func listKind(t *testing.T, svc *Service, projectID string, kind enum.TaskKind) 
 func TestFlowDisabled(t *testing.T) {
 	now := testClock
 	svc, st := newTestService(t, &now)
-	svc.WithAutoFlow(false)
+	svc.WithFlow(flowFromYAML(t, strings.Replace(defaultPlusSafetyReview, "auto: true", "auto: false", 1)))
 	projectID := seedProject(t, st, "APP")
 	approveRequirement(t, svc, st, projectID)
 
