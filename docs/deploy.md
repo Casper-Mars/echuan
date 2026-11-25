@@ -19,14 +19,14 @@
 │    ├── objects/<sha[:2]>/<sha>    │                        │
 │    └── workspaces/<task>/         │                        │
 │                                   │                        │
-│  configs/echuan.container.toml ───┼── 只读挂载             │
+│  configs/echuan.container.yaml ──┼── 只读挂载             │
 │                                   ▼                        │
 │                        ┌──────────────────────────────┐    │
 │                        │ docker 容器 echuan-v2         │    │
 │                        │ uid/gid 10001                │    │
 │                        │ /usr/local/bin/echuan        │    │
 │                        │ /data（bind mount）           │    │
-│                        │ /etc/echuan/echuan.toml (ro) │    │
+│                        │ /etc/echuan/echuan.yaml (ro) │    │
 │                        │ 0.0.0.0:8720                 │    │
 │                        └──────────────────────────────┘    │
 └────────────────────────────────────────────────────────────┘
@@ -292,8 +292,10 @@ docker buildx rm echuan-cold                    # 只清掉这个 builder 的缓
 
 ## 4. 配置
 
-容器读取只读挂载的 `/etc/echuan/echuan.toml`（`configs/echuan.container.toml`）。
-优先级：**环境变量 `ECHUAN_*` > TOML > 内置默认值**。
+容器读取只读挂载的 `/etc/echuan/echuan.yaml`（`configs/echuan.container.yaml`）。
+优先级：**环境变量 `ECHUAN_*` > YAML > 内置默认值**。格式只支持 YAML（`.yaml`/`.yml`）；旧的 TOML 配置已不再解析。
+配置非法（含 `flow` 段的 R1–R17 启动校验）时容器起不来，`docker logs` 里会有 `<路径>:<行号>: <原因>`。
+任务流程（`flow.stages`）与校验规则见 `docs/decisions/ADR-0003-workflow-config-stage-model.md`。
 
 | 键 | 容器值 | 说明 |
 |----|--------|------|
@@ -316,7 +318,7 @@ ECHUAN_PORT=8721
 COMPOSE_PROJECT_NAME=echuan-v2       # 默认 echuan-v2（compose 顶层 name），脚本会按它加 -p；已有部署不要中途改，否则 compose 会当成另一个项目
 ```
 
-> 修改 `configs/echuan.container.toml` 后需要重启容器：`docker compose restart echuan-v2`。
+> 修改 `configs/echuan.container.yaml` 后需要重启容器：`docker compose restart echuan-v2`。
 
 ---
 

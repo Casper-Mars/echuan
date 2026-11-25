@@ -17,7 +17,8 @@
 | `im_max_cards` | `ECHUAN_IM_MAX_CARDS` | 同时维护的卡片上限，默认 10 |
 | `im_doc_folder_token` | `ECHUAN_IM_DOC_FOLDER` | 材料文档目录；为空则卡片上的文件名不带链接 |
 
-> 注意：配置键是**扁平**的（`im_enabled` 而不是 `[im]` 段）。本仓库的 TOML 解析器忽略 section 头，写段会让键静默丢失。
+> 注意：在 YAML 配置文件里这些键写在嵌套的 `im:` 段下（`im: {enabled: true}`），环境变量仍是扁平的 `ECHUAN_IM_*`。上表左列是配置键名，不是顶层 YAML 键。
+> 旧版扁平 TOML 写法（`im_enabled = true`）已随 TOML 解析器一起删除，迁移到 `configs/echuan.yaml` 时请改写为 `im:` 段。
 
 ## 启动与重启
 
