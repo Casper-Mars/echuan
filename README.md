@@ -171,10 +171,10 @@ curl -fsS 127.0.0.1:8721/readyz
 ```bash
 make web                  # 构建前端并同步到 internal/web/dist
 make build                # 生成 ./echuan
-./echuan -config configs/echuan.toml
+./echuan -config configs/echuan.yaml
 ```
 
-默认监听 `127.0.0.1:8720`，数据目录 `~/.echuan`；样例配置使用 `8721` / `~/echuan-v2-data`。
+默认读取 `./echuan.yaml`，监听 `127.0.0.1:8720`，数据目录 `~/.echuan`；样例配置使用 `8721` / `~/echuan-v2-data`。
 也可以完全不用配置文件，通过 `ECHUAN_*` 环境变量覆盖。
 
 ### 健康检查
@@ -186,8 +186,14 @@ curl -fsS 127.0.0.1:8721/readyz    # 就绪（含数据库）
 
 ## 配置
 
-优先级：**环境变量（`ECHUAN_*`） > TOML 文件 > 内置默认值**。TOML 为扁平 `key = value`，
-支持 `#` 注释，样例见 [`configs/echuan.toml`](configs/echuan.toml)。
+优先级：**环境变量（`ECHUAN_*`） > YAML 文件 > 内置默认值**。格式只支持 YAML（`.yaml`/`.yml`），
+样例见 [`configs/echuan.yaml`](configs/echuan.yaml)；旧的 TOML 配置已不再解析（传 `.toml` 会直接报错指路）。
+
+启动校验失败时进程退出并打印 `<路径>:<行号>: <原因>`，例如流里写了未知模板变量：
+
+```text
+echuan: configs/echuan.yaml:47: flow.stages[2].title: unknown template variable {上游摘要} in "方案：{上游摘要}"; 可用变量: {上游卡号} {上游卡标题} {项目名} {产品名} {环节名} (R10)
+```
 
 常用配置：
 
@@ -203,6 +209,20 @@ curl -fsS 127.0.0.1:8721/readyz    # 就绪（含数据库）
 | `material_max_bytes` | `ECHUAN_MATERIAL_MAX_BYTES` | `20971520` | 单个物料最大字节数（20 MiB） |
 
 完整配置项、校验规则与调参建议见 [`docs/deploy.md`](docs/deploy.md)。
+
+### 任务流程（`flow` 段）
+
+流程是配置驱动的：`flow.stages` 里一个环节一项，`id` 落库（`tasks.kind`，正整数且永不复用）、
+`name` 是对外标识（kit 配置键、HTTP `kind`、审计规则串 `requirement->design`）、`label` 只是显示名。
+`derive` 声明审批通过后派给谁：`none` / `single`（一张卡）/ `list`（按上游清单文档展开）/
+`fanout`（配置里列举）。删掉整段 `flow` 会启用内置默认流程（`requirement→design→breakdown→dev`），
+效果与样例逐字段一致。
+
+派生卡的任务说明按三级取：条目正文（仅 `list`，不回落）→ 目标环节的 `description` →
+`flow.default_description`。会被 `single` 派生的环节必须显式写 `description`（可写 `""` 表示有意留空），
+否则拒绝启动（R16）。启动日志第一行 `flow chain loaded` 会打印来源、`fingerprint`、`auto` 与生效环节序列。
+
+校验规则 R1–R17 与字段含义见 [`docs/decisions/ADR-0003-workflow-config-stage-model.md`](docs/decisions/ADR-0003-workflow-config-stage-model.md)。
 
 ## Agent 接入（kit）
 

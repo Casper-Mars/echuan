@@ -1,22 +1,23 @@
 // Package platform provides cross-cutting infrastructure shared by the
-// service: configuration loading, logging, time and identifier helpers.
+// service: configuration loading, the task flow definition, logging, time and
+// identifier helpers.
 package platform
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Config is the fully resolved runtime configuration of echuan.
 //
-// Values are resolved in this order (later wins): defaults, TOML file,
+// Values are resolved in this order (later wins): defaults, YAML file,
 // ECHUAN_* environment variables.
 type Config struct {
 	// Listen is the address the HTTP server binds to.
@@ -54,9 +55,19 @@ type Config struct {
 	// IM is the optional Feishu bot integration. When IM.Enabled is false the
 	// platform behaves exactly as it did before the integration existed.
 	IM IMConfig
+	// Flow is the task flow: the ordered stage table, the derivation rules and
+	// the derived-card description policy. It always has a value: a config
+	// file without a flow section gets the built-in default flow.
+	Flow FlowConfig
+
+	// lineOfKey records the file line every top-level key was read from, so a
+	// cross-field validation failure in normalize can still point at the file
+	// ("<path>:<line>: ..."). Keys whose value was overridden by the
+	// environment are dropped from the map.
+	lineOfKey map[string]int
 }
 
-// DefaultConfig returns the configuration used when neither a TOML file nor
+// DefaultConfig returns the configuration used when neither a YAML file nor
 // environment variables provide a value.
 func DefaultConfig() Config {
 	return Config{
@@ -74,19 +85,24 @@ func DefaultConfig() Config {
 		WorkerRetention:        1 * time.Hour,
 		LogLevel:               "info",
 		IM:                     DefaultIMConfig(),
+		Flow:                   DefaultFlowProfile(),
 	}
 }
 
-// Load resolves the configuration from defaults, the TOML file at path and
+// Load resolves the configuration from defaults, the YAML file at path and
 // ECHUAN_* environment variables. A missing config file is not an error.
+//
+// The configuration format is YAML only (D1″): the TOML reader was removed, so
+// a config path with any other extension is rejected with a pointer at the
+// YAML sample instead of being parsed as something else.
+//
+// Every file problem is reported as "<path>:<line>: <reason>", which is what
+// the startup output and AC9 rely on. A broken flow therefore aborts before the
+// database is opened and before the listener exists.
 func Load(path string) (Config, error) {
 	cfg := DefaultConfig()
 
-	values, err := readTOMLFile(path)
-	if err != nil {
-		return Config{}, err
-	}
-	if err := cfg.apply(values, "config file "+path); err != nil {
+	if err := cfg.applyYAMLFile(path); err != nil {
 		return Config{}, err
 	}
 
@@ -99,11 +115,39 @@ func Load(path string) (Config, error) {
 	if err := cfg.apply(env, "environment"); err != nil {
 		return Config{}, err
 	}
+	// Environment variables win over the file, so their keys must no longer be
+	// reported at the file line they were read from.
+	for key := range env {
+		delete(cfg.lineOfKey, key)
+	}
 
 	if err := cfg.normalize(); err != nil {
-		return Config{}, err
+		return Config{}, cfg.annotate(path, err)
 	}
 	return cfg, nil
+}
+
+// annotate rewrites a validation error of the resolved configuration into the
+// "<path>:<line>: <reason>" form, using the line the offending key was read
+// from. It is a no-op when the message does not start with a key read from the
+// file (for example an environment-only value).
+func (c *Config) annotate(path string, err error) error {
+	if path == "" || err == nil {
+		return err
+	}
+	var cfgErr *configError
+	if errors.As(err, &cfgErr) {
+		return err
+	}
+	key, _, ok := strings.Cut(err.Error(), ": ")
+	if !ok {
+		return err
+	}
+	line, ok := c.lineOfKey[key]
+	if !ok {
+		return err
+	}
+	return configErrf(path, line, "%s", err.Error())
 }
 
 // envKeys maps configuration keys to their environment variable names.
@@ -129,6 +173,130 @@ var envKeys = map[string]string{
 	"im_quiet_hours":            "ECHUAN_IM_QUIET_HOURS",
 	"im_max_cards":              "ECHUAN_IM_MAX_CARDS",
 	"im_doc_folder_token":       "ECHUAN_IM_DOC_FOLDER",
+}
+
+// topLevelKeys are the top-level keys the YAML reader understands. Any other
+// top-level key keeps the historical "unknown keys are ignored" behaviour: a
+// file written for a newer version still starts an older binary. Inside the
+// flow subtree unknown keys are rejected instead (R14).
+var topLevelKeys = func() map[string]bool {
+	out := make(map[string]bool, len(envKeys))
+	for key := range envKeys {
+		if !strings.HasPrefix(key, "im_") {
+			out[key] = true
+		}
+	}
+	return out
+}()
+
+// applyYAMLFile reads the YAML file at path onto cfg. A missing file is not an
+// error; the defaults stay in place.
+func (c *Config) applyYAMLFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	// D1″: YAML only. Point at the sample instead of guessing what the old
+	// format meant.
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml":
+	default:
+		return configErrf(path, 1,
+			"unsupported config format %q: the configuration layer only reads YAML (.yaml/.yml); "+
+				"TOML support was removed, see configs/echuan.yaml", filepath.Ext(path))
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return configErrf(path, 1, "read config file: %v", err)
+	}
+
+	root, err := yamlRoot(path, data)
+	if err != nil {
+		return err
+	}
+	if root == nil {
+		return nil
+	}
+	pairs, err := yamlPairs(path, root, "config")
+	if err != nil {
+		return err
+	}
+
+	for _, pair := range pairs {
+		key, value := pair[0], pair[1]
+		switch key.Value {
+		case "flow":
+			flow, err := parseFlowSection(path, value)
+			if err != nil {
+				return err
+			}
+			if err := flow.validate(); err != nil {
+				return err
+			}
+			c.Flow = flow.flowConfig(path)
+		case "im":
+			if err := c.applyIMSection(path, value); err != nil {
+				return err
+			}
+		default:
+			if !topLevelKeys[key.Value] {
+				continue
+			}
+			raw, err := yamlScalar(path, value, key.Value)
+			if err != nil {
+				return err
+			}
+			if err := c.set(key.Value, raw); err != nil {
+				return configErrf(path, key.Line, "%v", err)
+			}
+			if c.lineOfKey == nil {
+				c.lineOfKey = make(map[string]int, len(pairs))
+			}
+			c.lineOfKey[key.Value] = key.Line
+		}
+	}
+	return nil
+}
+
+// applyIMSection reads the nested im: mapping and feeds it through the same
+// key parser the environment and the old flat form used. Unknown im keys stay
+// ignored, like unknown top-level keys.
+func (c *Config) applyIMSection(path string, node *yaml.Node) error {
+	pairs, err := yamlPairs(path, node, "im")
+	if err != nil {
+		return err
+	}
+	for _, pair := range pairs {
+		key, value := pair[0], pair[1]
+		configKey := "im_" + key.Value
+		if _, known := envKeys[configKey]; !known {
+			continue
+		}
+		raw, err := yamlListOrScalar(path, value, "im."+key.Value)
+		if err != nil {
+			return err
+		}
+		if err := c.set(configKey, raw); err != nil {
+			return configErrf(path, key.Line, "%v", err)
+		}
+	}
+	return nil
+}
+
+// yamlListOrScalar renders a value the flat key parser understands: a sequence
+// becomes a comma separated list, anything else its scalar text.
+func yamlListOrScalar(path string, node *yaml.Node, field string) (string, error) {
+	if node.Kind == yaml.SequenceNode {
+		items, err := yamlStringList(path, node, field)
+		if err != nil {
+			return "", err
+		}
+		return strings.Join(items, ","), nil
+	}
+	return yamlScalar(path, node, field)
 }
 
 // apply assigns raw string values onto cfg. source is only used to build
@@ -290,112 +458,10 @@ func expandHome(path, home string) (string, error) {
 	return path, nil
 }
 
-// readTOMLFile parses a minimal, flat TOML document. Supported syntax:
-// "key = \"value\"", "key = 123", "key = true", "# comment" and blank lines.
-// Section headers such as "[server]" are ignored: all keys are flat.
-// A missing file yields an empty map and no error.
-func readTOMLFile(path string) (map[string]string, error) {
-	if path == "" {
-		return nil, nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("open config file %s: %w", path, err)
-	}
-	defer f.Close()
-
-	values, err := parseTOML(f)
-	if err != nil {
-		return nil, fmt.Errorf("parse config file %s: %w", path, err)
-	}
-	return values, nil
-}
-
-// parseTOML parses the minimal TOML subset described by readTOMLFile.
-func parseTOML(r io.Reader) (map[string]string, error) {
-	values := map[string]string{}
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
-	for lineNo := 1; scanner.Scan(); lineNo++ {
-		line := stripComment(scanner.Text())
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "[") {
-			continue
-		}
-		key, raw, ok := strings.Cut(line, "=")
-		if !ok {
-			return nil, fmt.Errorf("line %d: expected key = value", lineNo)
-		}
-		key = strings.TrimSpace(key)
-		raw = strings.TrimSpace(raw)
-		if key == "" {
-			return nil, fmt.Errorf("line %d: empty key", lineNo)
-		}
-		value, err := parseTOMLValue(raw)
-		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", lineNo, err)
-		}
-		values[key] = value
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return values, nil
-}
-
-// parseTOMLValue normalizes a raw value into the plain string form used by
-// Config.set: quoted strings are unquoted, everything else is kept verbatim.
-func parseTOMLValue(raw string) (string, error) {
-	if raw == "" {
-		return "", errors.New("empty value")
-	}
-	if strings.HasPrefix(raw, `"`) {
-		if len(raw) < 2 || !strings.HasSuffix(raw, `"`) {
-			return "", fmt.Errorf("unterminated string %s", raw)
-		}
-		return raw[1 : len(raw)-1], nil
-	}
-	if strings.HasPrefix(raw, "'") {
-		if len(raw) < 2 || !strings.HasSuffix(raw, "'") {
-			return "", fmt.Errorf("unterminated string %s", raw)
-		}
-		return raw[1 : len(raw)-1], nil
-	}
-	return raw, nil
-}
-
-// stripComment removes a trailing "#" comment that is not inside a quoted
-// string.
-func stripComment(line string) string {
-	inSingle, inDouble := false, false
-	for i, r := range line {
-		switch r {
-		case '\'':
-			if !inDouble {
-				inSingle = !inSingle
-			}
-		case '"':
-			if !inSingle {
-				inDouble = !inDouble
-			}
-		case '#':
-			if !inSingle && !inDouble {
-				return line[:i]
-			}
-		}
-	}
-	return line
-}
-
 // IMConfig is the Feishu bot integration configuration.
 //
-// The keys are flat (im_enabled, im_app_id, ...) because the TOML reader in
-// this package ignores section headers and keeps every key flat: an [im]
-// section would silently drop its keys.
+// In YAML the keys live under the im: mapping; the flat im_* keys are still the
+// internal form because the environment variables and the key parser share it.
 type IMConfig struct {
 	// Enabled gates the whole integration. False keeps the platform unchanged.
 	Enabled bool

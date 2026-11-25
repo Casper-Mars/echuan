@@ -147,22 +147,23 @@ port_in_use() {
 
 write_config() {
   cat >"$CONFIG" <<EOF
-# e2e-worker.sh 生成的临时配置（每次运行都是新目录）
-listen = "127.0.0.1:$PORT"
-data_dir = "$TMP_DIR/data"
-read_pool_size = 4
-lease_ttl = "${LEASE_TTL_SECONDS}s"
-max_attempts = 3
-poll_timeout = "2s"
-review_stale_hours = 72
-material_max_bytes = 20971520
-worker_ttl = "${WORKER_TTL_SECONDS}s"
-heartbeat_interval = "15s"
-worker_metadata_max_bytes = 8192
+# e2e-worker.sh 生成的临时配置（每次运行都是新目录）；格式只支持 YAML
+listen: "127.0.0.1:$PORT"
+data_dir: "$TMP_DIR/data"
+read_pool_size: 4
+lease_ttl: "${LEASE_TTL_SECONDS}s"
+max_attempts: 3
+poll_timeout: "2s"
+review_stale_hours: 72
+material_max_bytes: 20971520
+worker_ttl: "${WORKER_TTL_SECONDS}s"
+heartbeat_interval: "15s"
+worker_metadata_max_bytes: 8192
 # 保留期必须严格大于 worker_ttl（配置校验），第 9 步才能在「先不删」之后
 # 再观察到清理。46s 让离线判定的窗口和清理窗口几乎重合，等待时间最短。
-worker_retention = "${WORKER_RETENTION_SECONDS}s"
-log_level = "info"
+worker_retention: "${WORKER_RETENTION_SECONDS}s"
+log_level: "info"
+# 不写 flow 段：e2e 跑的是内置默认流程
 EOF
 }
 
@@ -218,7 +219,7 @@ STEP="1/9 临时环境"
 say ""
 say "== 1/9 临时环境、全新库一键启动 =="
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/echuan-e2e.XXXXXX")"
-CONFIG="$TMP_DIR/echuan.toml"
+CONFIG="$TMP_DIR/echuan.yaml"
 LOG="$TMP_DIR/echuan.log"
 mkdir -p "$TMP_DIR/data"
 say "临时目录: $TMP_DIR"

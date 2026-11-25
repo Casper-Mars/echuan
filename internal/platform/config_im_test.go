@@ -13,7 +13,7 @@ import (
 func TestIMDisabledByDefault(t *testing.T) {
 	clearEnv(t)
 
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestIMEnabledFromEnv(t *testing.T) {
 	t.Setenv("ECHUAN_IM_MAX_CARDS", "3")
 	t.Setenv("ECHUAN_IM_DOC_FOLDER", "fld_test")
 
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -89,16 +89,17 @@ func TestIMEnabledFromEnv(t *testing.T) {
 	}
 }
 
-// TestIMFromTOML checks the flat key form the sample configs use.
-func TestIMFromTOML(t *testing.T) {
+// TestIMFromYAML checks the nested im: section the sample configs use.
+func TestIMFromYAML(t *testing.T) {
 	clearEnv(t)
 
-	path := filepath.Join(t.TempDir(), "echuan.toml")
+	path := filepath.Join(t.TempDir(), "echuan.yaml")
 	content := strings.Join([]string{
-		`im_enabled = true`,
-		`im_app_id = "cli_file"`,
-		`im_app_secret = "from-file"`,
-		`im_allowed_chat_ids = "oc_file"`,
+		"im:",
+		"  enabled: true",
+		"  app_id: \"cli_file\"",
+		"  app_secret: \"from-file\"",
+		"  allowed_chat_ids: [oc_file]",
 	}, "\n")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -144,7 +145,7 @@ func TestIMEnabledRequiresCredentials(t *testing.T) {
 			}
 			t.Setenv(tc.drop, "")
 
-			_, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+			_, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
 			if err == nil {
 				t.Fatal("Load: expected error, got nil")
 			}
@@ -163,7 +164,7 @@ func TestIMDisabledToleratesGarbage(t *testing.T) {
 	t.Setenv("ECHUAN_IM_QUIET_HOURS", "whenever")
 	t.Setenv("ECHUAN_IM_MAX_CARDS", "0")
 
-	if _, err := Load(filepath.Join(t.TempDir(), "missing.toml")); err != nil {
+	if _, err := Load(filepath.Join(t.TempDir(), "missing.yaml")); err != nil {
 		t.Fatalf("Load with disabled IM: %v", err)
 	}
 }
@@ -192,7 +193,7 @@ func TestIMInvalidValues(t *testing.T) {
 			t.Setenv("ECHUAN_IM_CHAT_IDS", "oc_1")
 			t.Setenv(tc.key, tc.value)
 
-			_, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+			_, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
 			if err == nil {
 				t.Fatal("Load: expected error, got nil")
 			}

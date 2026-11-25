@@ -8,7 +8,7 @@
 
 ## 1. 配置项
 
-配置来源优先级：**环境变量 `ECHUAN_*` > TOML 文件 > 内置默认值**。TOML 为扁平 `key = value`，支持 `#` 注释；样例见 `configs/echuan.toml`。
+配置来源优先级：**环境变量 `ECHUAN_*` > YAML 文件 > 内置默认值**。格式只支持 YAML（`.yaml`/`.yml`）；样例见 `configs/echuan.yaml`。
 
 | 键 | 环境变量 | 默认值 | 含义 | 调参注意 |
 |---|---|---|---|---|
@@ -267,7 +267,7 @@ SELECT t.task_id, p.project_id, dep.task_id AS waiting_on, dep.status AS waiting
 bash scripts/e2e-worker.sh   # 或 make e2e
 ```
 
-- 每次新建临时目录（`TMPDIR`，默认 `/tmp`）+ 随机高位端口 + 独立 TOML，不触碰 `~/.echuan` 或仓库内数据；空数据目录启动会自动跑迁移并生成 `state.db`；
+- 每次新建临时目录（`TMPDIR`，默认 `/tmp`）+ 随机高位端口 + 独立 YAML 配置，不触碰 `~/.echuan` 或仓库内数据；空数据目录启动会自动跑迁移并生成 `state.db`；
 - 覆盖 9 步：
   1. 空数据目录一键启动（自动迁移）、`/healthz` `/readyz` `/version`；
   2. 产品 / 项目容器语义（建项不建卡）、未注册 `/v1` 路径 404、参数错误 400；
