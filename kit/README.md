@@ -110,8 +110,8 @@ dsh plugin --profile <name> add ./kit
 
 ```bash
 cd kit
-pnpm build && pnpm pack            # 产出 dsh-echuan-0.2.0.tgz（已被 gitignore）
-dsh plugin --profile <name> add ./dsh-echuan-0.2.0.tgz
+pnpm build && pnpm pack            # 产出 dsh-echuan-0.8.0.tgz（已被 gitignore）
+dsh plugin --profile <name> add ./dsh-echuan-0.8.0.tgz
 ```
 
 同样受上面两条 ⚠️ 约束：`--profile` 在前；手工补 `bundles` 时要保留 `dsh-echuan`。
