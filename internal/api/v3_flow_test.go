@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,27 +14,29 @@ import (
 	storev3 "github.com/Casper-Mars/echuan/internal/store/v3"
 )
 
-// flowConfigYAML is the AC1 configuration: the built-in chain with dev handing
-// over to a new stage, whose templates name the upstream card.
+// flowConfigYAML is the configured-flow fixture: the built-in chain with dev
+// handing over to a new stage, whose task template names the upstream card. Every
+// deriving stage spells out derive.auto: true and there is no flow-level switch.
 const flowConfigYAML = `flow:
-  auto: true
   stages:
-    - { id: 1, name: requirement, label: 需求, material: requirement, derive: { to: design, mode: single } }
-    - { id: 2, name: design, label: 方案, material: design, title: "技术方案", description: "", derive: { to: breakdown, mode: single } }
-    - { id: 3, name: breakdown, label: 拆解, material: plan, title: "任务拆分", description: "", derive: { to: dev, mode: list, source: artifact, format: json } }
+    - { id: 1, name: requirement, label: 需求, material: requirement, description: 人工建卡入口, derive: { auto: true, to: design, mode: single } }
+    - { id: 2, name: design, label: 方案, material: design, title: "技术方案", task: "", description: 把需求展开成技术方案, derive: { auto: true, to: breakdown, mode: single } }
+    - { id: 3, name: breakdown, label: 拆解, material: plan, title: "任务拆分", task: "", description: 把方案拆成可独立验收的开发卡, derive: { auto: true, to: dev, mode: list, source: artifact, format: json } }
     - id: 4
       name: dev
       label: 开发
       material: report
       open_cards: multiple
       closing: true
-      derive: { to: safety_review, mode: single }
+      description: 实现与自测
+      derive: { auto: true, to: safety_review, mode: single }
     - id: 5
       name: safety_review
       label: 安全评审
       material: report
       title: "安全评审：{上游卡标题}"
-      description: "针对 {上游卡号} 做安全评审"
+      description: 安全评审环节的阶段描述
+      task: "针对 {上游卡号} 做安全评审"
       derive: { mode: none }
 `
 
@@ -65,9 +68,6 @@ func TestFlowEndpointMatchesConfig(t *testing.T) {
 	}
 	flow := decodeBody[v3FlowResponse](t, payload)
 
-	if !flow.Auto {
-		t.Error("auto = false, want true")
-	}
 	if flow.Default {
 		t.Error("default = true, want false for a configured flow")
 	}
@@ -76,6 +76,29 @@ func TestFlowEndpointMatchesConfig(t *testing.T) {
 	}
 	if len(flow.Fingerprint) != 12 {
 		t.Errorf("fingerprint = %q, want 12 characters", flow.Fingerprint)
+	}
+
+	// AC3/AC11 at the wire level: no flow-level "auto" any more, and every
+	// stage carries a "task" key next to its "description".
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if _, ok := raw["auto"]; ok {
+		t.Error(`top-level "auto" is still served; the switch is per stage now`)
+	}
+	rawStages, ok := raw["stages"].([]any)
+	if !ok || len(rawStages) != 5 {
+		t.Fatalf("payload stages = %v, want 5 objects", raw["stages"])
+	}
+	for i, rawStage := range rawStages {
+		stage, ok := rawStage.(map[string]any)
+		if !ok {
+			t.Fatalf("stage %d = %v, want an object", i, rawStage)
+		}
+		if _, ok := stage["task"]; !ok {
+			t.Errorf("stage %d (%v) has no \"task\" key", i, stage["name"])
+		}
 	}
 
 	want := []struct {
@@ -87,14 +110,15 @@ func TestFlowEndpointMatchesConfig(t *testing.T) {
 		closing   bool
 		title     string
 		desc      string
+		task      string
 		mode      string
 		to        string
 	}{
-		{1, "requirement", "需求", "requirement", "single", false, "", "", "single", "design"},
-		{2, "design", "方案", "design", "single", false, "技术方案", "", "single", "breakdown"},
-		{3, "breakdown", "拆解", "plan", "single", false, "任务拆分", "", "list", "dev"},
-		{4, "dev", "开发", "report", "multiple", true, "", "", "single", "safety_review"},
-		{5, "safety_review", "安全评审", "report", "single", false, "安全评审：{上游卡标题}", "针对 {上游卡号} 做安全评审", "none", ""},
+		{1, "requirement", "需求", "requirement", "single", false, "", "人工建卡入口", "", "single", "design"},
+		{2, "design", "方案", "design", "single", false, "技术方案", "把需求展开成技术方案", "", "single", "breakdown"},
+		{3, "breakdown", "拆解", "plan", "single", false, "任务拆分", "把方案拆成可独立验收的开发卡", "", "list", "dev"},
+		{4, "dev", "开发", "report", "multiple", true, "", "实现与自测", "", "single", "safety_review"},
+		{5, "safety_review", "安全评审", "report", "single", false, "安全评审：{上游卡标题}", "安全评审环节的阶段描述", "针对 {上游卡号} 做安全评审", "none", ""},
 	}
 	if len(flow.Stages) != len(want) {
 		t.Fatalf("stages = %d, want %d", len(flow.Stages), len(want))
@@ -109,9 +133,9 @@ func TestFlowEndpointMatchesConfig(t *testing.T) {
 			t.Errorf("stage %s open_cards=%q closing=%t, want %q/%t",
 				got.Name, got.OpenCards, got.Closing, w.openCards, w.closing)
 		}
-		if got.Title != w.title || got.Description != w.desc {
-			t.Errorf("stage %s title=%q description=%q, want %q/%q",
-				got.Name, got.Title, got.Description, w.title, w.desc)
+		if got.Title != w.title || got.Description != w.desc || got.Task != w.task {
+			t.Errorf("stage %s title=%q description=%q task=%q, want %q/%q/%q",
+				got.Name, got.Title, got.Description, got.Task, w.title, w.desc, w.task)
 		}
 		if got.Derive.Mode != w.mode || got.Derive.To != w.to {
 			t.Errorf("stage %s derive=mode=%q to=%q, want %q/%q",

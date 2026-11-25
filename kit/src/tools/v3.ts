@@ -1,5 +1,5 @@
 /**
- * V3 工具面：18 个工具（10 写 + 8 读）。
+ * V3 工具面：19 个工具（10 写 + 9 读）。
  *
  * 与 v2 的差异：
  * - `work_*` 全部改为 `task_*`；交付物统一走任务附件；
@@ -27,6 +27,7 @@ import {
   formatV3ProductCreated,
   formatV3Reported,
   formatV3Renewed,
+  formatV3StageList,
   formatV3Task,
   formatV3TaskCreated,
   formatV3TaskList,
@@ -561,6 +562,17 @@ export function createV3ReadTools(options: EchuanToolOptions): ToolDefinition[] 
         const result = await client.getV3Project({ id: requireText(args.id, 'id') })
         if (result.kind === 'empty') throw new EchuanValidationError('项目不存在', 'not_found', 'id')
         return formatV3Project(result.data)
+      },
+    ),
+    readTool(
+      'echuan_stage_list',
+      '当前流程的环节清单（GET /v1/flow）：每条只有 id / name / 阶段描述；建卡选环节、认领前确认环节名时用。',
+      {},
+      async () => {
+        // 无入参、只读：平台不可达 / 非 2xx / 非 JSON 都由客户端抛错（readTool 统一转出），
+        // 绝不回落成「空清单」——agent 会把空清单当成「平台没配环节」。
+        const result = await client.getV3Flow()
+        return formatV3StageList(result.kind === 'empty' ? undefined : result.data)
       },
     ),
     readTool(

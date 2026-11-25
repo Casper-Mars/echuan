@@ -126,6 +126,33 @@ export interface V3List<T> {
   items: T[]
 }
 
+/**
+ * 流程环节（`GET /v1/flow` 的 `stages[]`）。
+ *
+ * **只声明工具渲染用到的三个字段**：`id`（= `tasks.kind`）、`name`（对外标识，建卡时
+ * 填的 kind）与 `description`（阶段描述，人读文本）。平台的 `label` / `material` /
+ * `derive` / `source` / `fingerprint` 等字段不进这个口径（方案 N7）——这里不声明，
+ * 渲染层也就没有顺手多给的入口。
+ */
+export interface V3FlowStage {
+  /** 环节 id（平台落库的整数）；异常回包里可能是字符串，渲染层两种都认。 */
+  id: number | string
+  /** 环节 name（对外标识，agent 建卡 / 认领时按它填 `kind`）。 */
+  name: string
+  /** 阶段描述；未配置时是空串。 */
+  description: string
+}
+
+/**
+ * `GET /v1/flow` 的回包。
+ *
+ * 只消费 `stages`；`source` / `fingerprint` / `default` 等运维字段不进口径。
+ * `stages` 声明为可选：形状不对时由渲染层按空清单处理，不在这里抛错。
+ */
+export interface V3Flow {
+  stages?: V3FlowStage[]
+}
+
 export interface V3ProjectCreateInput {
   product_id: string
   name: string
@@ -186,6 +213,8 @@ export interface V3Client {
   }): Promise<ApiResult<V3Attachment>>
   heartbeatV3(input: { worker_id: string; state: "idle" | "busy"; kinds: readonly V3TaskKind[]; metadata: Record<string, unknown> }): Promise<ApiResult<unknown>>
   getV3Inbox(): Promise<ApiResult<V3List<V3Task>>>
+  /** `GET /v1/flow`：当前流程的环节表（渲染只取 id / name / 阶段描述）。 */
+  getV3Flow(): Promise<ApiResult<V3Flow>>
   listV3Events(query: { task_id: string; limit?: number }): Promise<ApiResult<V3List<V3Event>>>
   listV3Decisions(query: { task_id: string; limit?: number }): Promise<ApiResult<V3List<V3Decision>>>
   listV3Workers(query?: { limit?: number }): Promise<ApiResult<V3List<V3Worker>>>
