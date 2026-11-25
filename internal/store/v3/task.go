@@ -11,7 +11,7 @@ import (
 	storedb "github.com/Casper-Mars/echuan/internal/store"
 )
 
-const taskColumns = `t.id, t.task_id, t.project_id, t.parent_task_id, t.kind, t.title,
+const taskColumns = `t.id, t.task_id, t.project_id, t.parent_task_id, t.kind, t.kind_parallel, t.title,
 	t.description_md, t.context_md, t.priority, t.status, t.attempt, t.max_attempts,
 	t.not_before, t.lease_id, t.lease_until, t.worker_id, t.reason,
 	t.create_time, t.update_time, p.project_id AS project_code,
@@ -42,9 +42,13 @@ func CreateTaskTx(ctx context.Context, tx *sql.Tx, in CreateTaskInput) (Task, er
 	if in.MaxAttempts <= 0 {
 		in.MaxAttempts = 3
 	}
+	kindParallel, err := kindParallelOrDefault(in.Kind, in.KindParallel)
+	if err != nil {
+		return Task{}, err
+	}
 
 	var out Task
-	err := func() error {
+	err = func() error {
 		var (
 			projectPK     int64
 			projectStatus enum.ProjectStatus
@@ -94,11 +98,11 @@ func CreateTaskTx(ctx context.Context, tx *sql.Tx, in CreateTaskInput) (Task, er
 		}
 
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO tasks (task_id, project_id, parent_task_id, kind, title,
+			INSERT INTO tasks (task_id, project_id, parent_task_id, kind, kind_parallel, title,
 			                   description_md, context_md, priority, status, attempt,
 			                   max_attempts, create_time, update_time)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
-			in.TaskID, projectPK, parentPK, in.Kind, in.Title,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+			in.TaskID, projectPK, parentPK, in.Kind, kindParallel, in.Title,
 			in.DescriptionMD, in.ContextMD, in.Priority, status, in.MaxAttempts, in.Now, in.Now)
 		if err != nil {
 			if isUniqueViolation(err) {
@@ -128,6 +132,7 @@ func CreateTaskTx(ctx context.Context, tx *sql.Tx, in CreateTaskInput) (Task, er
 			ProjectID:     projectPK,
 			ParentTaskID:  parentPK,
 			Kind:          in.Kind,
+			KindParallel:  kindParallel,
 			Title:         in.Title,
 			DescriptionMD: in.DescriptionMD,
 			ContextMD:     in.ContextMD,
@@ -511,6 +516,26 @@ func CancelTask(ctx context.Context, s *storedb.Store, taskID, actor, now string
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────
+
+// kindParallelOrDefault resolves the open_cards snapshot written with a new
+// card. An explicit value wins (the flow configuration decides per stage); nil
+// falls back to the built-in default flow, where dev is `open_cards: multiple`
+// and every other stage is single. That fallback is exactly the migration's
+// backfill (kind = 4 → 1), so a card created by code that predates the flow
+// configuration behaves like every card migrated from 0002.
+func kindParallelOrDefault(kind enum.TaskKind, explicit *int) (int, error) {
+	if explicit != nil {
+		value := *explicit
+		if value != 0 && value != 1 {
+			return 0, fmt.Errorf("v3: kind_parallel must be 0 or 1, got %d", value)
+		}
+		return value, nil
+	}
+	if kind == enum.Dev {
+		return 1, nil
+	}
+	return 0, nil
+}
 
 func loadTaskTx(ctx context.Context, tx *sql.Tx, pk int64) (Task, error) {
 	task, err := storedb.One[Task](ctx, tx,

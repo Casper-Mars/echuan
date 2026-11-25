@@ -26,8 +26,10 @@ func TestCreateTaskBoundaries(t *testing.T) {
 			status: 400,
 		},
 		{
+			// Any positive id is a legal stage since 0003 (the vocabulary belongs
+			// to the flow configuration); only 0 is still rejected.
 			name:   "invalid kind",
-			req:    CreateTaskRequest{ProjectID: projectID, TaskID: "t_2", Kind: enum.TaskKind(99), Title: "x"},
+			req:    CreateTaskRequest{ProjectID: projectID, TaskID: "t_2", Kind: enum.TaskKind(0), Title: "x"},
 			status: 400,
 		},
 		{

@@ -56,25 +56,30 @@ func insertV3Project(t *testing.T, st *Store, productPK int64, code string, seq 
 }
 
 // insertV3Task creates one task. leaseWorker is empty for no lease; when set,
-// the lease columns are populated (required for status=3).
+// the lease columns are populated (required for status=3). The kind_parallel
+// snapshot follows the built-in default flow: dev is open_cards: multiple.
 func insertV3Task(t *testing.T, st *Store, projectPK int64, taskID string, kind, status int, leaseWorker string) int64 {
 	t.Helper()
 
 	var (
-		leaseID    any
-		leaseUntil any
-		workerID   any
+		leaseID      any
+		leaseUntil   any
+		workerID     any
+		kindParallel int
 	)
 	if leaseWorker != "" {
 		leaseID = "l_" + leaseWorker
 		leaseUntil = "2099-01-01T00:00:00.000Z"
 		workerID = leaseWorker
 	}
+	if kind == 4 {
+		kindParallel = 1
+	}
 	res := mustExec(t, st, `
-		INSERT INTO tasks (task_id, project_id, kind, title, description_md, context_md,
+		INSERT INTO tasks (task_id, project_id, kind, kind_parallel, title, description_md, context_md,
 		                   status, lease_id, lease_until, worker_id, create_time, update_time)
-		VALUES (?, ?, ?, ?, '描述', '上下文', ?, ?, ?, ?, ?, ?)`,
-		taskID, projectPK, kind, taskID, status, leaseID, leaseUntil, workerID, testTime, testTime)
+		VALUES (?, ?, ?, ?, ?, '描述', '上下文', ?, ?, ?, ?, ?, ?)`,
+		taskID, projectPK, kind, kindParallel, taskID, status, leaseID, leaseUntil, workerID, testTime, testTime)
 	id, err := res.LastInsertId()
 	if err != nil {
 		t.Fatalf("task id: %v", err)
@@ -132,7 +137,7 @@ func TestV3SchemaTables(t *testing.T) {
 	for _, name := range []string{
 		"ix_materials_chain", "ix_projects_status", "ix_projects_product",
 		"ix_tasks_queue", "ix_tasks_lease", "ix_tasks_project",
-		"ux_tasks_active_doc", "ux_tasks_worker_lease",
+		"ux_tasks_open_per_kind", "ux_tasks_worker_lease",
 		"ix_task_deps_upstream", "ix_attachments_task", "ix_attachments_project",
 		"ix_attachments_material", "ix_gate_decisions_task", "ix_gate_decisions_material",
 		"ix_task_events_task", "ix_workers_last_seen", "ux_workers_current_task",
@@ -142,7 +147,11 @@ func TestV3SchemaTables(t *testing.T) {
 			t.Errorf("index %s missing", name)
 		}
 	}
-	for _, gone := range []string{"ix_work_queue", "ix_work_lease", "ux_work_active_phase", "ux_work_worker", "ux_projects_dev_branch"} {
+	for _, gone := range []string{
+		"ix_work_queue", "ix_work_lease", "ux_work_active_phase", "ux_work_worker", "ux_projects_dev_branch",
+		// 0003 replaced the doc-only cap with the kind_parallel one (ADR-0003 D4″).
+		"ux_tasks_active_doc",
+	} {
 		if indexes[gone] {
 			t.Errorf("index %s must not exist in V3", gone)
 		}
@@ -152,8 +161,8 @@ func TestV3SchemaTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersion: %v", err)
 	}
-	if version != 2 {
-		t.Errorf("user_version = %d, want 2", version)
+	if version != 3 {
+		t.Errorf("user_version = %d, want 3", version)
 	}
 }
 
@@ -179,7 +188,7 @@ func TestV3SchemaColumns(t *testing.T) {
 
 	taskCols := schemaColumns(t, st, "tasks")
 	for _, want := range []string{
-		"task_id", "project_id", "parent_task_id", "kind", "title",
+		"task_id", "project_id", "parent_task_id", "kind", "kind_parallel", "title",
 		"description_md", "context_md", "priority", "status", "attempt",
 		"max_attempts", "not_before", "lease_id", "lease_until", "worker_id", "reason",
 	} {
@@ -198,7 +207,10 @@ func TestV3SchemaColumns(t *testing.T) {
 }
 
 // TestV3EnumChecks covers every integer enum: 0 and out-of-range values are
-// rejected by CHECK constraints.
+// rejected by CHECK constraints. The workflow stage ids (tasks.kind,
+// worker_kinds.kind, gate_decisions.gate) are open ended since 0003 — only 0 is
+// illegal there, so the positive cases live in
+// TestMigrate0003WidensKindChecks.
 func TestV3EnumChecks(t *testing.T) {
 	st := openTestStore(t, 2)
 
@@ -215,7 +227,6 @@ func TestV3EnumChecks(t *testing.T) {
 		{"project status 0", `UPDATE projects SET status = 0 WHERE id = ?`, []any{projectPK}},
 		{"project status 3", `UPDATE projects SET status = 3 WHERE id = ?`, []any{projectPK}},
 		{"task kind 0", `UPDATE tasks SET kind = 0 WHERE id = ?`, []any{taskPK}},
-		{"task kind 5", `UPDATE tasks SET kind = 5 WHERE id = ?`, []any{taskPK}},
 		{"task status 0", `UPDATE tasks SET status = 0 WHERE id = ?`, []any{taskPK}},
 		{"task status 8", `UPDATE tasks SET status = 8 WHERE id = ?`, []any{taskPK}},
 		{"material kind 0", `UPDATE materials SET kind = 0 WHERE id = ?`, []any{materialPK}},
@@ -223,7 +234,7 @@ func TestV3EnumChecks(t *testing.T) {
 		{"worker state 0", `INSERT INTO workers (worker_id, state, first_seen, last_seen, create_time, update_time) VALUES ('w_bad', 0, ?, ?, ?, ?)`, []any{testTime, testTime, testTime, testTime}},
 		{"worker state 3", `INSERT INTO workers (worker_id, state, first_seen, last_seen, create_time, update_time) VALUES ('w_bad2', 3, ?, ?, ?, ?)`, []any{testTime, testTime, testTime, testTime}},
 		{"worker kind 0", `INSERT INTO worker_kinds (worker_id, kind) VALUES ('w_bad', 0)`, nil},
-		{"worker kind 5", `INSERT INTO worker_kinds (worker_id, kind) VALUES ('w_bad', 5)`, nil},
+		{"kind_parallel 2", `UPDATE tasks SET kind_parallel = 2 WHERE id = ?`, []any{taskPK}},
 		{"im subject_kind 0", `INSERT INTO im_card (subject_kind, subject_id, chat_id, message_id, fingerprint, sent_at, rendered_at) VALUES (0, 'x', 'c', 'm', 'f', ?, ?)`, []any{testTime, testTime}},
 		{"im subject_kind 3", `INSERT INTO im_card (subject_kind, subject_id, chat_id, message_id, fingerprint, sent_at, rendered_at) VALUES (3, 'x', 'c', 'm', 'f', ?, ?)`, []any{testTime, testTime}},
 		{"event 0", `INSERT INTO task_events (task_id, event, create_time) VALUES (?, 0, ?)`, []any{taskPK, testTime}},
@@ -299,9 +310,10 @@ func TestV3TaskDepSelfCheck(t *testing.T) {
 	wantSQLError(t, err, "CHECK")
 }
 
-// TestV3ActiveDocUnique allows one active doc task per kind and unlimited dev
-// tasks.
-func TestV3ActiveDocUnique(t *testing.T) {
+// TestV3OpenPerKindUnique pins ux_tasks_open_per_kind (ADR-0003 D4″): a stage
+// with kind_parallel = 0 allows one open card per project, kind_parallel = 1
+// allows several, and finishing a card frees the slot.
+func TestV3OpenPerKindUnique(t *testing.T) {
 	st := openTestStore(t, 2)
 	productPK := insertV3Product(t, st, "APP")
 	projectPK := insertV3Project(t, st, productPK, "APP-1", 1)
@@ -317,9 +329,15 @@ func TestV3ActiveDocUnique(t *testing.T) {
 	mustExec(t, st, `UPDATE tasks SET status = 5 WHERE id = ?`, first)
 	insertV3Task(t, st, projectPK, "t_req_3", 1, 1, "")
 
-	// dev is exempt from the per-kind active uniqueness.
+	// kind_parallel = 1 is exempt from the per-kind cap (dev in the default flow).
 	insertV3Task(t, st, projectPK, "t_dev_1", 4, 1, "")
 	insertV3Task(t, st, projectPK, "t_dev_2", 4, 1, "")
+
+	// A finished multiple-card still keeps its snapshot, so a later single-card
+	// of the same kind would be a separate row; the cap is per (project, kind).
+	if got := scalarInt(t, st.Read(), `SELECT COUNT(*) FROM tasks WHERE kind = 1 AND status IN (1, 2, 3, 4)`); got != 1 {
+		t.Errorf("open requirement cards = %d, want 1", got)
+	}
 }
 
 // TestV3WorkerLeaseUnique pins one lease per worker.
@@ -331,14 +349,14 @@ func TestV3WorkerLeaseUnique(t *testing.T) {
 	insertV3Task(t, st, projectPK, "t_dev_1", 4, 3, "w_1")
 
 	_, err := st.Write().ExecContext(context.Background(), `
-		INSERT INTO tasks (task_id, project_id, kind, title, status, lease_id, lease_until, worker_id, create_time, update_time)
-		VALUES ('t_dev_2', ?, 4, '第二张租约', 3, 'l_2', '2099-01-01T00:00:00.000Z', 'w_1', ?, ?)`, projectPK, testTime, testTime)
+		INSERT INTO tasks (task_id, project_id, kind, kind_parallel, title, status, lease_id, lease_until, worker_id, create_time, update_time)
+		VALUES ('t_dev_2', ?, 4, 1, '第二张租约', 3, 'l_2', '2099-01-01T00:00:00.000Z', 'w_1', ?, ?)`, projectPK, testTime, testTime)
 	wantSQLError(t, err, "UNIQUE")
 
 	// A different worker can hold its own lease.
 	mustExec(t, st, `
-		INSERT INTO tasks (task_id, project_id, kind, title, status, lease_id, lease_until, worker_id, create_time, update_time)
-		VALUES ('t_dev_3', ?, 4, '另一个 worker', 3, 'l_3', '2099-01-01T00:00:00.000Z', 'w_2', ?, ?)`, projectPK, testTime, testTime)
+		INSERT INTO tasks (task_id, project_id, kind, kind_parallel, title, status, lease_id, lease_until, worker_id, create_time, update_time)
+		VALUES ('t_dev_3', ?, 4, 1, '另一个 worker', 3, 'l_3', '2099-01-01T00:00:00.000Z', 'w_2', ?, ?)`, projectPK, testTime, testTime)
 }
 
 // TestV3Defaults pins the defaults that encode "0 is illegal".
@@ -388,8 +406,8 @@ func TestV3SchemaVersionGuard(t *testing.T) {
 	if !errors.As(err, &versionErr) {
 		t.Fatalf("Migrate error = %v, want *SchemaVersionError", err)
 	}
-	if versionErr.Database != 6 || versionErr.Binary != 2 {
-		t.Errorf("SchemaVersionError = %+v, want database 6 / binary 2", versionErr)
+	if versionErr.Database != 6 || versionErr.Binary != 3 {
+		t.Errorf("SchemaVersionError = %+v, want database 6 / binary 3", versionErr)
 	}
 }
 

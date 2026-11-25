@@ -85,10 +85,12 @@ func seedLeasedTask(t *testing.T, st *store.Store, projectPK int64, taskID, work
 	ctx := context.Background()
 	leaseID := "l_" + taskID
 	err := st.Tx(ctx, func(tx *sql.Tx) error {
+		// kind_parallel = 1: dev is open_cards: multiple in the default flow, and
+		// this seed puts several open dev cards in one project (0003 index).
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO tasks (task_id, project_id, kind, title, status, attempt, max_attempts,
+			INSERT INTO tasks (task_id, project_id, kind, kind_parallel, title, status, attempt, max_attempts,
 			                   lease_id, lease_until, worker_id, create_time, update_time)
-			VALUES (?, ?, ?, 'dev', ?, 1, 3, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, 1, 'dev', ?, 1, 3, ?, ?, ?, ?, ?)`,
 			taskID, projectPK, enum.Dev, enum.InProgress, leaseID, leaseUntil, workerID, staleStamp, staleStamp)
 		if err != nil {
 			return err

@@ -6,21 +6,24 @@ import (
 	"testing/fstest"
 )
 
-// TestEmbeddedMigrations guards the embedded FS itself: V3 ships exactly one
-// initial schema at version 1. There is no incremental migration chain.
+// TestEmbeddedMigrations guards the embedded FS itself: 0001 is the V3 initial
+// schema, 0002 adds the material source link and 0003 opens the stage ids.
 func TestEmbeddedMigrations(t *testing.T) {
 	list, err := Load(FS)
 	if err != nil {
 		t.Fatalf("Load(FS): %v", err)
 	}
-	if len(list) != 2 {
-		t.Fatalf("migrations = %d, want 2", len(list))
+	if len(list) != 3 {
+		t.Fatalf("migrations = %d, want 3", len(list))
 	}
 	if list[0].Version != 1 || list[0].Name != "0001_init.sql" {
 		t.Errorf("migration[0] = %d/%s, want 1/0001_init.sql", list[0].Version, list[0].Name)
 	}
 	if list[1].Version != 2 || list[1].Name != "0002_material_source.sql" {
 		t.Errorf("migration[1] = %d/%s, want 2/0002_material_source.sql", list[1].Version, list[1].Name)
+	}
+	if list[2].Version != 3 || list[2].Name != "0003_kind_from_config.sql" {
+		t.Errorf("migration[2] = %d/%s, want 3/0003_kind_from_config.sql", list[2].Version, list[2].Name)
 	}
 	for _, migration := range list {
 		if len(migration.SQL) == 0 {
@@ -32,8 +35,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
 	}
-	if latest != 2 {
-		t.Errorf("latest = %d, want 2", latest)
+	if latest != 3 {
+		t.Errorf("latest = %d, want 3", latest)
 	}
 }
 

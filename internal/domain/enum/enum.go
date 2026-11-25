@@ -56,7 +56,15 @@ func ProjectStatuses() []ProjectStatus { return valuesOf(projectStatusNames) }
 
 // ── tasks.kind / worker_kinds.kind / gate_decisions.gate ─────────────────
 
-// TaskKind is the task type.
+// TaskKind is the task type — the workflow stage id.
+//
+// The vocabulary is owned by the flow configuration (ADR-0003 D2″), not by this
+// package: a configured flow may add a stage whose id this package has never
+// heard of. So Valid only requires a positive id (the schema CHECK is  kind > 0),
+// while the four built-in stages keep their names for logs and for the
+// requirement→design audit rule string. Resolving a stage name to its id is the
+// flow configuration's job; ParseTaskKind below still only knows the built-in
+// four, which is what keeps the existing HTTP contract unchanged.
 type TaskKind int
 
 const (
@@ -74,24 +82,46 @@ var taskKindNames = map[TaskKind]string{
 }
 
 func (v TaskKind) String() string { return nameOf(taskKindNames, v) }
-func (v TaskKind) Valid() bool    { return validOf(taskKindNames, v) }
+
+// Valid reports whether v is a legal stage id: any positive integer. 0 stays
+// illegal because it is the Go zero value and the schema rejects it.
+func (v TaskKind) Valid() bool { return v > 0 }
+
+// Value renders the kind as the integer stored in the database.
 func (v TaskKind) Value() (driver.Value, error) {
-	return valueOf(v, taskKindNames, "task kind")
+	if !v.Valid() {
+		return nil, fmt.Errorf("task kind: invalid value %d", int(v))
+	}
+	return int64(v), nil
 }
+
 func (v TaskKind) MarshalJSON() ([]byte, error) {
 	return marshalOf(v, taskKindNames, "task kind")
 }
 func (v *TaskKind) UnmarshalJSON(b []byte) error {
 	return unmarshalOf(b, v, taskKindNames, "task kind")
 }
+
+// Scan reads the integer column. Any positive id is accepted, including stages
+// this binary has no name for (a flow configured after this build).
 func (v *TaskKind) Scan(src any) error {
-	return scanOf(src, v, taskKindNames, "task kind")
+	value, err := scanInt(src, "task kind")
+	if err != nil {
+		return err
+	}
+	if value <= 0 {
+		return fmt.Errorf("task kind: invalid value %d", value)
+	}
+	*v = TaskKind(value)
+	return nil
 }
 
-// ParseTaskKind parses the JSON/database string name.
+// ParseTaskKind parses the JSON string name. Only the four built-in names
+// resolve; a configured stage name is mapped by the flow configuration.
 func ParseTaskKind(s string) (TaskKind, error) { return parseOf(taskKindNames, "task kind", s) }
 
-// TaskKinds returns all values in numeric order.
+// TaskKinds returns the four built-in values in numeric order. It is the
+// built-in default flow, not the whole legal set (see Valid).
 func TaskKinds() []TaskKind { return valuesOf(taskKindNames) }
 
 // ── tasks.status ────────────────────────────────────────────────────────
@@ -430,25 +460,39 @@ func valueOf[T ~int](v T, names map[T]string, field string) (driver.Value, error
 	return int64(v), nil
 }
 
-func scanOf[T ~int](src any, dst *T, names map[T]string, field string) error {
-	var value int64
+// scanInt converts one scanned database value into an int64. It is shared by
+// the closed enums (via scanOf, which then looks the value up in the name map)
+// and by the open ones such as TaskKind, whose legal set is a range and not a
+// fixed name map.
+func scanInt(src any, field string) (int64, error) {
 	switch raw := src.(type) {
 	case int64:
-		value = raw
+		return raw, nil
 	case int:
-		value = int64(raw)
+		return int64(raw), nil
 	case []byte:
+		var value int64
 		if _, err := fmt.Sscan(string(raw), &value); err != nil {
-			return fmt.Errorf("%s: scan %q: %w", field, string(raw), err)
+			return 0, fmt.Errorf("%s: scan %q: %w", field, string(raw), err)
 		}
+		return value, nil
 	case string:
+		var value int64
 		if _, err := fmt.Sscan(raw, &value); err != nil {
-			return fmt.Errorf("%s: scan %q: %w", field, raw, err)
+			return 0, fmt.Errorf("%s: scan %q: %w", field, raw, err)
 		}
+		return value, nil
 	case nil:
-		return fmt.Errorf("%s: cannot scan NULL", field)
+		return 0, fmt.Errorf("%s: cannot scan NULL", field)
 	default:
-		return fmt.Errorf("%s: unsupported scan type %T", field, src)
+		return 0, fmt.Errorf("%s: unsupported scan type %T", field, src)
+	}
+}
+
+func scanOf[T ~int](src any, dst *T, names map[T]string, field string) error {
+	value, err := scanInt(src, field)
+	if err != nil {
+		return err
 	}
 	converted := T(value)
 	if !validOf(names, converted) {
