@@ -41,7 +41,7 @@ export interface WorkerInfoAgent {
 export interface WorkerInfoDeps {
   /** `worker.poll.enable`：心跳是否开启。 */
   pollEnabled: boolean
-  /** 配置声明的 kinds（与心跳 body 一致）。 */
+  /** 配置声明的环节 name（kinds，与心跳 body 一致）。 */
   kinds: readonly string[]
   /** 当前 worker id（未注册返回 `undefined`；输出前打码）。 */
   workerId: () => string | undefined
@@ -59,8 +59,8 @@ export function createWorkerInfoTool(options: EchuanToolOptions): ToolDefinition
     name: 'echuan_worker_info',
     description:
       '查看本进程驿传（echuan）worker 的运行态（只读，零 HTTP、零副作用）：心跳开关、'
-      + '声明的 kinds、worker_id（打码）、派单目标 agent、inflight 里的工作项与租约。'
-      + '排障「为什么没派单 / 派单投给了谁」时先看这里。',
+      + '声明的环节 name（kinds，见 GET /v1/flow）、worker_id（打码）、派单目标 agent、'
+      + 'inflight 里的工作项与租约。排障「为什么没派单 / 派单投给了谁」时先看这里。',
     parameters: {},
     output: {
       schema: textOutputSchema,
@@ -96,8 +96,8 @@ function renderWorkerInfo(deps: WorkerInfoDeps): string {
   lines.push(`poll.enable：${deps.pollEnabled ? 'true' : 'false'}`)
   lines.push(
     deps.kinds.length === 0
-      ? 'worker.kinds：（未声明；心跳循环不会启动）'
-      : `worker.kinds：${deps.kinds.join('、')}`,
+      ? 'worker.kinds（环节 name）：（未声明；心跳循环不会启动）'
+      : `worker.kinds（环节 name）：${deps.kinds.join('、')}`,
   )
 
   // 2) worker id。
