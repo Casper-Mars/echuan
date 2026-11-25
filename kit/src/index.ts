@@ -5,8 +5,8 @@
  * - 声明插件标识 `name` 与依赖服务 `inject`；
  * - 在 `apply(ctx, config)` 里解析配置（baseUrl / actor / 超时 / exclude / worker）、落加载日志；
  * - host **不注册工具**，只提供 `echuan` 服务；工具由 preset 子路径
- *   `tools/leader`（18 个：10 写 + 8 读）、`tools/requester`（15 个）与
- *   `tools/readonly`（8 个只读）按名单注册，`exclude` 仍可裁剪；
+ *   `tools/leader`（19 个：10 写 + 9 读）、`tools/requester`（16 个）与
+ *   `tools/readonly`（9 个只读）按名单注册，`exclude` 仍可裁剪；
  *   工具只调平台契约、不提供审批/驳回/取消动作；
  * - 静态注册 1 个技能 `echuan-task-execution`（派单开工 / 读上下文 / 汇报 / 续租 / 门禁禁区），
  *   随插件 fiber 一并注销；

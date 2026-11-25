@@ -12,7 +12,7 @@
    - 生命周期写：`echuan_project_create`（建项目，`requirement_md` 必填，建项即入需求评审）、`echuan_project_requirement_write`（改写需求正文）、`echuan_project_submit`（草稿提交评审，仅历史草稿项目 / 驳回返工需要）、`echuan_spec_create`（建方案）、`echuan_spec_revise`（修订方案）、`echuan_plan_submit`（批量建卡）
    - 工作项写：`echuan_task_claim`（领卡）、`echuan_task_renew`（续租）、`echuan_task_report`（交报告）
    - 辅助写：`echuan_task_create`（单卡新增）、`echuan_task_update`（改卡）、`echuan_task_delete`（删卡）、`echuan_project_update`（改项目标题）、`echuan_product_create`（建产品）、`echuan_product_update`（整体改产品四字段）、`echuan_product_delete`（删无项目产品）、`echuan_project_package`（下载资料包）
-   - 读：`echuan_inbox`（待办）、`echuan_product_list`（产品列表）、`echuan_project_list`（项目列表）、`echuan_task_list`（工作项列表）、`echuan_project_get`（项目详情）、`echuan_task_get`（工作项详情）、`echuan_material_get`（资料）、`echuan_worker_info`（worker 诊断，零 HTTP）
+   - 读：`echuan_inbox`（待办）、`echuan_product_list`（产品列表）、`echuan_project_list`（项目列表）、`echuan_task_list`（工作项列表）、`echuan_project_get`（项目详情）、`echuan_stage_list`（当前流程的环节清单，只给 id / name / 阶段描述）、`echuan_task_get`（工作项详情）、`echuan_material_get`（资料）、`echuan_worker_info`（worker 诊断，零 HTTP）
 
 `echuan_worker_info` 只读进程内状态（心跳开关、声明的环节 name、打码的 `worker_id`、派单目标 agent、inflight 工作项与租约），**不发任何 HTTP 请求、不写盘、不改状态**；`ctx.agents` 缺失时只降级展示。
 

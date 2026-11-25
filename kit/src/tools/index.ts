@@ -1,5 +1,5 @@
 /**
- * 工具层入口：装配 V3 的 18 个工具（10 写 + 8 读）。
+ * 工具层入口：装配 V3 的 19 个工具（10 写 + 9 读）。
  *
  * 写工具只覆盖「建项目 / 建任务 / 领卡 / 续租 / 交报告 / 挂附件 / 关项目」，
  * **不提供任何审批 / 驳回 / 取消动作**。
@@ -28,10 +28,10 @@ export function createEchuanWriteTools(options: EchuanToolOptions): ToolDefiniti
   return createV3WriteTools(options)
 }
 
-/** 构造 8 个只读工具定义。 */
+/** 构造 9 个只读工具定义。 */
 export const createEchuanReadTools = createV3ReadTools
 
-/** 构造过滤后的 18 个工具定义（先写后读）。 */
+/** 构造过滤后的 19 个工具定义（先写后读）。 */
 export function createAllEchuanTools(options: EchuanToolOptions): ToolDefinition[] {
   const excluded = new Set(validateExclude(options.exclude))
   const all = [...createV3WriteTools(options), ...createV3ReadTools(options)]

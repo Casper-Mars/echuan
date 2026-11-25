@@ -5,7 +5,7 @@
  * - 200 / 204 / 各类错误码的可读映射（保留 `code`）；
  * - 超时（含实际耗时）与网络失败；
  * - X-Actor、URL/query 编码、GET 不带 content-type；
- * - 恰好 22 个方法、与 openapi 一一对应；
+ * - 恰好 22 个 V2 方法、与 openapi 一一对应（TOOL_OPERATIONS 共 23 条，含 V3 的 `getV3Flow`）；
  * - 不读 env / 不写盘 / 不缓存；
  * - D-01 metadata 预算前置拒绝。
  */
@@ -679,7 +679,7 @@ describe('产品改/删：本地不拦参数，原样透传，由平台判定（
   })
 })
 
-describe('方法集合：恰好 22 个，无审批类动作', () => {
+describe('方法集合：恰好 22 个 V2 方法 + 23 条 operation，无审批类动作', () => {
   it('TOOL_METHODS 长度为 22，客户端对象键与之一致', () => {
     const client = createClient(config, { fetchImpl: createFetch(() => jsonResponse({})).fetchImpl })
 
@@ -691,11 +691,37 @@ describe('方法集合：恰好 22 个，无审批类动作', () => {
       'createV3Project', 'closeV3Project', 'reopenV3Project', 'getV3Project', 'listV3Projects',
       'createV3Task', 'updateV3Task', 'getV3Task', 'listV3Tasks', 'claimV3Task',
       'renewV3Task', 'reportV3Task', 'createV3Material', 'attachV3', 'getV3Inbox',
-      'listV3Events', 'listV3Decisions', 'listV3Workers',
+      'getV3Flow', 'listV3Events', 'listV3Decisions', 'listV3Workers',
     ]
     for (const method of v3Methods) {
       expect(typeof (client as unknown as Record<string, unknown>)[method]).toBe('function')
     }
+  })
+
+  it('TOOL_OPERATIONS 共 23 条，新增的 getV3Flow 登记为 GET /v1/flow（operationId getFlow）', () => {
+    expect(TOOL_OPERATIONS).toHaveLength(23)
+    expect(TOOL_OPERATIONS).toContainEqual({
+      tool: 'getV3Flow',
+      method: 'GET',
+      path: '/v1/flow',
+      operationId: 'getFlow',
+    })
+    // 新增方法没有把 V2 那 22 条挤掉或改道。
+    expect(new Set(TOOL_OPERATIONS.map(op => op.tool)).size).toBe(23)
+  })
+
+  it('getV3Flow 无入参，打一次 GET /v1/flow', async () => {
+    const { calls, fetchImpl } = createFetch(() => jsonResponse({ stages: [] }))
+    const client = createClient(config, { fetchImpl })
+
+    const result = await client.getV3Flow()
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.init.method).toBe('GET')
+    expect(calls[0]!.url.endsWith('/v1/flow')).toBe(true)
+    expect(result.kind).toBe('ok')
+    // GET 不带 content-type（与其它读方法一致）。
+    expect(calls[0]!.init.headers as Record<string, string>).not.toHaveProperty('content-type')
   })
 
   it('不包含 accept / decide / cancel / rework / approve / reject', () => {

@@ -255,52 +255,60 @@ describe('exclude 校验', () => {
 })
 
 describe('preset 工具子路径', () => {
-  it('leader 注册 18 个（10 写 + 8 读），dispose 后全部注销', async () => {
+  it('leader 注册 19 个（10 写 + 9 读），dispose 后全部注销', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const fake = createFakeContext()
     apply(fake.ctx, undefined)
     await waitForService(fake)
 
     applyLeader(fake.ctx)
+    expect(fake.registrations).toHaveLength(19)
     expect(fake.registrations).toEqual([...TOOL_NAMES])
     fake.disposeAll()
     expect(fake.registrations).toEqual([])
   })
 
-  it('requester 注册 15 个：8 读 + 7 写，不含 claim/renew/product_create', async () => {
+  it('requester 注册 16 个：9 读 + 7 写，不含 claim/renew/product_create', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const fake = createFakeContext()
     apply(fake.ctx, undefined)
     await waitForService(fake)
 
     applyRequester(fake.ctx)
+    expect(fake.registrations).toHaveLength(16)
     expect([...fake.registrations].sort()).toEqual([...REQUESTER_TOOL_NAMES].sort())
     for (const name of ['echuan_task_claim', 'echuan_task_renew', 'echuan_product_create']) {
       expect(fake.registrations).not.toContain(name)
     }
   })
 
-  it('readonly 只注册 8 个读工具', async () => {
+  it('readonly 只注册 9 个读工具（含 echuan_stage_list）', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const fake = createFakeContext()
     apply(fake.ctx, undefined)
     await waitForService(fake)
 
     applyReadonly(fake.ctx)
+    expect(fake.registrations).toHaveLength(9)
     expect(fake.registrations).toEqual([...READ_TOOL_NAMES])
+    expect(fake.registrations).toContain('echuan_stage_list')
     expect(fake.registrations).not.toContain('echuan_task_report')
   })
 
   it('host exclude 会传递到子路径', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const fake = createFakeContext()
-    apply(fake.ctx, { exclude: ['echuan_project_create', 'echuan_task_create'] })
+    // 新增的 `echuan_stage_list` 也走同一套 `exclude`：裁掉后 leader 是 19 - 3 = 16。
+    apply(fake.ctx, {
+      exclude: ['echuan_project_create', 'echuan_task_create', 'echuan_stage_list'],
+    })
     await waitForService(fake)
 
     applyLeader(fake.ctx)
     expect(fake.registrations).toHaveLength(16)
     expect(fake.registrations).not.toContain('echuan_project_create')
     expect(fake.registrations).not.toContain('echuan_task_create')
+    expect(fake.registrations).not.toContain('echuan_stage_list')
   })
 })
 

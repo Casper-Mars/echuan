@@ -27,6 +27,7 @@ import type {
   V3Client,
   V3Decision,
   V3Event,
+  V3Flow,
   V3List,
   V3Material,
   V3Project,
@@ -628,14 +629,16 @@ export const TOOL_METHODS = [
 export type ToolMethodName = (typeof TOOL_METHODS)[number]
 
 /**
- * 22 个方法 ↔ openapi operation 的对应表。
+ * 客户端方法 ↔ openapi operation 的对应表（23 条 = V2 的 22 个方法 + V3 的 `getV3Flow`）。
  *
  * `tool` 是客户端方法名；`method`/`path`/`operationId` 必须能在
  * `api/openapi.yaml` 的 `paths` 下原样找到（单测解析 yaml 校验）。
  *
- * 注意：25 个工具共用这 22 条 operation 的**全部** 22 条（`echuan_worker_info` 零 HTTP）——
+ * 注意：其余工具共用这 22 条 operation（`echuan_worker_info` 零 HTTP）——
  * `updateProduct` / `deleteProduct` 已由 `echuan_product_update` / `echuan_product_delete` 装配；
  * `listProjects` / `listWorkItems` 各由一个 GET 同时承担「列表」与「按 id 取详情」两种工具语义。
+ * V3 方法大多不走这张表（工具层直接按 `/v1/tasks` 等路径调用），`getV3Flow` 随
+ * `echuan_stage_list` 新增，按「新方法也登记 operation」的约定补上一行。
  */
 export const TOOL_OPERATIONS = [
   { tool: 'claimWorkItem', method: 'POST', path: '/v1/work-items/claim', operationId: 'claimWorkItem' },
@@ -675,6 +678,7 @@ export const TOOL_OPERATIONS = [
   { tool: 'listProjects', method: 'GET', path: '/v1/projects', operationId: 'listOrGetProjects' },
   { tool: 'listWorkItems', method: 'GET', path: '/v1/work-items', operationId: 'listOrGetWorkItems' },
   { tool: 'getMaterials', method: 'GET', path: '/v1/materials', operationId: 'downloadMaterial' },
+  { tool: 'getV3Flow', method: 'GET', path: '/v1/flow', operationId: 'getFlow' },
 ] as const
 
 /** 客户端对外的 22 个方法。 */
@@ -1463,6 +1467,11 @@ export function createClient(
 
     async getV3Inbox() {
       return requestJson<V3List<V3Task>>(ctx, { method: 'GET', path: '/v1/inbox' })
+    },
+
+    async getV3Flow() {
+      // 无入参：`GET /v1/flow` 永远返回进程启动时的流程快照（200）。
+      return requestJson<V3Flow>(ctx, { method: 'GET', path: '/v1/flow' })
     },
 
     async listV3Events(query) {
