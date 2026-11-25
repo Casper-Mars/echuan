@@ -16,7 +16,7 @@
  * - 只暴露工具包需要的 22 个客户端方法（{@link TOOL_METHODS}），**没有任何门禁动作**
  *   （accept / decide / cancel / rework / approve / reject 一律不提供）；
  * - 与 `api/openapi.yaml` 一一对应：{@link TOOL_OPERATIONS} 记录每个方法对应的
- *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 22 条确实存在。
+ *   `METHOD /path` 与 `operationId`，单测会解析 yaml 断言这 23 条确实存在。
  *
  * 任务-03 的 worker 注册/心跳方法由 {@link createWorkerClient} 提供，走
  * **独立命名空间**，不进入 {@link TOOL_METHODS}，因此不会破坏「恰好 22 个」的断言；
