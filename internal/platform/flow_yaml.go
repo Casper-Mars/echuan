@@ -156,9 +156,6 @@ type flowDoc struct {
 	path string
 	line int
 
-	defaultDescription *string
-	defaultLine        int
-
 	stages     []stageDoc
 	stagesLine int
 }
@@ -285,25 +282,15 @@ func parseFlowSection(path string, node *yaml.Node) (*flowDoc, error) {
 	for _, pair := range pairs {
 		key, value := pair[0], pair[1]
 		switch key.Value {
-		case "auto":
-			// D5: the master switch is gone. The field stays a hard error with a
-			// dedicated message, so an operator carrying a v1 file over gets the
-			// migration step instead of a bare "unknown field" (N3′ refuses to
-			// read it: there is no compatibility path).
-			return nil, configErrf(path, key.Line,
-				"flow: \"auto\" was removed; move the switch into each stage as stages[].derive.auto (R14)")
-		case "default_description":
-			doc.defaultLine = key.Line
-			empty := ""
-			if isNullNode(value) {
-				doc.defaultDescription = &empty
-				continue
-			}
-			v, err := yamlString(path, value, "flow.default_description")
-			if err != nil {
-				return nil, err
-			}
-			doc.defaultDescription = &v
+		case "auto", "default_description":
+			// The two keys v2 removed are accepted and ignored: a v1 file that
+			// still carries them must start and behave exactly like a v2 file
+			// (the card's AC: "多写一个已删除的键也照样启动、行为不变"). They are
+			// not read, not validated, not logged, never enter a decision or the
+			// fingerprint — the master switch now lives on each stage and there is
+			// no flow-level fallback any more.
+			_ = value
+			continue
 		case "stages":
 			stages, err := parseStages(path, value)
 			if err != nil {
@@ -312,7 +299,7 @@ func parseFlowSection(path string, node *yaml.Node) (*flowDoc, error) {
 			doc.stages, doc.stagesLine = stages, value.Line
 		default:
 			return nil, configErrf(path, key.Line,
-				"flow: unknown field %q (allowed: default_description, stages) (R14)", key.Value)
+				"flow: unknown field %q (allowed: stages) (R14)", key.Value)
 		}
 	}
 	return doc, nil
@@ -406,9 +393,9 @@ func parseStage(path string, node *yaml.Node, index int) (stageDoc, error) {
 			}
 			stage.description = v
 		case "task":
-			// D3: the three states matter. A missing key means "not configured"
-			// (fall back to flow.default_description); an explicit "" is a
-			// deliberate empty card body and satisfies R16.
+			// D3: the two states matter. A missing key means "not configured"
+			// (R16 then refuses to start for a single-derived stage); an explicit
+			// "" is a deliberate empty card body and satisfies R16.
 			stage.taskLine = key.Line
 			empty := ""
 			if isNullNode(value) {
@@ -556,7 +543,7 @@ func parseItem(path string, node *yaml.Node, field string, index int) (itemDoc, 
 
 // flowConfig builds the plain model from the parsed document.
 func (d *flowDoc) flowConfig(source string) FlowConfig {
-	flow := FlowConfig{DefaultDescription: d.defaultDescription, Source: source}
+	flow := FlowConfig{Source: source}
 	flow.Stages = make([]Stage, 0, len(d.stages))
 	for i := range d.stages {
 		flow.Stages = append(flow.Stages, d.stages[i].stage())

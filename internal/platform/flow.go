@@ -77,8 +77,6 @@ const (
 	DescriptionFromItem DescriptionSource = "item"
 	// DescriptionFromStage means the target stage's task template.
 	DescriptionFromStage DescriptionSource = "stage"
-	// DescriptionFromDefault means flow.default_description.
-	DescriptionFromDefault DescriptionSource = "default"
 	// DescriptionEmpty means nothing matched: the card is created with an empty
 	// description. For single derivations R16 forbids this unless the operator
 	// wrote task: "" on purpose.
@@ -92,10 +90,6 @@ const (
 // derives the next stage is decided by that stage's own Derive.Auto, so a
 // configuration cannot be "on globally, off here" or the other way round.
 type FlowConfig struct {
-	// DefaultDescription is the flow-level fallback description template. nil
-	// means "not configured"; a pointer to "" means the operator explicitly
-	// asked for an empty description (R16 distinguishes the two).
-	DefaultDescription *string
 	// Stages is the ordered stage table. The order is the board and task
 	// picker order; ids are what lands in tasks.kind.
 	Stages []Stage
@@ -254,15 +248,16 @@ const FingerprintScheme = 2
 // produced a card. It is content-only (no timestamps), so two loads of the same
 // configuration always agree (§8.7).
 //
-// The digest covers the flow-level default description and, for every stage,
-// id|name|label|material|open_cards|closing|title|task|derive (scheme 2). The
-// stage description is deliberately absent: it is display text, it changes no
-// card, and scheme 1 had no such field. An unset task is encoded differently
-// from an explicit "", because the two mean different things (R16).
+// The digest covers, for every stage, id|name|label|material|open_cards|closing|
+// title|task|derive (scheme 2). Nothing else: the stage description is display
+// text that changes no card, and the removed flow-level keys (auto,
+// default_description) are not configuration any more, so they must not move the
+// digest either — a file that still carries them fingerprints like one that does
+// not. An unset task is encoded differently from an explicit "", because the two
+// mean different things (R16).
 func (f FlowConfig) Fingerprint() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "scheme=%d\n", FingerprintScheme)
-	fmt.Fprintf(&b, "default_description=%s\n", encodeOptional(f.DefaultDescription))
 	for _, s := range f.Stages {
 		fmt.Fprintf(&b, "%d|%s|%s|%s|%s|%t|%s|%s|%s\n",
 			s.ID, s.Name, s.Label, s.Material, s.OpenCards, s.Closing,
@@ -345,17 +340,18 @@ func (f FlowConfig) SwitchWarnings() []SwitchWarning {
 //     upstream agent left body_md empty the card keeps an empty description;
 //  2. a fanout derivation takes the configured entry body when it is non-empty;
 //  3. then the target stage's task template;
-//  4. then flow.default_description;
-//  5. otherwise the task description is empty.
+//  4. otherwise the task description is empty.
 //
-// The stage's Description (the human-readable one) is never a candidate: it is
-// display text, not a template (D2). R16 guarantees a single-derived stage never
-// reaches step 5 unless the operator wrote task: "" on purpose.
+// There is no flow-level fallback: default_description was removed together with
+// the master switch and is not read at all (see parseFlowSection). The stage's
+// Description (the human-readable one) is never a candidate either: it is display
+// text, not a template (D2). R16 guarantees a single-derived stage never reaches
+// step 4 unless the operator wrote task: "" on purpose.
 //
 // mode is the *upstream* stage's Derive.Mode (the derivation that creates the
 // card), item is the entry being turned into a card and may be nil for single
 // derivations. dst may be nil when the target stage is unknown; the caller then
-// still gets the flow-level fallback.
+// gets an empty description (there is no flow-level fallback any more).
 func (f FlowConfig) ResolveDescription(dst *Stage, mode DeriveMode, item *DeriveItem) (string, DescriptionSource) {
 	hasBody := item != nil && strings.TrimSpace(item.BodyMD) != ""
 
@@ -374,9 +370,6 @@ func (f FlowConfig) ResolveDescription(dst *Stage, mode DeriveMode, item *Derive
 	}
 	if dst != nil && dst.Task != nil {
 		return *dst.Task, DescriptionFromStage
-	}
-	if f.DefaultDescription != nil {
-		return *f.DefaultDescription, DescriptionFromDefault
 	}
 	return "", DescriptionEmpty
 }

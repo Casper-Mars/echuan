@@ -320,8 +320,10 @@ paths:
         and `derive` (`{mode, to, source, format, items}`).
 
         There is no flow-level `auto` field: whether an approval derives the next
-        stage is decided per stage by `derive.auto`, and a process that finds
-        `flow.auto` in the configuration refuses to start.
+        stage is decided per stage by `derive.auto`. The removed configuration keys
+        `flow.auto` and `flow.default_description` are accepted and ignored, so a
+        file that still carries them starts and behaves exactly like one that does
+        not (they never appear in this response nor in the fingerprint).
 
         The list is the stage table in configured order; no query parameters. A
         running process always serves its startup snapshot, so editing the file

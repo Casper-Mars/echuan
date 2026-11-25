@@ -68,9 +68,9 @@ im:
 # （kit 配置键、HTTP kind、审计规则串 requirement->design 都用它），label 只是显示名。
 # 删掉整段 flow 会启用手里的内置默认流程，效果与下面这份逐字段一致。
 flow:
-  # 派生卡的缺省任务说明（模板）：环节没写 task 时用它。
-  # 内置默认流程故意不配，因为派生卡的 description_md 需要与历史逐字一致（空字符串）。
-  # default_description: "请按上游交付物的要求完成本环节工作，交付物写入任务报告。"
+  # 派生卡的任务说明只有两级：条目正文（仅 list/fanout）→ 目标环节的 task → 空。
+  # 旧版的 flow.auto 与 flow.default_description 已删除：留着也不读、不管、不报错，
+  # 既不改变派生行为，也不进指纹——建议在下次改配置时顺手删掉。
   stages:
     - id: 1
       name: requirement

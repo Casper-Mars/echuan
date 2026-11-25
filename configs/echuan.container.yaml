@@ -57,6 +57,7 @@ im:
 # ---------- 任务流程 ----------
 # 删掉整段 flow 会启用手里的内置默认流程，效果与下面这份逐字段一致。
 # description = 阶段描述（给人看）；task = 派生卡的任务说明模板（进卡正文）。
+# 旧版的 flow.auto / flow.default_description 已删除：留着也不读不管、不影响派生与指纹。
 flow:
   stages:
     - id: 1

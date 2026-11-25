@@ -15,9 +15,6 @@ func TestDefaultFlowProfile(t *testing.T) {
 	if flow.Source != BuiltinFlowSource {
 		t.Errorf("Source = %q, want %q", flow.Source, BuiltinFlowSource)
 	}
-	if flow.DefaultDescription != nil {
-		t.Errorf("DefaultDescription = %q, want unset", *flow.DefaultDescription)
-	}
 
 	want := []struct {
 		id          int
@@ -139,7 +136,6 @@ func TestFlowFromConfigFile(t *testing.T) {
 	body := `listen: "127.0.0.1:8720"
 data_dir: "/tmp/echuan-flow-parse"
 flow:
-  default_description: "请按上游交付物完成本环节工作"
   stages:
     - id: 1
       name: requirement
@@ -180,10 +176,6 @@ flow:
 	if flow.Source != path {
 		t.Errorf("Source = %q, want %q", flow.Source, path)
 	}
-	if flow.DefaultDescription == nil || *flow.DefaultDescription != "请按上游交付物完成本环节工作" {
-		t.Errorf("DefaultDescription = %v", flow.DefaultDescription)
-	}
-
 	requirement, ok := flow.ByName("requirement")
 	if !ok {
 		t.Fatal("stage requirement not found")
@@ -368,13 +360,12 @@ func TestSwitchWarnings(t *testing.T) {
 // ptrStage returns a pointer to a copy of s, so table entries cannot share state.
 func ptrStage(s Stage) *Stage { return &s }
 
-// TestResolveDescription covers the three-level resolution of §8.4 and the one
-// branch that must not fall back: a list entry with an empty body. The stage's
-// human-readable Description is never a candidate (D2).
+// TestResolveDescription covers the resolution chain of §8.4: item body → target
+// stage task template → empty. There is no flow-level fallback any more, and the
+// stage's human-readable Description is never a candidate (D2).
 func TestResolveDescription(t *testing.T) {
 	empty := ""
 	stageTask := "针对 {上游卡号} 做安全评审"
-	defaultDesc := "请按上游交付物完成本环节工作"
 	withTask := func(task *string) *Stage {
 		return ptrStage(Stage{Name: "design", Description: "阶段描述不进卡", Task: task})
 	}
@@ -399,7 +390,7 @@ func TestResolveDescription(t *testing.T) {
 		},
 		{
 			name:       "list with an empty body stays empty and does not fall back",
-			flow:       FlowConfig{DefaultDescription: &defaultDesc},
+			flow:       FlowConfig{},
 			dst:        withTask(&stageTask),
 			mode:       DeriveList,
 			item:       &DeriveItem{BodyMD: ""},
@@ -408,7 +399,7 @@ func TestResolveDescription(t *testing.T) {
 		},
 		{
 			name:       "list without an entry stays empty",
-			flow:       FlowConfig{DefaultDescription: &defaultDesc},
+			flow:       FlowConfig{},
 			dst:        withTask(&stageTask),
 			mode:       DeriveList,
 			item:       nil,
@@ -416,8 +407,8 @@ func TestResolveDescription(t *testing.T) {
 			wantSource: DescriptionEmpty,
 		},
 		{
-			name:       "single falls back to the stage task template",
-			flow:       FlowConfig{DefaultDescription: &defaultDesc},
+			name:       "single uses the stage task template",
+			flow:       FlowConfig{},
 			dst:        withTask(&stageTask),
 			mode:       DeriveSingle,
 			item:       nil,
@@ -425,17 +416,8 @@ func TestResolveDescription(t *testing.T) {
 			wantSource: DescriptionFromStage,
 		},
 		{
-			name:       "single without a stage task template falls back to the flow default",
-			flow:       FlowConfig{DefaultDescription: &defaultDesc},
-			dst:        withTask(nil),
-			mode:       DeriveSingle,
-			item:       nil,
-			want:       defaultDesc,
-			wantSource: DescriptionFromDefault,
-		},
-		{
 			name:       "explicit empty stage task template is honoured",
-			flow:       FlowConfig{DefaultDescription: &defaultDesc},
+			flow:       FlowConfig{},
 			dst:        withTask(&empty),
 			mode:       DeriveSingle,
 			item:       nil,
@@ -444,7 +426,7 @@ func TestResolveDescription(t *testing.T) {
 		},
 		{
 			name:       "fanout entry body wins over the stage task template",
-			flow:       FlowConfig{DefaultDescription: &defaultDesc},
+			flow:       FlowConfig{},
 			dst:        withTask(&stageTask),
 			mode:       DeriveFanout,
 			item:       &DeriveItem{BodyMD: "按安全基线评审"},
@@ -453,7 +435,7 @@ func TestResolveDescription(t *testing.T) {
 		},
 		{
 			name:       "fanout with an empty body falls back to the stage task template",
-			flow:       FlowConfig{DefaultDescription: &defaultDesc},
+			flow:       FlowConfig{},
 			dst:        withTask(&stageTask),
 			mode:       DeriveFanout,
 			item:       &DeriveItem{},
@@ -470,13 +452,13 @@ func TestResolveDescription(t *testing.T) {
 			wantSource: DescriptionEmpty,
 		},
 		{
-			name:       "a nil target still gets the flow default",
-			flow:       FlowConfig{DefaultDescription: &defaultDesc},
+			name:       "a nil target yields an empty task description",
+			flow:       FlowConfig{},
 			dst:        nil,
 			mode:       DeriveSingle,
 			item:       nil,
-			want:       defaultDesc,
-			wantSource: DescriptionFromDefault,
+			want:       "",
+			wantSource: DescriptionEmpty,
 		},
 	}
 
@@ -526,37 +508,5 @@ func TestSingleDerivationAcceptsExplicitEmptyTask(t *testing.T) {
 	}
 	if design.Description != "把需求展开成技术方案" {
 		t.Errorf("design.Description = %q, want the stage description kept apart", design.Description)
-	}
-}
-
-// TestFlowDefaultDescriptionSatisfiesR16 covers the other R16 branch: a flow
-// level default is enough, no per-stage task template needed.
-func TestFlowDefaultDescriptionSatisfiesR16(t *testing.T) {
-	clearEnv(t)
-
-	body := `flow:
-  default_description: "请按上游交付物完成 {环节名} 的工作"
-  stages:
-    - id: 1
-      name: requirement
-      material: requirement
-      derive: { auto: true, to: design, mode: single }
-    - id: 2
-      name: design
-      material: design
-      description: 把需求展开成技术方案
-      derive: { mode: none }
-`
-	cfg, err := Load(writeConfig(t, body))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	design, _ := cfg.Flow.ByName("design")
-	got, source := cfg.Flow.ResolveDescription(&design, DeriveSingle, nil)
-	if source != DescriptionFromDefault {
-		t.Errorf("source = %q, want %q", source, DescriptionFromDefault)
-	}
-	if !strings.Contains(got, "{环节名}") {
-		t.Errorf("description = %q, want the unrendered template", got)
 	}
 }

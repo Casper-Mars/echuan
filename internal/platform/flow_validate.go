@@ -232,21 +232,21 @@ func (d *flowDoc) validate() error {
 	// R16: every stage that a single derivation targets must say where its card
 	// task description comes from (D4). The stage description does not count: it
 	// is display text now, so a config that only ever wrote description fails here
-	// instead of silently producing empty cards (§7.3 item 2).
-	if d.defaultDescription == nil {
-		for i := range d.stages {
-			s := &d.stages[i]
-			if s.derive == nil || s.derive.mode != DeriveSingle {
-				continue
-			}
-			dst, ok := byName[strings.TrimSpace(s.derive.to)]
-			if !ok || dst.task != nil {
-				continue
-			}
-			return configErrf(path, dst.line,
-				"flow.stages[%d]: stage %q is derived automatically by flow.stages[%d] (%s) but declares no task template and flow.default_description is unset, so the derived card would carry no task description; add task to stage %q (write task: \"\" to keep it empty on purpose) or set flow.default_description (R16)。注：description 现在只表示阶段描述，不再作为任务说明兜底。",
-				dst.index, dst.name, s.index, s.name, dst.name)
+	// instead of silently producing empty cards (§7.3 item 2). There is no
+	// flow-level fallback to fall back on any more, which is why the check runs
+	// unconditionally.
+	for i := range d.stages {
+		s := &d.stages[i]
+		if s.derive == nil || s.derive.mode != DeriveSingle {
+			continue
 		}
+		dst, ok := byName[strings.TrimSpace(s.derive.to)]
+		if !ok || dst.task != nil {
+			continue
+		}
+		return configErrf(path, dst.line,
+			"flow.stages[%d]: stage %q is derived automatically by flow.stages[%d] (%s) but declares no task template, so the derived card would carry no task description; add task to stage %q (write task: \"\" to keep it empty on purpose) (R16)。注：description 现在只表示阶段描述，不再作为任务说明兜底。",
+			dst.index, dst.name, s.index, s.name, dst.name)
 	}
 
 	// R10 / R17: template variables are limited to the documented set.
@@ -272,11 +272,6 @@ func (d *flowDoc) validate() error {
 			if err := checkTemplateVars(path, lineOf(s.taskLine, s.line), field+".task", *s.task, allowItem, "R17"); err != nil {
 				return err
 			}
-		}
-	}
-	if d.defaultDescription != nil && *d.defaultDescription != "" {
-		if err := checkTemplateVars(path, lineOf(d.defaultLine, d.line), "flow.default_description", *d.defaultDescription, true, "R17"); err != nil {
-			return err
 		}
 	}
 

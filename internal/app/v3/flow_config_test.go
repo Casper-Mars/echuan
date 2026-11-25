@@ -448,17 +448,17 @@ func TestDeriveSwitchOffDerivesNothing(t *testing.T) {
 }
 
 // TestListDerivationDoesNotFallBack covers §8.4's list rule: a plan entry with an
-// empty body_md keeps an empty description even when the flow declares a
-// default_description, while a single/fanout derivation does fall back to it.
+// empty body_md keeps an empty description, while a single derivation takes the
+// target stage's task template. There is no flow-level fallback to fall back to
+// any more, so the stage template is the last level before empty.
 func TestListDerivationDoesNotFallBack(t *testing.T) {
 	now := testClock
 	svc, st := newTestService(t, &now)
 	svc.WithFlow(flowFromYAML(t, `flow:
-  default_description: "请按上游交付物完成本环节工作"
   stages:
     - { id: 1, name: requirement, label: 需求, material: requirement, derive: { auto: true, to: design, mode: single } }
-    - { id: 2, name: design, label: 方案, material: design, title: "技术方案", derive: { auto: true, to: breakdown, mode: single } }
-    - { id: 3, name: breakdown, label: 拆解, material: plan, title: "任务拆分", derive: { auto: true, to: dev, mode: list, source: artifact, format: json } }
+    - { id: 2, name: design, label: 方案, material: design, title: "技术方案", task: "请按上游交付物完成本环节工作", derive: { auto: true, to: breakdown, mode: single } }
+    - { id: 3, name: breakdown, label: 拆解, material: plan, title: "任务拆分", task: "", derive: { auto: true, to: dev, mode: list, source: artifact, format: json } }
     - { id: 4, name: dev, label: 开发, material: report, open_cards: multiple, closing: true, derive: { mode: none } }
 `))
 	// Every card's report material answers the same plan document, so the chain
@@ -469,7 +469,7 @@ func TestListDerivationDoesNotFallBack(t *testing.T) {
 	)})
 	projectID := seedProject(t, st, "APP")
 
-	// requirement → design: single, no stage task template → flow default.
+	// requirement → design: single, the target stage's task template wins.
 	createReadyTask(t, svc, projectID, "t_req", enum.Requirement)
 	approveTask(t, svc, st, "t_req", "w_req", enum.Requirement)
 	designs := listKind(t, svc, projectID, enum.Design)
@@ -477,18 +477,21 @@ func TestListDerivationDoesNotFallBack(t *testing.T) {
 		t.Fatalf("design tasks = %d, want 1", len(designs))
 	}
 	if designs[0].DescriptionMD != "请按上游交付物完成本环节工作" {
-		t.Errorf("design description_md = %q, want the flow default", designs[0].DescriptionMD)
+		t.Errorf("design description_md = %q, want the design task template", designs[0].DescriptionMD)
 	}
 
-	// design → breakdown: single, stage description not configured → default.
+	// design → breakdown: single, the stage wrote task: "" on purpose → empty.
 	approveTask(t, svc, st, designs[0].TaskID, "w_design", enum.Design)
 	breaks := listKind(t, svc, projectID, enum.Breakdown)
 	if len(breaks) != 1 {
 		t.Fatalf("breakdown tasks = %d, want 1", len(breaks))
 	}
+	if breaks[0].DescriptionMD != "" {
+		t.Errorf("breakdown description_md = %q, want empty (explicit task: \"\")", breaks[0].DescriptionMD)
+	}
 	approveTask(t, svc, st, breaks[0].TaskID, "w_break", enum.Breakdown)
 
-	// breakdown → dev: list entries decide, the flow default is not a fallback.
+	// breakdown → dev: list entries decide; nothing else fills the body in.
 	devs := listKind(t, svc, projectID, enum.Dev)
 	if len(devs) != 2 {
 		t.Fatalf("dev tasks = %d, want 2", len(devs))
@@ -643,6 +646,90 @@ func TestUnknownSiblingDependencyRollsBackBatch(t *testing.T) {
 	}
 	if cards := listKind(t, svc, projectID, enum.TaskKind(5)); len(cards) != 0 {
 		t.Errorf("review tasks = %d, want 0 after rollback", len(cards))
+	}
+}
+
+// TestRemovedFlowKeysDoNotChangeDerivation is the card's AC on the two keys v2
+// removed: a flow that still writes auto and default_description must derive the
+// same cards as one that only lists stages — same count, same title, same card
+// body, same fingerprint in the audit event. The keys are not read at all, so
+// they cannot change a decision.
+func TestRemovedFlowKeysDoNotChangeDerivation(t *testing.T) {
+	const stagesOnly = `flow:
+  stages:
+    - { id: 1, name: requirement, label: 需求, material: requirement, derive: { auto: true, to: design, mode: single } }
+    - { id: 2, name: design, label: 方案, material: design, title: "技术方案", task: "针对 {上游卡号} 出方案", derive: { mode: none } }
+`
+	const withRemovedKeys = `flow:
+  auto: true
+  default_description: "请按上游交付物完成本环节工作"
+  stages:
+    - { id: 1, name: requirement, label: 需求, material: requirement, derive: { auto: true, to: design, mode: single } }
+    - { id: 2, name: design, label: 方案, material: design, title: "技术方案", task: "针对 {上游卡号} 出方案", derive: { mode: none } }
+`
+
+	type run struct {
+		title  string
+		body   string
+		config string
+		count  int
+	}
+
+	derive := func(body string) run {
+		now := testClock
+		svc, st := newTestService(t, &now)
+		flow := flowFromYAML(t, body)
+		svc.WithFlow(flow)
+		projectID := seedProject(t, st, "APP")
+
+		createReadyTask(t, svc, projectID, "t_req", enum.Requirement)
+		approveTask(t, svc, st, "t_req", "w_req", enum.Requirement)
+
+		children := listKind(t, svc, projectID, enum.Design)
+		got := run{count: len(children)}
+		if len(children) == 1 {
+			card := children[0]
+			got.title, got.body = card.Title, card.DescriptionMD
+			events, err := svc.ListEvents(context.Background(), card.TaskID, 10)
+			if err != nil {
+				t.Fatalf("ListEvents %s: %v", card.TaskID, err)
+			}
+			for _, event := range events {
+				if event.Event != enum.EventFlowAutoCreate {
+					continue
+				}
+				var detail flowEventDetailJSON
+				if err := json.Unmarshal([]byte(event.DetailJSON), &detail); err != nil {
+					t.Fatalf("event detail %q: %v", event.DetailJSON, err)
+				}
+				got.config = detail.Config
+			}
+		}
+		if got.config == "" {
+			t.Fatal("flow.auto_create event missing: the approval derived nothing")
+		}
+		if events, err := svc.ListEvents(context.Background(), "t_req", 10); err != nil {
+			t.Fatalf("ListEvents t_req: %v", err)
+		} else if len(events) == 0 {
+			t.Fatal("upstream has no events")
+		}
+		return got
+	}
+
+	plain := derive(stagesOnly)
+	legacy := derive(withRemovedKeys)
+
+	if plain.count != 1 || legacy.count != 1 {
+		t.Fatalf("derived cards = %d/%d, want 1/1", plain.count, legacy.count)
+	}
+	if legacy.title != plain.title {
+		t.Errorf("title = %q, want %q (same as without the removed keys)", legacy.title, plain.title)
+	}
+	if legacy.body != plain.body {
+		t.Errorf("card body = %q, want %q (default_description must not fill it in)", legacy.body, plain.body)
+	}
+	if legacy.config != plain.config {
+		t.Errorf("event config = %q, want %q (the removed keys must not enter the fingerprint)", legacy.config, plain.config)
 	}
 }
 

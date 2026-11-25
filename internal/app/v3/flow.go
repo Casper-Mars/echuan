@@ -328,11 +328,12 @@ func (d *derivation) hook(s *Service) func(context.Context, *sql.Tx, storev3.Tas
 			}
 			title = values.render(title)
 
-			// §8.4: the task description has four levels (item body, stage task
-			// template, flow default, empty). The stage's human-readable
-			// description is not one of them (D2). A list entry body is the
-			// upstream agent's prose, so it is used verbatim; every configured
-			// template is rendered. A list derivation never falls back.
+			// §8.4: the task description has three levels (item body, stage task
+			// template, empty); the flow-level fallback is gone with
+			// default_description. The stage's human-readable description is not
+			// one of them either (D2). A list entry body is the upstream agent's
+			// prose, so it is used verbatim; every configured template is
+			// rendered. A list derivation never falls back.
 			description, source := s.flow.ResolveDescription(&d.dst, d.mode, &platform.DeriveItem{
 				Key: entry.key, Title: entry.title, BodyMD: entry.bodyMD,
 			})

@@ -13,11 +13,11 @@ const BuiltinFlowSource = "<builtin>"
 // keeps working; label carries the Chinese display name the board has always
 // shown.
 //
-// The explicit task: "" on design and breakdown is load-bearing (R-I). Without
-// it both cards would fall back to flow.default_description, and AC4 requires
-// their description_md to stay exactly empty. An explicit empty string also
-// satisfies R16, which otherwise refuses to start when a single-derived stage
-// has no task template at all.
+// The explicit task: "" on design and breakdown is load-bearing (R-I): AC4
+// requires their description_md to stay exactly empty, and there is no flow-level
+// fallback to fill it in any more. An explicit empty string is also what satisfies
+// R16, which otherwise refuses to start when a single-derived stage has no task
+// template at all.
 //
 // Every stage that derives the next one has to say derive.auto: true: there is
 // no flow-level switch any more (D1), so a missing switch would silently break
