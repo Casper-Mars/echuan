@@ -3,6 +3,7 @@ package enum
 import (
 	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,10 +13,15 @@ import (
 // closures are written at the call site so that method resolution happens on
 // the concrete type, not on the type parameter.
 type enumSpec[T ~int] struct {
-	label    string
-	values   []T
-	names    []string
-	max      int
+	label  string
+	values []T
+	names  []string
+	max    int
+	// open marks an enum whose legal set is "any positive id" rather than the
+	// built-in name map (TaskKind: the stage vocabulary belongs to the flow
+	// configuration, ADR-0003 D2"). max stays the highest built-in value, so a
+	// number above it is legal but has no name.
+	open     bool
 	valid    func(T) bool
 	text     func(T) string
 	parse    func(string) (T, error)
@@ -107,16 +113,52 @@ func testEnumContract[T ~int](t *testing.T, spec enumSpec[T]) {
 		t.Errorf("%s: UnmarshalJSON(number) should fail", spec.label)
 	}
 
-	// max+1 is out of range.
+	// max+1 is out of range for a closed enum, and an unnamed-but-legal id for
+	// an open one.
 	out := T(spec.max + 1)
-	if spec.valid(out) {
-		t.Errorf("%s: %d must be invalid", spec.label, out)
+	if spec.open {
+		checkOpenValue(t, spec, out)
+	} else {
+		if spec.valid(out) {
+			t.Errorf("%s: %d must be invalid", spec.label, out)
+		}
+		if _, err := spec.value(out); err == nil {
+			t.Errorf("%s: Value(%d) should fail", spec.label, out)
+		}
+		if _, err := spec.scan(int64(out)); err == nil {
+			t.Errorf("%s: Scan(%d) should fail", spec.label, out)
+		}
 	}
-	if _, err := spec.value(out); err == nil {
-		t.Errorf("%s: Value(%d) should fail", spec.label, out)
+}
+
+// checkOpenValue pins the open-enum surface for one id above the built-in set:
+// it is a legal value (persisted, scanned, validated) but has no name, so the
+// string and JSON surfaces refuse it instead of inventing one.
+func checkOpenValue[T ~int](t *testing.T, spec enumSpec[T], v T) {
+	t.Helper()
+
+	if !spec.valid(v) {
+		t.Errorf("%s: %d must be valid (open enum)", spec.label, v)
 	}
-	if _, err := spec.scan(int64(out)); err == nil {
-		t.Errorf("%s: Scan(%d) should fail", spec.label, out)
+	value, err := spec.value(v)
+	if err != nil {
+		t.Errorf("%s: Value(%d) error: %v", spec.label, v, err)
+	} else if value != int64(v) {
+		t.Errorf("%s: Value(%d) = %v, want %d", spec.label, v, value, int64(v))
+	}
+	if scanned, err := spec.scan(int64(v)); err != nil {
+		t.Errorf("%s: Scan(%d) error: %v", spec.label, v, err)
+	} else if scanned != v {
+		t.Errorf("%s: Scan(%d) = %d", spec.label, v, scanned)
+	}
+	if got, want := spec.text(v), fmt.Sprintf("invalid(%d)", int(v)); got != want {
+		t.Errorf("%s: String(%d) = %q, want %q", spec.label, v, got, want)
+	}
+	if blob, err := spec.toJSON(v); err == nil {
+		t.Errorf("%s: MarshalJSON(%d) = %s, want an error (no name)", spec.label, v, blob)
+	}
+	if _, err := spec.parse(fmt.Sprintf("invalid(%d)", int(v))); err == nil {
+		t.Errorf("%s: Parse(%q) should fail", spec.label, fmt.Sprintf("invalid(%d)", int(v)))
 	}
 }
 
@@ -150,6 +192,7 @@ func TestTaskKindContract(t *testing.T) {
 		values: TaskKinds(),
 		names:  []string{"requirement", "design", "breakdown", "dev"},
 		max:    4,
+		open:   true,
 		valid:  TaskKind.Valid,
 		text:   TaskKind.String,
 		parse:  ParseTaskKind,

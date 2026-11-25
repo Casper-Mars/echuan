@@ -18,7 +18,13 @@ import (
 type EnumSQLContract struct {
 	Table  string
 	Column string
+	// Values is the closed value set, compared against CHECK (col IN (...)).
 	Values []int
+	// Open marks a column whose legal set is not a value list but "any positive
+	// id": the workflow stage ids (tasks.kind, worker_kinds.kind) and the gate
+	// they mirror are owned by the flow configuration (ADR-0003 D2"), so the
+	// contract is the CHECK shape (col > 0) plus "no Go value is 0".
+	Open bool
 }
 
 // ints converts an enum value set into plain ints for comparison.
@@ -36,7 +42,7 @@ func TestEnumSQLContract(t *testing.T) {
 
 	contracts := []EnumSQLContract{
 		{Table: "projects", Column: "status", Values: ints(enum.ProjectStatuses())},
-		{Table: "tasks", Column: "kind", Values: ints(enum.TaskKinds())},
+		{Table: "tasks", Column: "kind", Values: ints(enum.TaskKinds()), Open: true},
 		{Table: "tasks", Column: "status", Values: ints(enum.TaskStatuses())},
 		{Table: "materials", Column: "kind", Values: ints(enum.MaterialKinds())},
 		{Table: "attachments", Column: "role", Values: ints(enum.AttachmentRoles())},
@@ -44,12 +50,16 @@ func TestEnumSQLContract(t *testing.T) {
 		{Table: "task_events", Column: "event", Values: ints(enum.Events())},
 		{Table: "workers", Column: "state", Values: ints(enum.WorkerStates())},
 		{Table: "im_card", Column: "subject_kind", Values: ints(enum.SubjectKinds())},
-		{Table: "worker_kinds", Column: "kind", Values: ints(enum.TaskKinds())},
+		{Table: "worker_kinds", Column: "kind", Values: ints(enum.TaskKinds()), Open: true},
 	}
 
 	for _, contract := range contracts {
 		t.Run(contract.Table+"."+contract.Column, func(t *testing.T) {
 			sql := tableSQL(t, st, contract.Table)
+			if contract.Open {
+				checkOpenEnum(t, sql, contract)
+				return
+			}
 			got := checkValues(t, sql, contract)
 
 			want := append([]int(nil), contract.Values...)
@@ -70,6 +80,29 @@ func TestEnumSQLContract(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// checkOpenEnum pins the open-enum contract: the CHECK must be the range
+// predicate `col > 0` (any positive id is legal, 0 never is), and every Go
+// constant that can be persisted must satisfy it. A closed IN (...) list here
+// would silently re-freeze the vocabulary the flow configuration now owns.
+func checkOpenEnum(t *testing.T, tableSQL string, contract EnumSQLContract) {
+	t.Helper()
+
+	column := regexp.QuoteMeta(contract.Column)
+	openPattern := regexp.MustCompile(`(?is)CHECK\s*\(\s*` + column + `\s*>\s*0\s*\)`)
+	if !openPattern.MatchString(tableSQL) {
+		t.Fatalf("%s.%s: want CHECK (%s > 0) in %q", contract.Table, contract.Column, contract.Column, tableSQL)
+	}
+	closedPattern := regexp.MustCompile(`(?is)CHECK\s*\(\s*` + column + `\s+(IN\s*\(|BETWEEN\b)`)
+	if closedPattern.MatchString(tableSQL) {
+		t.Fatalf("%s.%s: still a closed value list, %q", contract.Table, contract.Column, tableSQL)
+	}
+	for _, v := range contract.Values {
+		if v <= 0 {
+			t.Fatalf("%s.%s: Go value %d violates CHECK (%s > 0)", contract.Table, contract.Column, v, contract.Column)
+		}
 	}
 }
 

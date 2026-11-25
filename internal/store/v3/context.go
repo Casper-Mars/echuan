@@ -103,21 +103,33 @@ func ListUpstreamOutputs(ctx context.Context, q storedb.Querier, taskPK int64) (
 	return out, nil
 }
 
-// HasDownstreamDev reports whether another dev task depends on this task; the
-// last dev task opens the project merge PR.
-func HasDownstreamDev(ctx context.Context, q storedb.Querier, taskPK int64) (bool, error) {
+// HasDownstream reports whether a downstream task of one kind depends on this
+// task. The claim envelope uses it to answer "is this the last card of the
+// stage": HasDownstreamDev is the built-in default flow's answer for dev.
+func HasDownstream(ctx context.Context, q storedb.Querier, taskPK int64, kind enum.TaskKind) (bool, error) {
+	if !kind.Valid() {
+		return false, fmt.Errorf("v3: has downstream: invalid kind %d", int(kind))
+	}
 	var count int
 	row, err := storedb.One[struct {
 		Count int `db:"count"`
 	}](ctx, q, `
 		SELECT COUNT(*) AS count
 		  FROM task_deps d JOIN tasks t ON t.id = d.task_id
-		 WHERE d.depends_on_task_id = ? AND t.kind = ?`, taskPK, enum.Dev)
+		 WHERE d.depends_on_task_id = ? AND t.kind = ?`, taskPK, kind)
 	if err != nil {
-		return false, fmt.Errorf("v3: count downstream dev tasks: %w", err)
+		return false, fmt.Errorf("v3: count downstream tasks of kind %d: %w", int(kind), err)
 	}
 	count = row.Count
 	return count > 0, nil
+}
+
+// HasDownstreamDev reports whether another dev task depends on this task; the
+// last dev task opens the project merge PR. The stage is parameterised
+// (HasDownstream) because a configured flow may move the closing stage off dev;
+// this wrapper keeps the built-in default flow's meaning at every call site.
+func HasDownstreamDev(ctx context.Context, q storedb.Querier, taskPK int64) (bool, error) {
+	return HasDownstream(ctx, q, taskPK, enum.Dev)
 }
 
 // ListTaskAttachmentRefs lists every attachment of one task with the material
@@ -135,4 +147,3 @@ func ListTaskAttachmentRefs(ctx context.Context, q storedb.Querier, taskPK int64
 	}
 	return refs, nil
 }
-
