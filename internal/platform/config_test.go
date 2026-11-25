@@ -19,7 +19,7 @@ func clearEnv(t *testing.T) {
 func TestLoadDefaults(t *testing.T) {
 	clearEnv(t)
 
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -60,6 +60,14 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ReadPoolSize != 4 {
 		t.Errorf("ReadPoolSize = %d, want 4", cfg.ReadPoolSize)
 	}
+	// A config file without a flow section gets the built-in flow, not an empty
+	// one: the service always has a usable stage table.
+	if cfg.Flow.Source != BuiltinFlowSource {
+		t.Errorf("Flow.Source = %q, want %q", cfg.Flow.Source, BuiltinFlowSource)
+	}
+	if len(cfg.Flow.Stages) != 4 {
+		t.Errorf("len(Flow.Stages) = %d, want 4", len(cfg.Flow.Stages))
+	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -78,14 +86,14 @@ func TestLoadIgnoresRemovedWorkspaceKey(t *testing.T) {
 	clearEnv(t)
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "echuan.toml")
+	path := filepath.Join(dir, "echuan.yaml")
 	legacyKey := "workspace" + "_dir"
 	legacyEnv := "ECHUAN_WORKSPACE" + "_DIR"
 	t.Setenv(legacyEnv, filepath.Join(dir, "env-ws"))
 
 	content := strings.Join([]string{
-		"data_dir = \"" + filepath.Join(dir, "data") + "\"",
-		legacyKey + " = \"" + filepath.Join(dir, "ws") + "\"",
+		"data_dir: \"" + filepath.Join(dir, "data") + "\"",
+		legacyKey + ": \"" + filepath.Join(dir, "ws") + "\"",
 	}, "\n")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -100,27 +108,27 @@ func TestLoadIgnoresRemovedWorkspaceKey(t *testing.T) {
 	}
 }
 
-func TestLoadFromTOML(t *testing.T) {
+func TestLoadFromYAML(t *testing.T) {
 	clearEnv(t)
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "echuan.toml")
+	path := filepath.Join(dir, "echuan.yaml")
 	content := strings.Join([]string{
 		"# echuan configuration",
-		"listen = \"0.0.0.0:9000\"",
-		"data_dir = \"" + filepath.Join(dir, "data") + "\"",
+		"listen: \"0.0.0.0:9000\"",
+		"data_dir: \"" + filepath.Join(dir, "data") + "\"",
 		"",
-		"lease_ttl = \"45s\"",
-		"max_attempts = 7",
-		"poll_timeout = \"5s\"",
-		"review_stale_hours = 12",
-		"material_max_bytes = 1024",
-		"worker_ttl = \"50s\"",
-		"heartbeat_interval = \"20s\"",
-		"worker_metadata_max_bytes = 4096",
-		"worker_retention = \"24h\"",
-		"read_pool_size = 6",
-		"log_level = \"debug\"",
+		"lease_ttl: \"45s\"",
+		"max_attempts: 7",
+		"poll_timeout: \"5s\"",
+		"review_stale_hours: 12",
+		"material_max_bytes: 1024",
+		"worker_ttl: \"50s\"",
+		"heartbeat_interval: \"20s\"",
+		"worker_metadata_max_bytes: 4096",
+		"worker_retention: \"24h\"",
+		"read_pool_size: 6",
+		"log_level: \"debug\"",
 	}, "\n")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -172,11 +180,13 @@ func TestLoadFromTOML(t *testing.T) {
 	}
 }
 
-func TestLoadUnknownKeysAndSectionsIgnored(t *testing.T) {
+// TestLoadUnknownTopLevelKeysIgnored keeps the historical forward-compatibility
+// rule: only the flow subtree is strict (R14).
+func TestLoadUnknownTopLevelKeysIgnored(t *testing.T) {
 	clearEnv(t)
 
-	path := filepath.Join(t.TempDir(), "echuan.toml")
-	content := "[server]\nfuture_key = \"whatever\"\nlisten = \"127.0.0.1:9999\"\n"
+	path := filepath.Join(t.TempDir(), "echuan.yaml")
+	content := "future_key: \"whatever\"\nlisten: \"127.0.0.1:9999\"\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -193,8 +203,8 @@ func TestLoadUnknownKeysAndSectionsIgnored(t *testing.T) {
 func TestEnvOverridesFile(t *testing.T) {
 	clearEnv(t)
 
-	path := filepath.Join(t.TempDir(), "echuan.toml")
-	if err := os.WriteFile(path, []byte("listen = \"127.0.0.1:9001\"\nmax_attempts = 2\n"), 0o600); err != nil {
+	path := filepath.Join(t.TempDir(), "echuan.yaml")
+	if err := os.WriteFile(path, []byte("listen: \"127.0.0.1:9001\"\nmax_attempts: 2\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -241,8 +251,8 @@ func TestEnvOverridesFile(t *testing.T) {
 	}
 }
 
-// TestEnvOverridesWorkerDefaults checks the new worker keys resolve from the
-// environment without any TOML file present.
+// TestEnvOverridesWorkerDefaults checks the worker keys resolve from the
+// environment without any config file present.
 func TestEnvOverridesWorkerDefaults(t *testing.T) {
 	clearEnv(t)
 
@@ -251,7 +261,7 @@ func TestEnvOverridesWorkerDefaults(t *testing.T) {
 	t.Setenv("ECHUAN_WORKER_METADATA_MAX_BYTES", "16384")
 	t.Setenv("ECHUAN_WORKER_RETENTION", "336h")
 
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -272,36 +282,37 @@ func TestEnvOverridesWorkerDefaults(t *testing.T) {
 func TestLoadInvalidValues(t *testing.T) {
 	tests := []struct {
 		name    string
-		toml    string
+		yaml    string
 		envKey  string
 		envVal  string
 		wantSub string
 	}{
 		{
 			name:    "invalid duration",
-			toml:    "lease_ttl = \"forever\"\n",
+			yaml:    "lease_ttl: forever\n",
 			wantSub: "lease_ttl: invalid duration",
 		},
 		{
 			name:    "invalid integer",
-			toml:    "max_attempts = \"many\"\n",
+			yaml:    "max_attempts: many\n",
 			wantSub: "max_attempts: invalid integer",
 		},
 		{
 			name:    "invalid log level",
-			toml:    "log_level = \"verbose\"\n",
+			yaml:    "log_level: verbose\n",
 			wantSub: "log_level: must be one of",
 		},
 		{
 			name:    "negative attempts",
-			toml:    "max_attempts = -1\n",
+			yaml:    "max_attempts: -1\n",
 			wantSub: "max_attempts: must be positive",
 		},
 		{
 			name:    "non-positive read pool size",
-			toml:    "read_pool_size = 0\n",
+			yaml:    "read_pool_size: 0\n",
 			wantSub: "read_pool_size: must be positive",
-		}, {
+		},
+		{
 			name:    "invalid env duration",
 			envKey:  "ECHUAN_POLL_TIMEOUT",
 			envVal:  "soon",
@@ -309,12 +320,12 @@ func TestLoadInvalidValues(t *testing.T) {
 		},
 		{
 			name:    "invalid worker ttl",
-			toml:    "worker_ttl = \"forever\"\n",
+			yaml:    "worker_ttl: forever\n",
 			wantSub: "worker_ttl: invalid duration",
 		},
 		{
 			name:    "invalid heartbeat interval",
-			toml:    "heartbeat_interval = \"15\"\n",
+			yaml:    "heartbeat_interval: 15\n",
 			wantSub: "heartbeat_interval: invalid duration",
 		},
 		{
@@ -325,17 +336,17 @@ func TestLoadInvalidValues(t *testing.T) {
 		},
 		{
 			name:    "invalid worker metadata bytes",
-			toml:    "worker_metadata_max_bytes = \"8k\"\n",
+			yaml:    "worker_metadata_max_bytes: 8k\n",
 			wantSub: "worker_metadata_max_bytes: invalid integer",
 		},
 		{
 			name:    "zero worker ttl",
-			toml:    "worker_ttl = \"0s\"\n",
+			yaml:    "worker_ttl: 0s\n",
 			wantSub: "worker_ttl: must be positive",
 		},
 		{
 			name:    "negative heartbeat interval",
-			toml:    "heartbeat_interval = \"-1s\"\n",
+			yaml:    "heartbeat_interval: -1s\n",
 			wantSub: "heartbeat_interval: must be positive",
 		},
 		{
@@ -346,12 +357,12 @@ func TestLoadInvalidValues(t *testing.T) {
 		},
 		{
 			name:    "zero worker retention",
-			toml:    "worker_retention = \"0h\"\n",
+			yaml:    "worker_retention: 0h\n",
 			wantSub: "worker_retention: must be greater than worker_ttl",
 		},
 		{
 			name:    "worker retention not greater than ttl",
-			toml:    "worker_ttl = \"45s\"\nworker_retention = \"10s\"\n",
+			yaml:    "worker_ttl: 45s\nworker_retention: 10s\n",
 			wantSub: "must be greater than worker_ttl (45s), got 10s",
 		},
 	}
@@ -360,9 +371,9 @@ func TestLoadInvalidValues(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clearEnv(t)
 
-			path := filepath.Join(t.TempDir(), "echuan.toml")
-			if tc.toml != "" {
-				if err := os.WriteFile(path, []byte(tc.toml), 0o600); err != nil {
+			path := filepath.Join(t.TempDir(), "echuan.yaml")
+			if tc.yaml != "" {
+				if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
 					t.Fatalf("write config: %v", err)
 				}
 			}
@@ -377,19 +388,51 @@ func TestLoadInvalidValues(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.wantSub) {
 				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantSub)
 			}
+			// A file problem always names the file it came from (AC9).
+			if tc.envKey == "" && !strings.Contains(err.Error(), path+":") {
+				t.Errorf("error = %q, want it to name %q", err.Error(), path)
+			}
 		})
 	}
 }
 
-func TestLoadMalformedTOML(t *testing.T) {
+func TestLoadMalformedYAML(t *testing.T) {
 	clearEnv(t)
 
-	path := filepath.Join(t.TempDir(), "echuan.toml")
-	if err := os.WriteFile(path, []byte("listen\n"), 0o600); err != nil {
+	path := filepath.Join(t.TempDir(), "echuan.yaml")
+	if err := os.WriteFile(path, []byte("listen: [unterminated\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	if _, err := Load(path); err == nil {
+	_, err := Load(path)
+	if err == nil {
 		t.Fatal("Load: expected parse error, got nil")
+	}
+	if !strings.Contains(err.Error(), path+":") {
+		t.Errorf("error = %q, want it to name %q", err.Error(), path)
+	}
+}
+
+// TestLoadRejectsNonYAMLConfig pins D1″: the configuration format is YAML only,
+// so a leftover .toml path fails loudly and points at the YAML sample instead of
+// being parsed as something else.
+func TestLoadRejectsNonYAMLConfig(t *testing.T) {
+	clearEnv(t)
+
+	path := filepath.Join(t.TempDir(), "echuan.toml")
+	if err := os.WriteFile(path, []byte("listen = \"127.0.0.1:9000\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load: expected an unsupported-format error, got nil")
+	}
+	msg := err.Error()
+	if !strings.HasPrefix(msg, path+":1: ") {
+		t.Errorf("error = %q, want it to start with %q", msg, path+":1: ")
+	}
+	if !strings.Contains(msg, "only reads YAML") || !strings.Contains(msg, "configs/echuan.yaml") {
+		t.Errorf("error = %q, want it to explain the YAML-only rule", msg)
 	}
 }

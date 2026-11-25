@@ -1,0 +1,329 @@
+package platform
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"strings"
+)
+
+// DeriveMode is how a stage derives the cards that follow it (D3″).
+//
+// It is a graph edge declaration, not a chain: every stage says on its own who
+// it hands work to and how many cards it creates.
+type DeriveMode string
+
+const (
+	// DeriveNone does not derive anything: the stage is a chain tail or purely
+	// manual.
+	DeriveNone DeriveMode = "none"
+	// DeriveSingle derives exactly one card with an empty entry.
+	DeriveSingle DeriveMode = "single"
+	// DeriveList reads the entry list out of the stage's latest output
+	// artifact (the plan JSON/YAML a breakdown card produces).
+	DeriveList DeriveMode = "list"
+	// DeriveFanout derives the entries enumerated in the configuration.
+	DeriveFanout DeriveMode = "fanout"
+)
+
+// valid reports whether m is a declared derivation mode (R6).
+func (m DeriveMode) valid() bool {
+	switch m {
+	case DeriveNone, DeriveSingle, DeriveList, DeriveFanout:
+		return true
+	}
+	return false
+}
+
+// OpenCards is the per-project cap on unfinished cards of one stage (D4″).
+type OpenCards string
+
+const (
+	// OpenCardsSingle allows at most one unfinished card per project.
+	OpenCardsSingle OpenCards = "single"
+	// OpenCardsMultiple allows any number of unfinished cards per project.
+	OpenCardsMultiple OpenCards = "multiple"
+)
+
+// MaterialNames are the material categories a stage may declare (R5). The
+// values match enum.MaterialKind, which is what lands in materials.kind.
+var MaterialNames = []string{"requirement", "design", "plan", "report", "context", "other"}
+
+// BuiltinNames maps the ids the existing database already uses to the stage
+// name that id must keep (R15). Renaming them would silently reinterpret every
+// historical card.
+var BuiltinNames = map[int]string{
+	1: "requirement",
+	2: "design",
+	3: "breakdown",
+	4: "dev",
+}
+
+// CardTemplateVars are the card-level template variables every template may
+// use (D5″).
+var CardTemplateVars = []string{"上游卡号", "上游卡标题", "项目名", "产品名", "环节名"}
+
+// ItemTemplateVars are the entry-level template variables that only apply to
+// list/fanout derivations (D5″).
+var ItemTemplateVars = []string{"条目标题", "条目key", "条目序号"}
+
+// DescriptionSource names the level a derived card description came from
+// (§8.4).
+type DescriptionSource string
+
+const (
+	// DescriptionFromItem means the entry body (the artifact field for list,
+	// the configured body for fanout) supplied the text.
+	DescriptionFromItem DescriptionSource = "item"
+	// DescriptionFromStage means the target stage's description template.
+	DescriptionFromStage DescriptionSource = "stage"
+	// DescriptionFromDefault means flow.default_description.
+	DescriptionFromDefault DescriptionSource = "default"
+	// DescriptionEmpty means nothing matched: the card is created with an empty
+	// description. For single derivations R16 forbids this unless the operator
+	// wrote description: "" on purpose.
+	DescriptionEmpty DescriptionSource = "empty"
+)
+
+// FlowConfig is the resolved flow: the stage table plus the derivation policy
+// shared by every stage.
+type FlowConfig struct {
+	// Auto is the master switch for automatic derivation after an approval
+	// (AC8). It defaults to true so a flow section that only lists stages
+	// keeps behaving as the platform always has.
+	Auto bool
+	// DefaultDescription is the flow-level fallback description template. nil
+	// means "not configured"; a pointer to "" means the operator explicitly
+	// asked for an empty description (R16 distinguishes the two).
+	DefaultDescription *string
+	// Stages is the ordered stage table. The order is the board and task
+	// picker order; ids are what lands in tasks.kind.
+	Stages []Stage
+	// Source names where the flow came from: BuiltinFlowSource when the config
+	// file has no flow section, otherwise the config file path.
+	Source string
+}
+
+// Stage is one configured stage.
+type Stage struct {
+	// ID is the integer stored in tasks.kind. Positive, unique, never reused.
+	ID int
+	// Name is the public identifier: kit preset keys, HTTP kind values and
+	// audit rule strings all use it. Unique within the flow.
+	Name string
+	// Label is the display name. Empty means "use Name".
+	Label string
+	// Material is the material category the stage produces (R5).
+	Material string
+	// OpenCards is the per-project cap on unfinished cards of this stage.
+	OpenCards OpenCards
+	// Closing marks the stage whose completion opens the project merge PR.
+	Closing bool
+	// Title is the card title template. Empty means "use the entry title".
+	Title string
+	// Description is the card description template. nil means "not
+	// configured" (fall through to the flow default); a pointer to "" is an
+	// explicit empty description.
+	Description *string
+	// Derive declares what an approval of a card in this stage creates.
+	Derive Derive
+}
+
+// LabelOrName returns the display name, falling back to the identifier.
+func (s Stage) LabelOrName() string {
+	if strings.TrimSpace(s.Label) != "" {
+		return s.Label
+	}
+	return s.Name
+}
+
+// Derive is one stage's derivation rule.
+type Derive struct {
+	// To is the target stage name. Empty when Mode is DeriveNone.
+	To string
+	// Mode is none, single, list or fanout.
+	Mode DeriveMode
+	// Source is where a list derivation reads its entries from. Only
+	// "artifact" is supported.
+	Source string
+	// Format is the artifact format of a list derivation: json or yaml.
+	Format string
+	// Items are the entries of a fanout derivation.
+	Items []DeriveItem
+}
+
+// DeriveItem is one entry a fanout derivation turns into a card.
+type DeriveItem struct {
+	// Key identifies the entry among its siblings (not a stage name).
+	Key string
+	// Title is the card title, or empty to use the target stage template.
+	Title string
+	// BodyMD is the card description, or empty to fall back to the stage /
+	// flow default.
+	BodyMD string
+	// Priority is an optional ordering hint passed through to the engine.
+	Priority int
+	// DependsOn are the sibling entry keys this entry depends on.
+	DependsOn []string
+}
+
+// String renders the derivation rule. It is used by the startup log line and
+// by the flow fingerprint, so it must stay deterministic.
+func (d Derive) String() string {
+	if d.Mode == "" || d.Mode == DeriveNone {
+		return string(DeriveNone)
+	}
+	parts := []string{"to=" + d.To, "mode=" + string(d.Mode)}
+	if d.Source != "" {
+		parts = append(parts, "source="+d.Source)
+	}
+	if d.Format != "" {
+		parts = append(parts, "format="+d.Format)
+	}
+	for _, item := range d.Items {
+		parts = append(parts, fmt.Sprintf("item=%s:%s:%s:%d:%s",
+			item.Key, item.Title, item.BodyMD, item.Priority, strings.Join(item.DependsOn, ",")))
+	}
+	return strings.Join(parts, " ")
+}
+
+// ByName returns the stage with the given name.
+func (f FlowConfig) ByName(name string) (Stage, bool) {
+	for _, s := range f.Stages {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return Stage{}, false
+}
+
+// ByID returns the stage with the given id (tasks.kind).
+func (f FlowConfig) ByID(id int) (Stage, bool) {
+	for _, s := range f.Stages {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	return Stage{}, false
+}
+
+// Names returns the stage names in configured order. It feeds the "available
+// stages" half of every error message.
+func (f FlowConfig) Names() []string {
+	out := make([]string, 0, len(f.Stages))
+	for _, s := range f.Stages {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+// IDs returns the configured stage ids in order. The startup database sentinel
+// compares it against SELECT DISTINCT kind FROM tasks.
+func (f FlowConfig) IDs() []int {
+	out := make([]int, 0, len(f.Stages))
+	for _, s := range f.Stages {
+		out = append(out, s.ID)
+	}
+	return out
+}
+
+// Label returns the display name of a stage name, falling back to the name.
+func (f FlowConfig) Label(name string) string {
+	if s, ok := f.ByName(name); ok {
+		return s.LabelOrName()
+	}
+	return name
+}
+
+// Fingerprint is the 12-character digest of the effective flow, used by the
+// startup log and by the derivation event detail to record which configuration
+// produced a card. It is content-only (no timestamps), so two loads of the same
+// configuration always agree (§8.7).
+//
+// The digest covers the auto switch, the flow-level default description and,
+// for every stage, id|name|label|material|open_cards|closing|title|description|
+// derive. An unset description is encoded differently from an explicit "",
+// because the two produce different cards.
+func (f FlowConfig) Fingerprint() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "auto=%t\n", f.Auto)
+	fmt.Fprintf(&b, "default_description=%s\n", encodeOptional(f.DefaultDescription))
+	for _, s := range f.Stages {
+		fmt.Fprintf(&b, "%d|%s|%s|%s|%s|%t|%s|%s|%s\n",
+			s.ID, s.Name, s.Label, s.Material, s.OpenCards, s.Closing,
+			s.Title, encodeOptional(s.Description), s.Derive)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// encodeOptional makes "not configured" and "explicit empty" distinguishable in
+// the fingerprint input string.
+func encodeOptional(v *string) string {
+	if v == nil {
+		return "<unset>"
+	}
+	return "<" + *v + ">"
+}
+
+// ChainSummary renders one line per stage for the startup log, for example
+// "1:requirement(需求) -> 2:design(方案) (single)" (§8.1 step 6).
+func (f FlowConfig) ChainSummary() []string {
+	out := make([]string, 0, len(f.Stages))
+	for _, s := range f.Stages {
+		line := fmt.Sprintf("%d:%s(%s)", s.ID, s.Name, s.LabelOrName())
+		if s.Derive.Mode == "" || s.Derive.Mode == DeriveNone {
+			line += " (" + string(DeriveNone) + ")"
+		} else if dst, ok := f.ByName(s.Derive.To); ok {
+			line += fmt.Sprintf(" -> %d:%s(%s) (%s)", dst.ID, dst.Name, dst.LabelOrName(), s.Derive.Mode)
+		} else {
+			line += fmt.Sprintf(" -> %s (%s)", s.Derive.To, s.Derive.Mode)
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// ResolveDescription picks the template a derived card's description is
+// rendered from, together with the level it came from (§8.4 / D8‴).
+//
+// The rules, in order:
+//
+//  1. a list derivation takes the entry body and never falls back: when the
+//     upstream agent left body_md empty the card keeps an empty description;
+//  2. a fanout derivation takes the configured entry body when it is non-empty;
+//  3. then the target stage's description template;
+//  4. then flow.default_description;
+//  5. otherwise the description is empty.
+//
+// R16 guarantees a single-derived stage never reaches step 5 unless the
+// operator wrote description: "" on purpose.
+//
+// mode is the *upstream* stage's Derive.Mode (the derivation that creates the
+// card), item is the entry being turned into a card and may be nil for single
+// derivations. dst may be nil when the target stage is unknown; the caller then
+// still gets the flow-level fallback.
+func (f FlowConfig) ResolveDescription(dst *Stage, mode DeriveMode, item *DeriveItem) (string, DescriptionSource) {
+	hasBody := item != nil && strings.TrimSpace(item.BodyMD) != ""
+
+	switch mode {
+	case DeriveList:
+		if hasBody {
+			return item.BodyMD, DescriptionFromItem
+		}
+		return "", DescriptionEmpty
+	case DeriveNone:
+		return "", DescriptionEmpty
+	}
+
+	if hasBody {
+		return item.BodyMD, DescriptionFromItem
+	}
+	if dst != nil && dst.Description != nil {
+		return *dst.Description, DescriptionFromStage
+	}
+	if f.DefaultDescription != nil {
+		return *f.DefaultDescription, DescriptionFromDefault
+	}
+	return "", DescriptionEmpty
+}

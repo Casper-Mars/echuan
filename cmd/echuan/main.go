@@ -42,9 +42,13 @@ func main() {
 }
 
 func run() error {
-	configPath := flag.String("config", "./echuan.toml", "path to the TOML config file (optional)")
+	configPath := flag.String("config", "./echuan.yaml", "path to the YAML config file (optional)")
 	flag.Parse()
 
+	// Load resolves the file, the environment and the default flow. A broken
+	// configuration (including an invalid flow, R1–R17) returns here, before the
+	// database is opened and before net.Listen, so a rejected config never
+	// accepts traffic and the error carries "<path>:<line>: <reason>".
 	cfg, err := platform.Load(*configPath)
 	if err != nil {
 		return err
@@ -52,6 +56,7 @@ func run() error {
 
 	logger := platform.NewLogger(cfg.LogLevel, os.Stdout)
 	banner := platform.NewBannerLogger(os.Stdout)
+	logFlow(banner, cfg.Flow)
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return fmt.Errorf("create directory %s: %w", cfg.DataDir, err)
@@ -355,6 +360,20 @@ func schemaVersion(st *store.Store) int {
 		return 0
 	}
 	return version
+}
+
+// logFlow writes the effective flow at startup (§8.1 step 6): which
+// configuration it came from, the fingerprint that derivation events carry, the
+// auto switch and one line per stage so the operator can compare the loaded
+// chain with the file without querying anything.
+func logFlow(banner *slog.Logger, flow platform.FlowConfig) {
+	banner.Info("flow chain loaded",
+		"source", flow.Source,
+		"default", flow.Source == platform.BuiltinFlowSource,
+		"fingerprint", flow.Fingerprint(),
+		"auto", flow.Auto,
+		"stages", flow.ChainSummary(),
+	)
 }
 
 // logStartup writes the startup banner. It must be called with the banner

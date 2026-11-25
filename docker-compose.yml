@@ -52,14 +52,14 @@ services:
 
     environment:
       TZ: ${TZ:-Asia/Shanghai}
-      # 留空时配置文件生效；非空时覆盖 TOML（ECHUAN_* 优先级最高）。
+      # 留空时配置文件生效；非空时覆盖 YAML（ECHUAN_* 优先级最高）。
       ECHUAN_LOG_LEVEL: ${ECHUAN_LOG_LEVEL:-}
 
     volumes:
       # 数据库 / objects / workspaces 全部落在宿主机目录，删容器不丢数据。
       - "${ECHUAN_DATA_DIR:-${HOME}/echuan-v2-data}:/data"
       # 配置只读挂载；容器启动参数见 Dockerfile 的 CMD。
-      - "./configs/echuan.container.toml:/etc/echuan/echuan.toml:ro"
+      - "./configs/echuan.container.yaml:/etc/echuan/echuan.yaml:ro"
 
     logging:
       driver: json-file

@@ -17,7 +17,7 @@ import (
 )
 
 // TestConfigMaxAttemptsReachesCreatedTask walks the whole production path:
-// TOML → platform.Load → newTaskService (the wiring in run) → CreateTask →
+// YAML → platform.Load → newTaskService (the wiring in run) → CreateTask →
 // persisted row. It is the regression guard for "the configuration is never
 // wired into the task service": delete WithMaxAttempts from newTaskService and
 // this test must fail (the service then falls back to the built-in 3).
@@ -27,12 +27,12 @@ import (
 func TestConfigMaxAttemptsReachesCreatedTask(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "data")
-	configPath := filepath.Join(dir, "echuan.toml")
-	toml := "listen = \"127.0.0.1:18720\"\n" +
-		"data_dir = \"" + dataDir + "\"\n" +
-		"read_pool_size = 2\n" +
-		"max_attempts = 7\n"
-	if err := os.WriteFile(configPath, []byte(toml), 0o600); err != nil {
+	configPath := filepath.Join(dir, "echuan.yaml")
+	yaml := "listen: \"127.0.0.1:18720\"\n" +
+		"data_dir: \"" + dataDir + "\"\n" +
+		"read_pool_size: 2\n" +
+		"max_attempts: 7\n"
+	if err := os.WriteFile(configPath, []byte(yaml), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 

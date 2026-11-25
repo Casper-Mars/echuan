@@ -1,0 +1,107 @@
+# echuan v2 本地开发配置样例（宿主直接运行 ./echuan 时使用）
+#
+# 生效优先级：环境变量（ECHUAN_*） > 本文件 > 内置默认值。
+# 默认读取 ./echuan.yaml，可用 -config 指定其他路径；文件不存在时全部走默认值。
+# 格式只支持 YAML（.yaml/.yml）；旧版 TOML 配置已不再解析，传 .toml 会直接报错。
+#
+# 每个启动校验错误都会带上 <路径>:<行号>，改完重启即可看到结果。
+
+# HTTP 监听地址
+listen: "127.0.0.1:8721"
+
+# 数据目录（SQLite 库、运行期数据），支持 ~ 展开
+data_dir: "~/echuan-v2-data"
+
+# SQLite 读连接池大小（写池固定为 1）
+read_pool_size: 4
+
+# 任务租约有效期，超过未续租则租约失效（Go duration 语法）
+lease_ttl: "90s"
+
+# 单个任务允许的最大尝试次数
+max_attempts: 3
+
+# claim 长轮询超时
+poll_timeout: "25s"
+
+# 评审超过该小时数未处理视为 stale
+review_stale_hours: 72
+
+# 单个素材允许的最大字节数（默认 20 MiB）
+material_max_bytes: 20971520
+
+# Worker 存活时间：注册后超过该时长未心跳即视为离线（Go duration 语法）
+worker_ttl: "45s"
+
+# Worker 心跳间隔，需显著小于 worker_ttl
+heartbeat_interval: "15s"
+
+# Worker 注册时 metadata 允许的最大字节数（默认 8 KiB）
+worker_metadata_max_bytes: 8192
+
+# 离线 Worker 状态的保留时长（默认 1 小时，需大于 worker_ttl，Go duration 语法）
+worker_retention: "1h"
+
+# 日志级别：debug / info / warn / error
+log_level: "info"
+
+# ---------- 飞书机器人（可选，默认关闭） ----------
+# 开启后平台会内嵌长连接、卡片与文档同步；关闭时平台行为不变。
+im:
+  enabled: false
+  # 自建应用凭证；app_secret 建议只通过环境变量 ECHUAN_IM_APP_SECRET 注入
+  app_id: ""
+  app_secret: ""
+  # 卡片操作白名单 chat_id（open_id 是应用维度的，不能跨应用复用）
+  allowed_chat_ids: []
+  # 拉取待办卡片间隔
+  poll_interval: "30s"
+  # 免打扰时段，格式 HH:MM-HH:MM
+  quiet_hours: "23:00-08:00"
+  # 同时维护的卡片上限
+  max_cards: 10
+  # 材料文档落库目录；留空则启动时自动创建
+  doc_folder_token: ""
+
+# ---------- 任务流程（可配置的部分） ----------
+# 顺序 = 看板与「新建任务」下拉里的顺序；id 落库（tasks.kind），name 是对外标识
+# （kit 配置键、HTTP kind、审计规则串 requirement->design 都用它），label 只是显示名。
+# 删掉整段 flow 会启用手里的内置默认流程，效果与下面这份逐字段一致。
+flow:
+  # 自动派生总开关：关掉后审批通过不再自动建卡
+  auto: true
+  # 派生卡的缺省任务描述（模板）：环节没写 description 时用它。
+  # 内置默认流程故意不配，因为派生卡的 description_md 需要与历史逐字一致（空字符串）。
+  # default_description: "请按上游交付物的要求完成本环节工作，交付物写入任务报告。"
+  stages:
+    - id: 1
+      name: requirement
+      label: 需求
+      material: requirement
+      derive: { to: design, mode: single }
+    - id: 2
+      name: design
+      label: 方案
+      material: design
+      title: "技术方案"
+      # 显式留空 = 沿用今天（派生卡没有任务描述）；填内容即生效。
+      # 显式 "" 与「漏配」不同：漏配会被 R16 拒绝启动。
+      description: ""
+      derive: { to: breakdown, mode: single }
+    - id: 3
+      name: breakdown
+      label: 拆解
+      material: plan
+      title: "任务拆分"
+      # 同理显式留空；拆解卡的派生目标用清单文档里的 body_md，不回落缺省值。
+      description: ""
+      derive: { to: dev, mode: list, source: artifact, format: json }
+    - id: 4
+      name: dev
+      label: 开发
+      material: report
+      # 同项目可并行多张未完成开发卡（被 list/fanout 派生的目标必须写 multiple）
+      open_cards: multiple
+      # 最后一张开发卡开项目合并 PR
+      closing: true
+      derive: { mode: none }
