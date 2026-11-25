@@ -282,6 +282,17 @@ func (d *derivation) hook(s *Service) func(context.Context, *sql.Tx, storev3.Tas
 			parallel = 1
 		}
 
+		// The provenance line is platform-generated and names the stages, not
+		// their ids (AC7/AC11). A list derivation is the exception: the previous
+		// release's breakdown rule created its dev cards without a context and
+		// AC7 compares those cards field for field, so a list-derived card keeps
+		// an empty context_md. Its provenance lives in the flow.auto_create
+		// event instead (rule + stage + config + key).
+		contextMD := ""
+		if d.mode != platform.DeriveList {
+			contextMD = fmt.Sprintf("由 %s 自动派生（%s）", approved.TaskID, d.rule())
+		}
+
 		// created maps an entry key onto the card it became; sibling
 		// dependencies resolve through it and only ever point backwards.
 		created := make(map[string]string, len(d.entries))
@@ -336,7 +347,7 @@ func (d *derivation) hook(s *Service) func(context.Context, *sql.Tx, storev3.Tas
 				KindParallel:  &parallel,
 				Title:         title,
 				DescriptionMD: description,
-				ContextMD:     fmt.Sprintf("由 %s 自动派生（%s）", approved.TaskID, d.rule()),
+				ContextMD:     contextMD,
 				Priority:      entry.priority,
 				MaxAttempts:   s.attemptLimit(0),
 				DependsOn:     deps,

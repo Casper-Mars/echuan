@@ -183,8 +183,11 @@ func TestDefaultFlowDerivationMatchesSnapshot(t *testing.T) {
 		byTitle[dev.Title] = dev
 	}
 	a := byTitle["A"]
-	if a.DescriptionMD != "a" || a.ContextMD != "由 "+breakdown.TaskID+" 自动派生（breakdown->dev）" {
-		t.Errorf("dev A description/context = %q/%q", a.DescriptionMD, a.ContextMD)
+	// The previous release's breakdown rule created its dev cards without a
+	// context line and AC7 compares those cards field for field, so a
+	// list-derived card keeps context_md empty.
+	if a.DescriptionMD != "a" || a.ContextMD != "" {
+		t.Errorf("dev A description/context = %q/%q, want a/empty", a.DescriptionMD, a.ContextMD)
 	}
 	if a.Kind != enum.Dev || a.KindParallel != 1 || a.Priority != 1 {
 		t.Errorf("dev A kind=%d kind_parallel=%d priority=%d, want 4/1/1", a.Kind, a.KindParallel, a.Priority)
@@ -485,6 +488,71 @@ func TestListDerivationDoesNotFallBack(t *testing.T) {
 	}
 	if got := byTitle["没说明"].DescriptionMD; got != "" {
 		t.Errorf("dev 没说明 description_md = %q, want empty (list does not fall back)", got)
+	}
+}
+
+// TestListDerivedContextStaysEmpty pins the one rule AC2 turns on: a list
+// derivation does not write the provenance line, while single and fanout still
+// do. The baseline (2db5b993) created breakdown→dev cards without a context, so
+// their context_md is the empty string, verbatim.
+func TestListDerivedContextStaysEmpty(t *testing.T) {
+	now := testClock
+	svc, st := newTestService(t, &now)
+	// Every report material answers the same plan, so the whole built-in chain
+	// runs through the real derivations.
+	svc.WithMaterialReader(fakeReader{fallback: planBody(
+		planItem{SeqNo: 1, Title: "A", BodyMD: "a"},
+		planItem{SeqNo: 2, Title: "B", BodyMD: "b"},
+	)})
+	projectID := seedProject(t, st, "APP")
+
+	createReadyTask(t, svc, projectID, "t_req", enum.Requirement)
+	approveTask(t, svc, st, "t_req", "w_req", enum.Requirement)
+	designs := listKind(t, svc, projectID, enum.Design)
+	if len(designs) != 1 {
+		t.Fatalf("design tasks = %d, want 1", len(designs))
+	}
+	// Contrast: a single derivation still writes the line.
+	if want := "由 t_req 自动派生（requirement->design）"; designs[0].ContextMD != want {
+		t.Errorf("design context_md = %q, want %q", designs[0].ContextMD, want)
+	}
+	approveTask(t, svc, st, designs[0].TaskID, "w_design", enum.Design)
+	breaks := listKind(t, svc, projectID, enum.Breakdown)
+	if len(breaks) != 1 {
+		t.Fatalf("breakdown tasks = %d, want 1", len(breaks))
+	}
+	approveTask(t, svc, st, breaks[0].TaskID, "w_break", enum.Breakdown)
+
+	devs := listKind(t, svc, projectID, enum.Dev)
+	if len(devs) != 2 {
+		t.Fatalf("dev tasks = %d, want 2", len(devs))
+	}
+	for _, dev := range devs {
+		if dev.ContextMD != "" {
+			t.Errorf("dev %q context_md = %q, want empty (list writes no provenance line)", dev.Title, dev.ContextMD)
+		}
+		// The provenance still exists, in the event detail.
+		events, err := svc.ListEvents(context.Background(), dev.TaskID, 10)
+		if err != nil {
+			t.Fatalf("ListEvents %s: %v", dev.TaskID, err)
+		}
+		var detail flowEventDetailJSON
+		found := false
+		for _, event := range events {
+			if event.Event != enum.EventFlowAutoCreate {
+				continue
+			}
+			found = true
+			if err := json.Unmarshal([]byte(event.DetailJSON), &detail); err != nil {
+				t.Fatalf("event detail %q: %v", event.DetailJSON, err)
+			}
+		}
+		if !found {
+			t.Fatalf("dev %q has no flow.auto_create event", dev.Title)
+		}
+		if detail.Rule != "breakdown->dev" || detail.Stage != "dev" || detail.Config == "" || detail.Key == "" {
+			t.Errorf("dev %q event detail = %+v, want rule/stage/config/key", dev.Title, detail)
+		}
 	}
 }
 
