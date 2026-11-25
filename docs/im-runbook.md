@@ -4,21 +4,31 @@
 
 ## 开关与配置
 
-`im_enabled = false` 时平台行为与接入前完全一致：不建连接、不起轮询、不发任何请求。
+`im.enabled: false`（即配置文件 `im:` 段下的 `enabled: false`，默认值）时平台行为与接入前完全一致：不建连接、不起轮询、不发任何请求。
 
-| 配置键 | 环境变量 | 说明 |
+| 配置键（YAML `im:` 段下） | 环境变量 | 说明 |
 |---|---|---|
-| `im_enabled` | `ECHUAN_IM_ENABLED` | 总开关 |
-| `im_app_id` | `ECHUAN_IM_APP_ID` | 自建应用 ID |
-| `im_app_secret` | `ECHUAN_IM_APP_SECRET` | **只放环境变量**，不落配置文件 |
-| `im_allowed_chat_ids` | `ECHUAN_IM_CHAT_IDS` | 卡片操作白名单，逗号分隔 |
-| `im_poll_interval` | `ECHUAN_IM_POLL_INTERVAL` | 轮询间隔，默认 30s |
-| `im_quiet_hours` | `ECHUAN_IM_QUIET_HOURS` | 免打扰时段，默认 `23:00-08:00` |
-| `im_max_cards` | `ECHUAN_IM_MAX_CARDS` | 同时维护的卡片上限，默认 10 |
-| `im_doc_folder_token` | `ECHUAN_IM_DOC_FOLDER` | 材料文档目录；为空则卡片上的文件名不带链接 |
+| `enabled` | `ECHUAN_IM_ENABLED` | 总开关 |
+| `app_id` | `ECHUAN_IM_APP_ID` | 自建应用 ID |
+| `app_secret` | `ECHUAN_IM_APP_SECRET` | **只放环境变量**，不落配置文件 |
+| `allowed_chat_ids` | `ECHUAN_IM_CHAT_IDS` | 卡片操作白名单，YAML 里是字符串列表（环境变量用逗号分隔） |
+| `poll_interval` | `ECHUAN_IM_POLL_INTERVAL` | 轮询间隔，默认 30s |
+| `quiet_hours` | `ECHUAN_IM_QUIET_HOURS` | 免打扰时段，默认 `23:00-08:00` |
+| `max_cards` | `ECHUAN_IM_MAX_CARDS` | 同时维护的卡片上限，默认 10 |
+| `doc_folder_token` | `ECHUAN_IM_DOC_FOLDER` | 材料文档目录；为空则卡片上的文件名不带链接 |
 
-> 注意：在 YAML 配置文件里这些键写在嵌套的 `im:` 段下（`im: {enabled: true}`），环境变量仍是扁平的 `ECHUAN_IM_*`。上表左列是配置键名，不是顶层 YAML 键。
-> 旧版扁平 TOML 写法（`im_enabled = true`）已随 TOML 解析器一起删除，迁移到 `configs/echuan.yaml` 时请改写为 `im:` 段。
+> 配置文件只支持 YAML（`.yaml`/`.yml`），上面这些键全部写在嵌套的 `im:` 段下，例如：
+>
+> ```yaml
+> im:
+>   enabled: true
+>   app_id: "cli_xxx"
+>   allowed_chat_ids: [oc_1, oc_2]
+>   poll_interval: "30s"
+> ```
+>
+> 环境变量仍是扁平的 `ECHUAN_IM_*`，且优先级高于配置文件。旧版 TOML 配置文件已不再解析（传 `.toml` 会直接报错指路），
+> 迁移时把原来的扁平键整体挪进 `im:` 段即可；`configs/echuan.yaml` 里有完整的 `im:` 段范例。
 
 ## 启动与重启
 
