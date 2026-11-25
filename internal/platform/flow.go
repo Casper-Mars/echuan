@@ -75,23 +75,23 @@ const (
 	// DescriptionFromItem means the entry body (the artifact field for list,
 	// the configured body for fanout) supplied the text.
 	DescriptionFromItem DescriptionSource = "item"
-	// DescriptionFromStage means the target stage's description template.
+	// DescriptionFromStage means the target stage's task template.
 	DescriptionFromStage DescriptionSource = "stage"
 	// DescriptionFromDefault means flow.default_description.
 	DescriptionFromDefault DescriptionSource = "default"
 	// DescriptionEmpty means nothing matched: the card is created with an empty
 	// description. For single derivations R16 forbids this unless the operator
-	// wrote description: "" on purpose.
+	// wrote task: "" on purpose.
 	DescriptionEmpty DescriptionSource = "empty"
 )
 
 // FlowConfig is the resolved flow: the stage table plus the derivation policy
 // shared by every stage.
+//
+// There is deliberately no flow-level switch any more (D1): whether an approval
+// derives the next stage is decided by that stage's own Derive.Auto, so a
+// configuration cannot be "on globally, off here" or the other way round.
 type FlowConfig struct {
-	// Auto is the master switch for automatic derivation after an approval
-	// (AC8). It defaults to true so a flow section that only lists stages
-	// keeps behaving as the platform always has.
-	Auto bool
 	// DefaultDescription is the flow-level fallback description template. nil
 	// means "not configured"; a pointer to "" means the operator explicitly
 	// asked for an empty description (R16 distinguishes the two).
@@ -121,10 +121,14 @@ type Stage struct {
 	Closing bool
 	// Title is the card title template. Empty means "use the entry title".
 	Title string
-	// Description is the card description template. nil means "not
+	// Description is the human-readable stage description (D2): it is what
+	// GET /v1/flow and the stage-list tool show, and it never lands in a card.
+	// It is not a template, so it is not rendered and R17 does not look at it.
+	Description string
+	// Task is the derived card's task-description template (D2). nil means "not
 	// configured" (fall through to the flow default); a pointer to "" is an
-	// explicit empty description.
-	Description *string
+	// explicit empty task description, which R16 accepts as "empty on purpose".
+	Task *string
 	// Derive declares what an approval of a card in this stage creates.
 	Derive Derive
 }
@@ -139,6 +143,10 @@ func (s Stage) LabelOrName() string {
 
 // Derive is one stage's derivation rule.
 type Derive struct {
+	// Auto is the only switch deciding whether an approval of a card in this
+	// stage derives the next one (D1). It defaults to false: writing to/mode
+	// without auto means "configured, still off" (R-C).
+	Auto bool
 	// To is the target stage name. Empty when Mode is DeriveNone.
 	To string
 	// Mode is none, single, list or fanout.
@@ -170,10 +178,11 @@ type DeriveItem struct {
 // String renders the derivation rule. It is used by the startup log line and
 // by the flow fingerprint, so it must stay deterministic.
 func (d Derive) String() string {
+	parts := []string{fmt.Sprintf("auto=%t", d.Auto)}
 	if d.Mode == "" || d.Mode == DeriveNone {
-		return string(DeriveNone)
+		return strings.Join(append(parts, string(DeriveNone)), " ")
 	}
-	parts := []string{"to=" + d.To, "mode=" + string(d.Mode)}
+	parts = append(parts, "to="+d.To, "mode="+string(d.Mode))
 	if d.Source != "" {
 		parts = append(parts, "source="+d.Source)
 	}
@@ -235,23 +244,29 @@ func (f FlowConfig) Label(name string) string {
 	return name
 }
 
+// FingerprintScheme is the version of the fingerprint input string. It is part
+// of that string, so a scheme change can never collide with a value computed by
+// an older binary (D6). Scheme 2 is the per-stage switch + task template layout.
+const FingerprintScheme = 2
+
 // Fingerprint is the 12-character digest of the effective flow, used by the
 // startup log and by the derivation event detail to record which configuration
 // produced a card. It is content-only (no timestamps), so two loads of the same
 // configuration always agree (§8.7).
 //
-// The digest covers the auto switch, the flow-level default description and,
-// for every stage, id|name|label|material|open_cards|closing|title|description|
-// derive. An unset description is encoded differently from an explicit "",
-// because the two produce different cards.
+// The digest covers the flow-level default description and, for every stage,
+// id|name|label|material|open_cards|closing|title|task|derive (scheme 2). The
+// stage description is deliberately absent: it is display text, it changes no
+// card, and scheme 1 had no such field. An unset task is encoded differently
+// from an explicit "", because the two mean different things (R16).
 func (f FlowConfig) Fingerprint() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "auto=%t\n", f.Auto)
+	fmt.Fprintf(&b, "scheme=%d\n", FingerprintScheme)
 	fmt.Fprintf(&b, "default_description=%s\n", encodeOptional(f.DefaultDescription))
 	for _, s := range f.Stages {
 		fmt.Fprintf(&b, "%d|%s|%s|%s|%s|%t|%s|%s|%s\n",
 			s.ID, s.Name, s.Label, s.Material, s.OpenCards, s.Closing,
-			s.Title, encodeOptional(s.Description), s.Derive)
+			s.Title, encodeOptional(s.Task), s.Derive)
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])[:12]
@@ -267,7 +282,11 @@ func encodeOptional(v *string) string {
 }
 
 // ChainSummary renders one line per stage for the startup log, for example
-// "1:requirement(需求) -> 2:design(方案) (single)" (§8.1 step 6).
+// "1:requirement(需求) -> 2:design(方案) (single, auto=on)" (§8.1 step 6).
+//
+// Every deriving stage prints its switch next to its mode: with the switch
+// defaulting to off, "to/mode but no auto" is the one misconfiguration the
+// startup log has to make visible (R-C).
 func (f FlowConfig) ChainSummary() []string {
 	out := make([]string, 0, len(f.Stages))
 	for _, s := range f.Stages {
@@ -275,29 +294,63 @@ func (f FlowConfig) ChainSummary() []string {
 		if s.Derive.Mode == "" || s.Derive.Mode == DeriveNone {
 			line += " (" + string(DeriveNone) + ")"
 		} else if dst, ok := f.ByName(s.Derive.To); ok {
-			line += fmt.Sprintf(" -> %d:%s(%s) (%s)", dst.ID, dst.Name, dst.LabelOrName(), s.Derive.Mode)
+			line += fmt.Sprintf(" -> %d:%s(%s) (%s, auto=%s)",
+				dst.ID, dst.Name, dst.LabelOrName(), s.Derive.Mode, switchLabel(s.Derive.Auto))
 		} else {
-			line += fmt.Sprintf(" -> %s (%s)", s.Derive.To, s.Derive.Mode)
+			line += fmt.Sprintf(" -> %s (%s, auto=%s)", s.Derive.To, s.Derive.Mode, switchLabel(s.Derive.Auto))
 		}
 		out = append(out, line)
 	}
 	return out
 }
 
-// ResolveDescription picks the template a derived card's description is
-// rendered from, together with the level it came from (§8.4 / D8‴).
+// switchLabel renders the derive switch the way the startup log spells it.
+func switchLabel(auto bool) string {
+	if auto {
+		return "on"
+	}
+	return "off"
+}
+
+// SwitchWarning is one W1 finding (§10.2): a stage whose derive switch is on
+// while its derive mode creates no card at all, so the switch silently does
+// nothing.
+type SwitchWarning struct {
+	// Stage is the stage name the operator has to fix.
+	Stage string
+	// Mode is the configured derive mode, kept so the log line can name it.
+	Mode DeriveMode
+}
+
+// SwitchWarnings reports, in configured order, every stage with derive.auto on
+// and derive.mode none (§10.2 W1). A half-migrated configuration must still
+// start (B1), so this is a warning list and never a validation error. One entry
+// per offending stage.
+func (f FlowConfig) SwitchWarnings() []SwitchWarning {
+	out := make([]SwitchWarning, 0)
+	for _, s := range f.Stages {
+		if s.Derive.Auto && (s.Derive.Mode == "" || s.Derive.Mode == DeriveNone) {
+			out = append(out, SwitchWarning{Stage: s.Name, Mode: DeriveNone})
+		}
+	}
+	return out
+}
+
+// ResolveDescription picks the template a derived card's task description is
+// rendered from, together with the level it came from (§8.4 / D3).
 //
 // The rules, in order:
 //
 //  1. a list derivation takes the entry body and never falls back: when the
 //     upstream agent left body_md empty the card keeps an empty description;
 //  2. a fanout derivation takes the configured entry body when it is non-empty;
-//  3. then the target stage's description template;
+//  3. then the target stage's task template;
 //  4. then flow.default_description;
-//  5. otherwise the description is empty.
+//  5. otherwise the task description is empty.
 //
-// R16 guarantees a single-derived stage never reaches step 5 unless the
-// operator wrote description: "" on purpose.
+// The stage's Description (the human-readable one) is never a candidate: it is
+// display text, not a template (D2). R16 guarantees a single-derived stage never
+// reaches step 5 unless the operator wrote task: "" on purpose.
 //
 // mode is the *upstream* stage's Derive.Mode (the derivation that creates the
 // card), item is the entry being turned into a card and may be nil for single
@@ -319,8 +372,8 @@ func (f FlowConfig) ResolveDescription(dst *Stage, mode DeriveMode, item *Derive
 	if hasBody {
 		return item.BodyMD, DescriptionFromItem
 	}
-	if dst != nil && dst.Description != nil {
-		return *dst.Description, DescriptionFromStage
+	if dst != nil && dst.Task != nil {
+		return *dst.Task, DescriptionFromStage
 	}
 	if f.DefaultDescription != nil {
 		return *f.DefaultDescription, DescriptionFromDefault

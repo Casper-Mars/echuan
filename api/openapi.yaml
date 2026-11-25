@@ -306,16 +306,22 @@ paths:
       operationId: getFlow
       summary: The effective stage table (configured order, name→id mapping, derive rules)
       description: |
-        Returns the flow the running process loaded: `auto`, `default` (true when
-        the configuration had no flow section and the built-in default took
-        over), `source` (the YAML path, or `<builtin>`), `fingerprint` (the
-        12-character digest the derivation events carry) and `stages[]`.
+        Returns the flow the running process loaded: `default` (true when the
+        configuration had no flow section and the built-in default took over),
+        `source` (the YAML path, or `<builtin>`), `fingerprint` (the 12-character
+        digest the derivation events carry, scheme 2) and `stages[]`.
 
-        Every stage carries `id` (= `tasks.kind`), `name` (the public identifier
+        For every stage: `id` (= `tasks.kind`), `name` (the public identifier
         clients send as `kind`), `label` (display name, = name when unset),
-        `material`, `open_cards` (`single` / `multiple`), `closing`, the card
-        templates `title` / `description` as written ("" = not configured) and
-        `derive` (`{mode, to, source, format, items}`).
+        `material`, `open_cards` (`single` / `multiple`), `closing`, the card title
+        template `title` ("" = not configured), `description` — the human-readable
+        stage description, not a template, never rendered into a card — `task` the
+        card task-description template as written ("" = empty or not configured)
+        and `derive` (`{mode, to, source, format, items}`).
+
+        There is no flow-level `auto` field: whether an approval derives the next
+        stage is decided per stage by `derive.auto`, and a process that finds
+        `flow.auto` in the configuration refuses to start.
 
         The list is the stage table in configured order; no query parameters. A
         running process always serves its startup snapshot, so editing the file

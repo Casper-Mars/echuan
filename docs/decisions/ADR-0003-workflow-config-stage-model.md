@@ -231,3 +231,45 @@ id 1–4 与库里的存量值逐一对应，`name` 保持英文（审计规则�
 
 不在本卡：派生引擎（写卡、幂等、模板渲染、`context_md`）、`GET /v1/flow`、`enum.TaskKind` 放宽、启动哨兵、
 `migrations/0003`、web 下拉与徽标、kit 0.7.0。
+
+## 修订 R2：总闸下放、`description` 语义回收（配置契约 v2）
+
+- 日期：2026-11-25；来源：issue #188 需求 v0.2 + 技术方案 v0.1（§5 D1–D7、§6.2/§6.3、§7.1、§10）；issue #180 结论不变处不重写。
+- 性质：**硬切**。二进制与配置必须成对升级：旧配置的 `flow.auto` 会让新二进制拒绝启动，新配置的
+  `task` / `derive.auto` 会让旧二进制拒绝启动（R14）。
+
+### 变更点（覆盖上文的对应条目）
+
+| 上文条目 | 改成 |
+|---|---|
+| D1″ 之外的隐含前提「`flow.auto` 是全局总闸」 | 删除 `flow.auto`。派生唯一开关是 `stages[].derive.auto`（bool，缺省 `false`）。写了 `to`/`mode` 却忘写 `auto: true` → 静默不派生，由启动日志 `stages=` 的 `auto=on|off` 暴露 |
+| D2‴ 字段表：`description` = 任务说明模板 | 拆成两个字段：`description` = **阶段描述**（plain string，给人看，不做模板、不渲染、不进卡正文、R11/R16/R17 都不管它）；`task` = **任务说明模板**（`nil` = 未配置 / `""` = 有意留空 / 文本 = 模板） |
+| D8‴ 三级解析第 2 级 | 由「目标环节 `description`」改为「目标环节 `task`」。其余（`list` 不回落、条目正文优先、流程级兜底）不变 |
+| R11 | 只查 `title` 与 `task`；`description` 放行（入口环节也能写阶段描述） |
+| R13 | **废止**：没有总闸可关，R1–R17 恒在加载时执行 |
+| R14 | `flow` 段允许的键去掉 `auto`（写 `flow.auto` 给专门迁移文案）；stage 白名单加 `task`；`derive` 白名单加 `auto` |
+| R16 | 被 `single` 派生的环节必须有 `task`（或 `flow.default_description`）；文案指明「`description` 现在只表示阶段描述，不再作为任务说明兜底」 |
+| R17 | 模板变量白名单的校验对象由 `description` 换成 `task` |
+| 指纹 | 升到 **scheme 2**：digest 首行 `scheme=2`，去掉 `auto` 行，每环节行末的 `description` 换成 `task`，`derive` 串加 `auto=%t`。输出仍是 12 位 hex；`flow.auto_create` 事件结构与 HTTP 响应都不加字段 |
+| `GET /v1/flow` | 顶层删 `auto`；每条 stage 增 `task`（未配置为 `""`）；`description` 字段名不变、语义变成阶段描述 |
+
+### 新增的非阻断 warning（W1）
+
+`stages[i].derive.auto: true` 且 `derive.mode` 为 `none`/`""`：**不挡启动**，启动日志每个环节一条
+`WARN flow derive switch on without target stage="…" …; nothing will be derived`。
+
+### 内置默认流程
+
+与升级前逐字等价，只是写法换成 v2：`requirement`/`design`/`breakdown` 三处显式 `derive.auto: true`，
+`design`/`breakdown` 的 `description: ""` 换成 `task: ""`（仍是有意留空，load-bearing：删掉它派生卡正文会被
+`flow.default_description` 填上），四个环节各补一句中文阶段描述（`description`，不进卡）。
+
+### 迁移（运维）
+
+1. 删 `flow.auto`，逐个环节写 `derive.auto: true`；
+2. 把原来放在 `description` 里的任务说明文字搬到 `task`；
+3. 原来有意写 `description: ""` 的环节改成 `task: ""`；
+4. 想给环节写自我介绍，写在 `description`（不再有 R11 例外）；
+5. 映射后的指纹与历史事件里的 `config` 值**不可比**（scheme 1 → 2，属预期）。
+
+回滚是成对操作：镜像与配置一起回退，单独回退任一方都启动失败。

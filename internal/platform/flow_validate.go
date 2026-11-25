@@ -14,8 +14,9 @@ const maxNameRunes = 32
 // violation is a configError, so the startup output always contains
 // "<path>:<line>: <reason>".
 //
-// R13 is structural rather than a check of its own: validate runs whether or
-// not flow.auto is true, so a flow that is switched off still has to be valid.
+// R13 is retired (D4): there is no master switch any more, so validation always
+// runs. A flow whose per-stage switches are all off still has to be valid — a
+// switch decides what a running process derives, never whether the file parses.
 func (d *flowDoc) validate() error {
 	path := d.path
 
@@ -229,7 +230,9 @@ func (d *flowDoc) validate() error {
 	}
 
 	// R16: every stage that a single derivation targets must say where its card
-	// description comes from.
+	// task description comes from (D4). The stage description does not count: it
+	// is display text now, so a config that only ever wrote description fails here
+	// instead of silently producing empty cards (§7.3 item 2).
 	if d.defaultDescription == nil {
 		for i := range d.stages {
 			s := &d.stages[i]
@@ -237,12 +240,12 @@ func (d *flowDoc) validate() error {
 				continue
 			}
 			dst, ok := byName[strings.TrimSpace(s.derive.to)]
-			if !ok || dst.description != nil {
+			if !ok || dst.task != nil {
 				continue
 			}
 			return configErrf(path, dst.line,
-				"flow.stages[%d]: stage %q is derived automatically by flow.stages[%d] (%s) but has neither description nor flow.default_description, so the agent receiving the card gets no task description; add description (write description: \"\" to keep it empty on purpose) or set flow.default_description (R16)",
-				dst.index, dst.name, s.index, s.name)
+				"flow.stages[%d]: stage %q is derived automatically by flow.stages[%d] (%s) but declares no task template and flow.default_description is unset, so the derived card would carry no task description; add task to stage %q (write task: \"\" to keep it empty on purpose) or set flow.default_description (R16)。注：description 现在只表示阶段描述，不再作为任务说明兜底。",
+				dst.index, dst.name, s.index, s.name, dst.name)
 		}
 	}
 
@@ -263,8 +266,10 @@ func (d *flowDoc) validate() error {
 				return err
 			}
 		}
-		if s.description != nil && *s.description != "" {
-			if err := checkTemplateVars(path, lineOf(s.descriptionLine, s.line), field+".description", *s.description, allowItem, "R17"); err != nil {
+		// D2: the stage description is not a template, so it is not checked here
+		// and braces in it render verbatim (R-D).
+		if s.task != nil && *s.task != "" {
+			if err := checkTemplateVars(path, lineOf(s.taskLine, s.line), field+".task", *s.task, allowItem, "R17"); err != nil {
 				return err
 			}
 		}
@@ -294,9 +299,11 @@ func (d *flowDoc) validate() error {
 				"flow.stages[%d].title: stage %q is not the target of any derive.to, so the template is never rendered; point a derive.to at it or drop the template (R11)",
 				s.index, s.name)
 		}
-		if s.description != nil {
-			return configErrf(path, lineOf(s.descriptionLine, s.line),
-				"flow.stages[%d].description: stage %q is not the target of any derive.to, so the template is never rendered; point a derive.to at it or drop the template (R11)",
+		// D2/D4: only templates count. A stage description is always meaningful
+		// (it is shown by GET /v1/flow), so it is deliberately not checked (AC7).
+		if s.task != nil {
+			return configErrf(path, lineOf(s.taskLine, s.line),
+				"flow.stages[%d].task: stage %q is not the target of any derive.to, so the template is never rendered; point a derive.to at it or drop the template (R11)",
 				s.index, s.name)
 		}
 	}

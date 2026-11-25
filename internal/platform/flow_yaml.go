@@ -156,10 +156,6 @@ type flowDoc struct {
 	path string
 	line int
 
-	auto     bool
-	autoSet  bool
-	autoLine int
-
 	defaultDescription *string
 	defaultLine        int
 
@@ -197,8 +193,14 @@ type stageDoc struct {
 	title     string
 	titleLine int
 
-	description     *string
+	// description is the stage description: plain text, never a template.
+	description     string
 	descriptionLine int
+
+	// task keeps the three states R16 needs: nil = not configured, pointer to ""
+	// = empty on purpose, pointer to text = the template.
+	task     *string
+	taskLine int
 
 	derive *deriveDoc
 }
@@ -206,6 +208,10 @@ type stageDoc struct {
 // deriveDoc is one stage's derive block with its source lines.
 type deriveDoc struct {
 	line int
+
+	auto     bool
+	autoSet  bool
+	autoLine int
 
 	to     string
 	toSet  bool
@@ -280,11 +286,12 @@ func parseFlowSection(path string, node *yaml.Node) (*flowDoc, error) {
 		key, value := pair[0], pair[1]
 		switch key.Value {
 		case "auto":
-			v, err := yamlBool(path, value, "flow.auto")
-			if err != nil {
-				return nil, err
-			}
-			doc.auto, doc.autoSet, doc.autoLine = v, true, key.Line
+			// D5: the master switch is gone. The field stays a hard error with a
+			// dedicated message, so an operator carrying a v1 file over gets the
+			// migration step instead of a bare "unknown field" (N3′ refuses to
+			// read it: there is no compatibility path).
+			return nil, configErrf(path, key.Line,
+				"flow: \"auto\" was removed; move the switch into each stage as stages[].derive.auto (R14)")
 		case "default_description":
 			doc.defaultLine = key.Line
 			empty := ""
@@ -305,7 +312,7 @@ func parseFlowSection(path string, node *yaml.Node) (*flowDoc, error) {
 			doc.stages, doc.stagesLine = stages, value.Line
 		default:
 			return nil, configErrf(path, key.Line,
-				"flow: unknown field %q (allowed: auto, default_description, stages) (R14)", key.Value)
+				"flow: unknown field %q (allowed: default_description, stages) (R14)", key.Value)
 		}
 	}
 	return doc, nil
@@ -387,17 +394,32 @@ func parseStage(path string, node *yaml.Node, index int) (stageDoc, error) {
 			}
 			stage.title, stage.titleLine = v, key.Line
 		case "description":
+			// D2: the stage description is plain text. null and "" mean the same
+			// thing (no description), because nothing falls back to it any more.
 			stage.descriptionLine = key.Line
-			empty := ""
 			if isNullNode(value) {
-				stage.description = &empty
 				continue
 			}
 			v, err := yamlString(path, value, field+".description")
 			if err != nil {
 				return stageDoc{}, err
 			}
-			stage.description = &v
+			stage.description = v
+		case "task":
+			// D3: the three states matter. A missing key means "not configured"
+			// (fall back to flow.default_description); an explicit "" is a
+			// deliberate empty card body and satisfies R16.
+			stage.taskLine = key.Line
+			empty := ""
+			if isNullNode(value) {
+				stage.task = &empty
+				continue
+			}
+			v, err := yamlString(path, value, field+".task")
+			if err != nil {
+				return stageDoc{}, err
+			}
+			stage.task = &v
 		case "derive":
 			derive, err := parseDerive(path, value, field)
 			if err != nil {
@@ -406,7 +428,7 @@ func parseStage(path string, node *yaml.Node, index int) (stageDoc, error) {
 			stage.derive = derive
 		default:
 			return stageDoc{}, configErrf(path, key.Line,
-				"%s: unknown field %q (allowed: id, name, label, material, open_cards, closing, title, description, derive) (R14)",
+				"%s: unknown field %q (allowed: id, name, label, material, open_cards, closing, title, description, task, derive) (R14)",
 				field, key.Value)
 		}
 	}
@@ -423,6 +445,12 @@ func parseDerive(path string, node *yaml.Node, field string) (*deriveDoc, error)
 	for _, pair := range pairs {
 		key, value := pair[0], pair[1]
 		switch key.Value {
+		case "auto":
+			v, err := yamlBool(path, value, field+".derive.auto")
+			if err != nil {
+				return nil, err
+			}
+			derive.auto, derive.autoSet, derive.autoLine = v, true, key.Line
 		case "to":
 			v, err := yamlString(path, value, field+".derive.to")
 			if err != nil {
@@ -455,7 +483,7 @@ func parseDerive(path string, node *yaml.Node, field string) (*deriveDoc, error)
 			derive.items, derive.itemsLine = items, value.Line
 		default:
 			return nil, configErrf(path, key.Line,
-				"%s.derive: unknown field %q (allowed: to, mode, source, format, items) (R14)", field, key.Value)
+				"%s.derive: unknown field %q (allowed: auto, to, mode, source, format, items) (R14)", field, key.Value)
 		}
 	}
 	return derive, nil
@@ -528,10 +556,7 @@ func parseItem(path string, node *yaml.Node, field string, index int) (itemDoc, 
 
 // flowConfig builds the plain model from the parsed document.
 func (d *flowDoc) flowConfig(source string) FlowConfig {
-	flow := FlowConfig{Auto: true, DefaultDescription: d.defaultDescription, Source: source}
-	if d.autoSet {
-		flow.Auto = d.auto
-	}
+	flow := FlowConfig{DefaultDescription: d.defaultDescription, Source: source}
 	flow.Stages = make([]Stage, 0, len(d.stages))
 	for i := range d.stages {
 		flow.Stages = append(flow.Stages, d.stages[i].stage())
@@ -554,10 +579,12 @@ func (s *stageDoc) stage() Stage {
 		Closing:     s.closing,
 		Title:       s.title,
 		Description: s.description,
+		Task:        s.task,
 		Derive:      Derive{Mode: DeriveNone},
 	}
 	if s.derive != nil {
 		out.Derive = Derive{
+			Auto:   s.derive.auto,
 			To:     strings.TrimSpace(s.derive.to),
 			Mode:   s.derive.mode,
 			Source: s.derive.source,

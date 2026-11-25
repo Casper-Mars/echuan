@@ -83,20 +83,24 @@ type derivation struct {
 func (d *derivation) rule() string { return d.src.Name + "->" + d.dst.Name }
 
 // planDerivation resolves what an approval of task creates. A nil plan means
-// "no successor": the stage derives nothing, auto is off, or the task's kind is
-// not in the configured flow (the card is history from a removed stage).
+// "no successor": the stage derives nothing, its derive switch is off, or the
+// task's kind is not in the configured flow (the card is history from a removed
+// stage).
 //
 // Everything that can fail on operator data — the plan artifact of a list
 // derivation — is read here, outside the approval transaction, so a broken plan
 // answers 409 while the card stays untouched in in_review (§8.5).
 func (s *Service) planDerivation(ctx context.Context, task storev3.Task) (*derivation, error) {
-	if !s.flow.Auto {
-		return nil, nil
-	}
 	src, ok := s.flow.ByID(int(task.Kind))
 	if !ok {
 		s.logger.Warn("flow derivation skipped(unknown_kind)",
 			"kind", int(task.Kind), "task_id", task.TaskID)
+		return nil, nil
+	}
+	// D1: the switch that decides whether this approval derives anything sits on
+	// the stage the approved card belongs to. There is no flow-level switch, so a
+	// stage that forgot derive.auto stays silent instead of inheriting one.
+	if !src.Derive.Auto {
 		return nil, nil
 	}
 	mode := src.Derive.Mode
@@ -324,10 +328,11 @@ func (d *derivation) hook(s *Service) func(context.Context, *sql.Tx, storev3.Tas
 			}
 			title = values.render(title)
 
-			// §8.4: the description has four levels (item body, stage template,
-			// flow default, empty). A list entry body is the upstream agent's
-			// prose, so it is used verbatim; every configured template is
-			// rendered. A list derivation never falls back.
+			// §8.4: the task description has four levels (item body, stage task
+			// template, flow default, empty). The stage's human-readable
+			// description is not one of them (D2). A list entry body is the
+			// upstream agent's prose, so it is used verbatim; every configured
+			// template is rendered. A list derivation never falls back.
 			description, source := s.flow.ResolveDescription(&d.dst, d.mode, &platform.DeriveItem{
 				Key: entry.key, Title: entry.title, BodyMD: entry.bodyMD,
 			})

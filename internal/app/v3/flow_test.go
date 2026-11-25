@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/Casper-Mars/echuan/internal/domain/enum"
@@ -73,15 +72,21 @@ func listKind(t *testing.T, svc *Service, projectID string, kind enum.TaskKind) 
 	return tasks
 }
 
+// TestFlowDisabled covers AC1: the switch is per stage, so a stage that omits
+// derive.auto derives nothing even when its target is fully configured.
 func TestFlowDisabled(t *testing.T) {
 	now := testClock
 	svc, st := newTestService(t, &now)
-	svc.WithFlow(flowFromYAML(t, strings.Replace(defaultPlusSafetyReview, "auto: true", "auto: false", 1)))
+	svc.WithFlow(flowFromYAML(t, `flow:
+  stages:
+    - { id: 1, name: requirement, material: requirement, derive: { to: design, mode: single } }
+    - { id: 2, name: design, material: design, title: "技术方案", task: "", derive: { mode: none } }
+`))
 	projectID := seedProject(t, st, "APP")
 	approveRequirement(t, svc, st, projectID)
 
 	if tasks := listKind(t, svc, projectID, enum.Design); len(tasks) != 0 {
-		t.Fatalf("design tasks = %d, want 0 with flow disabled", len(tasks))
+		t.Fatalf("design tasks = %d, want 0 when the stage switch is absent", len(tasks))
 	}
 }
 
