@@ -3,7 +3,8 @@
  *
  * 与 v2 的 worker.ts 的区别：v2 等心跳回包里的 `commands.dispatch`；V3 的
  * `/v1/workers/heartbeat` 只登记 worker，任务队列走 `/v1/tasks/claim`。本文件
- * 因此不再解析 dispatch 指令，而是按 `worker.kinds` 逐个 kind 领卡。
+ * 因此不再解析 dispatch 指令，而是按 `worker.kinds` 逐个环节 name 领卡。
+ * 环节词汇属于平台（`GET /v1/flow`）：本文件不校验名字，配了什么就领什么。
  *
  * 一个 worker 同时只持一张卡：拿到即写 inflight，报告成功（工具层回调
  * `notifyReported`）或租约过期后清空，下一轮才继续领。

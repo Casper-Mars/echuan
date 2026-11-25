@@ -19,11 +19,16 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 35_000
 export const WORKER_METADATA_MAX_BYTES = 8 * 1024
 
 /**
- * 默认 kind → preset 映射（V3 角色表）。
+ * 默认「环节 name → preset」映射（V3 角色表）。
  *
  * 角色路由属于 **worker 侧**：kit 最清楚本 Host 装了哪些 preset，也天然承担
- * 「换 agent 运行时」的适配责任。平台只发它自己的工作项词汇（kind），不认识
+ * 「换 agent 运行时」的适配责任。平台只发它自己的环节 name（kind），不认识
  * preset 名，所以新增角色只需改这里 + 在 Host 装好对应 preset，平台零改动。
+ *
+ * 四个键就是平台**内置默认流程**的四个环节 name（ADR-0003 §8.7 逐字段等价，
+ * R15 保证它们不会被改嫁），所以存量 agent 配置零改动：默认流程下不必动这里。
+ * 平台配置里加了新环节时，在 agent 配置的 `presetByKind` 里补一条
+ * `<环节 name>: <preset>` 即可——kit 不维护环节词汇，不需要升级执行侧包。
  *
  * requirement → pm；design / breakdown → cto（CTO 同时负责技术方案与任务拆解）；
  * dev → dev-leader（dev Host 的编排 preset；developer / tester 是会话内派生的
@@ -36,7 +41,10 @@ export const DEFAULT_PRESET_BY_KIND: Readonly<Record<string, string>> = {
   dev: 'dev-leader',
 }
 
-/** kind → preset 映射；键是平台的工作项类别。空对象表示不做映射（回落 registry 默认）。 */
+/**
+ * 环节 name → preset 映射；键是平台流程里的环节 name（`GET /v1/flow` 的
+ * `stages[].name`）。空对象表示不做映射（回落 registry 默认）。
+ */
 export type PresetByKind = Readonly<Record<string, string>>
 
 /** 插件收到的原始配置：字段均可缺省，由 Schema 的默认值补齐。 */
@@ -69,11 +77,11 @@ export interface ResolvedConfig {
       enable: boolean
     }
     /**
-     * 派生值：`presetByKind` 的键（保序）。心跳上报与平台派单匹配都用它；
-     * 不作为独立配置项存在——有映射就必然有可接的 kind。
+     * 派生值：`presetByKind` 的键（保序），即本 worker 声明的**环节 name**。
+     * 心跳上报与平台派单匹配都用它；不作为独立配置项存在——有映射就必然有可接的环节。
      */
     kinds: string[]
-    /** kind → preset 映射（已 trim）；键即声明的 kinds，空对象表示不启动心跳。 */
+    /** 环节 name → preset 映射（已 trim）；键即声明的 kinds，空对象表示不启动心跳。 */
     presetByKind: Record<string, string>
     /** 会话键：project = 一个项目一个会话；project-preset = 项目+角色（默认）。 */
     sessionKey: 'project' | 'project-preset'
@@ -127,9 +135,10 @@ export const Config: Schemastery<ConfigInput, SchemaConfig> = Schema.object({
     presetByKind: Schema.dict(Schema.string())
       .default({ ...DEFAULT_PRESET_BY_KIND })
       .description(
-        'kind → preset 映射（角色路由在 worker 侧）。键即本 worker 声明的 kinds，'
-        + '所以这是唯一的角色/能力配置；默认 requirement=pm, design=cto, '
-        + 'breakdown=cto, dev=dev-leader。写空对象表示不接任何卡（不启动心跳）',
+        '环节 name → preset 映射（角色路由在 worker 侧）。键即本 worker 声明的环节 name'
+        + '（心跳上报的 kinds），所以这是唯一的角色/能力配置；默认 requirement=pm, '
+        + 'design=cto, breakdown=cto, dev=dev-leader。平台流程加环节时在这里补一条'
+        + ' name → preset，不需要升级执行侧包。写空对象表示不接任何卡（不启动心跳）',
       ),
     sessionKey: Schema.union(['project', 'project-preset'] as const)
       .default('project-preset')
