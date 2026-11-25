@@ -68,34 +68,38 @@ im:
 # （kit 配置键、HTTP kind、审计规则串 requirement->design 都用它），label 只是显示名。
 # 删掉整段 flow 会启用手里的内置默认流程，效果与下面这份逐字段一致。
 flow:
-  # 自动派生总开关：关掉后审批通过不再自动建卡
-  auto: true
-  # 派生卡的缺省任务描述（模板）：环节没写 description 时用它。
-  # 内置默认流程故意不配，因为派生卡的 description_md 需要与历史逐字一致（空字符串）。
-  # default_description: "请按上游交付物的要求完成本环节工作，交付物写入任务报告。"
+  # 派生卡的任务说明只有两级：条目正文（仅 list/fanout）→ 目标环节的 task → 空。
+  # 旧版的 flow.auto 与 flow.default_description 已删除：留着也不读、不管、不报错，
+  # 既不改变派生行为，也不进指纹——建议在下次改配置时顺手删掉。
   stages:
     - id: 1
       name: requirement
       label: 需求
       material: requirement
-      derive: { to: design, mode: single }
+      # 阶段描述：给人看（/v1/flow 与 echuan_stage_list），不是模板、不进卡正文。
+      description: "人工建卡入口，不自动派生下游"
+      # 派不派由每个环节自己的 derive.auto 决定（缺省 false）。
+      # 写了 to/mode 却漏写 auto: true = 静默不派生，启动日志会显示 auto=off。
+      derive: { auto: true, to: design, mode: single }
     - id: 2
       name: design
       label: 方案
       material: design
       title: "技术方案"
-      # 显式留空 = 沿用今天（派生卡没有任务描述）；填内容即生效。
-      # 显式 "" 与「漏配」不同：漏配会被 R16 拒绝启动。
-      description: ""
-      derive: { to: breakdown, mode: single }
+      description: "把需求展开成技术方案：目标与范围、接口与数据、风险与验证方式"
+      # 派生卡的任务说明模板。显式 "" = 有意留空（沿用今天的行为）；
+      # 「漏配」与「显式 ""」不同：漏配会被 R16 拒绝启动。
+      task: ""
+      derive: { auto: true, to: breakdown, mode: single }
     - id: 3
       name: breakdown
       label: 拆解
       material: plan
       title: "任务拆分"
+      description: "把方案拆成可独立验收的开发卡"
       # 同理显式留空；拆解卡的派生目标用清单文档里的 body_md，不回落缺省值。
-      description: ""
-      derive: { to: dev, mode: list, source: artifact, format: json }
+      task: ""
+      derive: { auto: true, to: dev, mode: list, source: artifact, format: json }
     - id: 4
       name: dev
       label: 开发
@@ -104,4 +108,6 @@ flow:
       open_cards: multiple
       # 最后一张开发卡开项目合并 PR
       closing: true
+      description: "实现与自测，交付物写入任务报告"
+      # 链尾：不派生，也就不需要开关。
       derive: { mode: none }

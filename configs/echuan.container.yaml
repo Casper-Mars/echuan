@@ -56,32 +56,37 @@ im:
 
 # ---------- 任务流程 ----------
 # 删掉整段 flow 会启用手里的内置默认流程，效果与下面这份逐字段一致。
+# description = 阶段描述（给人看）；task = 派生卡的任务说明模板（进卡正文）。
+# 旧版的 flow.auto / flow.default_description 已删除：留着也不读不管、不影响派生与指纹。
 flow:
-  auto: true
   stages:
     - id: 1
       name: requirement
       label: 需求
       material: requirement
-      derive: { to: design, mode: single }
+      description: "人工建卡入口，不自动派生下游"
+      derive: { auto: true, to: design, mode: single }
     - id: 2
       name: design
       label: 方案
       material: design
       title: "技术方案"
-      description: ""
-      derive: { to: breakdown, mode: single }
+      description: "把需求展开成技术方案：目标与范围、接口与数据、风险与验证方式"
+      task: ""
+      derive: { auto: true, to: breakdown, mode: single }
     - id: 3
       name: breakdown
       label: 拆解
       material: plan
       title: "任务拆分"
-      description: ""
-      derive: { to: dev, mode: list, source: artifact, format: json }
+      description: "把方案拆成可独立验收的开发卡"
+      task: ""
+      derive: { auto: true, to: dev, mode: list, source: artifact, format: json }
     - id: 4
       name: dev
       label: 开发
       material: report
       open_cards: multiple
       closing: true
+      description: "实现与自测，交付物写入任务报告"
       derive: { mode: none }

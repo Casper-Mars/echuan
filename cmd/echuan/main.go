@@ -370,16 +370,28 @@ func schemaVersion(st *store.Store) int {
 
 // logFlow writes the effective flow at startup (§8.1 step 6): which
 // configuration it came from, the fingerprint that derivation events carry, the
-// auto switch and one line per stage so the operator can compare the loaded
-// chain with the file without querying anything.
+// scheme that fingerprint was computed with and one line per stage — each
+// deriving stage printing its own switch — so the operator can compare the
+// loaded chain with the file without querying anything.
+//
+// A stage with the switch on but nothing to derive is the one half-migrated
+// state a hard cut can produce (§10.2 W1); it is a warning, not a startup error,
+// so the process keeps serving while the log names the stage to fix.
 func logFlow(banner *slog.Logger, flow platform.FlowConfig) {
 	banner.Info("flow chain loaded",
 		"source", flow.Source,
 		"default", flow.Source == platform.BuiltinFlowSource,
 		"fingerprint", flow.Fingerprint(),
-		"auto", flow.Auto,
+		"fingerprint_scheme", platform.FingerprintScheme,
 		"stages", flow.ChainSummary(),
 	)
+	for _, warning := range flow.SwitchWarnings() {
+		banner.Warn("flow derive switch on without target",
+			"stage", warning.Stage,
+			"derive_mode", string(warning.Mode),
+			"detail", "derive.auto: true but derive.mode is none; nothing will be derived",
+		)
+	}
 }
 
 // logStartup writes the startup banner. It must be called with the banner

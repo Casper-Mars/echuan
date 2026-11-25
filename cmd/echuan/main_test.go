@@ -54,6 +54,67 @@ func TestLogStartupIgnoresLogLevel(t *testing.T) {
 	}
 }
 
+// TestLogFlowWarnsOnceOnSwitchWithoutTarget covers §10.2 W1 and the "does not
+// block startup" half of it: a stage with derive.auto: true and derive.mode:
+// none is a single WARN line, the flow line still prints (with
+// fingerprint_scheme=2 and no "auto" attribute), and nothing fails.
+func TestLogFlowWarnsOnceOnSwitchWithoutTarget(t *testing.T) {
+	flow := platform.DefaultFlowProfile()
+	// dev is the chain tail; switching it on with mode none is a config that has
+	// been migrated halfway.
+	flow.Stages[3].Derive.Auto = true
+
+	var buf bytes.Buffer
+	logFlow(platform.NewBannerLogger(&buf), flow)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("log lines = %d, want 2 (chain + one warning); output = %q", len(lines), buf.String())
+	}
+
+	var chain map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &chain); err != nil {
+		t.Fatalf("chain line is not valid JSON: %v; output = %q", err, lines[0])
+	}
+	if chain["msg"] != "flow chain loaded" {
+		t.Fatalf("msg = %v, want flow chain loaded", chain["msg"])
+	}
+	if _, ok := chain["auto"]; ok {
+		t.Error(`the startup line still prints "auto"; the switch is per stage now`)
+	}
+	if chain["fingerprint_scheme"] != float64(platform.FingerprintScheme) {
+		t.Errorf("fingerprint_scheme = %v, want %d", chain["fingerprint_scheme"], platform.FingerprintScheme)
+	}
+	if chain["fingerprint"] == nil || chain["fingerprint"] == "" {
+		t.Error("fingerprint missing from the startup line")
+	}
+
+	var warning map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &warning); err != nil {
+		t.Fatalf("warning line is not valid JSON: %v; output = %q", err, lines[1])
+	}
+	if warning["level"] != "WARN" {
+		t.Errorf("level = %v, want WARN", warning["level"])
+	}
+	if warning["msg"] != "flow derive switch on without target" {
+		t.Errorf("msg = %v, want flow derive switch on without target", warning["msg"])
+	}
+	if warning["stage"] != "dev" {
+		t.Errorf("stage = %v, want dev", warning["stage"])
+	}
+}
+
+// TestLogFlowPrintsNoWarningForTheBuiltinFlow is the other side of W1: the
+// shipped default flow must start silently.
+func TestLogFlowPrintsNoWarningForTheBuiltinFlow(t *testing.T) {
+	var buf bytes.Buffer
+	logFlow(platform.NewBannerLogger(&buf), platform.DefaultFlowProfile())
+
+	if strings.Contains(buf.String(), "flow derive switch on without target") {
+		t.Errorf("built-in flow produced a warning: %q", buf.String())
+	}
+}
+
 // TestBusinessLoggerStillHonoursLogLevel guards against fixing the banner by
 // forcing the global level to info.
 func TestBusinessLoggerStillHonoursLogLevel(t *testing.T) {

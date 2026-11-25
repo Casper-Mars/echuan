@@ -33,8 +33,11 @@ func (h *v3Handler) stageName(kind enum.TaskKind) string {
 // v3FlowResponse is GET /v1/flow: the effective stage table, in configured
 // order, plus the provenance an operator needs to know which configuration the
 // process loaded.
+//
+// There is no "auto" field any more (D7): whether a stage derives is part of
+// each stage's own derive block semantics and the switch itself is per stage, so
+// a flow-level boolean would only mirror nothing.
 type v3FlowResponse struct {
-	Auto        bool          `json:"auto"`
 	Default     bool          `json:"default"`
 	Source      string        `json:"source"`
 	Fingerprint string        `json:"fingerprint"`
@@ -49,11 +52,14 @@ type v3FlowStage struct {
 	OpenCards string `json:"open_cards"`
 	Closing   bool   `json:"closing"`
 	Title     string `json:"title"`
-	// Description is the template as written; "" means the operator wrote
-	// description: "" or did not configure one (the card then falls back to the
-	// flow default, §8.4).
-	Description string       `json:"description"`
-	Derive      v3FlowDerive `json:"derive"`
+	// Description is the stage description as written: human-readable text for
+	// operators and agents. It is not a template and never lands in a card.
+	Description string `json:"description"`
+	// Task is the card task-description template as written; "" means the
+	// operator wrote task: "" or did not configure one (the card then falls back
+	// to the flow default, §8.4).
+	Task   string       `json:"task"`
+	Derive v3FlowDerive `json:"derive"`
 }
 
 type v3FlowDerive struct {
@@ -82,9 +88,9 @@ func (h *v3Handler) flowDoc(w http.ResponseWriter, r *http.Request) {
 func (h *v3Handler) flowResponse(flow platform.FlowConfig) v3FlowResponse {
 	stages := make([]v3FlowStage, 0, len(flow.Stages))
 	for _, stage := range flow.Stages {
-		description := ""
-		if stage.Description != nil {
-			description = *stage.Description
+		task := ""
+		if stage.Task != nil {
+			task = *stage.Task
 		}
 		derive := v3FlowDerive{
 			Mode:   string(stage.Derive.Mode),
@@ -109,12 +115,12 @@ func (h *v3Handler) flowResponse(flow platform.FlowConfig) v3FlowResponse {
 			OpenCards:   string(stage.OpenCards),
 			Closing:     stage.Closing,
 			Title:       stage.Title,
-			Description: description,
+			Description: stage.Description,
+			Task:        task,
 			Derive:      derive,
 		})
 	}
 	return v3FlowResponse{
-		Auto:        flow.Auto,
 		Default:     flow.Source == platform.BuiltinFlowSource,
 		Source:      flow.Source,
 		Fingerprint: flow.Fingerprint(),

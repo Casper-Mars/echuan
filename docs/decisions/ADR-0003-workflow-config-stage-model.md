@@ -231,3 +231,49 @@ id 1–4 与库里的存量值逐一对应，`name` 保持英文（审计规则�
 
 不在本卡：派生引擎（写卡、幂等、模板渲染、`context_md`）、`GET /v1/flow`、`enum.TaskKind` 放宽、启动哨兵、
 `migrations/0003`、web 下拉与徽标、kit 0.7.0。
+
+## 修订 R2：总闸下放、`description` 语义回收（配置契约 v2）
+
+- 日期：2026-11-25；来源：issue #188 需求 v0.2 + 技术方案 v0.1（§5 D1–D7、§6.2/§6.3、§7.1、§10）；issue #180 结论不变处不重写。
+- 性质：**硬切**（语义层面）。旧二进制不认 `task` / `derive.auto`（R14 拒绝启动）；
+  新二进制不再认 `flow.auto` 与 `flow.default_description` 的语义。后者按卡口径**不报错**：
+  两个键照旧可写，解析时**接受并忽略**——不读、不校验、不告警、不参与任何判定、不进指纹。
+
+### 变更点（覆盖上文的对应条目）
+
+| 上文条目 | 改成 |
+|---|---|
+| D1″ 之外的隐含前提「`flow.auto` 是全局总闸」 | 删除 `flow.auto`。派生唯一开关是 `stages[].derive.auto`（bool，缺省 `false`）。写了 `to`/`mode` 却忘写 `auto: true` → 静默不派生，由启动日志 `stages=` 的 `auto=on|off` 暴露 |
+| D2‴ 字段表：`description` = 任务说明模板 | 拆成两个字段：`description` = **阶段描述**（plain string，给人看，不做模板、不渲染、不进卡正文、R11/R16/R17 都不管它）；`task` = **任务说明模板**（`nil` = 未配置 / `""` = 有意留空 / 文本 = 模板） |
+| D8‴ 三级解析第 2 级 | 由「目标环节 `description`」改为「目标环节 `task`」；第 3 级「流程级 `default_description`」**删除**，解析链只剩 条目正文 → 环节 `task` → 空（`list` 仍不回落） |
+| R11 | 只查 `title` 与 `task`；`description` 放行（入口环节也能写阶段描述） |
+| R13 | **废止**：没有总闸可关，R1–R17 恒在加载时执行 |
+| R14 | `flow` 段只认 `stages`：`auto` 与 `default_description` **接受并忽略**（不报错、不告警）；其余拼错的键仍拒绝，白名单文案只列 `stages`。stage 白名单加 `task`；`derive` 白名单加 `auto` |
+| R16 | 被 `single` 派生的环节必须有 `task`（**没有流程级兜底可退**，检查因此无条件执行）；文案指明「`description` 现在只表示阶段描述，不再作为任务说明兜底」 |
+| R17 | 模板变量白名单的校验对象由 `description` 换成 `task`；`default_description` 不再校验（它已不是配置） |
+| 指纹 | 升到 **scheme 2**：digest 首行 `scheme=2`，**再去掉 `default_description` 行**，每环节行末的 `description` 换成 `task`，`derive` 串加 `auto=%t`。输入 = `scheme=2` + 每环节 `id\|name\|label\|material\|open_cards\|closing\|title\|task\|derive`；两个已删键写与不写、值是什么，指纹完全相同。输出仍是 12 位 hex；`flow.auto_create` 事件结构与 HTTP 响应都不加字段 |
+| `GET /v1/flow` | 顶层删 `auto`；每条 stage 增 `task`（未配置为 `""`）；`description` 字段名不变、语义变成阶段描述 |
+
+### 新增的非阻断 warning（W1）
+
+`stages[i].derive.auto: true` 且 `derive.mode` 为 `none`/`""`：**不挡启动**，启动日志每个环节一条
+`WARN flow derive switch on without target stage="…" …; nothing will be derived`。
+
+### 内置默认流程
+
+与升级前逐字等价，只是写法换成 v2：`requirement`/`design`/`breakdown` 三处显式 `derive.auto: true`，
+`design`/`breakdown` 的 `description: ""` 换成 `task: ""`（仍是有意留空，load-bearing：删掉它 R16 会拒绝启动，
+因为已经没有任何流程级兜底能填上正文），四个环节各补一句中文阶段描述（`description`，不进卡）。
+
+### 迁移（运维）
+
+1. 逐个环节写 `derive.auto: true`（原来的 `flow.auto` 可删可不删：留着的值既不报错也一律忽略，
+   但建议删掉以免误读）；
+2. 把原来放在 `description` 里的任务说明文字搬到 `task`；
+3. 原来有意写 `description: ""` 的环节改成 `task: ""`；
+4. 想给环节写自我介绍，写在 `description`（不再有 R11 例外）；
+5. 原来用 `flow.default_description` 做兜底的，把那段文字搬到各环节的 `task`（或写 `task: ""` 有意留空）；
+   `default_description` 本身留着不报错，但不再有任何作用；
+6. 映射后的指纹与历史事件里的 `config` 值**不可比**（scheme 1 → 2，属预期）。
+
+回滚是成对操作：镜像与配置一起回退，单独回退任一方都启动失败。
