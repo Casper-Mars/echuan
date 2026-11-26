@@ -14,8 +14,10 @@ on:
       - 'kit/**'
       - '.github/workflows/dsh-compat-kit.yml'
   schedule:
-    # 每天 09:00（Asia/Shanghai）= 01:00 UTC。GitHub cron 一律按 UTC 解释。
-    - cron: '0 1 * * *'
+    # 每天 09:53（Asia/Shanghai）= 01:53 UTC。GitHub cron 一律按 UTC 解释。
+    # 不排整点：整点前后是 Actions 高负载时段，schedule 会被延迟甚至丢弃（官方建议
+    # 排到小时内的其他分钟）。四个产品按 17/29/41/53 分错开，避免同一分钟一起排队。
+    - cron: '53 1 * * *'
   workflow_dispatch:
     inputs:
       extra_versions:
